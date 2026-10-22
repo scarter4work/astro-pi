@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -708,6 +709,30 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             const auto n = static_cast<int64_t>(q.size());
             d.candidates = n;
             if (n == 0) continue;
+            // Ruling P27. Detail indistinguishable from the measurement noise: the median candidate's
+            // quality under kRegionDetailSigmas of its own qualitySigma -> no kept frame, so the region
+            // takes the fallback, the plain mean (Regions.h).
+            std::vector<double> ratio;
+            for (size_t i = 0; i < q.size(); ++i)
+                ratio.push_back(sg[i] > 0 && std::isfinite(sg[i]) ? q[i] / sg[i] : std::numeric_limits<double>::infinity());
+            std::nth_element(ratio.begin(), ratio.begin() + static_cast<std::ptrdiff_t>(ratio.size() / 2), ratio.end());
+            if (ratio[ratio.size() / 2] < kRegionDetailSigmas) {
+                d.noiseOnly = true;
+                continue;
+            }
+            // ... or detail, but a spread its qualitySigma explains (even the spread two standard errors up,
+            // var(q) (1 + 2 sqrt(2 / n)), within the mean qualitySigma^2): no frame is sharper than another
+            // here, so every aligned frame is stacked.
+            double mean = 0, var = 0, noise2 = 0;
+            for (size_t i = 0; i < q.size(); ++i) {
+                mean += q[i];
+                noise2 += std::isfinite(sg[i]) ? sg[i] * sg[i] : 0.0;
+            }
+            mean /= static_cast<double>(n);
+            noise2 /= static_cast<double>(n);
+            for (const double v : q) var += (v - mean) * (v - mean);
+            var /= static_cast<double>(std::max<int64_t>(1, n - 1));
+            const bool steady = n > 1 && var * (1 + 2 * std::sqrt(2.0 / static_cast<double>(n))) <= noise2;
             const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (n + 1) / 2));
             const int64_t floorCount =
                 std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));
@@ -723,6 +748,15 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
                 keptSigma.push_back(std::isfinite(sg[i]) ? sg[i] : 0.0);
             }
             d.kept = static_cast<int64_t>(rank.keep);
+            if (steady) {
+                d.steady = true;
+                d.kept = 0;
+                for (size_t f = 0; f < nf; ++f)
+                    if (plan.flags[f * nr + r] & RegionPlan::kShiftUsable) {
+                        plan.flags[f * nr + r] |= RegionPlan::kKept;
+                        ++d.kept;
+                    }
+            }
             d.bestQuality = rank.qRef;
             d.detailScale = rank.qRef > 0 ? 1 / rank.qRef : 0;
             if (!keptSigma.empty()) {

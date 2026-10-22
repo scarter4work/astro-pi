@@ -692,7 +692,7 @@ std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t aligne
             out += ": " + Count(static_cast<int64_t>(k.size())) + " stacking their own sharpest " + range + median + ",";
     }
     if (none > 0)
-        out += (k.empty() ? ": " : " ") + Count(none) + " with no measurable detail in any frame taking the mean of the " +
+        out += (k.empty() ? ": " : " ") + Count(none) + " with no detail above the measurement noise taking the mean of the " +
                Count(stackedFrames) + " stacked frames";
     return out;
 }

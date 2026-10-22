@@ -261,7 +261,21 @@ struct RegionDetail {
     // RMS spatial frequency inverted: for a Gaussian-blurred white texture it is about sqrt(2) x the
     // blur sigma, so it grows with defocus or seeing whatever the target's brightness.
     double detailScale = 0;
+    // Ruling P27 (PlanRegions): the candidates' detail is indistinguishable from the measurement
+    // noise (kept 0: the fallback's plain mean), or real but steady within its qualitySigma (kept =
+    // every aligned frame).
+    bool noiseOnly = false, steady = false;
 };
+
+// A region's detail is real when its median candidate's quality is at least this many of its own
+// qualitySigma (Ruling P27). Measured 2026-10-22 (median q / qualitySigma over a region's candidates):
+// pure noise reads 2 Z on the frames whose noise-corrected gradient energy happens to be positive (derived:
+// q / qualitySigma ~ 2 SN / sd(SN)), a median of ~1.35; the Moon 193142's dark limb regions 0.02 / 1.72
+// / 1.79 (1, 203 and 24 candidates of 2102 frames) and the 2023-02-02 Moon's 1.71 (347 of 1482), while
+// the least detailed regions that keep a lucky subset read 7.44 / 12.8 (2023-02-02 Moon: 826 and 1072
+// candidates, keeping 88 and 131) and everything else 20 and up (Jupiter 195830 over 4000, Neptune
+// 204515 10.7-11.8).
+constexpr double kRegionDetailSigmas = 3;
 
 struct RegionPlan {
     RegionLayout layout;
@@ -302,6 +316,12 @@ struct RegionPlan {
 // quality distribution -- few where the region's sharpness comes and goes with the seeing, most where
 // it is steady (measured 2026-10-21: the steady 2026-01-30 Jupiter keeps 260-300 of 300 per region,
 // spread +-3%; the same night's Moon a median 199 of 300). Deterministic and order-independent.
+// Ruling P27, before the ranking: a region whose median candidate's quality is under
+// kRegionDetailSigmas of its qualitySigma keeps no frame (noiseOnly: the fallback's plain mean of the
+// stacked frames -- ranked, its noise-floor "detail" kept a handful, once a single frame of 2102 on
+// the Moon 193142, sqrt(2102) times the noise); one whose quality spread its qualitySigma explains
+// (var(q) (1 + 2 sqrt(2 / n)) <= mean qualitySigma^2) keeps every aligned frame (steady; Neptune
+// 204515's regions, spread 0.76-0.80 of their qualitySigma, kept all 93 frames ranked as well).
 // threads: regions are ranked on that many threads (< 1 counts as 1); the result is the same for any count.
 RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1);
 

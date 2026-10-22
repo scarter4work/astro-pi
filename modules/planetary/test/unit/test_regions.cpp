@@ -386,6 +386,71 @@ TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") 
     CHECK_THROWS_AS(stack::PlanRegions(lay, dup), std::invalid_argument);
 }
 
+TEST_CASE("A featureless region stacks every frame; textured ones keep their lucky frames (Ruling P27)", "[regions]") {
+    // The surface of "each region keeps the frames sharp there", with a 64-px patch replaced by a flat
+    // level and a faint smooth blob (amplitude 0.03, sigma 6 px): structure enough for a region to be
+    // placed and aligned there, but gradient energy far under the noise's, so its frames' quality is
+    // the noise floor's -- the Moon 193142's dark limb regions. Ranked, such a region kept a handful of
+    // noise-floor frames (sqrt(frames / kept) times the noise of the mean).
+    const int w = 256, h = 192, px0 = 64, py0 = 64, px1 = 128, py1 = 128;
+    const Scene s = testing::MakeSurface(21, w, h);
+    auto patch = [&](FloatImage& im, double noise, unsigned seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n(0, noise);
+        for (int y = py0; y < py1; ++y)
+            for (int x = px0; x < px1; ++x) {
+                const double dx = x - 96.3, dy = y - 95.7;
+                im.data[static_cast<size_t>(y) * w + x] =
+                    static_cast<float>(0.4 + 0.03 * std::exp(-(dx * dx + dy * dy) / 72.0) + (noise > 0 ? n(rng) : 0.0));
+            }
+    };
+    FloatImage ref = Truth(s, w, h, 0.6);
+    patch(ref, 0, 0);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionMeasurer m(ref, lay);
+    std::mt19937 rng(4);
+    std::uniform_real_distribution<double> uni(0, 1);
+    const int frames = 80;
+    std::vector<FrameRegions> measured;
+    for (int k = 0; k < frames; ++k) {
+        FrameSpec f;
+        f.hasLocal = true;
+        f.dx = Constant(0);
+        f.dy = Constant(0);
+        f.noise = 0.01;
+        std::vector<bool> sharp(64);
+        for (auto&& b : sharp) b = uni(rng) < 0.3;
+        f.sigma = Cells(w, h, 64, 0.5, 2.5, [&](int i, int j) { return sharp[static_cast<size_t>((j * 8 + i) % 64)]; });
+        FloatImage frame = Render(s, w, h, f, 300 + k);
+        patch(frame, 0.01, 700u + static_cast<unsigned>(k));
+        measured.push_back(m.Measure(frame, k, Shift{}));
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    int flat = 0, textured = 0;
+    for (size_t r = 0; r < plan.RegionCount(); ++r) {
+        const auto& reg = lay.regions[r];
+        const auto& d = plan.detail[r];
+        const bool inside = reg.x0 >= px0 && reg.x1 <= px1 && reg.y0 >= py0 && reg.y1 <= py1;
+        const bool clear = reg.x1 <= px0 || reg.x0 >= px1 || reg.y1 <= py0 || reg.y0 >= py1;
+        INFO("region at " << reg.x0 << "," << reg.y0 << ": candidates " << d.candidates << ", kept " << d.kept
+                          << (d.noiseOnly ? ", noise only" : "") << (d.steady ? ", steady" : ""));
+        if (inside) {
+            ++flat;
+            CHECK(d.candidates > 0);  // the case that matters: noise-floor "detail" in some frames
+            CHECK(d.noiseOnly);
+            CHECK(d.kept == 0);       // the fallback: the plain mean of the stacked frames
+        } else if (clear) {
+            ++textured;
+            CHECK_FALSE(d.noiseOnly);
+            CHECK_FALSE(d.steady);
+            CHECK(d.kept >= 1);
+            CHECK(d.kept < d.candidates);  // a lucky subset
+        }
+    }
+    CHECK(flat >= 1);
+    CHECK(textured >= 10);
+}
+
 TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (Ruling P8)", "[regions]") {
     // Select holds frames above its fence as suspects and admits those that align (Ruling P6); every
     // frame reaching the regions has passed alignment, and in a region a frame passes the region's own
