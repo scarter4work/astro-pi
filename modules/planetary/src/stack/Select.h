@@ -316,7 +316,10 @@ struct DetailRanking {
 // `quality` must be finite and > 0 (std::invalid_argument otherwise, or when the sizes differ);
 // a non-finite or non-positive sigma counts as 0 (exact). need, floorCount: as in SelectFrames.
 // Empty input gives an empty ranking.
+// applyFence false skips step 5 (nothing is fenced; `fence` is still reported): for samples that have
+// already passed an alignment check, where a quality far above the rest is a lucky moment, not a
+// glitch (Ruling P8, PlanRegions).
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
-                           int64_t floorCount);
+                           int64_t floorCount, bool applyFence = true);
 
 }  // namespace planetary::stack

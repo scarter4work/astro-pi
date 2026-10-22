@@ -44,17 +44,6 @@ void BSplineWeights(float t, float w[4]) {
     w[3] = t3 / 6;
 }
 
-// B-spline weights tabulated at 1/kSplineSteps px of the fractional offset (the offset is rounded to
-// the nearest step: a position error under 1/128 px, far below the warp's own accuracy).
-constexpr int kSplineSteps = 64;
-struct SplineTable {
-    float w[kSplineSteps + 1][4];
-    SplineTable() {
-        for (int i = 0; i <= kSplineSteps; ++i) BSplineWeights(static_cast<float>(i) / kSplineSteps, w[i]);
-    }
-};
-const SplineTable kSplineTable;
-
 inline int FloorInt(float v) {
     const int i = static_cast<int>(v);
     return i > v ? i - 1 : i;
@@ -695,8 +684,12 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             orow[x] = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1;
             // floor without a libm call (the baseline x86-64 target has no rounding instruction).
             const int ix = FloorInt(sx), iy = FloorInt(sy);
-            const float* wx = kSplineTable.w[static_cast<int>((sx - ix) * kSplineSteps + 0.5f)];
-            const float* wy = kSplineTable.w[static_cast<int>((sy - iy) * kSplineSteps + 0.5f)];
+            // Exact weights: a table at 1/64 px moved the stack by up to 6e-4 (measured), these by none.
+            float wxa[4], wya[4];
+            BSplineWeights(sx - ix, wxa);
+            BSplineWeights(sy - iy, wya);
+            const float* wx = wxa;
+            const float* wy = wya;
             float* o = srow + static_cast<size_t>(x) * C;
             if (ix >= 1 && iy >= 1 && ix + 2 < W && iy + 2 < H) {
                 const float* p0 = fr + (static_cast<size_t>(iy - 1) * W + (ix - 1)) * C;

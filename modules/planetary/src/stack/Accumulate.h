@@ -32,8 +32,8 @@ namespace planetary::stack {
 // error is under 0.02 px, its curvature being that of sin^2 blends over >= 32 luma px).
 //
 // Interpolation: cubic B-spline (each frame prefiltered once, recursive filter with mirrored edges,
-// then a 4 x 4 kernel whose weights are tabulated at 1/64 px of the fractional offset -- a position
-// error under 1/128 px). It reproduces the frame exactly at integer shifts and passes more of the fine
+// then a 4 x 4 kernel with exact weights -- a table at 1/64 px was tried and moved the stack by up to
+// 6e-4, measurably). It reproduces the frame exactly at integer shifts and passes more of the fine
 // detail at fractional ones than Catmull-Rom: amplitude kept at a half-pixel shift 0.97 vs
 // 0.88 at 0.25 cycles/px, 0.66 vs 0.45 at 0.4 cycles/px (unit test) -- lucky imaging is about that
 // detail, and a frame's softening is the worst at half a pixel. A sample whose position falls outside
@@ -69,11 +69,12 @@ namespace planetary::stack {
 // per-region stacks: the blend above needs none.)
 //
 // Cost (measured 2026-10-21, Ryzen 9 9950X, 128 synthetic 1920 x 1080 frames moved in): Bayer (RGB
-// output) 43 ms per Add on one thread, 273 frames/s on 16 threads and 289 on 32 (4000 frames: 14.7 /
-// 13.8 s); mono 34 ms, 408 / 429 frames/s (9.8 / 9.3 s). What made it so (from 72 ms and 96 frames/s):
-// the prefilter in two streaming passes, tabulated B-spline weights, no libm floor in the sampling, the
-// 3 channels' taps as 12 vectorisable lanes, rows processed through a ring that stays in cache, and
-// float sums.
+// output) 45 ms per Add on one thread, 219 frames/s on 16 threads and 281 on 32 (4000 frames: 18.3 /
+// 14.2 s); mono 42 ms, 333 / 397 frames/s (12.0 / 10.1 s). Before the review round: 72 ms and 96 /
+// 85 frames/s (Bayer). What made it so -- the prefilter in two streaming passes, no libm floor in the
+// sampling, the 3 channels' taps as 12 vectorisable lanes, rows through a ring that stays in cache,
+// float sums -- changes the stack by at most 4e-7 (float rounding; A/B against the double-sum
+// version on mono and Bayer captures with sharp point features).
 //
 // Thread safety: Add() may be called from many threads at once (rows are added under per-kLockRows
 // locks, each frame starting at its own row). The sums are float: the order frames arrive in changes
@@ -105,11 +106,17 @@ void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWei
 
 // The per-pixel residual scale for rejection: frames are warped onto the reference (luma, Catmull-Rom,
 // gain-corrected, the stack's blended warp on its kWarpGrid grid) and their squared difference from
-// the reference accumulated per pixel. Sigma() = sqrt(mean square), median-filtered over 5 x 5 pixels (a trail or a
-// bird in a few frames inflates its own pixels; the median keeps those from widening the tolerance
-// along a 1-2 px trail), floored at one quantisation step (an 8-bit sky clipped to black measures 0).
-// Observing ~200 frames spread over the capture is enough; observing all is fine. Not thread-safe:
-// one instance per thread, then Merge. Cost: 26 ms per 1920 x 1080 mono frame (one thread).
+// the reference accumulated per pixel, with the largest one. Sigma(): per pixel, the RMS without that
+// largest squared residual (a trail or a bird crossing in one observed frame does not widen its own
+// tolerance), then the largest over 3 x 3 pixels (a sharp feature landing a pixel off), floored at one
+// quantisation step (an 8-bit sky clipped to black measures 0). Never smoothed over space: thin
+// structure carries its large residual on its own pixels only (a 5 x 5 median rejected the sharpest
+// frames there -- review finding). Observe every frame the stack uses (the tests do; a subset would
+// make the leave-one-out guard weaker against a bird spanning frames). Memory per instance: 16 bytes
+// per luma pixel (double sum, float max and count) plus the reference -- 1080p Bayer (960 x 540) 10 MB,
+// 1080p mono 41 MB -- so Task 6 should use one instance per worker (16-32: 0.3-1.3 GB for mono 1080p;
+// cap the workers observing to 8 there, or Merge as each worker finishes a run of frames). Not
+// thread-safe: one instance per thread, then Merge. Cost: 26 ms per 1920 x 1080 mono frame (one thread).
 class ResidualScale {
 public:
     // Throws std::invalid_argument when the reference is not a 1-channel image of the layout's size.

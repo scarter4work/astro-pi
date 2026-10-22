@@ -385,3 +385,34 @@ TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") 
     dup.push_back(measured.front());
     CHECK_THROWS_AS(stack::PlanRegions(lay, dup), std::invalid_argument);
 }
+
+TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (Ruling P8)", "[regions]") {
+    // Select holds frames above its fence as suspects and admits those that align (Ruling P6); every
+    // frame reaching the regions has passed alignment, and in a region a frame passes the region's own
+    // confidence cut too. A lucky moment far sharper than the rest must count where it is sharp.
+    const int w = 192, h = 160;
+    const Scene s = testing::MakeSurface(23, w, h);
+    const FloatImage ref = Truth(s, w, h, 0.6);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    std::mt19937 rng(8);
+    std::normal_distribution<double> n(0, 1);
+    std::vector<FrameRegions> measured;
+    for (int k = 0; k < 60; ++k) {
+        FrameRegions m;
+        m.frameIndex = k;
+        for (size_t r = 0; r < lay.regions.size(); ++r) {
+            stack::RegionMeasure q;
+            q.aligned = true;
+            q.confidence = 0.95f;
+            q.quality = static_cast<float>(k == 7 ? 0.9 : 0.3 * (1 + 0.01 * n(rng)));
+            q.qualitySigma = 0.002f;
+            m.regions.push_back(q);
+        }
+        measured.push_back(m);
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    const int64_t pos = plan.Find(7);
+    REQUIRE(pos >= 0);
+    for (size_t r = 0; r < plan.RegionCount(); ++r)
+        CHECK((plan.flags[static_cast<size_t>(pos) * plan.RegionCount() + r] & stack::RegionPlan::kKept) != 0);
+}

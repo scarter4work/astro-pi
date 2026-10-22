@@ -132,7 +132,7 @@ struct Ranked {
 }  // namespace
 
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
-                           int64_t floorCount) {
+                           int64_t floorCount, bool applyFence) {
     if (sigma.size() != quality.size())
         throw std::invalid_argument("RankByDetail: " + std::to_string(sigma.size()) + " sigmas for " +
                                     std::to_string(quality.size()) + " qualities");
@@ -170,7 +170,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         const auto nDetailed = static_cast<int64_t>(nd);
         const auto modeSize = static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(nDetailed))));
         int64_t cut = 0;  // fence off the `cut` sharpest samples
-        if (above > 0 && nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount) {
+        if (applyFence && above > 0 && nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount) {
             double below = -std::numeric_limits<double>::infinity();  // sharpest sample under the fence
             int64_t band = 0;  // samples in the kFenceBandSigmas robust sd just under the fence
             for (double v : lq)

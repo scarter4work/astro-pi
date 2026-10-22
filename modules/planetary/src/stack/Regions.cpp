@@ -683,7 +683,11 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (n + 1) / 2));
             const int64_t floorCount =
                 std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));
-            const DetailRanking rank = RankByDetail(q, sg, need, floorCount);
+            // No upper fence (Ruling P8): every candidate passed this region's alignment cut (and the
+            // frame the global one, Select's suspects included once admitted); a trail or a hot pixel that
+            // raises one frame's quality here is removed sample by sample in the Accumulator, not by
+            // dropping the frame, and a garbage frame does not align.
+            const DetailRanking rank = RankByDetail(q, sg, need, floorCount, false);
             std::vector<double> keptSigma;
             for (size_t k = 0; k < rank.keep; ++k) {
                 const size_t i = rank.ranked[k];

@@ -494,7 +494,7 @@ TEST_CASE("Accumulator memory is bounded by one frame, not by the frames added",
     Pipeline p = Run(cap, true);
     const size_t held = p.acc->BytesHeld();
     const size_t frameBytes = static_cast<size_t>(w) * h * sizeof(float);
-    // Sums in double and the rejected samples' in float ((channels + 1) of each per pixel), the luma
+    // Float sums of the kept and of the rejected samples ((channels + 1) of each per pixel), the luma
     // maps and the plan: a few frames' worth.
     const size_t planBytes = p.plan.frames.size() * p.plan.RegionCount() * 9 + p.plan.frames.size() * 40;
     CHECK(held <= 2 * 2 * frameBytes + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
