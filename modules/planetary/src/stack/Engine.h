@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,8 +31,8 @@ namespace planetary::stack {
 //     Afterwards: cut = AlignmentCut over the clean frames' shifts; clean frames under it are excluded
 //     (reported in StackSummary::alignment); AdmitSuspects(selection, suspects' shifts, cut) decides
 //     the suspects (its explanation becomes StackSummary::selection); PlanRegions over the frames kept.
-//     Two diagnoses are made here (below): Unaligned, and the region-stage OutOfFocus (Ruling P4) from
-//     the kFocusFrames sharpest kept frames, read once more.
+//     One diagnosis is made here (below): Unaligned. The region-stage focus check (Rulings P4, P15, P20)
+//     reads the kFocusFrames sharpest kept frames once more and can only warn, never refuse.
 //  3. Stacking: Accumulator over every frame the plan uses (RegionPlan::Uses), each read once more,
 //     DemosaicHQ, Add; Finish is the image.
 // So the capture is read in full once (measuring), then the selected frames once (aligning) and the
@@ -155,12 +156,13 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 // Sub-pixel shifts are applied by the Fourier shift theorem, never by interpolation (MeasureFocus).
 // The detail scale of a window is D = 1 / (2 pi sqrt(<f^2>)) over its signal power (FocusDetailScale).
 //
-// The verdict (FocusCheck), a measure judged against two bands set from in-focus captures:
+// The verdict (FocusCheck), a measure judged against a band set from in-focus captures (Rulings P15,
+// P20). No region-stage verdict refuses an image: a gross defocus is refused only by Select's own
+// disc rule, or the target is not found (NoTarget).
 //   InFocus     up to warnAbove, the in-focus range measured (rounded up);
 //   Warned      over it: the image is made, with FocusWarning in the summary warnings;
-//   Refused     from refuseFrom >= 2 x every in-focus reading: OutOfFocus, no image -- gross failure only
-//               (a frame-filling target is never refused; for a disc the band lies above what a blob can read);
-//   NotJudged   nothing above the noise to judge on: the image is made, no verdict.
+//   NotJudged   nothing to judge on (no signal, a halo the frame cannot hold, an inversion at its limit):
+//               the image is made, no verdict.
 //
 // A disc: the measure is its limb blur over its radius, sigma / R. One flat (untapered, DC dropped)
 // window holds the whole disc on sky (MeasureDiscFocus: DiscFocusWindow, grown while the inverted blur's
@@ -175,23 +177,23 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 // and everything left -- diffraction, seeing, defocus -- scales with the image scale as R does, so the
 // same optics at 1x, 1.5x, 2x, 3x (a Barlow) read the same measure. Round 1's limit max(R / 8, 3 px) was
 // set by its fixed 3-px floor for every capture calibrated, so it did not scale: Jupiter's in-focus blur
-// read 1.23-1.33 at 1.5-3x. Unit test (synthetic Jupiter, R 7.9 luma px at 1x, Bayer and mono): in-focus
-// sigma / R 0.16 reads 0.145-0.147 (Bayer) / 0.105-0.110 (mono) at every scale, 0.5 reads 0.47-0.48 /
-// 0.45-0.46.
+// read 1.23-1.33 at 1.5-3x. Unit test (flat discs integrated over each sensor pixel (6 x 6 sub-samples),
+// R 7.9 luma px at 1x, scaled 1x / 1.5x / 2x / 3x, Bayer and mono): a true sigma / R of 0.16 reads
+// 0.160-0.163 at every scale, 0.5 reads 0.467-0.478 (the half-level radius sits a little inward).
 // The price: once sigma passes about R / 2 the disc becomes a Gaussian blob, whose radius grows with the
-// blur in any measure taken from the image, so sigma / R saturates -- 0.57-0.67 measured (synthetic discs
-// R 3-20 blurred 0.75-2 R; real Jupiter 195830 blurred by 16 px 0.566). And a small disc is a blob
-// already in focus: diffraction and seeing against Neptune's 2-px radius read 0.378. Ruling P15 puts the
-// refusal at >= 2 x every in-focus reading, 0.76, above that saturation: so the region stage warns a
-// defocused disc but never refuses one (Select's own disc rule and NoTarget still may).
+// blur in any measure taken from the image, so sigma / R saturates -- 0.57-0.81 measured (synthetic discs
+// R 3-24 blurred 0.75-2 R; real Jupiter 195830 blurred by 16 px 0.566). And a small disc is a blob
+// already in focus: diffraction and seeing against Neptune's 2-px radius read 0.378. Ruling P20: the
+// region stage never refuses; noisy, faint blobs blurred past their radius can still read above 0.76 (the
+// review measured 0.78-2.8 on discs of R 0.8-2 blurred by 6-8 px), which a refusal band would have turned
+// into a false OutOfFocus -- such a disc is warned, or NotJudged when its inversion reaches the model's limit.
 // Measured with stack-probe (first 600 frames; --blur sigma = every frame blurred by a Gaussian of sigma
 // sensor px per colour site plane, its own pixel noise put back -- a synthetic defocus):
 //   in focus: Jupiter 2026-01-30 195830 / 201158 / 195438 (R 7.7-7.8 luma px) 0.164 / 0.168 / 0.171,
 //     195137 (R 11.8) 0.071, Neptune 204515 (R 2.0) 0.378;
 //   195830 blurred 2 / 4 / 8 / 16: 0.26 / 0.38 / 0.53 / 0.57; Neptune blurred 1 / 2 / 3: 0.49 / 0.55 /
 //   0.57 (by 4 it is no longer found: NoTarget).
-// kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px;
-// kDiscRefuseFrom 0.76 (2 x 0.378).
+// kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px.
 //
 // A frame-filling target: the measure is the detail scale D in sensor px, pooled over Hann-tapered
 // windows of kFocusWindow sensor px on the placed regions (FocusWindows, JudgeFocus; the taper's own
@@ -205,7 +207,9 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 // synthetic surface (unit test scene, mono 16-bit) blurred 1 / 3 / 12 px: 4.5 / 7.3 / 12.3.
 // kSurfaceWarnAbove 6.5 (5.99, rounded up to the next half pixel).
 // The bands (Ruling P15), from the in-focus readings above.
-constexpr double kDiscWarnAbove = 0.4, kDiscRefuseFrom = 0.76;
+// No region-stage verdict refuses (Ruling P20): refuseFrom is +inf for discs as for frame-filling targets.
+constexpr double kDiscWarnAbove = 0.4;
+constexpr double kDiscRefuseFrom = std::numeric_limits<double>::infinity();
 constexpr double kSurfaceWarnAbove = 6.5;
 constexpr int kFocusWindow = 128;  // sensor px (64 luma px for Bayer input and an undeclared mosaic)
 constexpr int kMinFocusWindow = 16;
@@ -292,25 +296,27 @@ double DiscHalfRadius(const ser::FloatImage& luma, double cx, double cy, double 
 // 5% of R + 0.1 px of itself for sigma <= R / 2. r0 when no crossing is found.
 double DiscRadius(const ser::FloatImage& luma, double cx, double cy, double r0);
 
-// The focus verdict (Ruling P15): Refused (OutOfFocus, no image) only on gross failure, Warned (the
+// The focus verdict (Rulings P15, P20 -- never a refusal): Warned (the
 // image, with FocusWarning in the summary warnings), InFocus, or NotJudged (nothing to judge on:
 // stacked, no verdict).
-enum class FocusOutcome { NotJudged, InFocus, Warned, Refused };
+enum class FocusOutcome { NotJudged, InFocus, Warned };
 struct FocusCheck {
     FocusOutcome outcome = FocusOutcome::NotJudged;
     bool disc = false;
     // The judged measure and its bands: disc -- limb blur over the disc's radius (dimensionless);
-    // frame-filling -- the detail scale, sensor px. Warned above warnAbove, refused from refuseFrom.
+    // frame-filling -- the detail scale, sensor px. Warned above warnAbove; refuseFrom is +inf for both
+    // (no region-stage verdict refuses, Ruling P20).
     double measure = 0, warnAbove = 0, refuseFrom = 0;
     double limbBlur = 0;     // disc: limb blur sigma, sensor px
-    double radius = 0;       // disc: DiscHalfRadius on the reference (Select's radius when it finds none), luma px
+    double radius = 0;       // disc: DiscRadius on the reference (its seed when no crossing is found), luma px
     double detailScale = 0;  // sensor px (disc: of the disc window; frame-filling: pooled)
     int windows = 0, judged = 0;
     std::string note;        // why a disc was not judged (empty otherwise)
 };
 // One disc window's profile (MeasureFocus of DiscFocusWindow) of a disc of `radius` luma px. NotJudged,
 // with `note`, when the inverted blur's 3-sigma halo leaves the window around the disc's centre (the cut
-// halo reads sharper than it is) -- unless it is already Refused, which the cut can only understate.
+// halo reads sharper than it is), and when the inversion reaches its 4 R + 8 limit (the detail lies
+// beyond the blurred-disc model: noise, or a blob far wider than the radius it was fitted with).
 // poll(): called between steps of the inversion (it may throw StackCancelled).
 FocusCheck JudgeDiscFocus(const FocusProfile& profile, double radius, double lumaScale, const FocusWindow& window,
                           const std::function<void()>& poll = {});
@@ -343,7 +349,7 @@ struct StackSummary {
     //  alignment: the alignment outcome -- frames aligned of selected, the match and cut, the clean
     //             frames left out by AlignmentCut, the regions and how many frames each keeps, the
     //             samples rejected as outliers and the hot pixels repaired. Empty whenever there is no
-    //             image: Select's diagnoses, Unaligned and the region-stage OutOfFocus.
+    //             image: Select's diagnoses and Unaligned.
     std::string selection, alignment;
     double seconds = 0;      // wall time of the whole call
     // Wall time per step, in order: "Hot pixels", "Measuring frames", "Selecting", "Building

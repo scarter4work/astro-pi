@@ -594,14 +594,20 @@ FocusCheck JudgeDiscFocus(const FocusProfile& profile, double radius, double lum
     const double limb = LimbBlurFromDetail(detail, radius, profile.side, poll);
     c.limbBlur = limb * lumaScale;
     c.measure = limb / radius;
-    c.outcome = c.measure >= c.refuseFrom ? FocusOutcome::Refused
-                : c.measure > c.warnAbove ? FocusOutcome::Warned
-                                          : FocusOutcome::InFocus;
-    // The blurred halo must lie inside the window around the disc's centre, or the window's edge cuts it
-    // and the measure reads sharper than the disc is; a refusal stands (the cut only understates).
+    // Never refused (Ruling P20): refuseFrom is +inf; a gross defocus is Select's to refuse.
+    c.outcome = c.measure > c.warnAbove ? FocusOutcome::Warned : FocusOutcome::InFocus;
+    // Two ways the number means nothing, on every path: the inversion ran into its limit (the detail lies
+    // beyond the disc model -- noise or a blob far wider than the disc it was fitted with), or the blurred
+    // halo leaves the window around the disc's centre (the window's edge cuts it).
+    if (!(limb < 4 * radius + 8 - 1e-6)) {
+        c.note = "the disc's detail lies beyond the blurred-disc model (the limb blur reached its " +
+                 Num((4 * radius + 8) * lumaScale, 0) + "-px limit)";
+        c.outcome = FocusOutcome::NotJudged;
+        return c;
+    }
     const double room = std::min({window.cx - window.x0, window.x0 + window.side - 1 - window.cx, window.cy - window.y0,
                                   window.y0 + window.side - 1 - window.cy});
-    if (c.outcome != FocusOutcome::Refused && radius + 3 * limb > room) {
+    if (radius + 3 * limb > room) {
         c.note = "the disc's blurred halo (radius " + Num((radius + 3 * limb) * lumaScale, 0) + " px) does not fit the " +
                  Num(window.side * lumaScale, 0) + "-px window the frame allows";
         c.outcome = FocusOutcome::NotJudged;
@@ -660,8 +666,7 @@ std::string FocusWarning(const FocusCheck& c) {
     if (c.outcome != FocusOutcome::Warned) return {};
     if (c.disc)
         return "The stack may be out of focus: the sharpest frames blur the limb by " + Num(c.limbBlur, 1) + " px, " +
-               Num(c.measure, 2) + " of the disc's radius (in-focus captures: up to " + Num(c.warnAbove, 2) + "; refused from " +
-               Num(c.refuseFrom, 2) + ") -- check the focus.";
+               Num(c.measure, 2) + " of the disc's radius (in-focus captures: up to " + Num(c.warnAbove, 2) + ") -- check the focus.";
     return "The stack may be out of focus (or the capture is sampled far finer than the detail it holds): the "
            "sharpest frames show no detail finer than " +
            Num(c.detailScale, 1) + " px (in-focus captures: up to " + Num(c.warnAbove, 1) + " px).";
@@ -988,22 +993,8 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
         aligning.Finish();
         aligning.ThrowIfCancelled();
         step("Judging focus", t0);
-        if (fc.outcome == FocusOutcome::Refused) {
-            // Only a disc is refused (P15: gross limb blur; a frame-filling target is never refused here).
-            const auto numbers = std::vector<std::pair<std::string, double>>{
-                {"limb blur (pixels)", fc.limbBlur},
-                {"target radius (pixels)", fc.radius * scale},
-                {"limb blur / radius", fc.measure},
-                {"refused from (limb blur / radius)", fc.refuseFrom},
-                {"frames measured for detail", static_cast<double>(ranked.size())}};
-            return finish(Diagnosed(std::move(out), DiagnosisKind::OutOfFocus,
-                                    "Out of focus: even the " + Count(static_cast<int64_t>(ranked.size())) +
-                                        " sharpest frames blur the limb by " + Num(fc.limbBlur, 1) + " px, " +
-                                        Num(fc.measure, 2) + " of the disc's " + Num(fc.radius * scale, 1) +
-                                        "-px radius (in-focus captures: up to " + Num(fc.warnAbove, 2) +
-                                        ") -- the focus, or seeing that blurred every frame.",
-                                    numbers));
-        }
+        // No region-stage verdict refuses (Ruling P20): a Warned check adds a summary warning when the
+        // image is made; a gross defocus is refused only by Select (its disc rule) or found as NoTarget.
     }
 
     // ---- Stacking ------------------------------------------------------------------------------------

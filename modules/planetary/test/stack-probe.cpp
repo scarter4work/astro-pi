@@ -128,7 +128,6 @@ const char* FocusName(stack::FocusOutcome k) {
         case stack::FocusOutcome::NotJudged: return "NotJudged";
         case stack::FocusOutcome::InFocus: return "InFocus";
         case stack::FocusOutcome::Warned: return "Warned";
-        case stack::FocusOutcome::Refused: return "Refused";
     }
     return "?";
 }

@@ -593,7 +593,6 @@ TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- cle
         CHECK(o.image.has_value());
         CHECK(f.outcome == stack::FocusOutcome::Warned);
         CHECK(f.measure > stack::kDiscWarnAbove);
-        CHECK(f.measure < stack::kDiscRefuseFrom);
         int warned = 0;
         for (const auto& wtext : o.summary.warnings) warned += wtext == stack::FocusWarning(f);
         CHECK(warned == 1);
@@ -609,7 +608,6 @@ TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- cle
                      << " | " << o.summary.selection);
         CHECK(f.outcome == stack::FocusOutcome::Warned);
         CHECK(f.measure > 0.5);
-        CHECK(f.measure < stack::kDiscRefuseFrom);
         CHECK(o.image.has_value());
     }
 }
@@ -862,74 +860,58 @@ TEST_CASE("The alignment line's region phrase never claims a region stacks 0 fra
 
 namespace {
 
-// The scene as the same optics at `m` x the image scale (a Barlow): every length times m about (ox, oy).
-Scene ScaleScene(const Scene& base, double m, double ox, double oy) {
-    Scene s = base;
-    for (auto& w : s.waves) {
-        w.u /= m;
-        w.v /= m;
-        w.phi -= 2 * M_PI * (w.u * ox + w.v * oy) * (1 - m);  // keep the texture anchored at the origin
-    }
-    for (auto& b : s.blobs) {
-        b.x = ox + m * (b.x - ox);
-        b.y = oy + m * (b.y - oy);
-        b.s *= m;
-    }
-    s.cx = ox + m * (s.cx - ox);
-    s.cy = oy + m * (s.cy - oy);
-    s.radius *= m;
-    s.edge *= m;
-    s.bins.clear();
-    return s;
-}
 
 // The region-stage disc verdict on synthetic frames of the same optics at scale m: a disc of radius
-// R0 m luma px blurred by sigma0 m luma px (sensor px x LumaScale), 16 frames with sub-pixel jitter.
+// R0 m luma px blurred by sigma0 m luma px, 8 frames with sub-pixel jitter, pixel-integrated.
 stack::FocusCheck DiscVerdictAtScale(bool bayer, double m, double radius0, double sigma0, unsigned seed) {
+    // Sensor pixels integrate the image over their area: every pixel is the mean of 6 x 6 sub-samples of a
+    // flat disc (sky 0.02, disc 0.32) whose edge is a Gaussian blur of sigma -- what a real sensor records,
+    // so the model's removal of the pixel aperture is what is tested.
     const int ls = bayer ? 2 : 1;
     const double rS = radius0 * m * ls, sigmaS = sigma0 * m * ls;
-    int side = static_cast<int>(std::ceil(4 * rS + 16 * ls + 6 * sigmaS + 24));
+    int side = static_cast<int>(std::ceil(2 * (rS + 4 * sigmaS) + 16 * ls + 24));
     side += side & 1;
     const int w = side, h = side;
-    Scene base = testing::MakeDisc(seed, 0, 0, radius0 * ls);
-    base.edge = 0.05;
-    const Scene s = ScaleScene(base, m, 0, 0);
-    Capture cap = testing::NewCapture(w, h, bayer ? ser::ColorId::BayerRGGB : ser::ColorId::Mono);
     std::mt19937 rng(seed + 11);
     std::normal_distribution<double> n(0, 1);
     std::vector<stack::Shift> shifts;
-    std::vector<FloatImage> lumas;
-    Capture mono = testing::NewCapture(w, h);
-    testing::RenderCapture(mono, s, 16, [&](int) {
-        FrameSpec f;
-        f.gx = w / 2.0 + 0.8 * n(rng);
-        f.gy = h / 2.0 + 0.8 * n(rng);
-        f.hasLocal = true;
-        f.dx = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
-        f.dy = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
-        f.sigma = testing::RandomField(rng, w, h, 40, [&] { return sigmaS; });
-        shifts.push_back(stack::Shift{(f.gx - w / 2.0) / ls, (f.gy - h / 2.0) / ls, 1});
-        return f;
-    });
-    const double gain[3] = {1.0, 0.8, 0.55};
-    for (const auto& fr : *mono.frames) {
-        std::vector<float> v(fr.size());
-        for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x) {
-                const int c = !bayer ? 1 : (y & 1) == 0 ? ((x & 1) == 0 ? 0 : 1) : ((x & 1) == 0 ? 1 : 2);
-                const size_t i = static_cast<size_t>(y) * w + x;
-                v[i] = static_cast<float>(gain[c] * fr[i] / 65535.0);
-            }
-        cap.Add(v);
+    std::vector<double> gx, gy;
+    for (int k = 0; k < 8; ++k) {
+        gx.push_back(w / 2.0 + 0.8 * n(rng));
+        gy.push_back(h / 2.0 + 0.8 * n(rng));
+        shifts.push_back(stack::Shift{(gx.back() - w / 2.0) / ls, (gy.back() - h / 2.0) / ls, 1});
     }
+    Capture cap = testing::NewCapture(w, h, bayer ? ser::ColorId::BayerRGGB : ser::ColorId::Mono);
+    const double gain[3] = {1.0, 0.8, 0.55};
+    std::vector<std::vector<float>> frames(8, std::vector<float>(static_cast<size_t>(w) * h));
+    std::vector<std::thread> pool;
+    for (int k = 0; k < 8; ++k)
+        pool.emplace_back([&, k] {
+            std::mt19937 noise(seed * 31 + k);
+            std::normal_distribution<double> g(0, 1);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    double acc = 0;
+                    for (int j = 0; j < 6; ++j)
+                        for (int i = 0; i < 6; ++i) {
+                            const double r = std::hypot(x - 0.5 + (i + 0.5) / 6 - gx[static_cast<size_t>(k)],
+                                                        y - 0.5 + (j + 0.5) / 6 - gy[static_cast<size_t>(k)]);
+                            acc += 0.5 * std::erfc((r - rS) / (std::sqrt(2.0) * std::max(sigmaS, 1e-3)));
+                        }
+                    const int c = !bayer ? 1 : (y & 1) == 0 ? ((x & 1) == 0 ? 0 : 1) : ((x & 1) == 0 ? 1 : 2);
+                    frames[static_cast<size_t>(k)][static_cast<size_t>(y) * w + x] =
+                        static_cast<float>(gain[c] * (0.02 + 0.3 * acc / 36) + 0.003 * g(noise));
+                }
+        });
+    for (auto& t : pool) t.join();
+    for (const auto& f : frames) cap.Add(f);
     auto src = cap.Factory()();
-    for (int k = 0; k < 16; ++k) lumas.push_back(stack::MeasurementLuma(src->ReadFrame(k), cap.info));
-    // The half-level radius on one frame, about its own (shifted) centre, as RunStack does on the reference.
-    FloatImage ref = lumas[0];
+    std::vector<FloatImage> lumas;
+    for (int k = 0; k < 8; ++k) lumas.push_back(stack::MeasurementLuma(src->ReadFrame(k), cap.info));
     // Luma pixel i covers sensor pixels ls i .. ls i + ls - 1: sensor X is luma (X - (ls - 1) / 2) / ls.
     const double cx = (w / 2.0 - 0.5 * (ls - 1)) / ls, cy = (h / 2.0 - 0.5 * (ls - 1)) / ls;
-    // RunStack starts from Select's radius; here the true one, inflated as Select's would be by the blur.
-    const double half = stack::DiscRadius(ref, cx + shifts[0].dx, cy + shifts[0].dy, radius0 * m + 2 * sigma0 * m);
+    // RunStack seeds DiscRadius with Select's radius; here the true one, inflated as Select's would be.
+    const double half = stack::DiscRadius(lumas[0], cx + shifts[0].dx, cy + shifts[0].dy, radius0 * m + 2 * sigma0 * m);
     return stack::MeasureDiscFocus(lumas, shifts, cx, cy, half, ls, 4);
 }
 
@@ -937,7 +919,7 @@ stack::FocusCheck DiscVerdictAtScale(bool bayer, double m, double radius0, doubl
 
 TEST_CASE("The disc focus verdict is the same at 1x, 1.5x, 2x and 3x the image scale, Bayer and mono (review round 2, I2)", "[engine]") {
     // The 2026-01-30 Jupiter's in-focus limb (sigma / R = 0.16 at R 7.9 luma px), 3x it (warned) and
-    // 12x it (a blob: warned): blur and radius both scaled, the same sensor noise.
+    // 12x it (a blob: warned): blur and radius both scaled, the same sensor noise, pixel-integrated.
     struct Level {
         double ratio;
         stack::FocusOutcome expect;
@@ -945,23 +927,17 @@ TEST_CASE("The disc focus verdict is the same at 1x, 1.5x, 2x and 3x the image s
     for (bool bayer : {true, false})
         for (const Level& lv : {Level{0.16, stack::FocusOutcome::InFocus}, Level{0.5, stack::FocusOutcome::Warned},
                                 Level{2.0, stack::FocusOutcome::Warned}}) {
-            double lo = 1e9, hi = 0;
             for (double m : {1.0, 1.5, 2.0, 3.0}) {
                 const stack::FocusCheck f = DiscVerdictAtScale(bayer, m, 7.9, lv.ratio * 7.9, 61);
                 INFO((bayer ? "Bayer" : "mono") << " scale " << m << ", true sigma/R " << lv.ratio << ": measure " << f.measure
-                                                << ", radius " << f.radius << ", limb " << f.limbBlur);
+                                                << ", radius " << f.radius << ", limb " << f.limbBlur << ", note " << f.note);
                 CHECK(f.outcome == lv.expect);
-                lo = std::min(lo, f.measure);
-                hi = std::max(hi, f.measure);
+                // The reading tracks the true sigma / R -- the model strips the pixel aperture -- within 10%
+                // up to the blob regime; past it the half-level radius inflates and the reading saturates.
+                if (lv.ratio < 1) CHECK(f.measure == Catch::Approx(lv.ratio).epsilon(0.10));
+                else CHECK(f.measure < 1.0);
             }
-            INFO((bayer ? "Bayer" : "mono") << " ratio " << lv.ratio << ": measure " << lo << " .. " << hi << " over the scales");
-            // Invariant to the image scale within 20% below the blob regime; a disc blurred past its radius
-            // saturates (its half-level radius inflates with the blur) -- warned at every scale, never refused.
-            if (lv.ratio < 1) CHECK(hi <= 1.2 * lo);
-            if (lv.ratio > 1) CHECK(hi < stack::kDiscRefuseFrom);  // saturated, under the refusal band
         }
-    // Refusal sits at >= 2 x every in-focus reading at every scale (the band is a ratio).
-    CHECK(stack::kDiscRefuseFrom >= 2 * 0.378);  // >= 2 x every in-focus reading (Neptune 2026-01-30: 0.378)
 }
 
 TEST_CASE("The disc model inversion is fast for a large disc and cancellable (review round 2, I1)", "[engine]") {
@@ -1005,4 +981,57 @@ TEST_CASE("A disc whose halo does not fit the frame is not judged, with the reas
     CHECK(f.note.find("does not fit") != std::string::npos);
     // ... while a frame with no room even for the disc and 8 px of sky gives no window at all.
     CHECK(stack::DiscFocusWindow(48, 48, 44, n, n).side == 0);
+}
+
+namespace {
+
+// Mono luma frames of a disc of radius R blurred by s (erfc edge, 4 x 4 pixel-integrated), 16 frames
+// with jitter, sky 0.02 and noise -- the review's scan (round 3).
+stack::FocusCheck ScanDisc(int n, double R, double s, double noise) {
+    std::mt19937 rng(5);
+    std::normal_distribution<double> nd(0, 1);
+    std::vector<FloatImage> lumas;
+    std::vector<stack::Shift> shifts;
+    const double c = n / 2.0;
+    for (int k = 0; k < 16; ++k) {
+        const double dx = 0.7 * nd(rng), dy = 0.7 * nd(rng);
+        FloatImage im{n, n, 1, std::vector<float>(static_cast<size_t>(n) * n)};
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                double acc = 0;
+                for (int j = 0; j < 4; ++j)
+                    for (int i = 0; i < 4; ++i) {
+                        const double r = std::hypot(x - 0.5 + (i + 0.5) / 4 - dx - c, y - 0.5 + (j + 0.5) / 4 - dy - c);
+                        acc += 0.25 * std::erfc((r - R) / (std::sqrt(2.0) * std::max(s, 1e-3)));
+                    }
+                im.data[static_cast<size_t>(y) * n + x] = static_cast<float>(0.02 + acc / 16 + noise * nd(rng));
+            }
+        lumas.push_back(std::move(im));
+        shifts.push_back(stack::Shift{dx, dy, 1});
+    }
+    const double rad = stack::DiscRadius(lumas[0], c + shifts[0].dx, c + shifts[0].dy, R + 2 * s);
+    return stack::MeasureDiscFocus(lumas, shifts, c, c, rad, 1, 8);
+}
+
+}  // namespace
+
+TEST_CASE("No region-stage disc verdict refuses: faint blobs and a clamped inversion are warned or not judged (Ruling P20)", "[engine]") {
+    CHECK(std::isinf(stack::kDiscRefuseFrom));
+    struct Case {
+        int n;
+        double R, s, noise;
+    };
+    // The review's refusals (round 3): tiny discs blurred past their radius, read 0.78-2.8.
+    for (const Case& c : {Case{106, 0.8, 8, 0.005}, Case{106, 1.0, 8, 0.005}, Case{107, 1.5, 8, 0.005}, Case{92, 2.0, 6, 0.005},
+                          Case{90, 0.8, 6, 0.08}}) {
+        const stack::FocusCheck f = ScanDisc(c.n, c.R, c.s, c.noise);
+        INFO("R " << c.R << " s " << c.s << " noise " << c.noise << ": outcome " << static_cast<int>(f.outcome) << ", measure " << f.measure
+                  << ", limb " << f.limbBlur << ", note " << f.note);
+        CHECK((f.outcome == stack::FocusOutcome::Warned || f.outcome == stack::FocusOutcome::NotJudged));
+    }
+    // ... and the one that hit the inversion's limit (limb 23.9 px in a 32-px window): not judged, with why.
+    const stack::FocusCheck clamped = ScanDisc(71, 1.5, 3.5, 0.08);
+    INFO("clamped: outcome " << static_cast<int>(clamped.outcome) << ", measure " << clamped.measure << ", note " << clamped.note);
+    CHECK(clamped.outcome == stack::FocusOutcome::NotJudged);
+    CHECK_FALSE(clamped.note.empty());
 }
