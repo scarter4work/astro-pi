@@ -1,10 +1,8 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <ctime>
 #include <limits>
 #include <random>
 #include <regex>
@@ -457,26 +455,34 @@ TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
     for (int64_t f : kept) CHECK(good(f));
     CHECK(static_cast<double>(kept.size()) >= 0.9 * static_cast<double>(nGood));
 
-    // Speed as work, not wall time (a loaded machine -- ctest -j8 -- stretched the wall clock past a
-    // fixed bound): this thread's CPU time, which other processes do not add to, the least of three
-    // runs. Linear in N (the deconvolution is O(N kPriorGrid) per EM step): 4x the frames take 4x the
-    // work (an O(N^2) step would take 16x), and 20 000 frames well under a second of CPU.
-    auto cpu = [](const std::vector<FrameStats>& s) {
-        double best = 1e300;
-        for (int r = 0; r < 3; ++r) {
-            timespec a{}, b{};
-            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
-            const Selection one = SelectFrames(s, Info(640, 480));
-            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b);
-            REQUIRE(one.frames == SelectFrames(s, Info(640, 480)).frames);  // deterministic as well
-            best = std::min(best, (b.tv_sec - a.tv_sec) + 1e-9 * static_cast<double>(b.tv_nsec - a.tv_nsec));
+    CHECK(SelectFrames(stats, Info(640, 480)).frames == sel.frames);  // deterministic
+
+    // Speed as counted work, never a clock: CPU time includes memory stalls, and under memory-bandwidth
+    // load (review: 32 processes copying 64 MB) the 20 000-frame working set spills cache where the
+    // 5 000 one does not -- 2.6-3.1 s CPU against 0.40-0.43 s idle, ratio 8.6-12.1 against 3.9-4.1 --
+    // so no timing bound on this machine is both meaningful and safe. RankByDetail counts its grid
+    // evaluations (steps 6 and 8, where the cost is); on the samples SelectFrames ranks here, 4x the
+    // frames is 4x the work (an O(N^2) step would be 16x), and it is exactly the likelihood table
+    // plus kPriorIterations EM steps plus the posteriors, kPriorGrid each per sample.
+    auto work = [](const std::vector<FrameStats>& s) {
+        std::vector<double> q, sg;
+        for (const FrameStats& f : s) {
+            q.push_back(f.quality);
+            sg.push_back(f.qualitySigma);
         }
-        return best;
+        const auto n = static_cast<int64_t>(s.size());
+        const auto floorCount = static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n))));
+        const stack::DetailRanking r = stack::RankByDetail(q, sg, stack::kMinStackFrames, floorCount);
+        return std::make_pair(r.work, r.left.size());
     };
-    const double full = cpu(stats), part = cpu(quarter);
-    INFO("CPU seconds: 20 000 frames " << full << ", 5 000 frames " << part << " (ratio " << full / part << ")");
-    CHECK(full / part < 6);
-    CHECK(full < 1.0);
+    const auto [full, fullLeft] = work(stats);
+    const auto [part, partLeft] = work(quarter);
+    INFO("grid evaluations: 20 000 frames " << full << " (" << fullLeft << " ranked), 5 000 frames " << part << " ("
+                                            << partLeft << ")");
+    const auto perSample = static_cast<uint64_t>(stack::kPriorGrid) * (2 * stack::kPriorIterations + 2);
+    CHECK(full == perSample * fullLeft);
+    CHECK(part == perSample * partLeft);
+    CHECK(static_cast<double>(full) / static_cast<double>(part) == Catch::Approx(4).epsilon(0.01));
 }
 
 TEST_CASE("input order does not matter; the result is in frame order", "[select]") {
@@ -1488,11 +1494,11 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
     }
 }
 
-TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P15)", "[select][diagnosis][focus][class]") {
+TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P20)", "[select][diagnosis][focus][class]") {
     // Classed by the box, these turned "large" (boxes of 16-22 luma px) and were refused here before
-    // the region stage could judge them -- R 11 blurred 4 px as PoorSeeing, where the engine's own
-    // measure only warns (4 px over its 3 px limit). Classed by the half-contrast radius they stay
-    // small, and the small-disc rule (box-inflated: S <= 0.85 on these) leaves them to the region stage.
+    // the region stage could judge them (R 11 blurred 4 px as PoorSeeing): the size class moved with
+    // the blur being judged. Classed by the half-contrast radius they stay small, and the small-disc
+    // rule (box-inflated: S <= 0.85 on these) leaves them to the region stage, which warns (Ruling P20).
     for (const auto& [radius, blur] : std::vector<std::pair<double, double>>{{8, 6}, {11, 4}, {11, 6}, {14, 6}}) {
         const Selection sel = MeasuredDisc(radius, blur, false, 0.01, 7);
         INFO("R " << radius << ", blur " << blur << ": " << sel.explanation);

@@ -10,8 +10,9 @@
 namespace planetary::stack {
 
 // Why a capture gives no image (spec "Diagnosis"). None: frames were selected. SelectFrames makes the
-// first five; Unaligned (too few frames align to the reference) and the region stage's OutOfFocus are
-// made by RunStack after alignment (Engine.h).
+// first five; only Unaligned (too few frames align to the reference) is made by RunStack, after
+// alignment (Engine.h). OutOfFocus and PoorSeeing come only from SelectFrames (steps 4 and 7): the
+// region-stage focus check warns and never refuses (Ruling P20).
 enum class DiagnosisKind { None, NoTarget, OutOfFocus, PoorSeeing, Clipped, TargetLeavesFrame, Unaligned };
 
 struct Diagnosis {
@@ -48,13 +49,14 @@ struct Selection {
     } line;
     bool fullFrameTarget = false; // the target fills the frame (lunar surface), step 2
     // Whether focus and seeing were judged here (step 7). False for a full-frame target: its
-    // quality is texture, not a limb, so OutOfFocus / PoorSeeing for it belong to the region stage
-    // (Ruling P4: Task 5 exposes per-region detail with its uncertainty, Task 6 diagnoses when even
-    // the best regions of the best frames fall below an absolute texture-scale floor).
+    // quality is texture, not a limb, so its focus is left to the region stage (Ruling P4), which
+    // only warns (Ruling P20) -- a frame-filling target is never refused for focus.
     bool focusJudged = false;
     // Step 7's size class when focusJudged, 0 otherwise: the median FrameStats::halfRadius (luma px),
-    // which a blur hardly moves (the box radius grows with it). Discs under kMinJudgedRadius are judged
-    // a second time from the region stage (Ruling P4, Engine.h); larger ones only here (step 7).
+    // which a blur hardly moves (the box radius grows with it). The region stage judges every disc
+    // too, but only to warn (Ruling P20); step 7's large-disc rule (halfRadius >= kMinJudgedRadius) is
+    // the only refusal of a disc for gross defocus. Small discs' own rule did not fire on any measured
+    // capture (step 7), so in practice a small disc is never refused for focus.
     double targetRadius = 0;
 };
 
@@ -134,7 +136,7 @@ constexpr double kDetailDepth = 3.0;
 // Focus / seeing: blurred when the best frames' limb blur is at least kBlurLimit of the radius.
 constexpr double kBlurLimit = 0.125;
 // Discs with a half-contrast radius (FrameStats::halfRadius) under this (luma px) are judged with
-// the sampling correction and floor below, and again by the region stage.
+// the sampling correction and floor below; the region stage judges them too, warn-only (Ruling P20).
 constexpr double kMinJudgedRadius = 15;
 // A disc of at least kMinJudgedRadius is refused only when grossly blurred: sigma(q_ref) >= this times
 // its half-contrast radius (FrameStats::halfRadius), twice the highest in-focus reading measured and
@@ -230,8 +232,8 @@ constexpr int kMinJudgedFrames = 30;
 //           when sigma'(q_ref) >= max(R / 8, kBlurFloorPixels / LumaScale). Classed by the box, a small
 //           disc blurred far enough turned "large" (its box grows 1.28 sigma) and met the large-disc
 //           rule before the region stage judged it: StackSynth R 8 / 11 / 14 blurred 6 / 4 / 6 px
-//           reached boxes of 16-22 and were refused here (R 11 by 4 px, mono: the engine's measure
-//           only warns there, 4 px over its 3 px limit = 1.33, Engine.h).
+//           reached boxes of 16-22 and were refused here (R 11 by 4 px as PoorSeeing): the size
+//           class moved with the blur being judged.
 //           Measured 2026-10-22, the small rule itself did not fire on any measured frames -- its R
 //           is the box's, inflated by the blur as above: S = sigma'(q_ref) / max(R / 8, kBlurFloorPixels /
 //           LumaScale) reads 0.50 / 0.50 / 0.48 / 0.00 on the 2026-01-30 Jupiters 195830 / 202657 /
@@ -239,8 +241,9 @@ constexpr int kMinJudgedFrames = 30;
 //           2022-09-08 001402 Jupiter), at most 0.93 when they are blurred by 1-24 sensor px
 //           (Neptune by 1-3: 0.19-0.54; by 4 it is not found), and 0.00-0.85 on StackSynth discs of R
 //           3-14 blurred 0.6-6 px (mono, limb and convolved); in the region stage's warn band (those
-//           Jupiters blurred 1-3 sensor px) 0.54-0.77 -- so on measured data small discs are refused
-//           for focus by the region stage's own measure (Ruling P15), not by Select before it.
+//           Jupiters blurred 1-3 sensor px) 0.54-0.77 -- so on measured data a small disc is never
+//           refused for focus: the region stage only warns (Ruling P20), and a disc defocused far
+//           enough to grow its half-contrast radius past kMinJudgedRadius meets the large-disc rule.
 //    R / 8: the coarsest planetary structure (belts, period P ~ R/4) then keeps under 1% contrast
 //    (exp(-2 pi^2 sigma^2 / P^2) < 0.01 at sigma > 0.48 P).
 //    Why R_h for large discs (Task 6 found an R 24 disc blurred by 12 px stacked): the box sits at the
@@ -369,6 +372,10 @@ struct DetailRanking {
     FenceRule fenceRule = FenceRule::None;  // which rule fenced them (None iff fenced is empty)
     int64_t fenceBand = 0;       // 5a: the samples in the band just under the fence; 0 otherwise
     double fence = 0;            // the fence in quality units (exp of the log fence); 0 for empty input
+    // Grid evaluations done by steps 6 and 8 (the likelihood table, two per sample and grid point per
+    // EM step, one per sample and point for the posteriors): the cost, counted -- deterministic, so a
+    // test can check it is linear in the samples without a clock (the fence and sorts add N log N).
+    uint64_t work = 0;
 };
 // `quality` must be finite and > 0 (std::invalid_argument otherwise, or when the sizes differ);
 // a non-finite or non-positive sigma counts as 0 (exact). need, floorCount: as in SelectFrames.

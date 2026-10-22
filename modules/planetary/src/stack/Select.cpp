@@ -80,6 +80,7 @@ Selection Diagnosed(Selection sel, DiagnosisKind kind, std::string message,
 struct Prior {
     std::vector<double> u, pi, lik;
     size_t k = 0;
+    uint64_t work = 0;  // grid evaluations: the likelihood table plus two per sample and point per EM step
 };
 
 // NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM.
@@ -106,6 +107,7 @@ Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
             const double z = (q[i] - p.u[j]) / sg;
             p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
         }
+        p.work += k;
     }
     std::vector<double> acc(k);
     for (int it = 0; it < kPriorIterations; ++it) {
@@ -114,8 +116,10 @@ Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
             const double* l = &p.lik[i * k];
             double d = 0;
             for (size_t j = 0; j < k; ++j) d += p.pi[j] * l[j];
+            p.work += k;
             if (!(d > 0)) continue;
             for (size_t j = 0; j < k; ++j) acc[j] += p.pi[j] * l[j] / d;
+            p.work += k;
         }
         for (size_t j = 0; j < k; ++j) p.pi[j] = acc[j] / static_cast<double>(n);
     }
@@ -226,6 +230,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         qRef = qs[static_cast<size_t>(refRank - 1)];
     }
     out.qRef = qRef;
+    out.work = prior.work;
 
     // 8's weight: contrast at the detail frequency of a sample of true quality q.
     auto mtfAt = [&](double q) {
@@ -245,6 +250,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
             m += p * prior.u[j];
             w += p * mtfAt(prior.u[j]);
         }
+        out.work += prior.k;
         ranked.push_back(d > 0 ? Ranked{pos, m / d, w / d} : Ranked{pos, quality[pos], mtfAt(quality[pos])});
     }
     std::sort(ranked.begin(), ranked.end(), [](const Ranked& a, const Ranked& b) {

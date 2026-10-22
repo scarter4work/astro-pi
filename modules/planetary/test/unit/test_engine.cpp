@@ -597,18 +597,16 @@ TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- cle
         for (const auto& wtext : o.summary.warnings) warned += wtext == stack::FocusWarning(f);
         CHECK(warned == 1);
     }
-    SECTION("a disc blurred by twice its radius is a blob: its measure saturates under the refusal band, so it is warned") {
-        // Ruling P15 + the scale-invariance requirement: the refusal band is >= 2 x every in-focus reading
-        // (Neptune 0.378 -> 0.76), and a blob's half-level radius grows with its blur, holding the measure at
-        // 0.57-0.67 (real Jupiter blurred by 16 px: 0.566; this synthetic: 0.61), under 0.76 -- so the region stage does
-        // not refuse a disc; Select or NoTarget may.
+    SECTION("a disc blurred by twice its radius is a blob: Select's gross-defocus rule refuses it before the region stage") {
+        // The region stage never refuses a disc (Ruling P20; a blob's half-level radius grows with its blur, holding
+        // its measure at 0.57-0.67 -- real Jupiter blurred by 16 px: 0.566; this synthetic: 0.61). Select does: the
+        // blob's half-contrast radius (~15.6 luma px) puts it in the large-disc class, where sigma(q_ref) / R_h reads
+        // 0.47 against kGrossBlurLimit 0.25 (Select.h step 7) -- the one refusal for a disc's gross defocus.
         const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82).Factory(), 8, {});
-        const stack::FocusCheck& f = o.summary.focus;
-        INFO("limb " << f.limbBlur << " px, " << f.measure << " of the radius " << f.radius << " | " << o.diagnosis.message
-                     << " | " << o.summary.selection);
-        CHECK(f.outcome == stack::FocusOutcome::Warned);
-        CHECK(f.measure > 0.5);
-        CHECK(o.image.has_value());
+        INFO(o.diagnosis.message << " | " << o.summary.selection);
+        CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+        CHECK(o.diagnosis.message.find("Out of focus") != std::string::npos);
+        CHECK_FALSE(o.image.has_value());
     }
 }
 TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, with no image", "[engine]") {

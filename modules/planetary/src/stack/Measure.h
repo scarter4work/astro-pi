@@ -31,8 +31,12 @@ struct FrameStats {
     // blurred by 0 / 3 / 6 luma px: this 21.5 / 21.0 / 20.5, the box 26 / 27 / 30). Dark texture
     // inside the disc does not shrink it (only the outermost pixels count), nor does the phase of a
     // gibbous or crescent disc (its cusps still span the diameter along one axis; a diagonal one, at
-    // least 0.85 of it). Saturn's open rings widen it; edge-on ones are opened away. Select judges
-    // large discs' focus by it (Select.h, step 7).
+    // least 0.85 of it) -- reasoned, untested: no Mars or Venus capture on the NAS is a large disc.
+    // Saturn's open rings widen it: they span ~2.3 globe radii and are bright enough to clear half
+    // contrast (the 2022-08-03 Saturn: 12.5 against a box radius of 13.6 -- the rings fill the box), so
+    // its focus reading, ~1 / R^2, is up to ~5x lower than the globe's own: Select's large-disc rule is
+    // effectively off for a ringed Saturn (it fails safe: stacked, never refused). Edge-on rings are
+    // opened away. Select judges large discs' focus by it (Select.h, step 7).
     double halfRadius = 0;
     // The target's extent, half-open [bx0, bx1) x [by0, by1), conservative: the blocks of the
     // detection grid (see below) where the target exceeds 10% of its contrast, grown by one block,

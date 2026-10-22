@@ -157,20 +157,33 @@ private:
 // a tenth of the hot pixel's excess of it, and the first test fails in a varying share of the frames
 // (measured, Task 6's capture: a 112 x 96 disc of R 24 with MakeDisc's texture, seeing blur and local
 // jitter, no drift, 50 frames; a hot pixel on each of the 1386 sites within 21 px of the centre, found
-// when isolated in >= kHotShare of the frames: mono +0.35 549, +0.2 3, +0.15 0; Bayer +0.35 125, +0.5
-// 552). So a site also counts when it stands above the whole ring by kHotMin AND its excess over the
-// ring's smooth surface -- the quadratic through the 8 neighbours, which predicts the site as
-// 2 mean(4 sides) - mean(4 corners) and follows the texture's slope and curvature -- is more than
-// kHotRatio of its excess over their median. Found then: mono 1386, 1356, 1212; Bayer 1196 (+0.35),
-// 1306 (+0.5), 624 (+0.15) -- in a mosaic the same-colour ring is 2 px out, where the texture is rougher.
-// The clean disc flags nothing (no site passes in more than 2 of the 50 frames). Still optical detail
-// passes only when sharper than planetary optics give: over every sub-pixel placement and angle, the
-// largest share of a still point's rise left unpredicted is 0.14 at PSF sigma 1.6 ring steps (mono),
-// 0.44 at 0.8 (Bayer at sigma 1.6 px), 0.67 at 0.6; of a still line's 0.73 at 0.8 (the worst angle,
-// ~35 degrees off an axis, through the site), 0.63 at 0.9; an edge (a limb) never stands above the
-// whole ring. Against 0.9 that is a margin of 1.2 on the worst line at the Bayer design point (the
-// first test's own is 1.1 on a point there; unit test: points on and between sites and lines along a
-// row, a column and at 35 degrees, still on a tracked textured disc, none flagged). In a mosaic an adjacent
+// when isolated in >= kHotShare of the frames, HotPixelMap as a whole: mono +0.35 573, +0.2 6, +0.15 0;
+// Bayer +0.35 177, +0.5 411). So a site also counts when it stands above the whole ring by kHotMin AND
+// its excess over the ring's smooth surface -- the quadratic through the 8 neighbours, which predicts
+// the site as 2 mean(4 sides) - mean(4 corners) and follows the texture's slope and curvature -- is more
+// than kHotRatio of its excess over their median. In mono that is all: found then mono 1386 / 1357 /
+// 1213 (+0.35 / +0.2 / +0.15); still optical detail passes only when far sharper than planetary optics
+// give (over every sub-pixel placement and angle, the largest share of a still point's rise left
+// unpredicted is 0.14 at PSF sigma 1.6 px, a line's well under 0.9 above ~0.65 px; an edge, a limb,
+// never stands above the whole ring). In a mosaic the ring is 2 px out, and native sampling of a 2.9 um
+// sensor at f/9-f/12 is PSF sigma 1.0-1.1 px, 0.5 ring steps: still points and lines that sharp pass
+// the surface test too (review round 1, 6 seeds x ~21 features, 50 frames, amplitude 0.25: sigma 1.0
+// lines on a disc 0 -> 8, on sky 0 -> 13; sigma 0.8 points on a disc 0 -> 70, lines 0 -> 59). So in a
+// mosaic the site must also leave the different-colour samples 1 px away at the local level: the
+// larger of the rises of the 1-px pair over the same colours 3 px out, along x and along y, is under
+// kHotRiseShare of its excess over the surface. A hot pixel leaves its other-colour neighbours alone;
+// an optical feature through the site raises them -- over every placement and angle of still points and
+// lines that pass the surface test, that rise is at least 0.25 / 0.50 / 0.90 / 1.08 / 1.27 of the
+// excess at PSF sigma 0.6 / 0.8 / 1.0 / 1.1 / 1.2 px (and none pass from 1.3), and the brighter of the
+// two colour pairs counts, so a neighbour colour half as bright still clears the gate from sigma 1.0
+// (0.45 against 0.25) and just reaches it at 0.8 (scan of noise-free features, amplitude 0.1-1).
+// Measured with the gate (same scans): no more false flags than the first test alone at any sigma
+// 0.8-2.5, still or jittered 0.2 px, on disc or sky (sigma 0.8 points on sky: 16, as before; every
+// other cell 0); found on Task 6's disc, Bayer: 1160 (+0.35; 1207 without the gate), 1228 (+0.5), 493
+// (+0.15). The clean disc flags nothing. Still segments with hard (non-optical) ends do pass in mono
+// (6 seeds: 1 / 1 / 2 sites at sigma 1.0 / 1.3 / 2.0): an end cut off within a pixel is a step no PSF
+// makes, and the surface cannot predict it; with erf ends at the PSF's sigma, none (the unit test's
+// features have erf ends). In a mosaic an adjacent
 // pair is two lone sites (neighbouring sensor pixels are other colours). Hot pairs and segments along a
 // line -- column, row or diagonal; in mono any adjacent pair, in a mosaic 3 px or more -- put members on
 // each other's ring, so a site also counts when it stands above the 6 neighbours off one such line by
@@ -185,10 +198,9 @@ private:
 // line rule within 2 ring steps of the frame's edge across the line. Caveat: a Bayer capture sharper
 // than PSF sigma ~1.1 px puts a point's distance-2 neighbours under 0.2 of its peak, so a star held
 // perfectly still on one site would pass the shape test (scan, 20 frames: false flags from sigma 1.0 on;
-// still lines along a line, from 0.9; mono none down to 0.9); the smooth-surface rule moves the line
-// limit up: a still line at the worst angle through a site passes it from PSF sigma ~1.3 px down in a
-// mosaic at full scale (~1.2 px at a quarter of it), from ~0.65 px in mono (scan of the predictor over
-// angles and sub-pixel offsets). Only the persistence rule below then protects it. A site isolated in at
+// still lines along a line, from 0.9; mono none down to 0.9); the smooth-surface rule, gated in a
+// mosaic as above, adds none down to sigma 0.8, and in mono passes a still line at its worst angle only
+// from ~0.65 px down. Only the persistence rule below then protects it. A site isolated in at
 // least kHotShare of the observed frames is hot (a moon peak that passes the shape test moves over the
 // sensor with drift and jitter and is not on one site that often).
 // Repair replaces it with the median of its same-colour neighbours. Observing ~50-100 frames spread
@@ -198,6 +210,7 @@ private:
 constexpr double kHotMin = 0.02;
 constexpr double kHotRatio = 0.9;
 constexpr double kHotShare = 0.8;
+constexpr double kHotRiseShare = 0.25;  // mosaic smooth-surface gate (above)
 constexpr int kMinHotFrames = 10;
 class HotPixelMap {
 public:
