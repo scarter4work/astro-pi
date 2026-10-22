@@ -198,7 +198,7 @@ void SERViewerInterface::LoadFile( const String& path, bool interactive )
    const String fileName = File::ExtractNameAndExtension( trimmed );
    try
    {
-      m_file = ser::OpenVideo( ToUtf8( trimmed ), BayerChoiceFor( instance.p_bayerPattern ) );
+      m_file = ser::OpenVideo( ToUtf8( trimmed ), BayerChoiceFor( instance.p_bayerPattern, "SERViewer" ) );
       const ser::FileInfo& info = m_file->Info();
       if ( info.frameCount > INT_MAX )
          throw ser::SerError( std::to_string( info.frameCount ) + " frames: more than the frame slider can address" );
@@ -383,7 +383,7 @@ void SERViewerInterface::SaveAsSer()
       std::unique_ptr<ser::FrameSource> reader;
       try
       {
-         reader = ser::OpenVideo( ToUtf8( source ), BayerChoiceFor( instance.p_bayerPattern ) );
+         reader = ser::OpenVideo( ToUtf8( source ), BayerChoiceFor( instance.p_bayerPattern, "SERViewer" ) );
       }
       catch ( const ser::SerError& e )
       {

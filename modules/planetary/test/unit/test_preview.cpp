@@ -353,3 +353,19 @@ TEST_CASE("conversion rewords every 'showing the raw CFA as mono' warning to wha
           "sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway");
     CHECK(ConversionWarning(tail.substr(2)) == tail.substr(2));
 }
+
+TEST_CASE("stacking rewords every 'showing the raw CFA as mono' warning to what it stacks", "[preview][info]") {
+    const std::string tail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
+    const std::string stacks = "; the raw CFA is stacked as mono -- set bayerPattern (or save the pattern with "
+                               "SERViewer's Save pattern...) to stack in colour";
+    for (const std::string& reason : {std::string("no Bayer pattern known (no .avi.txt sidecar)"),
+                                     std::string("sidecar a.avi.txt could not be read; no Bayer pattern known"),
+                                     std::string("sidecar a.avi.txt has no Bayer value"),
+                                     std::string("sidecar Bayer value XY is not recognised")}) {
+        INFO(reason);
+        CHECK(StackWarning(reason + tail) == reason + stacks);
+    }
+    CHECK(StackWarning("sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway") ==
+          "sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway");
+    CHECK(StackWarning(tail.substr(2)) == tail.substr(2));
+}

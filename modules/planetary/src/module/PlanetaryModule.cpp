@@ -12,6 +12,7 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "PlanetaryModule.h"
+#include "PlanetaryStackProcess.h"
 #include "SERViewerInterface.h"
 #include "SERViewerProcess.h"
 
@@ -100,6 +101,7 @@ PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
    {
       new pcl::SERViewerProcess;
       new pcl::SERViewerInterface;
+      new pcl::PlanetaryStackProcess;
    }
    return 0;
 }

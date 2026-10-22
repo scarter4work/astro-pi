@@ -21,7 +21,7 @@
 namespace planetary::stack {
 
 const char* const kUndeclaredMosaicWarning =
-    "No Bayer pattern is known for this AVI (no capture sidecar), so the raw colour mosaic was stacked as "
+    "No Bayer pattern is known for this AVI (no capture sidecar names one), so the raw colour mosaic was stacked as "
     "mono: the result is a mono image of the mosaic and cannot be debayered afterwards (every frame was "
     "resampled onto the stack, which mixes the colour sites). For colour, choose the Bayer pattern when "
     "opening the capture (SERViewer's Save pattern... remembers it) and stack again.";

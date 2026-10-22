@@ -8,16 +8,18 @@
 //     { kind: "image", name, path, bayerPattern?, expectId, width, height, channels,
 //       samples: [ {x, y, c, v} ]            (the engine's values, tolerance TOLERANCE),
 //       keywords: [ {name, value | comment | commentContains} ], absentKeywords: [ name ],
+//       absentComments: [ text ] (no keyword comment contains it),
 //       consoleContains: [ text ] },
 //     { kind: "diagnosis", name, path, bayerPattern?, expectError },   (the engine's message)
 //     { kind: "error", name, path, expectError },
 //     { kind: "cancel", name, path, abortAfter, after: <an image case> } ] }
 // Output: $PLANETARY_PROBE_OUT -- { "ok": bool, "cases": [ {name, ok, errors[], note?} ] }
 //
-// A diagnosis or error case must throw with the expected text (no window, and
-// for a diagnosis the message on the console too). A cancel case aborts the run
-// from the Process Console (console.abort, as the console's Abort button does)
-// abortAfter seconds in: it must throw, leave no window, leave no thread behind
+// A diagnosis or error case must fail with the expected text (failedWith: no
+// window, and for a diagnosis the message on the console too). A cancel case
+// aborts the run from the Process Console (console.abort, as the console's
+// Abort button does) abortAfter seconds in: it must fail saying it was
+// cancelled, leave no window, leave no thread behind
 // (/proc/self/status, against the count before the run) and the next run of
 // the `after` case must succeed.
 //
@@ -78,7 +80,8 @@ function runImageCase( c, r )
    var x = execute( newProcess( c ) );
    if ( x.threw || x.ok !== true )
    {
-      r.errors.push( "executeGlobal " + (x.threw ? "threw '" + x.message + "'" : "returned " + x.ok) );
+      r.errors.push( "executeGlobal " + (x.threw ? "threw '" + x.message + "'" : "returned " + x.ok) + "; console: " +
+                     x.log.substring( Math.max( 0, x.log.length - 1500 ) ) );
       return;
    }
    if ( windowIds().length != before + 1 )
@@ -112,21 +115,41 @@ function runImageCase( c, r )
             r.errors.push( "sample(" + s.x + "," + s.y + "," + s.c + ") = " + got + ", engine " + s.v );
       }
    }
-   checkKeywords( w.keywords, c.keywords, c.absentKeywords, r.errors );
+   var kws = w.keywords;
+   checkKeywords( kws, c.keywords, c.absentKeywords, r.errors );
+   checkAbsentComments( kws, c.absentComments, r.errors );
    for ( var t = 0; t < c.consoleContains.length; ++t )
       if ( x.log.indexOf( c.consoleContains[t] ) < 0 )
          r.errors.push( "console lacks '" + c.consoleContains[t] + "': " + x.log.substring( 0, 1500 ) );
    w.forceClose();
 }
 
+// A failure is loud either way PixInsight reports it: executeGlobal throws
+// (a CanExecuteGlobal refusal), or it returns false with the error that
+// ExecuteGlobal threw on the Process Console. r.note records which.
+function failedWith( x, text, r )
+{
+   if ( x.threw )
+   {
+      r.note = "exception";
+      if ( x.message.indexOf( text ) < 0 )
+         r.errors.push( "threw '" + x.message + "', expected text '" + text + "'" );
+   }
+   else if ( x.ok === false )
+   {
+      r.note = "console";
+      if ( x.log.indexOf( text ) < 0 )
+         r.errors.push( "returned false; console lacks '" + text + "': " + x.log.substring( 0, 900 ) );
+   }
+   else
+      r.errors.push( "expected a failure containing '" + text + "', but executeGlobal returned " + x.ok );
+}
+
 function runFailureCase( c, r )
 {
    var before = windowIds().length;
    var x = execute( newProcess( c ) );
-   if ( !x.threw )
-      r.errors.push( "expected a failure containing '" + c.expectError + "', but executeGlobal returned " + x.ok );
-   else if ( x.message.indexOf( c.expectError ) < 0 )
-      r.errors.push( "threw '" + x.message + "', expected text '" + c.expectError + "'" );
+   failedWith( x, c.expectError, r );
    if ( c.kind == "diagnosis" && x.log.indexOf( c.expectError ) < 0 )
       r.errors.push( "console lacks the diagnosis '" + c.expectError + "': " + x.log.substring( 0, 900 ) );
    if ( windowIds().length != before )
@@ -154,12 +177,8 @@ function runCancelCase( c, r )
    timer.stop();
    if ( !fired )
       r.errors.push( "the abort timer never fired (the run did not process events)" );
-   if ( !x.threw )
-      r.errors.push( "an aborted run returned " + x.ok + " instead of failing" );
-   else if ( x.message.indexOf( "abort" ) < 0 )
-      r.errors.push( "an aborted run threw '" + x.message + "', expected an abort" );
-   if ( x.log.indexOf( "PlanetaryStack: cancelled" ) < 0 )
-      r.errors.push( "console lacks 'PlanetaryStack: cancelled': " + x.log.substring( 0, 900 ) );
+   failedWith( x, "PlanetaryStack: cancelled; no image was made", r );
+   var how = r.note;
    if ( windowIds().length != before )
       r.errors.push( "a cancelled run left a window open: " + windowIds().join( "," ) );
    // Joined threads leave /proc/self/task once the kernel reaps them.
@@ -171,9 +190,20 @@ function runCancelCase( c, r )
    }
    if ( threadsAfter > threadsBefore )
       r.errors.push( threadsAfter + " threads after the cancel, " + threadsBefore + " before" );
-   r.note = "aborted after " + seconds.toFixed( 2 ) + " s; threads " + threadsBefore + " -> " + threadsAfter;
+   // The phase the abort landed in: the last progress line the run started.
+   var phases = x.log.match( /PlanetaryStack: (Measuring frames|Aligning|Stacking):/g );
+   if ( phases === null )
+      r.errors.push( "the run was aborted before any progress (not mid-run): " + x.log.substring( 0, 900 ) );
+   var phase = phases === null ? "none" : phases[phases.length - 1].replace( /^PlanetaryStack: |:$/g, "" );
+   r.note = how + "; aborted in " + phase + " after " + seconds.toFixed( 2 ) + " s; threads " + threadsBefore + " -> " +
+            threadsAfter;
 
-   // PixInsight is still usable: the next stack succeeds.
+   // PixInsight is still usable: the next stack succeeds. An accepted abort
+   // stands for the rest of the running script -- measured: a built-in
+   // Convolution run after it fails at once with "Process aborted" too, until
+   // console.resetStatus() -- while a run started anew from the GUI begins
+   // clean; resetStatus() is that new start.
+   console.resetStatus();
    var after = { name: c.after.name, errors: [] };
    runImageCase( c.after, after );
    for ( var e = 0; e < after.errors.length; ++e )

@@ -150,14 +150,7 @@ function runImageCase( c, P, r )
    var kws = w.keywords;
    checkKeywords( kws, c.keywords, c.absentKeywords, r.errors );
    if ( c.absentComments !== undefined )
-      for ( var t = 0; t < c.absentComments.length; ++t )
-         for ( var q = 0; q < kws.length; ++q )
-            if ( kws[q].comment.indexOf( c.absentComments[t] ) >= 0 )
-            {
-               r.errors.push( "keyword comment contains '" + c.absentComments[t] + "': " + kws[q].name + " /" +
-                              kws[q].comment );
-               break;
-            }
+      checkAbsentComments( kws, c.absentComments, r.errors );
    w.forceClose();
 }
 

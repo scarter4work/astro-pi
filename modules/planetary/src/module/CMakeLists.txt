@@ -17,6 +17,10 @@ set(MODULE_SOURCES
     SERViewerInstance.cpp
     SERViewerInterface.cpp
     FramePreview.cpp
+    BayerPatternParameter.cpp
+    PlanetaryStackProcess.cpp
+    PlanetaryStackParameters.cpp
+    PlanetaryStackInstance.cpp
 )
 
 add_library(Planetary SHARED ${MODULE_SOURCES})
@@ -44,6 +48,7 @@ target_compile_options(Planetary PRIVATE
 
 target_link_directories(Planetary PRIVATE ${PCLDIR}/lib/x64)
 target_link_libraries(Planetary PRIVATE
+    planetary_stack
     planetary_ser
     PCL-pxi
     lz4-pxi

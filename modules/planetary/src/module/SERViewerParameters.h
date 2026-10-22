@@ -6,6 +6,8 @@
 
 #include <pcl/MetaParameter.h>
 
+#include "BayerPatternParameter.h"
+
 namespace pcl
 {
 
@@ -38,19 +40,11 @@ public:
    bool DefaultValue() const override;
 };
 
-// AVI only (a SER carries its own ColorID): the CFA pattern. Auto = the ASIAIR
-// sidecar's Bayer value (rotated for Flip=Vert); with no sidecar, raw mono and a warning.
-class SVBayerPattern : public MetaEnumeration
+// The shared bayerPattern parameter (BayerPatternParameter.h).
+class SVBayerPattern : public BayerPatternEnumeration
 {
 public:
-   enum { Auto, None, RGGB, GRBG, GBRG, BGGR, NumberOfItems, Default = Auto };
-
    SVBayerPattern( MetaProcess* );
-   IsoString Id() const override;
-   size_type NumberOfElements() const override;
-   IsoString ElementId( size_type ) const override;
-   int ElementValue( size_type ) const override;
-   size_type DefaultValueIndex() const override;
 };
 
 // When non-empty, ExecuteGlobal converts the AVI at filePath to a SER at this

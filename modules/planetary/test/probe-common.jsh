@@ -74,3 +74,15 @@ function checkKeywords( kws, keywords, absentKeywords, errors )
             break;
          }
 }
+
+// No keyword comment contains any of `texts`.
+function checkAbsentComments( kws, texts, errors )
+{
+   for ( var t = 0; t < texts.length; ++t )
+      for ( var q = 0; q < kws.length; ++q )
+         if ( kws[q].comment.indexOf( texts[t] ) >= 0 )
+         {
+            errors.push( "keyword comment contains '" + texts[t] + "': " + kws[q].name + " /" + kws[q].comment );
+            break;
+         }
+}

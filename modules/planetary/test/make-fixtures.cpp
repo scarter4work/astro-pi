@@ -225,7 +225,8 @@ constexpr int64_t kFrameStep = 333330000LL;            // 33.333 s
 // stack-cases.json: { "cases": [ { name, path, kind, ... } ] }, kind:
 //   image      bayerPattern? (PlanetaryStack enum element id), probeBayer (stack-probe --bayer),
 //              expectId, sample: [[x, y]], keywords: [{name, value|comment|commentContains}],
-//              absentKeywords: [name], frameTimes? (ISO UTC per frame, from the SER trailer),
+//              absentKeywords: [name], absentComments: [text] (no keyword comment contains it),
+//              frameTimes? (ISO UTC per frame, from the SER trailer),
 //              consoleContains: [text]
 //   diagnosis  probeBayer, expectKind (stack-probe's diagnosis kind)
 //   error      expectError (text the thrown error carries)
@@ -313,7 +314,7 @@ struct StackCase {
     std::string name, path, kind, bayerPattern, probeBayer = "auto", expectId, expectKind, expectError;
     std::vector<std::pair<int, int>> sample;
     std::vector<Kw> keywords;
-    std::vector<std::string> absent, frameTimes, consoleContains;
+    std::vector<std::string> absent, absentComments, frameTimes, consoleContains;
     double abortAfter = 0, minSeconds = 0;
 };
 
@@ -332,7 +333,8 @@ std::string ToJson(const StackCase& c) {
     for (size_t i = 0; i < c.keywords.size(); ++i)
         o << (i ? "," : "") << "{\"name\":" << Quote(c.keywords[i].name) << "," << Quote(c.keywords[i].field) << ":"
           << Quote(c.keywords[i].text) << "}";
-    o << "],\"absentKeywords\":" << JsonList(c.absent) << ",\"frameTimes\":" << JsonList(c.frameTimes)
+    o << "],\"absentKeywords\":" << JsonList(c.absent) << ",\"absentComments\":" << JsonList(c.absentComments)
+      << ",\"frameTimes\":" << JsonList(c.frameTimes)
       << ",\"consoleContains\":" << JsonList(c.consoleContains) << "}";
     return o.str();
 }
@@ -348,7 +350,7 @@ void WriteSidecarRG(const std::string& avi, int w, int h) {
 
 int WriteStackFixtures(const std::filesystem::path& dir) {
     std::vector<StackCase> cases;
-    const std::string kMosaicWarning = "No Bayer pattern is known for this AVI (no capture sidecar), so the raw colour "
+    const std::string kMosaicWarning = "No Bayer pattern is known for this AVI (no capture sidecar names one), so the raw colour "
                                        "mosaic was stacked as mono";
 
     // A Bayer AVI with an ASIAIR sidecar (RG, Flip None -> RGGB): 192 x 160, a disc of radius 40
@@ -369,9 +371,9 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         c.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
                       {"SRCVIDEO", "value", "stack-bayer.avi"},
                       {"HISTORY", "commentContains", "PlanetaryStack " PLANETARY_VERSION_STRING ": stacked stack-bayer.avi"},
-                      {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar RG)"}};
+                      {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar)"}};
         c.absent = {"DATE-OBS", "DATE-END", "BAYERPAT"};
-        c.consoleContains = {"PlanetaryStack: Bayer RGGB (sidecar RG)"};
+        c.consoleContains = {"PlanetaryStack: Bayer RGGB (sidecar)"};
         cases.push_back(c);
 
         // A pattern set explicitly wins over the sidecar (as in SERViewer).
@@ -426,9 +428,13 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         c.sample = {{96, 80}, {97, 80}, {96, 81}, {120, 100}, {10, 10}};
         c.keywords = {{"HISTORY", "commentContains", "PlanetaryStack warning: " + kMosaicWarning},
                       {"HISTORY", "commentContains", "cannot be debayered afterwards"},
-                      {"HISTORY", "commentContains", "SERViewer's Save pattern... remembers it"}};
+                      {"HISTORY", "commentContains", "SERViewer's Save pattern... remembers it"},
+                      {"HISTORY", "commentContains",
+                       "PlanetaryStack warning: no Bayer pattern known (no .avi.txt sidecar); the raw CFA is stacked as mono"}};
         c.absent = {"BAYERPAT", "INSTRUME", "DATE-OBS"};
-        c.consoleContains = {kMosaicWarning, "cannot be debayered afterwards"};
+        c.absentComments = {"showing the raw CFA"};  // the reader's viewing wording, reworded for a stack
+        c.consoleContains = {kMosaicWarning, "cannot be debayered afterwards",
+                             "no Bayer pattern known (no .avi.txt sidecar); the raw CFA is stacked as mono"};
         cases.push_back(c);
     }
 
