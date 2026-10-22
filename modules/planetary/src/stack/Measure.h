@@ -21,6 +21,23 @@ struct FrameStats {
     bool targetFound = false;
     // Centroid of the target: luma above half its contrast, weighted by the excess.
     double cx = 0, cy = 0;
+    // Half the larger extent, along x or y, of the box's pixels above half the target's contrast in
+    // the opened luma ("Background and noise": a noise spike on a shallow, blurred limb would otherwise
+    // push the extent out -- an R 24 disc blurred 12 px read 25.5 on the raw luma, 24.5 opened)
+    // (luma px; 0 when no target): a disc's radius at its limb's half point. A blur hardly
+    // moves it -- a blurred edge still crosses half contrast at the edge; only once the blur is a large
+    // part of R does the dimming centre move it (out) -- while the box, regrown from the 10% contour,
+    // moves out by 1.28 sigma plus up to a block (measured 2026-10-22, the 2022-09-17 1080p Jupiter
+    // blurred by 0 / 3 / 6 luma px: this 21.5 / 21.0 / 20.5, the box 26 / 27 / 30). Dark texture
+    // inside the disc does not shrink it (only the outermost pixels count), nor does the phase of a
+    // gibbous or crescent disc (its cusps still span the diameter along one axis; a diagonal one, at
+    // least 0.85 of it) -- reasoned, untested: no Mars or Venus capture on the NAS is a large disc.
+    // Saturn's open rings widen it: they span ~2.3 globe radii and are bright enough to clear half
+    // contrast (the 2022-08-03 Saturn: 12.5 against a box radius of 13.6 -- the rings fill the box), so
+    // its focus reading, ~1 / R^2, is up to ~5x lower than the globe's own: Select's large-disc rule is
+    // effectively off for a ringed Saturn (it fails safe: stacked, never refused). Edge-on rings are
+    // opened away. Select judges large discs' focus by it (Select.h, step 7).
+    double halfRadius = 0;
     // The target's extent, half-open [bx0, bx1) x [by0, by1), conservative: the blocks of the
     // detection grid (see below) where the target exceeds 10% of its contrast, grown by one block,
     // clipped to the image. A target cut by -- or within one block of -- the image edge has its box

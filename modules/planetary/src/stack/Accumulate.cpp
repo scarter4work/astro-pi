@@ -475,6 +475,33 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
                 const double excess = v - n[7];
                 const double med = 0.5 * (n[3] + n[4]);
                 bool alone = excess > minExcess && excess > kHotRatio * (v - med);
+                // A lone site on texture: still above the whole ring by minExcess, and by the shape margin
+                // over the ring's own smooth surface rather than over its largest member -- the quadratic
+                // through the ring predicts the site as 2 mean(sides) - mean(corners), which follows the
+                // texture's slope and curvature under a hot pixel, while a site where optics put a peak
+                // or a ridge is predicted to within a fraction of its rise (Accumulate.h). In a mosaic the
+                // ring is 2 px out, so a still feature as sharp as native sampling gives (PSF sigma ~1 px)
+                // can pass too; there the different-colour samples 1 px away decide: an optical peak or
+                // ridge through the site raises them well over the same colours 3 px away, a hot pixel
+                // leaves them at the local level (Accumulate.h, kHotRiseShare).
+                if (!alone && excess > minExcess) {
+                    const double sides = 0.25 * (ring[1] + ring[3] + ring[4] + ring[6]);
+                    const double corners = 0.25 * (ring[0] + ring[2] + ring[5] + ring[7]);
+                    const double unpredicted = v - (2 * sides - corners);
+                    alone = unpredicted > minExcess && unpredicted > kHotRatio * (v - med);
+                    if (alone && d == 2) {
+                        if (x < 3 || x + 3 >= W || y < 3 || y + 3 >= height_) {
+                            alone = false;
+                        } else {
+                            auto at = [&](int dx, int dy) {
+                                return static_cast<double>(s[(static_cast<size_t>(y + dy) * W + (x + dx)) * C + c]);
+                            };
+                            const double riseX = 0.5 * (at(-1, 0) + at(1, 0)) - 0.5 * (at(-3, 0) + at(3, 0));
+                            const double riseY = 0.5 * (at(0, -1) + at(0, 1)) - 0.5 * (at(0, -3) + at(0, 3));
+                            alone = std::max(riseX, riseY) < kHotRiseShare * unpredicted;
+                        }
+                    }
+                }
                 // A member of a hot pair or segment along a line through it (column, row or diagonal): its
                 // fellow members are the ring's two neighbours on that line (1 px away in mono, 2 in a
                 // mosaic). It counts when it stands above the 6 ring neighbours off the line, by the shape

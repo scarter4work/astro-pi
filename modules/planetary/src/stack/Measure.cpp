@@ -291,10 +291,11 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
     s.bx1 = std::min(w, (gx1 + 2) * g.d);
     s.by1 = std::min(h, (gy1 + 2) * g.d);
 
-    // Target pixels, brightness, clipping, centroid.
+    // Target pixels, brightness, clipping, centroid, and the half-contrast extent.
     const double cenThr = b + kCentroidFraction * contrast;
     double sum = 0, wsum = 0, wx = 0, wy = 0;
     int64_t n = 0, clipped = 0;
+    int hx0 = w, hy0 = h, hx1 = -1, hy1 = -1;
     for (int y = s.by0; y < s.by1; ++y)
         for (int x = s.bx0; x < s.bx1; ++x) {
             const double v = at(x, y);
@@ -302,6 +303,12 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
                 sum += v;
                 ++n;
                 if (v >= kClippedLuma) ++clipped;
+            }
+            if (opened[static_cast<size_t>(y) * w + x] > cenThr) {
+                hx0 = std::min(hx0, x);
+                hx1 = std::max(hx1, x);
+                hy0 = std::min(hy0, y);
+                hy1 = std::max(hy1, y);
             }
             if (v > cenThr) {
                 const double wt = v - cenThr;
@@ -318,6 +325,7 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
         s.cx = wx / wsum;
         s.cy = wy / wsum;
     }
+    if (hx1 >= hx0) s.halfRadius = 0.5 * std::max(hx1 - hx0 + 1, hy1 - hy0 + 1);
 
     // Quality over the box plus a margin.
     const int margin = std::max(1, static_cast<int>(std::lround(kMarginFraction * std::max(s.bx1 - s.bx0, s.by1 - s.by0))));

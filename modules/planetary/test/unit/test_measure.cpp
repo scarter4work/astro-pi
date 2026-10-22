@@ -115,10 +115,30 @@ void Quantize8(FloatImage& im) {
 bool SameStats(const FrameStats& a, const FrameStats& b) {
     return a.index == b.index && a.targetFound == b.targetFound && a.cx == b.cx && a.cy == b.cy &&
            a.bx0 == b.bx0 && a.by0 == b.by0 && a.bx1 == b.bx1 && a.by1 == b.by1 && a.quality == b.quality &&
-           a.qualitySigma == b.qualitySigma && a.brightness == b.brightness && a.clippedFraction == b.clippedFraction;
+           a.qualitySigma == b.qualitySigma && a.brightness == b.brightness && a.clippedFraction == b.clippedFraction &&
+           a.halfRadius == b.halfRadius;
 }
 
 }  // namespace
+
+TEST_CASE("halfRadius stays at a planet's radius as blur grows; the box grows with the blur") {
+    const int w = 200, h = 200;
+    const double cx = 100.3, cy = 99.6, r = 30;
+    const FloatImage base = TexturedPlanet(w, h, cx, cy, r, 0.05f);
+    const int d = stack::DetectionBlock(w, h);
+    for (double sigma : {0.0, 2.0, 6.0, 15.0}) {
+        FloatImage im = GaussianBlur(base, sigma);
+        AddNoise(im, 0.005, 17);
+        const FrameStats s = stack::MeasureFrame(im, 0, 1);
+        REQUIRE(s.targetFound);
+        const double box = std::sqrt(static_cast<double>(s.bx1 - s.bx0) * (s.by1 - s.by0)) / 2 - d;
+        INFO("blur " << sigma << ": halfRadius " << s.halfRadius << ", box radius " << box);
+        CHECK(s.halfRadius >= 0.85 * r);
+        CHECK(s.halfRadius <= 1.1 * r);
+        if (sigma >= 6) CHECK(box > s.halfRadius + sigma);
+    }
+    CHECK(stack::MeasureFrame(Flat(64, 48, 0.05f), 0, 1).halfRadius == 0);  // no target
+}
 
 TEST_CASE("quality falls strictly with blur, whatever the brightness, with and without noise") {
     const int w = 192, h = 176;

@@ -80,6 +80,7 @@ Selection Diagnosed(Selection sel, DiagnosisKind kind, std::string message,
 struct Prior {
     std::vector<double> u, pi, lik;
     size_t k = 0;
+    uint64_t work = 0;  // grid evaluations: the likelihood table plus two per sample and point per EM step
 };
 
 // NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM.
@@ -106,6 +107,7 @@ Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
             const double z = (q[i] - p.u[j]) / sg;
             p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
         }
+        p.work += k;
     }
     std::vector<double> acc(k);
     for (int it = 0; it < kPriorIterations; ++it) {
@@ -114,8 +116,10 @@ Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
             const double* l = &p.lik[i * k];
             double d = 0;
             for (size_t j = 0; j < k; ++j) d += p.pi[j] * l[j];
+            p.work += k;
             if (!(d > 0)) continue;
             for (size_t j = 0; j < k; ++j) acc[j] += p.pi[j] * l[j] / d;
+            p.work += k;
         }
         for (size_t j = 0; j < k; ++j) p.pi[j] = acc[j] / static_cast<double>(n);
     }
@@ -226,6 +230,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         qRef = qs[static_cast<size_t>(refRank - 1)];
     }
     out.qRef = qRef;
+    out.work = prior.work;
 
     // 8's weight: contrast at the detail frequency of a sample of true quality q.
     auto mtfAt = [&](double q) {
@@ -245,6 +250,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
             m += p * prior.u[j];
             w += p * mtfAt(prior.u[j]);
         }
+        out.work += prior.k;
         ranked.push_back(d > 0 ? Ranked{pos, m / d, w / d} : Ranked{pos, quality[pos], mtfAt(quality[pos])});
     }
     std::sort(ranked.begin(), ranked.end(), [](const Ranked& a, const Ranked& b) {
@@ -463,21 +469,26 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     if (!sel.fullFrameTarget) {
         sel.focusJudged = true;
         const int d = DetectionBlock(lw, lh);
-        std::vector<double> radii;
+        std::vector<double> radii, halfRadii;
         for (size_t i : rank.ranked) {
             const FrameStats* s = detailed[i];
             radii.push_back(std::sqrt(static_cast<double>(s->bx1 - s->bx0) * (s->by1 - s->by0)) / 2 - d);
+            halfRadii.push_back(s->halfRadius);
         }
-        const double radius = std::max(1.0, Quantile(radii, 0.5));
-        sel.targetRadius = radius;
-        const bool small = radius < kMinJudgedRadius;
+        // The size class and a large disc's judgement go by the half-contrast radius: the box grows with
+        // the blur being judged (a small disc blurred far enough would otherwise turn "large").
+        const double boxRadius = std::max(1.0, Quantile(radii, 0.5));
+        const double halfRadius = std::max(1.0, Quantile(halfRadii, 0.5));
+        sel.targetRadius = halfRadius;
+        const bool small = halfRadius < kMinJudgedRadius;
+        const double radius = small ? boxRadius : halfRadius;
         const double sqrtPi = std::sqrt(M_PI);
         auto limbBlur = [&](double q) {
             const double sigma = 1 / (sqrtPi * q * q * radius);
             return small ? std::sqrt(std::max(0.0, sigma * sigma - kSamplingBlur * kSamplingBlur)) : sigma;
         };
         const double sigmaRef = limbBlur(qRef);
-        const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kBlurLimit * radius;
+        const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kGrossBlurLimit * radius;
         if (sigmaRef >= limit) {
             // The spread of the true blur: q at mu -+ 1.2816 tau (p10 / p90 of a normal), not the
             // posterior means (those are pulled together by the noise); tauHi gives the upper bound.

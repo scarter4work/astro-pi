@@ -1,9 +1,17 @@
 #include <catch_amalgamated.hpp>
 
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 #include <algorithm>
-#include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <ctime>
+#include <functional>
 #include <limits>
 #include <random>
 #include <regex>
@@ -14,6 +22,7 @@
 #include "Align.h"
 #include "Measure.h"
 #include "Select.h"
+#include "StackSynth.h"
 
 using namespace planetary;
 using stack::DiagnosisKind;
@@ -51,6 +60,7 @@ FrameStats Disc(int64_t index, int lw, int lh, double cx, double cy, double radi
     s.bx1 = std::min(lw, static_cast<int>(std::ceil(cx + radius)) + d);
     s.by1 = std::min(lh, static_cast<int>(std::ceil(cy + radius)) + d);
     s.quality = DiscQuality(radius, sigma);
+    s.halfRadius = radius;  // the disc's own radius: its limb crosses half contrast there
     s.brightness = 0.5;
     s.clippedFraction = 0;
     return s;
@@ -71,6 +81,46 @@ double Number(const stack::Diagnosis& d, const std::string& name) {
 }
 
 void CheckCountsAddUp(const Selection& sel, int64_t n);
+
+// Instructions retired by this thread, user space only, while `f` runs (perf_event_open; Linux allows
+// it for one's own thread at perf_event_paranoid <= 2). available false, with the reason, where the
+// kernel or a container gives no hardware counter.
+struct InstructionCount {
+    bool available = false;
+    uint64_t count = 0;
+    std::string error;
+};
+InstructionCount Instructions(const std::function<void()>& f) {
+    perf_event_attr attr{};
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.size = sizeof attr;
+    attr.config = PERF_COUNT_HW_INSTRUCTIONS;
+    attr.disabled = 1;
+    attr.exclude_kernel = 1;
+    attr.exclude_hv = 1;
+    InstructionCount out;
+    const int fd = static_cast<int>(syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0));
+    if (fd < 0) {
+        out.error = std::strerror(errno);
+        f();
+        return out;
+    }
+    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+    f();
+    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+    uint64_t v = 0;
+    out.available = read(fd, &v, sizeof v) == static_cast<ssize_t>(sizeof v);
+    if (!out.available) out.error = "short read of the counter";
+    out.count = v;
+    close(fd);
+    return out;
+}
+// The 20 000- over the 5 000-frame instruction count of the long-capture test may not exceed this
+// (measured 4.003, idle or under 32 memcpy-bandwidth processes; the counts repeat to within ~20
+// instructions in 4.2e9 idle and ~3 000 under that load: deterministic, so the
+// margin is small).
+constexpr double kLinearInstructionRatio = 4.2;
 
 // Checks what every successful selection promises; returns the indices as a set.
 std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameStats>& stats) {
@@ -335,14 +385,14 @@ TEST_CASE("diagnosis: clipped", "[select][diagnosis]") {
 TEST_CASE("diagnosis: out of focus (steady blur over the limit)", "[select][diagnosis]") {
     std::mt19937 rng(19);
     std::normal_distribution<double> n01(0, 1);
-    // R = 60 luma px, limb blur 10 luma px (1/6 of R) in every frame, 1% jitter.
-    const auto stats = DiscCapture(500, [&](int64_t) { return 10.0 * (1 + 0.01 * n01(rng)); });
+    // R = 60 luma px, limb blur 20 luma px (1/3 of R: over kGrossBlurLimit) in every frame, 1% jitter.
+    const auto stats = DiscCapture(500, [&](int64_t) { return 20.0 * (1 + 0.01 * n01(rng)); });
     const Selection mono = SelectFrames(stats, Info(640, 480));
     CheckDiagnosed(mono, DiagnosisKind::OutOfFocus);
-    CHECK(Number(mono.diagnosis, "limb blur (pixels)") == Catch::Approx(10).epsilon(0.05));
+    CHECK(Number(mono.diagnosis, "limb blur (pixels)") == Catch::Approx(20).epsilon(0.05));
     CHECK(Number(mono.diagnosis, "target radius (pixels)") == Catch::Approx(60).epsilon(0.05));
-    CHECK(Number(mono.diagnosis, "blur / radius") == Catch::Approx(1.0 / 6).epsilon(0.05));
-    CHECK(Number(mono.diagnosis, "blur limit (pixels)") == Catch::Approx(60 * stack::kBlurLimit).epsilon(0.05));
+    CHECK(Number(mono.diagnosis, "blur / radius") == Catch::Approx(1.0 / 3).epsilon(0.05));
+    CHECK(Number(mono.diagnosis, "blur limit (pixels)") == Catch::Approx(60 * stack::kGrossBlurLimit).epsilon(0.05));
     CHECK(mono.focusJudged);
     CHECK(Number(mono.diagnosis, "blur spread") < stack::kSteadySpread);
     // Clearly steady: the confident verdict, not "can't tell" -- even the upper bound is under 5%.
@@ -353,7 +403,7 @@ TEST_CASE("diagnosis: out of focus (steady blur over the limit)", "[select][diag
     // The same luma statistics from a Bayer capture: pixels are reported at sensor scale.
     const Selection bayer = SelectFrames(stats, Info(1280, 960, ser::ColorId::BayerRGGB));
     CheckDiagnosed(bayer, DiagnosisKind::OutOfFocus);
-    CHECK(Number(bayer.diagnosis, "limb blur (pixels)") == Catch::Approx(20).epsilon(0.05));
+    CHECK(Number(bayer.diagnosis, "limb blur (pixels)") == Catch::Approx(40).epsilon(0.05));
     CHECK(Number(bayer.diagnosis, "target radius (pixels)") == Catch::Approx(120).epsilon(0.05));
 
     // No detail at all in any frame (quality 0) is out of focus whatever the target's size.
@@ -371,11 +421,11 @@ TEST_CASE("diagnosis: out of focus (steady blur over the limit)", "[select][diag
 TEST_CASE("diagnosis: poor seeing (varying blur, best frames still over the limit)", "[select][diagnosis]") {
     std::mt19937 rng(23);
     std::normal_distribution<double> n01(0, 1);
-    // Median limb blur 20 luma px on R = 60, 30% log-normal spread: the best 1% are near 10 px.
-    const auto stats = DiscCapture(1000, [&](int64_t) { return 20.0 * std::exp(0.3 * n01(rng)); });
+    // Median limb blur 40 luma px on R = 60, 30% log-normal spread: the best 1% are near 20 px.
+    const auto stats = DiscCapture(1000, [&](int64_t) { return 40.0 * std::exp(0.3 * n01(rng)); });
     const Selection sel = SelectFrames(stats, Info(640, 480));
     CheckDiagnosed(sel, DiagnosisKind::PoorSeeing);
-    CHECK(Number(sel.diagnosis, "blur / radius") >= stack::kBlurLimit);
+    CHECK(Number(sel.diagnosis, "blur / radius") >= stack::kGrossBlurLimit);
     CHECK(Number(sel.diagnosis, "blur spread") >= stack::kSteadySpread);
     CHECK(Number(sel.diagnosis, "limb blur (pixels)") > 0);
 }
@@ -431,27 +481,86 @@ TEST_CASE("very short captures behave sensibly", "[select][short]") {
     }
 }
 
-TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
-    std::mt19937 rng(31);
-    std::normal_distribution<double> n01(0, 1);
+TEST_CASE("20 000 frames: same rule, linear cost", "[select][long]") {
     auto good = [](int64_t i) { return (i / 50) % 3 == 0; };  // steady spells of 50 frames
-    auto stats = DiscCapture(20000, [&](int64_t i) {
-        return good(i) ? 1.0 * (1 + 0.03 * n01(rng)) : 1.7 * (1 + 0.05 * n01(rng));
-    });
-    // With 1% measurement noise reported, so the deconvolution (step 6) runs at full size.
-    for (auto& s : stats) {
-        s.quality *= 1 + 0.01 * n01(rng);
-        s.qualitySigma = 0.01 * s.quality;
-    }
-    const auto t0 = std::chrono::steady_clock::now();
+    auto capture = [&](int64_t n) {
+        std::mt19937 rng(31);
+        std::normal_distribution<double> n01(0, 1);
+        auto stats = DiscCapture(n, [&](int64_t i) {
+            return good(i) ? 1.0 * (1 + 0.03 * n01(rng)) : 1.7 * (1 + 0.05 * n01(rng));
+        });
+        // With 1% measurement noise reported, so the deconvolution (step 6) runs at full size.
+        for (auto& s : stats) {
+            s.quality *= 1 + 0.01 * n01(rng);
+            s.qualitySigma = 0.01 * s.quality;
+        }
+        return stats;
+    };
+    const auto stats = capture(20000), quarter = capture(5000);
     const Selection sel = SelectFrames(stats, Info(640, 480));
-    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const auto kept = CheckSelected(sel, stats);
     int64_t nGood = 0;
     for (const auto& s : stats) nGood += good(s.index);
     for (int64_t f : kept) CHECK(good(f));
     CHECK(static_cast<double>(kept.size()) >= 0.9 * static_cast<double>(nGood));
-    CHECK(secs < 1.0);
+
+    CHECK(SelectFrames(stats, Info(640, 480)).frames == sel.frames);  // deterministic
+
+    // Cost, without a clock that load can stretch: CPU time includes memory stalls, and under
+    // memory-bandwidth load (review: 32 processes copying 64 MB) the 20 000-frame working set spills
+    // cache where the 5 000 one does not -- 2.6-3.1 s CPU against 0.40-0.43 s idle, ratio 8.6-12.1
+    // against 3.9-4.1.
+    // (1) RankByDetail's own count of its grid evaluations (steps 6 and 8, where nearly all the cost
+    // is), on every frame's quality passed to it directly: exactly the likelihood table plus
+    // kPriorIterations EM steps plus the posteriors, kPriorGrid each per sample -- 4x the frames, 4x.
+    // It is counted inside the loops it measures, so it pins those loops' shape, nothing else.
+    auto work = [](const std::vector<FrameStats>& s) {
+        std::vector<double> q, sg;
+        for (const FrameStats& f : s) {
+            q.push_back(f.quality);
+            sg.push_back(f.qualitySigma);
+        }
+        const auto n = static_cast<int64_t>(s.size());
+        const auto floorCount = static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n))));
+        const stack::DetailRanking r = stack::RankByDetail(q, sg, stack::kMinStackFrames, floorCount);
+        return std::make_pair(r.work, r.left.size());
+    };
+    const auto [full, fullLeft] = work(stats);
+    const auto [part, partLeft] = work(quarter);
+    INFO("grid evaluations: 20 000 frames " << full << " (" << fullLeft << " ranked), 5 000 frames " << part << " ("
+                                            << partLeft << ")");
+    const auto perSample = static_cast<uint64_t>(stack::kPriorGrid) * (2 * stack::kPriorIterations + 2);
+    CHECK(full == perSample * fullLeft);
+    CHECK(part == perSample * partLeft);
+    CHECK(static_cast<double>(full) / static_cast<double>(part) == Catch::Approx(4).epsilon(0.01));
+
+    // (2) The whole of SelectFrames, by the instructions this thread retires (a hardware counter,
+    // user space only): the same input runs the same code, so the count is the same under any load --
+    // memory stalls, other processes and cache misses retire no instructions. 4x the frames retires
+    // 4.003x the instructions; any step superlinear in N anywhere in SelectFrames raises it
+    // (an O(N^2) pass of a few instructions per pair adds ~1.6e9 at 20 000 frames). The bound is the
+    // measured ratio plus a small margin, safe because the count is deterministic.
+    const InstructionCount full20 = Instructions([&] { (void)SelectFrames(stats, Info(640, 480)); });
+    const InstructionCount part5 = Instructions([&] { (void)SelectFrames(quarter, Info(640, 480)); });
+    if (full20.available && part5.available) {
+        const double ratio = static_cast<double>(full20.count) / static_cast<double>(part5.count);
+        INFO("instructions retired: 20 000 frames " << full20.count << ", 5 000 frames " << part5.count << " (ratio "
+                                                    << ratio << ")");
+        CHECK(ratio < kLinearInstructionRatio);
+    } else {
+        WARN("no hardware instruction counter here (perf_event_open: " << full20.error
+                                                                       << "); the superlinear check is the CPU ceiling alone");
+    }
+    // (3) A ceiling on this thread's CPU for the 20 000-frame selection, ~10x the most measured under
+    // memory-bandwidth load (2.6-3.1 s; 0.40-0.43 s idle): never tripped by load, only by a change
+    // that costs an order of magnitude -- the backstop where (2) has no counter.
+    timespec a{}, b{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
+    (void)SelectFrames(stats, Info(640, 480));
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b);
+    const double cpu = static_cast<double>(b.tv_sec - a.tv_sec) + 1e-9 * static_cast<double>(b.tv_nsec - a.tv_nsec);
+    INFO("CPU for 20 000 frames: " << cpu << " s");
+    CHECK(cpu < 30.0);
 }
 
 TEST_CASE("input order does not matter; the result is in frame order", "[select]") {
@@ -692,7 +801,7 @@ TEST_CASE("frames without detail (quality 0) are left out, not a reason to refus
 TEST_CASE("few blurred frames: focus or seeing is worded as undetermined (review item 6)", "[select][diagnosis]") {
     std::mt19937 rng(73);
     std::normal_distribution<double> n01(0, 1);
-    const auto stats = DiscCapture(20, [&](int64_t) { return 20.0 * std::exp(0.3 * n01(rng)); });
+    const auto stats = DiscCapture(20, [&](int64_t) { return 40.0 * std::exp(0.3 * n01(rng)); });
     const Selection sel = SelectFrames(stats, Info(640, 480));
     CheckDiagnosed(sel, DiagnosisKind::OutOfFocus);
     CHECK(sel.diagnosis.message.find("too few frames to tell") != std::string::npos);
@@ -824,13 +933,13 @@ TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[se
 }
 
 TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[select][diagnosis]") {
-    // Blurred disc (limb 10 px on R = 60), 500 frames, true blur spread g, quality noise `noise`.
+    // Blurred disc (limb 20 px on R = 60), 500 frames, true blur spread g, quality noise `noise`.
     auto capture = [](double g, double noise, uint32_t seed) {
         std::mt19937 rng(seed);
         std::normal_distribution<double> n01(0, 1);
         std::vector<FrameStats> v;
         for (int64_t i = 0; i < 500; ++i) {
-            const double qt = DiscQuality(60, 10.0 * (1 + g * n01(rng)));
+            const double qt = DiscQuality(60, 20.0 * (1 + g * n01(rng)));
             v.push_back(DiscQ(i, qt * (1 + noise * n01(rng)), noise * qt));
         }
         return v;
@@ -877,7 +986,7 @@ TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[se
     // Heavy noise and no measurable spread (scatter exactly the reported 15%: tau^2 = 0), yet a
     // spread over 5% cannot be ruled out: neither "steady" (focus) nor "varying" -- can't tell.
     std::vector<FrameStats> noisy;
-    const double qt = DiscQuality(60, 10.0);
+    const double qt = DiscQuality(60, 20.0);
     for (int64_t i = 0; i < 500; ++i) noisy.push_back(DiscQ(i, qt * (i % 2 ? 1.15 : 0.85), 0.15 * qt));
     const Selection selNoisy = SelectFrames(noisy, Info(640, 480));
     CheckDiagnosed(selNoisy, DiagnosisKind::OutOfFocus);
@@ -1368,4 +1477,112 @@ TEST_CASE("a frame-filling surface seen in under 10% of the frames: no target, c
     CHECK(Number(sel.diagnosis, "frames") == 2000);
     CHECK(Number(sel.diagnosis, "frames with a target") == static_cast<double>(clear));
     CHECK(Number(sel.diagnosis, "presence needed") == stack::kFullFramePresence);
+}
+
+// ---- gross defocus on large discs (Task 6 finding) ------------------------------------------------
+
+namespace {
+// A measured capture of a textured disc of radius R (MakeDisc, 60 frames, drift 1.5 px) blurred by
+// `blur` px: as StackSynth renders a blur (the limb widened in quadrature, the texture smoothed; 4%
+// jitter from frame to frame, noise 0.01: Task 6's case), or -- `convolve` -- as defocus acts on the
+// whole image: each sharp frame (seeing 0.6 px, 4% jitter) convolved with a Gaussian of sigma `blur`
+// (steady: the optics), pixel noise `noise` added after. Frames reach R + 3 blur + 30 px out from the
+// centre each way, so the blurred halo stays inside.
+Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed) {
+    const int half = static_cast<int>(radius + 3 * blur + 30), w = 2 * half, h = 2 * half;
+    const testing::Scene s = testing::MakeDisc(seed, half + 0.3, half - 0.2, radius);
+    testing::Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(seed + 1);
+    std::normal_distribution<double> n01(0, 1);
+    std::vector<testing::FrameSpec> specs;
+    for (int k = 0; k < 60; ++k) {
+        testing::FrameSpec f;
+        f.gx = 1.5 * n01(rng);
+        f.gy = 1.5 * n01(rng);
+        f.hasLocal = true;
+        f.dx = testing::RandomField(rng, w, h, 28, [] { return 0.0; });
+        f.dy = f.dx;
+        const double b = (convolve ? 0.6 : blur) * std::exp(0.04 * n01(rng));
+        f.sigma = testing::RandomField(rng, w, h, 28, [b] { return b; });
+        f.noise = convolve ? 0.0 : noise;
+        specs.push_back(f);
+    }
+    for (int k = 0; k < 60; ++k) {
+        std::vector<float> v = testing::RenderFrame(s, w, h, specs[static_cast<size_t>(k)], 500u + k);
+        if (convolve) {
+            const double sg = blur;
+            const int r = static_cast<int>(std::ceil(3 * sg));
+            std::vector<double> kern;
+            double sum = 0;
+            for (int i = -r; i <= r; ++i) sum += kern.emplace_back(std::exp(-0.5 * i * i / (sg * sg)));
+            for (double& kv : kern) kv /= sum;
+            auto pass = [&](std::vector<float>& img, bool alongX) {
+                std::vector<float> out(img.size());
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < w; ++x) {
+                        double acc = 0;
+                        for (int i = -r; i <= r; ++i) {
+                            const int xx = alongX ? std::clamp(x + i, 0, w - 1) : x;
+                            const int yy = alongX ? y : std::clamp(y + i, 0, h - 1);
+                            acc += kern[static_cast<size_t>(i + r)] * img[static_cast<size_t>(yy) * w + xx];
+                        }
+                        out[static_cast<size_t>(y) * w + x] = static_cast<float>(acc);
+                    }
+                img.swap(out);
+            };
+            pass(v, true);
+            pass(v, false);
+            for (float& p : v) p = static_cast<float>(p + noise * n01(rng));
+        }
+        cap.Add(v);
+    }
+    return SelectFrames(stack::MeasureAll(cap.Factory(), cap.info, 8, {}), cap.info);
+}
+}  // namespace
+
+TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft ones are stacked", "[select][diagnosis][focus]") {
+    // Task 6 found the R 24 / blur 12 case stacked: the box radius grows with the blur (24 -> 41 luma
+    // px here), so sigma(q) / R_box never reached R / 8 on any measured disc. Readings (Select.h step 7)
+    // are sigma(q_ref) over the half-contrast radius; limit kGrossBlurLimit.
+    struct Case {
+        double radius, blur;
+        bool convolve;
+        double noise;
+        bool diagnosed;
+    };
+    for (const Case& c : {Case{24, 0.6, false, 0.01, false}, Case{24, 2, false, 0.01, false}, Case{24, 3, false, 0.01, false},
+                          Case{40, 4, false, 0.01, false}, Case{24, 2, true, 0.005, false}, Case{40, 3, true, 0.005, false},
+                          Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true}}) {
+        const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7);
+        std::string numbers;
+        for (const auto& [name, v] : sel.diagnosis.numbers) numbers += name + " " + std::to_string(v) + "; ";
+        INFO("R " << c.radius << ", blur " << c.blur << (c.convolve ? " (convolved)" : " (StackSynth limb)") << ": "
+                  << sel.explanation << " | " << numbers);
+        CHECK(sel.focusJudged);
+        CHECK(sel.targetRadius >= stack::kMinJudgedRadius);  // judged by the large-disc rule
+        if (!c.diagnosed) {
+            CHECK(sel.diagnosis.kind == DiagnosisKind::None);
+            continue;
+        }
+        CHECK(sel.diagnosis.kind == DiagnosisKind::OutOfFocus);
+        if (sel.diagnosis.kind != DiagnosisKind::OutOfFocus) continue;
+        // The radius the judgement used is the disc's, not the blurred halo's.
+        CHECK(Number(sel.diagnosis, "target radius (pixels)") == Catch::Approx(c.radius).epsilon(0.15));
+        CHECK(Number(sel.diagnosis, "limb blur (pixels)") >= Number(sel.diagnosis, "blur limit (pixels)"));
+    }
+}
+
+TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P20)", "[select][diagnosis][focus][class]") {
+    // Classed by the box, these turned "large" (boxes of 16-22 luma px) and were refused here before
+    // the region stage could judge them (R 11 blurred 4 px as PoorSeeing): the size class moved with
+    // the blur being judged. Classed by the half-contrast radius they stay small, and the small-disc
+    // rule (box-inflated: S <= 0.85 on these) leaves them to the region stage, which warns (Ruling P20).
+    for (const auto& [radius, blur] : std::vector<std::pair<double, double>>{{8, 6}, {11, 4}, {11, 6}, {14, 6}}) {
+        const Selection sel = MeasuredDisc(radius, blur, false, 0.01, 7);
+        INFO("R " << radius << ", blur " << blur << ": " << sel.explanation);
+        CHECK(sel.focusJudged);
+        CHECK(sel.targetRadius < stack::kMinJudgedRadius);
+        CHECK(sel.targetRadius == Catch::Approx(radius).margin(2.5));
+        CHECK(sel.diagnosis.kind == DiagnosisKind::None);
+    }
 }
