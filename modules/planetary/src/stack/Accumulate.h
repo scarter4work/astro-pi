@@ -144,16 +144,21 @@ private:
 // target, seeing jitter of a pixel or two -- is in most frames and in the reference, so the rejection
 // above cannot see it; it is found and repaired on the raw frames instead, before LumaForMeasure and
 // DemosaicHQ (Task 6 calls Repair on every frame it reads, measurement and stacking passes alike).
-// A site counts as isolated in a frame when it stands above all 8 same-colour neighbours (2 px away in
-// a Bayer mosaic, 1 px in mono and in each RGB channel) by more than kHotMin of full scale AND by more
-// than kHotRatio of its excess over their median: an optical image is never that peaked (a star or
-// moon of PSF sigma >= 1.6 sensor px -- planetary optics at f/15 and slower -- keeps its distance-2
-// neighbours at >= 0.46 of its peak: ratio <= 0.8; a hot pixel's neighbours are the background: ~1). A
-// site isolated in at least kHotShare of the observed frames is hot (a moon peak that happens to pass
-// the shape test moves over the sensor with drift and jitter and is not on one site that often).
-// Repair replaces it with the median of its same-colour neighbours.
+// A site counts as isolated in a frame when it stands above its 8 same-colour neighbours (2 px away in
+// a Bayer mosaic, 1 px in mono and in each RGB channel) -- in mono and RGB above all but the two
+// largest, so an adjacent hot pair or a hot column segment counts too (Bayer: above all; neighbouring
+// sensor pixels are other colours, so a pair there is two lone sites) -- by more than kHotMin of full
+// scale AND by more than kHotRatio of its excess over their median: an optical image is never that
+// peaked (a star or moon of PSF sigma >= 1.6 sensor px -- planetary optics at f/15 and slower -- keeps
+// its neighbours at >= 0.46 of its peak: ratio <= 0.8; a hot pixel's neighbours are the background,
+// ~1). Caveat: a Bayer capture sharper than PSF sigma ~1.1 px puts a point's distance-2 neighbours under
+// 0.2 of its peak, so a star held perfectly still on one site would pass the shape test; only the
+// persistence rule below then protects it. A site isolated in at least kHotShare of the observed
+// frames is hot (a moon peak that passes the shape test moves over the sensor with drift and jitter and
+// is not on one site that often). Repair replaces it with the median of its same-colour neighbours.
 // Observing ~50-100 frames spread over the capture is enough (kMinHotFrames at least; fewer observed
-// marks nothing). Not thread-safe: one instance per thread, then Merge.
+// marks nothing). Memory per instance: 2 bytes per sample (1080p mono 4 MB, 1080p RGB 12 MB), so one
+// instance per worker, merged, is cheap. Not thread-safe: one instance per thread, then Merge.
 constexpr double kHotMin = 0.02;
 constexpr double kHotRatio = 0.9;
 constexpr double kHotShare = 0.8;
@@ -169,6 +174,8 @@ public:
     void Finish();
     // Hot sites (after Finish).
     size_t Count() const { return hot_.size(); }
+    // Hot sample indices ((y * width + x) * channels + channel), ascending (after Finish).
+    const std::vector<size_t>& Sites() const { return hot_; }
     int64_t FramesObserved() const { return frames_; }
     // Repairs a raw frame in place (no-op before Finish or without hot sites).
     void Repair(ser::Frame& frame) const;

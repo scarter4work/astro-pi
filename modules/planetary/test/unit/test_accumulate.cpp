@@ -637,6 +637,9 @@ TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon'
     a.Merge(b);
     CHECK(a.FramesObserved() == 40);
     a.Finish();
+    std::string sites;
+    for (size_t k : a.Sites()) sites += std::to_string(k % w) + "," + std::to_string(k / w) + " ";
+    INFO("sites " << sites);
     CHECK(a.Count() == hot.size());
 
     ser::Frame f = frame(0.7, -1.2);
@@ -734,4 +737,40 @@ TEST_CASE("Rejection never empties a pixel", "[accumulate]") {
     // Where everything was rejected the rejected samples stand in: the feature, not a hole.
     const double v = out.data[static_cast<size_t>(62) * w + 72], expect = ref.data[static_cast<size_t>(62) * w + 72] + 0.4;
     CHECK(v == Catch::Approx(expect).margin(0.02));
+}
+
+TEST_CASE("Hot pixel clusters on a mono sensor: an adjacent pair and a column segment", "[accumulate]") {
+    const int w = 96, h = 80;
+    ser::FileInfo info = testing::NewCapture(w, h).info;  // mono: neighbours 1 px away
+    const std::vector<std::pair<int, int>> hot = {{20, 20}, {21, 20}, {60, 30}, {60, 31}, {60, 32}};
+    std::mt19937 rng(11);
+    std::normal_distribution<double> n(0, 1);
+    auto frame = [&]() {
+        ser::Frame f;
+        f.width = w;
+        f.height = h;
+        f.channels = 1;
+        f.samples.resize(static_cast<size_t>(w) * h);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                double v = 0.05 + 0.004 * n(rng);
+                const double mx = x - 40.0, my = y - 60.0;  // a still moon, PSF sigma 1.6 px
+                v += 0.6 * std::exp(-(mx * mx + my * my) / (2 * 1.6 * 1.6));
+                for (const auto& [hx, hy] : hot)
+                    if (x == hx && y == hy) v += 0.3;
+                f.samples[static_cast<size_t>(y) * w + x] = static_cast<uint16_t>(std::lround(std::clamp(v, 0.0, 1.0) * 65535));
+            }
+        return f;
+    };
+    stack::HotPixelMap map(info);
+    for (int k = 0; k < 20; ++k) map.Observe(frame());
+    map.Finish();
+    CHECK(map.Count() == hot.size());
+    ser::Frame f = frame();
+    const ser::Frame before = f;
+    map.Repair(f);
+    for (const auto& [hx, hy] : hot) CHECK(f.samples[static_cast<size_t>(hy) * w + hx] / 65535.0 < 0.08);
+    size_t changed = 0;
+    for (size_t k = 0; k < f.samples.size(); ++k) changed += f.samples[k] != before.samples[k];
+    CHECK(changed == hot.size());
 }

@@ -218,8 +218,12 @@ struct RegionDetail {
     int64_t kept = 0;         // frames stacked here
     double confidenceCut = 0; // kAlignRelative x the median confidence of the aligned frames
     // "The best" quality of this region (RankByDetail's qRef: what the region's sharpest 1% truly
-    // reach, noise deconvolved), in 1/luma px, and the median qualitySigma of the kept frames.
-    double bestQuality = 0, bestQualitySigma = 0;
+    // reach, noise deconvolved), in 1/luma px.
+    double bestQuality = 0;
+    // One frame's measurement uncertainty at that level: the median qualitySigma of the kept frames.
+    // Not the uncertainty of bestQuality itself (a deconvolved quantile has none in closed form); a
+    // floor judged against bestQuality should allow a few of these.
+    double keptQualitySigma = 0;
     // Absolute texture scale: 1 / bestQuality, luma px (times LumaScale for sensor px). The region's
     // RMS spatial frequency inverted: for a Gaussian-blurred white texture it is about sqrt(2) x the
     // blur sigma, so it grows with defocus or seeing whatever the target's brightness.

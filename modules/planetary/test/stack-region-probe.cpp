@@ -194,7 +194,7 @@ int main(int argc, char** argv) try {
         std::printf("kept     per region min %lld / median %lld / max %lld of %zu; best region q %.3f (+- %.3f), detail scale %.2f luma px\n",
                     static_cast<long long>(keptCounts.front()), static_cast<long long>(keptCounts[keptCounts.size() / 2]),
                     static_cast<long long>(keptCounts.back()), kept.size(), plan.detail[static_cast<size_t>(plan.bestRegion)].bestQuality,
-                    plan.detail[static_cast<size_t>(plan.bestRegion)].bestQualitySigma,
+                    plan.detail[static_cast<size_t>(plan.bestRegion)].keptQualitySigma,
                     plan.detail[static_cast<size_t>(plan.bestRegion)].detailScale);
 
     // Per region: the quality distribution over the aligned frames and what was kept.

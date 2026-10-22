@@ -461,18 +461,20 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
                 const double v = s[k];
                 if (v < minExcess) continue;
                 uint16_t n[8];
-                int m = 0, hi = 0;
+                int m = 0;
                 for (int j = -1; j <= 1; ++j)
                     for (int i = -1; i <= 1; ++i) {
                         if (!i && !j) continue;
-                        n[m] = s[(static_cast<size_t>(y + j * d) * W + (x + i * d)) * C + c];
-                        hi = std::max<int>(hi, n[m]);
-                        ++m;
+                        n[m++] = s[(static_cast<size_t>(y + j * d) * W + (x + i * d)) * C + c];
                     }
-                const double excess = v - hi;
+                // Sorted ascending. Mono and RGB: the third largest neighbour stands for "the others", so a
+                // hot pair or a hot column segment (up to two hot neighbours) still stands alone. Bayer: the
+                // largest -- adjacent sensor pixels are other colours, so a pair is two lone sites in their
+                // planes, while next to a sharp peak the 2-px same-colour ring has nearer greens outside it.
+                std::sort(n, n + 8);
+                const double excess = v - n[d == 1 ? 5 : 7];
                 if (!(excess > minExcess)) continue;
-                std::nth_element(n, n + 4, n + 8);
-                const double med = 0.5 * (n[4] + *std::max_element(n, n + 4));
+                const double med = 0.5 * (n[3] + n[4]);
                 if (excess > kHotRatio * (v - med) && isolated_[k] < 65535) ++isolated_[k];
             }
     ++frames_;

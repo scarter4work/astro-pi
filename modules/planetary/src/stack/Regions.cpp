@@ -700,7 +700,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             if (!keptSigma.empty()) {
                 std::nth_element(keptSigma.begin(), keptSigma.begin() + static_cast<std::ptrdiff_t>(keptSigma.size() / 2),
                                  keptSigma.end());
-                d.bestQualitySigma = keptSigma[keptSigma.size() / 2];
+                d.keptQualitySigma = keptSigma[keptSigma.size() / 2];
             }
         }
     });
