@@ -171,8 +171,9 @@ private:
 // protects it. A site isolated in at least kHotShare of the observed frames is hot (a moon peak that
 // passes the shape test moves over the sensor with drift and jitter and is not on one site that often).
 // Repair replaces it with the median of its same-colour neighbours. Observing ~50-100 frames spread
-// over the capture is enough (kMinHotFrames at least; fewer observed marks nothing). Memory per instance: 2 bytes per sample (1080p mono 4 MB, 1080p RGB 12 MB), so one
-// instance per worker, merged, is cheap. Not thread-safe: one instance per thread, then Merge.
+// over the capture is enough (kMinHotFrames at least; fewer observed marks nothing). Memory per
+// instance: 2 bytes per sample (1080p mono 4 MB, 1080p RGB 12 MB), so one instance per worker,
+// merged, is cheap. Not thread-safe: one instance per thread, then Merge.
 constexpr double kHotMin = 0.02;
 constexpr double kHotRatio = 0.9;
 constexpr double kHotShare = 0.8;
