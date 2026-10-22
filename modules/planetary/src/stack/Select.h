@@ -52,9 +52,9 @@ struct Selection {
     // (Ruling P4: Task 5 exposes per-region detail with its uncertainty, Task 6 diagnoses when even
     // the best regions of the best frames fall below an absolute texture-scale floor).
     bool focusJudged = false;
-    // Step 7's box radius R (luma px) when focusJudged; 0 otherwise -- the size class: discs under
-    // kMinJudgedRadius are judged a second time from the region stage (Ruling P4, Engine.h); larger
-    // ones are judged here at their half-contrast radius (step 7), which a diagnosis reports.
+    // Step 7's size class when focusJudged, 0 otherwise: the median FrameStats::halfRadius (luma px),
+    // which a blur hardly moves (the box radius grows with it). Discs under kMinJudgedRadius are judged
+    // a second time from the region stage (Ruling P4, Engine.h); larger ones only here (step 7).
     double targetRadius = 0;
 };
 
@@ -133,7 +133,8 @@ constexpr int kPriorIterations = 300;
 constexpr double kDetailDepth = 3.0;
 // Focus / seeing: blurred when the best frames' limb blur is at least kBlurLimit of the radius.
 constexpr double kBlurLimit = 0.125;
-// Discs with a radius under this (luma px) are judged with the sampling correction and floor below.
+// Discs with a half-contrast radius (FrameStats::halfRadius) under this (luma px) are judged with
+// the sampling correction and floor below, and again by the region stage.
 constexpr double kMinJudgedRadius = 15;
 // A disc of at least kMinJudgedRadius is refused only when grossly blurred: sigma(q_ref) >= this times
 // its half-contrast radius (FrameStats::halfRadius), twice the highest in-focus reading measured and
@@ -221,11 +222,25 @@ constexpr int kMinJudgedFrames = 30;
 // 7. Focus / seeing, discs only (focusJudged). The disc model: a disc of radius R whose edge is
 //    blurred by a Gaussian sigma (sigma << R) has quality^2 = 1 / (sqrt(pi) R sigma) (rim gradient
 //    energy over disc signal energy), so sigma(q) = 1 / (sqrt(pi) q^2 R). R = the median box's
-//    sqrt(w h) / 2 less the one detection block it was grown by (at least 1) -- the size class.
-//      R >= kMinJudgedRadius: judged at R_h, the median FrameStats::halfRadius, not at R: blurred
-//           when sigma(q_ref; R_h) >= kGrossBlurLimit R_h.
-//      R <  kMinJudgedRadius (Ruling P4): sigma' = sqrt(max(0, sigma^2 - kSamplingBlur^2)); blurred
-//           when sigma'(q_ref) >= max(R / 8, kBlurFloorPixels / LumaScale).
+//    sqrt(w h) / 2 less the one detection block it was grown by (at least 1). The size class is R_h,
+//    the median FrameStats::halfRadius (Selection::targetRadius), which a blur hardly moves:
+//      R_h >= kMinJudgedRadius: judged at R_h, not at R: blurred when sigma(q_ref; R_h) >=
+//           kGrossBlurLimit R_h.
+//      R_h <  kMinJudgedRadius (Ruling P4): sigma' = sqrt(max(0, sigma^2 - kSamplingBlur^2)); blurred
+//           when sigma'(q_ref) >= max(R / 8, kBlurFloorPixels / LumaScale). Classed by the box, a small
+//           disc blurred far enough turned "large" (its box grows 1.28 sigma) and met the large-disc
+//           rule before the region stage judged it: StackSynth R 8 / 11 / 14 blurred 6 / 4 / 6 px
+//           reached boxes of 16-22 and were refused here (R 11 by 4 px, mono: the engine's measure
+//           only warns there, 4 px over its 3 px limit = 1.33, Engine.h).
+//           Measured 2026-10-22, the small rule itself did not fire on any measured frames -- its R
+//           is the box's, inflated by the blur as above: S = sigma'(q_ref) / max(R / 8, kBlurFloorPixels /
+//           LumaScale) reads 0.50 / 0.50 / 0.48 / 0.00 on the 2026-01-30 Jupiters 195830 / 202657 /
+//           195438 and Neptune as captured (every NAS disc as captured: 0.00-0.74, the highest the
+//           2022-09-08 001402 Jupiter), at most 0.93 when they are blurred by 1-24 sensor px
+//           (Neptune by 1-3: 0.19-0.54; by 4 it is not found), and 0.00-0.85 on StackSynth discs of R
+//           3-14 blurred 0.6-6 px (mono, limb and convolved); in the region stage's warn band (those
+//           Jupiters blurred 1-3 sensor px) 0.54-0.77 -- so on measured data small discs are refused
+//           for focus by the region stage's own measure (Ruling P15), not by Select before it.
 //    R / 8: the coarsest planetary structure (belts, period P ~ R/4) then keeps under 1% contrast
 //    (exp(-2 pi^2 sigma^2 / P^2) < 0.01 at sigma > 0.48 P).
 //    Why R_h for large discs (Task 6 found an R 24 disc blurred by 12 px stacked): the box sits at the
@@ -239,10 +254,10 @@ constexpr int kMinJudgedFrames = 30;
 //    growing with the blur. Why kGrossBlurLimit, not R / 8, there: the reading is not the true blur
 //    over R -- texture raises q in focus and limb darkening lowers it once the texture is gone, so a
 //    real Jupiter softened by only 0.5-1 luma px already reads 0.09-0.20 -- and a refusal must be
-//    safe. Measured 2026-10-22 (q_ref as here): the four large discs on the NAS as captured read
-//    0.053 / 0.053 (2022-09-17 1080p Jupiters, R_h 21.5), 0.125 (2022-08-03, R_h 14.5), 0.081
-//    (2026-01-30-195137, R_h 12) -- the limit is twice the highest; no other NAS capture is a large
-//    disc (43 planetary files surveyed, none refused for focus or seeing). The same four, defocused
+//    safe. Measured 2026-10-22 (q_ref as here): the four largest discs on the NAS as captured read
+//    0.053 / 0.053 (2022-09-17 1080p Jupiters, R_h 21.5: the only ones in this class), 0.125
+//    (2022-08-03, R_h 14.5), 0.081 (2026-01-30-195137, R_h 12) -- the limit is twice the highest (43
+//    planetary files surveyed, none refused for focus or seeing). The same four, defocused
 //    by a Gaussian of sigma 0.5 / 1 / 1.5 / 2 / 3 / 4 / 6 / 8 luma px (stack-probe --blur, own noise
 //    put back): 2022-09-17 0.093 / 0.139 / 0.150 / 0.159 / 0.184 / 0.202 / 0.249 / 0.288 and
 //    0.094 / 0.142 / 0.161 / 0.170 / 0.187 / 0.215 / 0.251 / 0.288; 2022-08-03 0.160 / 0.196 / 0.206 / 0.217 / 0.238 / 0.262 / 0.318 /

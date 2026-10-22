@@ -469,11 +469,13 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
             radii.push_back(std::sqrt(static_cast<double>(s->bx1 - s->bx0) * (s->by1 - s->by0)) / 2 - d);
             halfRadii.push_back(s->halfRadius);
         }
+        // The size class and a large disc's judgement go by the half-contrast radius: the box grows with
+        // the blur being judged (a small disc blurred far enough would otherwise turn "large").
         const double boxRadius = std::max(1.0, Quantile(radii, 0.5));
-        sel.targetRadius = boxRadius;
-        const bool small = boxRadius < kMinJudgedRadius;
-        // A large disc is judged at its half-contrast radius: the box grows with the blur being judged.
-        const double radius = small ? boxRadius : std::max(1.0, Quantile(halfRadii, 0.5));
+        const double halfRadius = std::max(1.0, Quantile(halfRadii, 0.5));
+        sel.targetRadius = halfRadius;
+        const bool small = halfRadius < kMinJudgedRadius;
+        const double radius = small ? boxRadius : halfRadius;
         const double sqrtPi = std::sqrt(M_PI);
         auto limbBlur = [&](double q) {
             const double sigma = 1 / (sqrtPi * q * q * radius);

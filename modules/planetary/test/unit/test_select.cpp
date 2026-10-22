@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <limits>
 #include <random>
 #include <regex>
@@ -434,26 +435,48 @@ TEST_CASE("very short captures behave sensibly", "[select][short]") {
 }
 
 TEST_CASE("20 000 frames: same rule, fast", "[select][long]") {
-    std::mt19937 rng(31);
-    std::normal_distribution<double> n01(0, 1);
     auto good = [](int64_t i) { return (i / 50) % 3 == 0; };  // steady spells of 50 frames
-    auto stats = DiscCapture(20000, [&](int64_t i) {
-        return good(i) ? 1.0 * (1 + 0.03 * n01(rng)) : 1.7 * (1 + 0.05 * n01(rng));
-    });
-    // With 1% measurement noise reported, so the deconvolution (step 6) runs at full size.
-    for (auto& s : stats) {
-        s.quality *= 1 + 0.01 * n01(rng);
-        s.qualitySigma = 0.01 * s.quality;
-    }
-    const auto t0 = std::chrono::steady_clock::now();
+    auto capture = [&](int64_t n) {
+        std::mt19937 rng(31);
+        std::normal_distribution<double> n01(0, 1);
+        auto stats = DiscCapture(n, [&](int64_t i) {
+            return good(i) ? 1.0 * (1 + 0.03 * n01(rng)) : 1.7 * (1 + 0.05 * n01(rng));
+        });
+        // With 1% measurement noise reported, so the deconvolution (step 6) runs at full size.
+        for (auto& s : stats) {
+            s.quality *= 1 + 0.01 * n01(rng);
+            s.qualitySigma = 0.01 * s.quality;
+        }
+        return stats;
+    };
+    const auto stats = capture(20000), quarter = capture(5000);
     const Selection sel = SelectFrames(stats, Info(640, 480));
-    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const auto kept = CheckSelected(sel, stats);
     int64_t nGood = 0;
     for (const auto& s : stats) nGood += good(s.index);
     for (int64_t f : kept) CHECK(good(f));
     CHECK(static_cast<double>(kept.size()) >= 0.9 * static_cast<double>(nGood));
-    CHECK(secs < 1.0);
+
+    // Speed as work, not wall time (a loaded machine -- ctest -j8 -- stretched the wall clock past a
+    // fixed bound): this thread's CPU time, which other processes do not add to, the least of three
+    // runs. Linear in N (the deconvolution is O(N kPriorGrid) per EM step): 4x the frames take 4x the
+    // work (an O(N^2) step would take 16x), and 20 000 frames well under a second of CPU.
+    auto cpu = [](const std::vector<FrameStats>& s) {
+        double best = 1e300;
+        for (int r = 0; r < 3; ++r) {
+            timespec a{}, b{};
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
+            const Selection one = SelectFrames(s, Info(640, 480));
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b);
+            REQUIRE(one.frames == SelectFrames(s, Info(640, 480)).frames);  // deterministic as well
+            best = std::min(best, (b.tv_sec - a.tv_sec) + 1e-9 * static_cast<double>(b.tv_nsec - a.tv_nsec));
+        }
+        return best;
+    };
+    const double full = cpu(stats), part = cpu(quarter);
+    INFO("CPU seconds: 20 000 frames " << full << ", 5 000 frames " << part << " (ratio " << full / part << ")");
+    CHECK(full / part < 6);
+    CHECK(full < 1.0);
 }
 
 TEST_CASE("input order does not matter; the result is in frame order", "[select]") {
@@ -1462,5 +1485,20 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         // The radius the judgement used is the disc's, not the blurred halo's.
         CHECK(Number(sel.diagnosis, "target radius (pixels)") == Catch::Approx(c.radius).epsilon(0.15));
         CHECK(Number(sel.diagnosis, "limb blur (pixels)") >= Number(sel.diagnosis, "blur limit (pixels)"));
+    }
+}
+
+TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P15)", "[select][diagnosis][focus][class]") {
+    // Classed by the box, these turned "large" (boxes of 16-22 luma px) and were refused here before
+    // the region stage could judge them -- R 11 blurred 4 px as PoorSeeing, where the engine's own
+    // measure only warns (4 px over its 3 px limit). Classed by the half-contrast radius they stay
+    // small, and the small-disc rule (box-inflated: S <= 0.85 on these) leaves them to the region stage.
+    for (const auto& [radius, blur] : std::vector<std::pair<double, double>>{{8, 6}, {11, 4}, {11, 6}, {14, 6}}) {
+        const Selection sel = MeasuredDisc(radius, blur, false, 0.01, 7);
+        INFO("R " << radius << ", blur " << blur << ": " << sel.explanation);
+        CHECK(sel.focusJudged);
+        CHECK(sel.targetRadius < stack::kMinJudgedRadius);
+        CHECK(sel.targetRadius == Catch::Approx(radius).margin(2.5));
+        CHECK(sel.diagnosis.kind == DiagnosisKind::None);
     }
 }
