@@ -75,8 +75,12 @@ int DetectionBlock(int width, int height);
 constexpr double kClippedLuma = 0.999;
 
 // Measures one luma image (1 channel, normalised to [0, 1] as LumaForMeasure makes it).
-// Throws std::invalid_argument for an empty image, a channel count other than 1, or a sample
-// count that does not match width * height. Deterministic: the same image gives the same stats.
+// `lumaScale`: frame (sensor) pixels per luma pixel along each axis -- LumaScale(info) for a frame
+// of a capture (MeasurementLuma's output), 1 for an image at sensor resolution. Only the target
+// size floor uses it ("Target rule"); every FrameStats field stays in luma pixels.
+// Throws std::invalid_argument for an empty image, a channel count other than 1, a sample
+// count that does not match width * height, or a lumaScale that is not finite and >= 1.
+// Deterministic: the same image gives the same stats.
 //
 // Background and noise. Detection works on a grey-scale opening of the luma by a 3x3 square
 // (erosion, then dilation): every structure a 3x3 square does not fit inside -- a hot pixel, a hot
@@ -97,17 +101,23 @@ constexpr double kClippedLuma = 0.999;
 //
 // Target rule. Blocks brighter than b + 4 s_b form 8-connected components. A component is a
 // target candidate when its brightest block stands at least max(10 s_b, 0.01) above b and at
-// least 16 real pixels of the opened luma inside it stand above half that contrast; the candidate
-// with the most flux (sum of block excess) is the target.
+// least 16 sensor pixels' worth of the opened luma inside it (luma pixels x lumaScale^2) stand
+// above half that contrast; the candidate with the most flux (sum of block excess) is the target.
 // 10 s_b: white noise peaks near 4-5 s_b over a 1080p grid, and the 2026-01-30 Saturn AVI (a
 // 5-6 DN pedestal and nothing else) peaks at 4.9-5.7 s_b, 0.0044-0.0051 of full scale on the
 // opened grid (measured 2026-10-21), so a real target has to stand well clear of both. 0.01 of full scale (2.5 DN at
 // 8 bits): a smooth amp glow or gradient can reach many s_b yet stays that faint, while a planet
 // capture is exposed to tens of percent (the same night's Neptune, the faintest target on the NAS,
-// at gain high enough for 22 DN of noise: 0.80 of full scale, over 18 s_b). 16 pixels, counted on the luma rather than as whole blocks (a 1080p block alone is
-// 64 px): the opening already removes anything thinner than 3 px, so this rejects a compact 3x3
-// hot cluster (9 px) or a small cosmic-ray blob, while a planet down to ~5 px across (a 12-px
-// Neptune has ~100 px above half its contrast) is found. The target's extent is then
+// at gain high enough for 22 DN of noise: 0.80 of full scale, over 18 s_b). 16 sensor pixels, counted on the luma rather than as whole blocks (a 1080p block alone is
+// 64 px): the opening already removes anything thinner than 3 luma px, so at sensor resolution this
+// rejects a compact 3x3 hot cluster (9 px) or a small cosmic-ray blob, while a planet down to ~5 px
+// across is found. On half-resolution luma (Bayer, or an undeclared mosaic) the floor is 4 luma px,
+// below the 9 that any structure surviving the opening already has (a 3x3 luma square = 6x6 sensor
+// pixels; the hot structures above, painted at sensor resolution and binned, are all rejected), so
+// the opening is the floor there. Counting the floor in
+// luma pixels instead lost 29 of 94 frames of the 2026-01-30 Neptune AVI (measured 2026-10-22:
+// binned, its disc has 9-22 luma px above half contrast) and then the whole capture, whose aligned
+// reference fell under it too. The target's extent is then
 // regrown from its brightest block over blocks above b + max(4 s_b, 10% of the contrast), which
 // keeps a faint halo or a nearby moon out of the box.
 //
@@ -146,7 +156,7 @@ constexpr double kClippedLuma = 0.999;
 // and the region are taken as fixed (their noise moves SD a little and SN not at all). Checked
 // against 200 noise realisations of a textured planet and a plain disc at two noise levels: the
 // empirical scatter is 0.88-1.07 times the reported sigma.
-FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index);
+FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
 
 // The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
 // Pixel noise s of a luma image, as MeasureFrame estimates it ("Background and noise"), and the

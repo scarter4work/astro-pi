@@ -96,7 +96,7 @@ int main(int argc, char** argv) try {
     }
     const ser::FloatImage ref = stack::BuildReference(factory, info, sel, stats, threads, {});
     const auto t2 = Clock::now();
-    const stack::GlobalAligner aligner(ref, sel.fullFrameTarget);
+    const stack::GlobalAligner aligner(ref, sel.fullFrameTarget, stack::LumaScale(info));
 
     std::vector<stack::Shift> shifts(sel.frames.size());
     std::vector<double> cpu(static_cast<size_t>(threads), 0.0);
@@ -140,7 +140,7 @@ int main(int argc, char** argv) try {
                 static_cast<long long>(info.frameCount), Quantile(dx, 0), Quantile(dx, 1), Quantile(dy, 0), Quantile(dy, 1),
                 Quantile(conf, 0), Quantile(conf, 0.01), Quantile(conf, 0.5), cut, below);
     if (!sel.fullFrameTarget) {
-        const stack::FrameStats rs = stack::MeasureFrame(ref, 0);
+        const stack::FrameStats rs = stack::MeasureFrame(ref, 0, stack::LumaScale(info));
         std::vector<double> d;
         for (size_t k = 0; k < shifts.size(); ++k) {
             const stack::FrameStats& s = stats[static_cast<size_t>(sel.frames[k])];
@@ -153,7 +153,7 @@ int main(int argc, char** argv) try {
 
     if (split && sel.fullFrameTarget) {
         const int h2 = ref.height / 2;
-        const stack::GlobalAligner top(Rows(ref, 0, h2), true), bottom(Rows(ref, h2, 2 * h2), true);
+        const stack::GlobalAligner top(Rows(ref, 0, h2), true, stack::LumaScale(info)), bottom(Rows(ref, h2, 2 * h2), true, stack::LumaScale(info));
         const auto src = factory();
         std::vector<double> dist;
         int torn = 0, both = 0;

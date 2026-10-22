@@ -21,7 +21,7 @@ namespace planetary::stack {
 // frame(x + dx, y + dy) ~ reference(x, y).
 //
 // The pipeline (Task 6 drives it; every piece here is I/O-free, Ruling P1):
-//  1. layout = PlaceRegions(reference, MeasureFrame(reference), selection.fullFrameTarget);
+//  1. layout = PlaceRegions(reference, MeasureFrame(reference, 0, LumaScale(info)), selection.fullFrameTarget);
 //  2. for each selected, globally aligned frame (its luma and GlobalAligner shift):
 //         FrameRegions m = measurer.Measure(luma, index, shift);   // RegionMeasurer(reference, layout)
 //         residual.Observe(luma, m);                               // ResidualScale, Accumulate.h

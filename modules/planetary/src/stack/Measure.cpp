@@ -28,7 +28,7 @@ constexpr double kPeakSigmas = 10;           // a target's brightest block: >= b
 constexpr double kMinContrast = 0.01;        // ... and >= b + 1% of full scale
 constexpr double kExtentFraction = 0.1;      // extent: above 10% of the contrast
 constexpr double kCentroidFraction = 0.5;    // centroid: above half the contrast
-constexpr int64_t kMinTargetPixels = 16;     // real pixels above half the contrast
+constexpr double kMinTargetPixels = 16;      // sensor pixels above half the contrast
 constexpr double kMarginFraction = 0.1;      // quality region: box + 10%
 
 const char* const kPhase = "Measuring frames";
@@ -195,7 +195,7 @@ int DetectionBlock(int width, int height) {
     return std::max(1, (std::max(width, height) + kGridCells - 1) / kGridCells);
 }
 
-FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
+FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale) {
     if (luma.width <= 0 || luma.height <= 0)
         throw std::invalid_argument("MeasureFrame: empty image");
     if (luma.channels != 1)
@@ -206,6 +206,8 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
     if (luma.data.size() != npix)
         throw std::invalid_argument("MeasureFrame: " + std::to_string(luma.data.size()) + " samples for a " +
                                     std::to_string(w) + "x" + std::to_string(h) + " image");
+    if (!std::isfinite(lumaScale) || lumaScale < 1)
+        throw std::invalid_argument("MeasureFrame: luma scale " + std::to_string(lumaScale) + " is not >= 1");
     const float* p = luma.data.data();
     auto at = [&](int x, int y) { return static_cast<double>(p[static_cast<size_t>(y) * w + x]); };
 
@@ -251,7 +253,7 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index) {
                 for (int x = x0; x < std::min(w, x0 + g.d); ++x)
                     if (opened[static_cast<size_t>(y) * w + x] > half) ++core;
         }
-        if (core >= kMinTargetPixels) {
+        if (static_cast<double>(core) * lumaScale * lumaScale >= kMinTargetPixels) {
             bestFlux = flux;
             bestPeak = peak;
         }
@@ -399,6 +401,7 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
     constexpr int64_t kRun = 8;  // consecutive frames per claim: each reader reads forward
     const int workers = static_cast<int>(std::min<int64_t>(std::max(1, threads), (total + kRun - 1) / kRun));
     std::vector<FrameStats> out(static_cast<size_t>(total));
+    const double scale = LumaScale(info);
 
     std::atomic<int64_t> nextFrame{0}, done{0};
     std::atomic<bool> stop{false};
@@ -426,7 +429,7 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
                 const int64_t last = std::min(total, first + kRun);
                 for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
                     out[static_cast<size_t>(i)] =
-                        MeasureFrame(MeasurementLuma(src->ReadFrame(i), info), i);
+                        MeasureFrame(MeasurementLuma(src->ReadFrame(i), info), i, scale);
                     done.fetch_add(1);
                 }
             }

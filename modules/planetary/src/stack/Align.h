@@ -140,9 +140,11 @@ constexpr int kReferenceFrames = 16;
 class GlobalAligner {
 public:
     // `reference`: a 1-channel luma image (BuildReference's output). fullFrame: Selection::
-    // fullFrameTarget. Throws std::invalid_argument for an empty or non-1-channel image, a sample
-    // count that does not match, or fullFrame false on a reference without a target.
-    GlobalAligner(const ser::FloatImage& reference, bool fullFrame);
+    // fullFrameTarget. lumaScale: LumaScale(info), as MeasureFrame takes it (the reference's target
+    // is found with it). Throws std::invalid_argument for an empty or non-1-channel image, a sample
+    // count that does not match, a lumaScale MeasureFrame refuses, or fullFrame false on a reference
+    // without a target.
+    GlobalAligner(const ser::FloatImage& reference, bool fullFrame, double lumaScale);
 
     // `frameLuma` must have the reference's size (std::invalid_argument otherwise); `frameStats` is
     // that frame's MeasureFrame result (only targetFound, cx, cy are used, and only for a disc).
@@ -194,7 +196,8 @@ private:
 // 0.02 px and >= 0.98 at 9% -- because the full-frame window cannot move past the image edge, so the
 // sliver lies in the window's taper. Not fixed yet (a window allowed to overhang the edge, or a
 // taper fitted to the target box, would be the fix).
-Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frameLuma, const FrameStats& frameStats);
+Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frameLuma, const FrameStats& frameStats,
+                  double lumaScale);
 
 // The reference every frame is aligned to, in measurement-luma scale (same size as LumaForMeasure's
 // output) -- the scale FrameStats and GlobalAligner work in; full-resolution consumers scale shifts

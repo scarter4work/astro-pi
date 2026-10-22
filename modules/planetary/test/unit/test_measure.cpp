@@ -134,7 +134,7 @@ TEST_CASE("quality falls strictly with blur, whatever the brightness, with and w
                 FloatImage im = GaussianBlur(base, sigmas[b]);
                 Scale(im, scales[si]);
                 if (noisy) AddNoise(im, 0.004, 1000u + 10u * si + b);  // fixed read noise: dimmer = lower SNR
-                const FrameStats s = MeasureFrame(im, b);
+                const FrameStats s = MeasureFrame(im, b, 1);
                 INFO("noisy " << noisy << " scale " << scales[si] << " blur " << sigmas[b] << " quality " << s.quality);
                 REQUIRE(s.targetFound);
                 q[b] = s.quality;
@@ -160,7 +160,7 @@ TEST_CASE("qualitySigma matches the scatter of quality over noise realisations")
     PaintDisc(plain, 61.3, 57.8, 20, [](int, int) { return 0.5; });
     const FloatImage images[2] = {TexturedPlanet(192, 176, 95.3, 88.6, 42, 0.05f), plain};
     for (const FloatImage& clean : images) {
-        const FrameStats noiseless = MeasureFrame(clean, 0);
+        const FrameStats noiseless = MeasureFrame(clean, 0, 1);
         REQUIRE(noiseless.targetFound);
         CHECK(noiseless.qualitySigma == 0);  // no measurable noise
         for (const double noise : {0.004, 0.015}) {
@@ -169,7 +169,7 @@ TEST_CASE("qualitySigma matches the scatter of quality over noise realisations")
             for (int k = 0; k < kRuns; ++k) {
                 FloatImage im = clean;
                 AddNoise(im, noise, 5000u + static_cast<unsigned>(k) + (noise > 0.01 ? 100000u : 0u));
-                const FrameStats s = MeasureFrame(im, k);
+                const FrameStats s = MeasureFrame(im, k, 1);
                 REQUIRE(s.targetFound);
                 REQUIRE(s.qualitySigma > 0);
                 sum += s.quality;
@@ -195,7 +195,7 @@ TEST_CASE("a frame of background only has no target") {
         AddNoise(im, 1.5 / 255, 7);
         Quantize8(im);
         At(im, 400, 300) = 1.0f;
-        const FrameStats s = MeasureFrame(im, 3);
+        const FrameStats s = MeasureFrame(im, 3, 1);
         CHECK(s.index == 3);
         CHECK_FALSE(s.targetFound);
         CHECK(s.quality == 0);
@@ -211,30 +211,30 @@ TEST_CASE("a frame of background only has no target") {
         FloatImage im = Flat(96, 64, 0.03f);
         AddNoise(im, 0.006, 11);
         At(im, 40, 30) = 1.0f;
-        CHECK_FALSE(MeasureFrame(im, 0).targetFound);
+        CHECK_FALSE(MeasureFrame(im, 0, 1).targetFound);
     }
     SECTION("perfectly flat frame") {
-        CHECK_FALSE(MeasureFrame(Flat(64, 48, 0.2f), 0).targetFound);
+        CHECK_FALSE(MeasureFrame(Flat(64, 48, 0.2f), 0, 1).targetFound);
     }
     SECTION("fully saturated frame reports its clipping") {
-        const FrameStats s = MeasureFrame(Flat(64, 48, 1.0f), 0);
+        const FrameStats s = MeasureFrame(Flat(64, 48, 1.0f), 0, 1);
         CHECK_FALSE(s.targetFound);
         CHECK(s.clippedFraction == 1.0);
     }
     SECTION("all-black frame") {
-        const FrameStats s = MeasureFrame(Flat(64, 48, 0.0f), 0);
+        const FrameStats s = MeasureFrame(Flat(64, 48, 0.0f), 0, 1);
         CHECK_FALSE(s.targetFound);
         CHECK(s.quality == 0);
         CHECK(s.brightness == 0);
         CHECK(s.clippedFraction == 0);
     }
     SECTION("1x1 and 2x2 frames") {
-        const FrameStats one = MeasureFrame(Flat(1, 1, 1.0f), 0);
+        const FrameStats one = MeasureFrame(Flat(1, 1, 1.0f), 0, 1);
         CHECK_FALSE(one.targetFound);
         CHECK(one.clippedFraction == 1.0);
         FloatImage two = Flat(2, 2, 0.05f);
         At(two, 1, 1) = 0.9f;
-        const FrameStats s2 = MeasureFrame(two, 0);
+        const FrameStats s2 = MeasureFrame(two, 0, 1);
         CHECK_FALSE(s2.targetFound);
         CHECK(s2.brightness == Catch::Approx((3 * 0.05 + 0.9) / 4).epsilon(1e-6));
     }
@@ -250,6 +250,18 @@ FloatImage SaturnBackground(int w, int h, unsigned seed) {
     AddNoise(im, 1.5 / 255, seed);
     Quantize8(im);
     return im;
+}
+
+// The 2 x 2 cell mean LumaForMeasure makes of a Bayer frame (and MeasurementLuma of an undeclared
+// mosaic): luma pixel (i, j) is sensor pixels 2i..2i+1 x 2j..2j+1.
+FloatImage Bin2x2(const FloatImage& in) {
+    FloatImage out = Flat(in.width / 2, in.height / 2, 0.0f);
+    for (int y = 0; y < out.height; ++y)
+        for (int x = 0; x < out.width; ++x) {
+            const size_t a = static_cast<size_t>(2 * y) * in.width + 2 * x, b = a + in.width;
+            At(out, x, y) = (in.data[a] + in.data[a + 1] + in.data[b] + in.data[b + 1]) / 4;
+        }
+    return out;
 }
 
 }  // namespace
@@ -271,14 +283,47 @@ TEST_CASE("small bright structures on a background-only frame are not a target")
     };
     for (const auto& size : {std::pair<int, int>{1920, 1080}, std::pair<int, int>{96, 64}}) {
         const FloatImage background = SaturnBackground(size.first, size.second, 21);
-        REQUIRE_FALSE(MeasureFrame(background, 0).targetFound);
+        REQUIRE_FALSE(MeasureFrame(background, 0, 1).targetFound);
         for (const auto& c : cases) {
             FloatImage im = background;
             c.second(im, size.first / 3, size.second / 3);
             INFO(size.first << "x" << size.second << ": " << c.first);
-            CHECK_FALSE(MeasureFrame(im, 0).targetFound);
+            CHECK_FALSE(MeasureFrame(im, 0, 1).targetFound);
         }
     }
+    // The same structures on a sensor-resolution frame measured as Bayer luma: binned 2 x 2 and
+    // under the 4-luma-px floor of luma scale 2 (the opening is what rejects them there).
+    const FloatImage sensor = SaturnBackground(1920, 1080, 22);
+    REQUIRE_FALSE(MeasureFrame(Bin2x2(sensor), 0, 2).targetFound);
+    for (const auto& c : cases)
+        for (const int phase : {0, 1}) {  // aligned with a 2 x 2 cell, and straddling two
+            FloatImage im = sensor;
+            c.second(im, 640 + phase, 360 + phase);
+            INFO("binned, phase " << phase << ": " << c.first);
+            CHECK_FALSE(MeasureFrame(Bin2x2(im), 0, 2).targetFound);
+        }
+}
+
+TEST_CASE("on half-resolution luma the size floor counts sensor pixels") {
+    // Neptune as an undeclared-mosaic or Bayer capture measures it: an 8-px disc at sensor
+    // resolution, seeing sigma 1 px, binned 2 x 2 -- 12 luma px above half its contrast (the
+    // 2026-01-30 Neptune AVI: 9-22), under a 16-luma-px floor but 48 sensor pixels' worth.
+    const double cx = 241.3, cy = 178.6;
+    FloatImage sensor = Flat(480, 360, 0.0f);
+    PaintDisc(sensor, cx, cy, 4.0, [](int, int) { return 0.6; });
+    sensor = GaussianBlur(sensor, 1.0);
+    for (float& v : sensor.data) v += 0.022f;
+    AddNoise(sensor, 1.5 / 255, 43);
+    Quantize8(sensor);
+    const FloatImage luma = Bin2x2(sensor);
+    const FrameStats s = MeasureFrame(luma, 0, 2);
+    INFO("centroid " << s.cx << "," << s.cy);
+    REQUIRE(s.targetFound);
+    // FrameStats stay in luma pixels: sensor x = 2 * luma x + 0.5.
+    CHECK(std::fabs(s.cx - (cx - 0.5) / 2) < 0.5);
+    CHECK(std::fabs(s.cy - (cy - 0.5) / 2) < 0.5);
+    // The same image taken as sensor resolution is a 6x6-px blob, under the 16-px floor.
+    CHECK_FALSE(MeasureFrame(luma, 0, 1).targetFound);
 }
 
 TEST_CASE("a small real planet on that background is still found") {
@@ -287,7 +332,7 @@ TEST_CASE("a small real planet on that background is still found") {
         const double cx = 1011.4, cy = 517.7;
         PaintDisc(im, cx, cy, r, [](int, int) { return 0.6; });
         At(im, 300, 300) = At(im, 301, 300) = 1.0f;  // and a hot pair elsewhere
-        const FrameStats s = MeasureFrame(im, 0);
+        const FrameStats s = MeasureFrame(im, 0, 1);
         INFO("r " << r << " centroid " << s.cx << "," << s.cy);
         REQUIRE(s.targetFound);
         CHECK(std::fabs(s.cx - cx) < 0.5);
@@ -303,7 +348,7 @@ TEST_CASE("target centroid within half a pixel of the truth") {
         FloatImage im = Flat(c.w, c.h, 0.05f);
         PaintDisc(im, c.cx, c.cy, c.r, [](int, int) { return 0.6; });
         AddNoise(im, 0.01, 5);
-        const FrameStats s = MeasureFrame(im, 0);
+        const FrameStats s = MeasureFrame(im, 0, 1);
         INFO(c.w << "x" << c.h << " centroid " << s.cx << "," << s.cy << " truth " << c.cx << "," << c.cy);
         REQUIRE(s.targetFound);
         CHECK(std::fabs(s.cx - c.cx) < 0.5);
@@ -331,7 +376,7 @@ TEST_CASE("a target cut by the frame edge has its box touching that edge") {
             const int k = big ? 4 : 1;
             FloatImage im = TexturedPlanet(w * k, h * k, c.cx * k, c.cy * k, 25.0 * k, 0.05f);
             AddNoise(im, 0.005, 3);
-            const FrameStats s = MeasureFrame(im, 0);
+            const FrameStats s = MeasureFrame(im, 0, 1);
             INFO("edge " << c.edge << " scale " << k << " box " << s.bx0 << "," << s.by0 << " - " << s.bx1 << "," << s.by1);
             REQUIRE(s.targetFound);
             if (c.edge == 0) CHECK(s.bx0 == 0);
@@ -354,7 +399,7 @@ TEST_CASE("clipped fraction is exact on a saturated disc") {
                 if (d2 < r1 * r1) { At(im, x, y) = 1.0f; ++n1; ++n2; }
                 else if (d2 < r2 * r2) { At(im, x, y) = 0.6f; ++n2; }
             }
-        const FrameStats s = MeasureFrame(im, 0);
+        const FrameStats s = MeasureFrame(im, 0, 1);
         INFO("grid " << k << " n1 " << n1 << " n2 " << n2);
         REQUIRE(s.targetFound);
         CHECK(s.clippedFraction == static_cast<double>(n1) / n2);
@@ -363,9 +408,12 @@ TEST_CASE("clipped fraction is exact on a saturated disc") {
 }
 
 TEST_CASE("MeasureFrame rejects malformed input") {
-    CHECK_THROWS_AS(MeasureFrame(FloatImage{}, 0), std::invalid_argument);
-    CHECK_THROWS_AS(MeasureFrame(FloatImage{4, 4, 3, std::vector<float>(48)}, 0), std::invalid_argument);
-    CHECK_THROWS_AS(MeasureFrame(FloatImage{4, 4, 1, std::vector<float>(15)}, 0), std::invalid_argument);
+    CHECK_THROWS_AS(MeasureFrame(FloatImage{}, 0, 1), std::invalid_argument);
+    CHECK_THROWS_AS(MeasureFrame(FloatImage{4, 4, 3, std::vector<float>(48)}, 0, 1), std::invalid_argument);
+    CHECK_THROWS_AS(MeasureFrame(FloatImage{4, 4, 1, std::vector<float>(15)}, 0, 1), std::invalid_argument);
+    CHECK_THROWS_AS(MeasureFrame(Flat(8, 8, 0.1f), 0, 0.5), std::invalid_argument);
+    CHECK_THROWS_AS(MeasureFrame(Flat(8, 8, 0.1f), 0, 0), std::invalid_argument);
+    CHECK_THROWS_AS(MeasureFrame(Flat(8, 8, 0.1f), 0, std::nan("")), std::invalid_argument);
 }
 
 namespace {
@@ -458,7 +506,7 @@ TEST_CASE("MeasureAll matches per-frame measurement and is identical for 1 and 8
         REQUIRE(eight.size() == static_cast<size_t>(kAviFrames));
         int found = 0;
         for (int64_t i = 0; i < kAviFrames; ++i) {
-            const FrameStats direct = MeasureFrame(stack::LumaForMeasure(probe->ReadFrame(i), info.colorId, info.normDepth), i);
+            const FrameStats direct = MeasureFrame(stack::LumaForMeasure(probe->ReadFrame(i), info.colorId, info.normDepth), i, stack::LumaScale(info));
             INFO("frame " << i);
             CHECK(SameStats(one[i], direct));
             CHECK(SameStats(eight[i], direct));

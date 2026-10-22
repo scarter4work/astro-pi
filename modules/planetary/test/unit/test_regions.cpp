@@ -65,7 +65,7 @@ TEST_CASE("Region weights are a partition of unity, flat to the edges for a full
     const int w = 250, h = 190;
     const Scene s = testing::MakeSurface(3, w, h);
     const FloatImage ref = Truth(s, w, h, 0.5);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
     REQUIRE(lay.flatEdges);
     REQUIRE(lay.size % 8 == 0);
     REQUIRE(lay.step * 2 == lay.size);
@@ -102,7 +102,7 @@ TEST_CASE("Regions on a 40 px disc cover the disc fully and taper to 0 in the sk
     const int w = 128, h = 112;
     const Scene s = testing::MakeDisc(5, 61.3, 54.7, 20);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const stack::FrameStats st = stack::MeasureFrame(ref, 0);
+    const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
     REQUIRE(st.targetFound);
     const RegionLayout lay = stack::PlaceRegions(ref, st, false);
     CHECK_FALSE(lay.flatEdges);
@@ -142,7 +142,7 @@ TEST_CASE("No region on a featureless frame; a sky-only node gets none", "[regio
     std::mt19937 rng(1);
     std::normal_distribution<double> n(0, 0.002);
     for (float& v : flat.data) v += static_cast<float>(n(rng));
-    const RegionLayout lay = stack::PlaceRegions(flat, stack::MeasureFrame(flat, 0), true);
+    const RegionLayout lay = stack::PlaceRegions(flat, stack::MeasureFrame(flat, 0, 1), true);
     CHECK(lay.regions.empty());
     CHECK(lay.nx * lay.ny == static_cast<int>(lay.node.size()));
     for (int v : lay.node) CHECK(v == -1);
@@ -153,7 +153,7 @@ TEST_CASE("Region sizes follow the target", "[regions]") {
     {
         const int w = 400, h = 300;
         const FloatImage ref = Truth(testing::MakeSurface(9, w, h), w, h, 0.5);
-        const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+        const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
         CHECK(lay.size == 40);  // 300 / 8 = 37.5 -> multiple of 8 -> 40
     }
     // A big disc: a quarter of its box.
@@ -161,7 +161,7 @@ TEST_CASE("Region sizes follow the target", "[regions]") {
         const int w = 400, h = 360;
         const Scene s = testing::MakeDisc(2, 200, 180, 120);
         const FloatImage ref = Truth(s, w, h, 0.6);
-        const stack::FrameStats st = stack::MeasureFrame(ref, 0);
+        const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
         const RegionLayout lay = stack::PlaceRegions(ref, st, false);
         const int side = std::min(st.bx1 - st.bx0, st.by1 - st.by0);
         CHECK(lay.size == std::clamp(8 * static_cast<int>(std::lround(side / 4.0 / 8.0)), stack::kMinRegionSize,
@@ -182,7 +182,7 @@ TEST_CASE("Local shifts: sub-pixel, up to 8 px, and a torn frame's halves", "[re
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(11, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
     const RegionMeasurer m(ref, lay);
     REQUIRE(lay.regions.size() > 20);
 
@@ -291,7 +291,7 @@ TEST_CASE("Region quality follows the local blur; gain follows the frame's brigh
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(12, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
     const RegionMeasurer m(ref, lay);
     // Frame A: sharp (0.5 px) left of x ~ 128 and blurred (2.5 px) right of it (sin^2 transition over
     // one 64-px cell); frame B the other way round, dimmed to 0.8.
@@ -330,7 +330,7 @@ TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") 
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(21, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
     const RegionMeasurer m(ref, lay);
     std::mt19937 rng(4);
     std::uniform_real_distribution<double> uni(0, 1);
@@ -393,7 +393,7 @@ TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (
     const int w = 192, h = 160;
     const Scene s = testing::MakeSurface(23, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
     std::mt19937 rng(8);
     std::normal_distribution<double> n(0, 1);
     std::vector<FrameRegions> measured;

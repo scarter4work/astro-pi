@@ -239,10 +239,10 @@ TEST_CASE("Fft2D matches a naive 2-D DFT") {
 TEST_CASE("GlobalShift recovers integer shifts of a textured disc") {
     const int w = 240, h = 180;
     const FloatImage ref = GaussianBlur(RenderDisc(w, h, 110.3, 88.6, 34, 0.03), 1.0);
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     for (auto d : std::vector<std::pair<int, int>>{{0, 0}, {7, -4}, {-12, 9}, {1, 0}, {0, -1}, {25, 18}}) {
         const FloatImage frame = GaussianBlur(RenderDisc(w, h, 110.3 + d.first, 88.6 + d.second, 34, 0.03), 1.0);
-        const FrameStats st = stack::MeasureFrame(frame, 0);
+        const FrameStats st = stack::MeasureFrame(frame, 0, 1);
         REQUIRE(st.targetFound);
         const Shift s = aligner.Align(frame, st);
         INFO("true shift " << d.first << ", " << d.second << "; got " << s.dx << ", " << s.dy);
@@ -257,12 +257,12 @@ TEST_CASE("GlobalShift recovers sub-pixel shifts of a textured disc within 0.1 p
     const int w = 240, h = 180;
     const double cx = 104.0, cy = 91.0;
     const FloatImage ref = GaussianBlur(RenderDisc(w, h, cx, cy, 34, 0.03), 1.0);
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     double worst = 0;
     for (double dx : {-3.7, -0.5, 0.25, 0.5, 1.3, 2.9})
         for (double dy : {-2.45, -0.1, 0.5, 0.75, 4.6}) {
             const FloatImage frame = GaussianBlur(RenderDisc(w, h, cx + dx, cy + dy, 34, 0.03), 1.0);
-            const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, 0));
+            const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, 0, 1));
             INFO("true " << dx << ", " << dy << "; got " << s.dx << ", " << s.dy);
             CHECK(std::fabs(s.dx - dx) <= 0.03);  // brief: 0.1; measured 2026-10-21: <= 0.0075
             CHECK(std::fabs(s.dy - dy) <= 0.03);
@@ -275,10 +275,10 @@ TEST_CASE("GlobalShift recovers sub-pixel shifts of a textured disc within 0.1 p
 TEST_CASE("GlobalShift follows a disc drifting far across the frame") {
     const int w = 320, h = 240;
     const FloatImage ref = GaussianBlur(RenderDisc(w, h, 80.2, 70.4, 30, 0.02), 1.0);
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     for (auto d : std::vector<std::pair<double, double>>{{150.35, 95.8}, {-30.6, 120.25}, {170.0, 0.4}}) {
         const FloatImage frame = GaussianBlur(RenderDisc(w, h, 80.2 + d.first, 70.4 + d.second, 30, 0.02), 1.0);
-        const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, 0));
+        const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, 0, 1));
         INFO("true " << d.first << ", " << d.second << "; got " << s.dx << ", " << s.dy);
         CHECK(std::fabs(s.dx - d.first) <= kTol);
         CHECK(std::fabs(s.dy - d.second) <= kTol);
@@ -291,7 +291,7 @@ TEST_CASE("GlobalShift on a disc is robust to noise and to a different blur (see
     const double cx = 118.4, cy = 87.7;
     FloatImage ref = GaussianBlur(RenderDisc(w, h, cx, cy, 34, 0.03), 1.0);
     AddNoise(ref, 0.005, 1);  // a reference averaged from a few frames: low noise
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     for (double noise : {0.02, 0.05}) {
         double sum2 = 0, worst = 0;
         int n = 0;
@@ -300,7 +300,7 @@ TEST_CASE("GlobalShift on a disc is robust to noise and to a different blur (see
             const double blur = 1.0 + 0.15 * (seed % 5);  // 1.0 .. 1.6 px
             FloatImage frame = GaussianBlur(RenderDisc(w, h, cx + dx, cy + dy, 34, 0.03), blur);
             AddNoise(frame, noise, 100 + seed);
-            const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, seed));
+            const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, seed, 1));
             const double ex = s.dx - dx, ey = s.dy - dy;
             sum2 += ex * ex + ey * ey;
             worst = std::max({worst, std::fabs(ex), std::fabs(ey)});
@@ -321,12 +321,12 @@ TEST_CASE("GlobalShift recovers integer and sub-pixel shifts of a frame-filling 
     const int w = 256, h = 192;
     const Lunar moon = MakeLunar(11);
     const FloatImage ref = GaussianBlur(RenderLunar(w, h, moon, 0, 0), 0.8);
-    const GlobalAligner aligner(ref, true);
+    const GlobalAligner aligner(ref, true, 1);
     double worst = 0;
     for (auto d : std::vector<std::pair<double, double>>{
              {0, 0}, {4, -6}, {0.3, -0.7}, {5.5, 3.25}, {-17.4, 11.6}, {-0.5, 0.5}, {31.2, -22.9}}) {
         const FloatImage frame = GaussianBlur(RenderLunar(w, h, moon, d.first, d.second), 0.8);
-        const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, 0));
+        const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, 0, 1));
         INFO("true " << d.first << ", " << d.second << "; got " << s.dx << ", " << s.dy << " conf " << s.confidence);
         CHECK(std::fabs(s.dx - d.first) <= 0.03);  // brief: 0.1; measured 2026-10-21: <= 0.015
         CHECK(std::fabs(s.dy - d.second) <= 0.03);
@@ -341,13 +341,13 @@ TEST_CASE("GlobalShift on a frame-filling surface is robust to noise and blur") 
     const Lunar moon = MakeLunar(5);
     FloatImage ref = GaussianBlur(RenderLunar(w, h, moon, 0, 0), 0.8);
     AddNoise(ref, 0.004, 2);
-    const GlobalAligner aligner(ref, true);
+    const GlobalAligner aligner(ref, true, 1);
     double worst = 0;
     for (unsigned seed = 0; seed < 10; ++seed) {
         const double dx = -6.3 + 1.37 * seed, dy = 4.1 - 0.91 * seed;
         FloatImage frame = GaussianBlur(RenderLunar(w, h, moon, dx, dy), 0.8 + 0.2 * (seed % 4));
         AddNoise(frame, 0.02, 300 + seed);
-        const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, seed));
+        const Shift s = aligner.Align(frame, stack::MeasureFrame(frame, seed, 1));
         INFO("seed " << seed << ": error " << s.dx - dx << ", " << s.dy - dy << " conf " << s.confidence);
         CHECK(std::fabs(s.dx - dx) <= kTol);
         CHECK(std::fabs(s.dy - dy) <= kTol);
@@ -367,13 +367,13 @@ TEST_CASE("a frame of a different scene gets a low confidence") {
     FloatImage noise{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.05f)};
     AddNoise(noise, 0.02, 9);
 
-    const GlobalAligner discAligner(disc, false), moonAligner(moonA, true);
+    const GlobalAligner discAligner(disc, false, 1), moonAligner(moonA, true, 1);
     std::vector<std::pair<std::string, Shift>> cases = {
-        {"lunar frame vs disc reference", discAligner.Align(moonB, stack::MeasureFrame(moonB, 0))},
-        {"noise frame vs disc reference", discAligner.Align(noise, stack::MeasureFrame(noise, 0))},
-        {"another lunar field vs lunar reference", moonAligner.Align(moonB, stack::MeasureFrame(moonB, 0))},
-        {"disc frame vs lunar reference", moonAligner.Align(disc, stack::MeasureFrame(disc, 0))},
-        {"noise frame vs lunar reference", moonAligner.Align(noise, stack::MeasureFrame(noise, 0))},
+        {"lunar frame vs disc reference", discAligner.Align(moonB, stack::MeasureFrame(moonB, 0, 1))},
+        {"noise frame vs disc reference", discAligner.Align(noise, stack::MeasureFrame(noise, 0, 1))},
+        {"another lunar field vs lunar reference", moonAligner.Align(moonB, stack::MeasureFrame(moonB, 0, 1))},
+        {"disc frame vs lunar reference", moonAligner.Align(disc, stack::MeasureFrame(disc, 0, 1))},
+        {"noise frame vs lunar reference", moonAligner.Align(noise, stack::MeasureFrame(noise, 0, 1))},
     };
     for (const auto& c : cases) {
         INFO(c.first << ": confidence " << c.second.confidence);
@@ -382,14 +382,14 @@ TEST_CASE("a frame of a different scene gets a low confidence") {
     }
     // A flat frame has nothing to align on.
     const FloatImage flat{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.2f)};
-    CHECK(moonAligner.Align(flat, stack::MeasureFrame(flat, 0)).confidence == 0.0);
+    CHECK(moonAligner.Align(flat, stack::MeasureFrame(flat, 0, 1)).confidence == 0.0);
 }
 
 TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixels of wobble do not") {
     const int w = 256, h = 192;
     const Lunar moon = MakeLunar(17);
     const FloatImage ref = GaussianBlur(RenderLunar(w, h, moon, 0, 0), 0.8);
-    const GlobalAligner aligner(ref, true);
+    const GlobalAligner aligner(ref, true, 1);
     // Rows from `tearRow` down show the scene displaced by `jump` px more than the rows above.
     auto torn = [&](int tearRow, double jump, unsigned seed) {
         const FloatImage top = RenderLunar(w, h, moon, 2.3, -1.6), bottom = RenderLunar(w, h, moon, 2.3 + jump, -1.6);
@@ -413,7 +413,7 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
     std::vector<Shift> capture;
     for (unsigned i = 0; i < 20; ++i) {
         const FloatImage f = torn(h, 0, 40 + i);  // intact
-        capture.push_back(aligner.Align(f, stack::MeasureFrame(f, i)));
+        capture.push_back(aligner.Align(f, stack::MeasureFrame(f, i, 1)));
     }
     // Torn through the middle, and with the larger part (the lower 60%) displaced: either way the
     // match is cut by about the torn part's share. A 1 px wobble is local alignment's to take out.
@@ -421,9 +421,9 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
     // after the 1.5 px low pass the large-scale structure correlates across 4 px -- so moderate tears
     // are left to the region stage, like the real 1.2-2.5 px wobble frames.)
     const FloatImage half = torn(h / 2, 8, 1), most = torn(h * 2 / 5, 8, 2), wobble = torn(h / 2, 1.0, 3);
-    const Shift sHalf = aligner.Align(half, stack::MeasureFrame(half, 0));
-    const Shift sMost = aligner.Align(most, stack::MeasureFrame(most, 0));
-    const Shift sWobble = aligner.Align(wobble, stack::MeasureFrame(wobble, 0));
+    const Shift sHalf = aligner.Align(half, stack::MeasureFrame(half, 0, 1));
+    const Shift sMost = aligner.Align(most, stack::MeasureFrame(most, 0, 1));
+    const Shift sWobble = aligner.Align(wobble, stack::MeasureFrame(wobble, 0, 1));
     capture.push_back(sHalf);
     capture.push_back(sMost);
     capture.push_back(sWobble);
@@ -439,7 +439,7 @@ TEST_CASE("a torn frame (part of it displaced) scores below the cut; a few pixel
     for (double blur : {0.8, 1.6, 2.4})
         for (double jump : {4.0, 5.0, 6.0, 8.0}) {
             const FloatImage f = tornBlurred(h / 2, jump, blur, 60);
-            const double c = aligner.Align(f, stack::MeasureFrame(f, 0)).confidence;
+            const double c = aligner.Align(f, stack::MeasureFrame(f, 0, 1)).confidence;
             INFO("half torn by " << jump << " px at blur " << blur << ": " << c << " (cut " << cut << ")");
             if (jump >= 8) CHECK(c < cut);                     // rejected through 3x blur (2.4 px: 0.82)
             if (jump >= 6 && blur < 1) CHECK(c < cut);         // sharp: 6 px rejected
@@ -484,14 +484,14 @@ TEST_CASE("GlobalShift (one call) equals GlobalAligner, and Align is determinist
     for (int i = 0; i < 16; ++i) {
         FloatImage f = GaussianBlur(RenderDisc(w, h, 100 + 0.37 * i, 90 - 0.21 * i, 34, 0.03), 1.0);
         AddNoise(f, 0.01, 50 + i);
-        stats.push_back(stack::MeasureFrame(f, i));
+        stats.push_back(stack::MeasureFrame(f, i, 1));
         frames.push_back(std::move(f));
     }
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     std::vector<Shift> serial;
     for (int i = 0; i < 16; ++i) serial.push_back(aligner.Align(frames[i], stats[i]));
     for (int i = 0; i < 16; ++i) {
-        const Shift one = GlobalShift(ref, frames[i], stats[i]);
+        const Shift one = GlobalShift(ref, frames[i], stats[i], 1);
         CHECK(one.dx == serial[i].dx);
         CHECK(one.dy == serial[i].dy);
         CHECK(one.confidence == serial[i].confidence);
@@ -515,8 +515,8 @@ TEST_CASE("GlobalShift's one-call form registers a frame-filling reference as a 
     const Lunar moon = MakeLunar(31);
     const FloatImage ref = GaussianBlur(RenderLunar(w, h, moon, 0, 0), 0.8);
     const FloatImage frame = GaussianBlur(RenderLunar(w, h, moon, -9.35, 6.6), 0.8);
-    const Shift s = GlobalShift(ref, frame, stack::MeasureFrame(frame, 0));
-    const Shift a = GlobalAligner(ref, true).Align(frame, stack::MeasureFrame(frame, 0));
+    const Shift s = GlobalShift(ref, frame, stack::MeasureFrame(frame, 0, 1), 1);
+    const Shift a = GlobalAligner(ref, true, 1).Align(frame, stack::MeasureFrame(frame, 0, 1));
     CHECK(std::fabs(s.dx + 9.35) <= kTol);
     CHECK(std::fabs(s.dy - 6.6) <= kTol);
     CHECK(s.dx == a.dx);
@@ -525,14 +525,14 @@ TEST_CASE("GlobalShift's one-call form registers a frame-filling reference as a 
 
 TEST_CASE("GlobalAligner rejects malformed input") {
     const FloatImage ref = GaussianBlur(RenderDisc(120, 100, 60, 50, 20, 0.03), 1.0);
-    CHECK_THROWS_AS(GlobalAligner(FloatImage{}, false), std::invalid_argument);
-    CHECK_THROWS_AS(GlobalAligner(FloatImage{4, 4, 3, std::vector<float>(48, 0.f)}, true), std::invalid_argument);
-    CHECK_THROWS_AS(GlobalAligner(FloatImage{4, 4, 1, std::vector<float>(15, 0.f)}, true), std::invalid_argument);
+    CHECK_THROWS_AS(GlobalAligner(FloatImage{}, false, 1), std::invalid_argument);
+    CHECK_THROWS_AS(GlobalAligner(FloatImage{4, 4, 3, std::vector<float>(48, 0.f)}, true, 1), std::invalid_argument);
+    CHECK_THROWS_AS(GlobalAligner(FloatImage{4, 4, 1, std::vector<float>(15, 0.f)}, true, 1), std::invalid_argument);
     // A disc reference must have a target.
-    CHECK_THROWS_AS(GlobalAligner(FloatImage{64, 64, 1, std::vector<float>(64 * 64, 0.1f)}, false), std::invalid_argument);
-    const GlobalAligner aligner(ref, false);
+    CHECK_THROWS_AS(GlobalAligner(FloatImage{64, 64, 1, std::vector<float>(64 * 64, 0.1f)}, false, 1), std::invalid_argument);
+    const GlobalAligner aligner(ref, false, 1);
     const FloatImage other = RenderDisc(100, 100, 50, 50, 20, 0.03);
-    CHECK_THROWS_AS(aligner.Align(other, stack::MeasureFrame(other, 0)), std::invalid_argument);
+    CHECK_THROWS_AS(aligner.Align(other, stack::MeasureFrame(other, 0, 1)), std::invalid_argument);
 }
 
 // ---- BuildReference ---------------------------------------------------------------------------------
@@ -617,7 +617,7 @@ TEST_CASE("BuildReference: a sharp, low-noise luma reference centred on the best
         CHECK(std::is_sorted(dones.begin(), dones.end()));
         CHECK(dones.back() == totals.back());
 
-        const FrameStats rs = stack::MeasureFrame(ref, 0);
+        const FrameStats rs = stack::MeasureFrame(ref, 0, scale);
         REQUIRE(rs.targetFound);
 
         // Which frames the reference is built from: the kReferenceFrames sharpest selected frames.
@@ -639,7 +639,7 @@ TEST_CASE("BuildReference: a sharp, low-noise luma reference centred on the best
 
         // Every selected frame aligns to it; shift = the frame's true position - the reference's,
         // and the reference sits at the mean true position of the frames it was built from.
-        const GlobalAligner aligner(ref, false);
+        const GlobalAligner aligner(ref, false, scale);
         double ox = 0, oy = 0;
         std::vector<std::pair<double, double>> offsets;
         for (int64_t i : sel.frames) {
@@ -702,7 +702,7 @@ TEST_CASE("BuildReference on a frame-filling surface") {
     REQUIRE(ref.width == w);
     REQUIRE(ref.height == h);
 
-    const GlobalAligner aligner(ref, true);
+    const GlobalAligner aligner(ref, true, 1);
     std::vector<double> ox, oy;
     for (int f = 0; f < n; ++f) {
         const FloatImage luma = stack::LumaForMeasure(probe->ReadFrame(f), info.colorId, info.normDepth);
@@ -802,14 +802,14 @@ TEST_CASE("BuildReference: a different-scene frame at the top quality rank does 
     CHECK(std::is_sorted(dones.begin(), dones.end()));
     CHECK(dones.back() == totals.back());
     CHECK(totals.back() == 4 * stack::kReferenceFrames);  // one anchor turned down
-    const FrameStats rs = stack::MeasureFrame(ref, 0);
+    const FrameStats rs = stack::MeasureFrame(ref, 0, 1);
     REQUIRE(rs.targetFound);
     const FrameStats& disc = stats[0];
     INFO("reference box " << rs.bx1 - rs.bx0 << "x" << rs.by1 - rs.by0 << ", a disc frame's " << disc.bx1 - disc.bx0
                           << "x" << disc.by1 - disc.by0);
     CHECK(std::abs((rs.bx1 - rs.bx0) - (disc.bx1 - disc.bx0)) <= 8);
     CHECK(std::abs((rs.by1 - rs.by0) - (disc.by1 - disc.by0)) <= 8);
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     double ox0 = 0, oy0 = 0;
     bool first = true;
     for (int f = 0; f < n; ++f) {
@@ -839,7 +839,7 @@ TEST_CASE("blurred frames across the range selection keeps (1-3x the best blur) 
         };
         FloatImage ref = render(0, 0, sc.best);
         AddNoise(ref, 0.003, 5);
-        const GlobalAligner aligner(ref, sc.full);
+        const GlobalAligner aligner(ref, sc.full, 1);
         // Evenly spread over 1x .. 3x, and skewed: most frames near the best, a tail at 2.5-3x (the
         // median is then a sharp frame's, the hardest case for a relative cut).
         for (bool skewed : {false, true}) {
@@ -850,7 +850,7 @@ TEST_CASE("blurred frames across the range selection keeps (1-3x the best blur) 
                                            : sc.best * (1 + 2.0 * i / 15);
                 FloatImage f = render(0.37 * i - 4, 2.9 - 0.21 * i, blur);
                 AddNoise(f, 0.01, 2000u + i);
-                shifts.push_back(aligner.Align(f, stack::MeasureFrame(f, i)));
+                shifts.push_back(aligner.Align(f, stack::MeasureFrame(f, i, 1)));
                 blurs.push_back(blur);
             }
             const double cut = stack::AlignmentCut(shifts);
@@ -880,13 +880,13 @@ TEST_CASE("a frame-filling crescent wider than the window: the window sits on th
         return GaussianBlur(im, 0.8);
     };
     const FloatImage ref = render(0, 0);
-    const GlobalAligner aligner(ref, true);
+    const GlobalAligner aligner(ref, true, 1);
     INFO("window centre " << aligner.WindowCentreX() << ", " << aligner.WindowCentreY() << " size " << aligner.WindowWidth());
     CHECK(aligner.WindowCentreX() - aligner.WindowWidth() / 2 <= 40);  // the window starts at the lit left side
     for (auto d : std::vector<std::pair<double, double>>{{3.4, -2.2}, {-11.7, 6.25}, {25.5, 9.1}}) {
         FloatImage f = render(d.first, d.second);
         AddNoise(f, 0.01, 77);
-        const Shift s = aligner.Align(f, stack::MeasureFrame(f, 0));
+        const Shift s = aligner.Align(f, stack::MeasureFrame(f, 0, 1));
         INFO("true " << d.first << ", " << d.second << " got " << s.dx << ", " << s.dy << " conf " << s.confidence);
         CHECK(std::fabs(s.dx - d.first) <= 0.05);
         CHECK(std::fabs(s.dy - d.second) <= 0.05);
@@ -929,12 +929,12 @@ TEST_CASE("BuildReference: three copies of a foreign scene ranked sharpest do no
     for (int f = 0; f < n; ++f) sel.frames.push_back(f);
 
     const FloatImage ref = stack::BuildReference(factory, info, sel, stats, 4, {});
-    const FrameStats rs = stack::MeasureFrame(ref, 0);
+    const FrameStats rs = stack::MeasureFrame(ref, 0, 1);
     REQUIRE(rs.targetFound);
     INFO("reference box " << rs.bx1 - rs.bx0 << "x" << rs.by1 - rs.by0 << ", a disc frame's "
                           << stats[0].bx1 - stats[0].bx0 << "x" << stats[0].by1 - stats[0].by0);
     CHECK(std::abs((rs.bx1 - rs.bx0) - (stats[0].bx1 - stats[0].bx0)) <= 8);
-    const GlobalAligner aligner(ref, false);
+    const GlobalAligner aligner(ref, false, 1);
     for (int f = 0; f < n; ++f) {
         if (std::find(foreign.begin(), foreign.end(), f) != foreign.end()) continue;
         const Shift s = aligner.Align(stack::LumaForMeasure(probe->ReadFrame(f), info.colorId, info.normDepth), stats[f]);

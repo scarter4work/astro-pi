@@ -141,8 +141,8 @@ int main(int argc, char** argv) try {
     std::printf("hot      %zu hot sites from %lld frames\n", hot.Count(), static_cast<long long>(hot.FramesObserved()));
 
     t0 = std::chrono::steady_clock::now();
-    const stack::GlobalAligner aligner(ref, sel.fullFrameTarget);
-    const stack::RegionLayout layout = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0), sel.fullFrameTarget);
+    const stack::GlobalAligner aligner(ref, sel.fullFrameTarget, stack::LumaScale(info));
+    const stack::RegionLayout layout = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, stack::LumaScale(info)), sel.fullFrameTarget);
     const stack::RegionMeasurer measurer(ref, layout);
     const int64_t n = static_cast<int64_t>(sel.frames.size());
     std::vector<stack::Shift> shifts(static_cast<size_t>(n));

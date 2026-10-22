@@ -225,7 +225,7 @@ std::pair<int, int> BestWindow(const ser::FloatImage& ref, int ww, int wh) {
 
 }  // namespace
 
-GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame)
+GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame, double lumaScale)
     : fullFrame_(fullFrame),
       width_(reference.width),
       height_(reference.height),
@@ -242,7 +242,7 @@ GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame)
         refCx_ = at.first + ww_ / 2;
         refCy_ = at.second + wh_ / 2;
     } else {
-        const FrameStats rs = MeasureFrame(reference, 0);
+        const FrameStats rs = MeasureFrame(reference, 0, lumaScale);
         if (!rs.targetFound) throw std::invalid_argument("GlobalAligner: the reference has no target to align on");
         const int box = std::max(rs.bx1 - rs.bx0, rs.by1 - rs.by0);
         int n = NextFastSize(static_cast<int>(std::ceil(1.5 * box)) + 16);
@@ -453,11 +453,12 @@ GlobalAligner::Peak GlobalAligner::Correlate(const ser::FloatImage& frameLuma, i
     return result;
 }
 
-Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frameLuma, const FrameStats& frameStats) {
+Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frameLuma, const FrameStats& frameStats,
+                  double lumaScale) {
     CheckLuma(reference, "GlobalShift");
-    const FrameStats rs = MeasureFrame(reference, 0);
+    const FrameStats rs = MeasureFrame(reference, 0, lumaScale);
     const bool full = !rs.targetFound || FillsFrame(rs, reference.width, reference.height);
-    return GlobalAligner(reference, full).Align(frameLuma, frameStats);
+    return GlobalAligner(reference, full, lumaScale).Align(frameLuma, frameStats);
 }
 
 ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo& info, const Selection& selection,
@@ -510,6 +511,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     }
 
     const bool full = selection.fullFrameTarget;
+    const double scale = LumaScale(info);
     std::vector<Shift> shifts(k);
     std::vector<bool> use(k);
     // Pass 1: onto an anchor the other frames confirm. The sharpest frame first; it is turned down
@@ -529,7 +531,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
                 tick();
             }
             tried = true;
-            const GlobalAligner aligner(frames[a], full);
+            const GlobalAligner aligner(frames[a], full, scale);
             std::vector<Shift> s(k), others;
             for (size_t i = 0; i < k; ++i) {
                 if (i == a) continue;
@@ -563,7 +565,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
 
     // Pass 2: onto that average, re-centred on the mean shift. The frames' stats centroids still
     // place the windows (they are positions in each frame, not relative to any reference).
-    const GlobalAligner aligner(first, full);
+    const GlobalAligner aligner(first, full, scale);
     for (size_t i = 0; i < k; ++i) {
         shifts[i] = aligner.Align(frames[i], *ranked[i]);
         ++done;
