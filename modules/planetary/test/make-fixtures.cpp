@@ -4,6 +4,8 @@
 //   make-fixtures <out dir>   ->  <out dir>/*.ser, *.avi (+ .avi.txt sidecars) + <out dir>/probe-in.json
 //   make-fixtures --stack <out dir>  ->  PlanetaryStack's captures + <out dir>/stack-cases.json
 //                                        (test/run-probe-stack.sh; see WriteStackFixtures)
+//   make-fixtures --stack-long <file.avi> <frames>  ->  the long Bayer capture with that many frames
+//                                        (test/gui-smoke-stack.sh; see WriteLongCapture)
 //
 // SERViewer's expected values come from the same generator formula that fills the files,
 // plus an independent bilinear demosaic written here, never from the reader
@@ -373,6 +375,20 @@ void WriteSidecarRG(const std::string& avi, int w, int h) {
     WriteText(avi + ".txt", text);
 }
 
+// The long Bayer capture (1024 x 768 RGGB AVI with its RG sidecar: a disc of radius 180 with seeing,
+// 30 rendered frames repeated to n): the probe's cancel case (600 frames) and the GUI smoke's run
+// (make-fixtures --stack-long, more frames so the progress bar and Cancel land mid-run).
+void WriteLongCapture(const std::string& path, int n) {
+    const int w = 1024, h = 768, unique = 30;
+    const std::vector<std::vector<uint8_t>> rendered = Frames8(Mosaic(SeeingDisc(w, h, 512.4, 384.6, 180, unique, 81)));
+    std::vector<std::vector<uint8_t>> frames;
+    for (int k = 0; k < n; ++k) frames.push_back(rendered[static_cast<size_t>(k % unique)]);
+    AviSpec a;
+    a.width = w; a.height = h;
+    WriteAvi(path, a, frames);
+    WriteSidecarRG(path, w, h);
+}
+
 int WriteStackFixtures(const std::filesystem::path& dir) {
     std::vector<StackCase> cases;
     const std::string kMosaicWarning = "No Bayer pattern is known for this AVI (no capture sidecar names one), so the raw colour "
@@ -622,15 +638,8 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
     // the Process Console while it runs; afterwards the Bayer AVI above must still stack (the run script
     // runs it again after the cancel).
     {
-        const int w = 1024, h = 768, unique = 30, n = 600;
-        const std::vector<std::vector<uint8_t>> rendered = Frames8(Mosaic(SeeingDisc(w, h, 512.4, 384.6, 180, unique, 81)));
-        std::vector<std::vector<uint8_t>> frames;
-        for (int k = 0; k < n; ++k) frames.push_back(rendered[static_cast<size_t>(k % unique)]);
-        AviSpec a;
-        a.width = w; a.height = h;
         const std::string path = (dir / "stack-long.avi").string();
-        WriteAvi(path, a, frames);
-        WriteSidecarRG(path, w, h);
+        WriteLongCapture(path, 600);
         StackCase c;
         c.name = "cancel mid-run from the console"; c.path = path; c.kind = "cancel";
         c.abortAfter = 0.5; c.minSeconds = 1.5;
@@ -657,8 +666,19 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(dir);
         return WriteStackFixtures(dir);
     }
+    if (argc == 4 && std::string(argv[1]) == "--stack-long") {
+        const int n = std::atoi(argv[3]);
+        if (n < 1) {
+            std::fprintf(stderr, "make-fixtures: --stack-long needs a frame count >= 1, got '%s'\n", argv[3]);
+            return 2;
+        }
+        WriteLongCapture(argv[2], n);
+        std::printf("make-fixtures: %s, %d frames\n", argv[2], n);
+        return 0;
+    }
     if (argc != 2) {
-        std::fprintf(stderr, "usage: %s <out dir>\n       %s --stack <out dir>\n", argv[0], argv[0]);
+        std::fprintf(stderr, "usage: %s <out dir>\n       %s --stack <out dir>\n       %s --stack-long <file.avi> <frames>\n",
+                     argv[0], argv[0], argv[0]);
         return 2;
     }
     const std::filesystem::path dir = std::filesystem::absolute(argv[1]);

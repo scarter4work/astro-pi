@@ -67,11 +67,8 @@
 # changes the preview and Save pattern... stays hidden) with
 # PLANETARY_GUI_AVI_FRAMES (its frame count). Default: make-fixtures'
 # bayer-colour.avi (bayer-colour.ser's frames, sidecar Bayer RG, 3 frames).
-# PLANETARY_GUI_SLOT overrides the slot (default 97).
-#
-# Display isolation beyond pi_headless_env: no desktop session variables and a
-# session-bus address that leads nowhere, so Qt cannot hand the file dialog to
-# the desktop portal (it would open on the user's real screen).
+# PLANETARY_GUI_SLOT overrides the slot (default 97). The display, PixInsight
+# launch and quit are harness.sh's planetary_gui_* (shared with gui-smoke-stack.sh).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -84,19 +81,11 @@ SO="${PLANETARY_SO:-$ROOT/build/src/module/Planetary-pxm.so}"
 MAKE_FIXTURES="${PLANETARY_MAKE_FIXTURES:-$ROOT/build/test/make-fixtures}"
 [ -f "$SO" ] || { echo "FAIL: module not built at $SO (cmake -DPLANETARY_BUILD_MODULE=ON)"; exit 1; }
 SO="$(realpath -e "$SO")"
-for tool in Xvfb xprop import; do
-   command -v "$tool" >/dev/null || { echo "FAIL: $tool not found"; exit 1; }
-done
 mkdir -p "$OUT"
 OUT="$(realpath -e "$OUT")"
 rm -f "$OUT"/*.png "$OUT"/windows.txt "$OUT"/checks.txt "$OUT"/preview.json
 
-PLANETARY_TEST_SLOT="${PLANETARY_GUI_SLOT:-97}" planetary_slot_setup || exit 1
-planetary_private_tmp || exit 1
-DISPLAY_NO=$(( 100 + PLANETARY_SLOT ))
-if [ -e "/tmp/.X11-unix/X$DISPLAY_NO" ]; then
-   echo "FAIL: display :$DISPLAY_NO is already in use (another GUI smoke on slot $PLANETARY_SLOT?)"; exit 1
-fi
+planetary_gui_setup || exit 1
 
 CHECK_ARGS=()
 # Always: Save pattern... writes its sidecar next to make-fixtures' avi-nosidecar.avi in this
@@ -150,16 +139,6 @@ case "$A_COLOR" in 8|9|10|11) ;; *) echo "FAIL: fixture A must be a Bayer file (
 
 planetary_sign "$SO" || exit 1
 planetary_seed_slot_modules || exit 1
-
-XVFB_PID="" PI_PID=""
-gui_cleanup()
-{
-   [ -n "$PI_PID" ] && kill -9 "$PI_PID" 2>/dev/null
-   pkill -9 -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " 2>/dev/null
-   [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null
-   return 0
-}
-planetary_on_exit gui_cleanup
 
 # PixInsight must hold exactly the video file $2 open (none when $2 is empty).
 expect_open_video()
@@ -216,38 +195,9 @@ check_saved_sidecar()
    echo "sidecar written by Save pattern...: $(wc -c <"$NOSIDECAR.txt") bytes, Bayer = RG, SERViewer $PLANETARY_VERSION"
 }
 
-Xvfb ":$DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$OUT/xvfb.log" 2>&1 & XVFB_PID=$!
-export DISPLAY=":$DISPLAY_NO"
-for _ in $(seq 50); do xprop -root >/dev/null 2>&1 && break; sleep 0.1; done
-
-pi_headless_env
-unset XDG_CURRENT_DESKTOP DESKTOP_SESSION KDE_FULL_SESSION KDE_SESSION_VERSION GNOME_DESKTOP_SESSION_ID \
-      QT_QPA_PLATFORMTHEME XDG_SESSION_TYPE
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$PLANETARY_RUN_DIR/no-session-bus"
-export XDG_DATA_HOME="$PLANETARY_RUN_DIR/xdg"; mkdir -m 700 "$XDG_DATA_HOME"
-export PLANETARY_GUI_DIR="$PLANETARY_RUN_DIR/gui"; mkdir -m 700 "$PLANETARY_GUI_DIR"
 export PLANETARY_GUI_IMPORT_PATH="$A" PLANETARY_GUI_IMPORT_FRAME=$(( A_FRAMES - 1 ))
-
-pi_require_private_display || exit 1   # this script's own Xvfb, never the desktop
-timeout 900 "$PI" -n="$PLANETARY_SLOT" --no-startup-scripts -m="$SO" -r="$HERE/gui-smoke-setup.js" >"$OUT/pi.log" 2>&1 & PI_PID=$!
-# A fresh slot shows start-up notices (e.g. "Risky Temporary Folders"): each
-# is answered with Return until the script is ready.
-n=0
-for _ in $(seq 360); do
-   [ -f "$PLANETARY_GUI_DIR/ready" ] && break
-   kill -0 "$PI_PID" 2>/dev/null || break
-   n=$(( n + 1 ))
-   (( n % 10 == 0 )) && { python3 "$HERE/gui_drive.py" --dismiss "$OUT" || { echo "FAIL: driver (dismiss)"; exit 1; }; }
-   sleep 0.5
-done
-if [ ! -f "$PLANETARY_GUI_DIR/ready" ]; then
-   import -window root "$OUT/not-ready.png" 2>/dev/null || true
-   echo "FAIL: the GUI script never became ready (see $OUT/pi.log, $OUT/not-ready.png)"; exit 1
-fi
-cp "$PLANETARY_GUI_DIR/ready" "$OUT/ready.txt"
-grep -q "launchInterface=true" "$OUT/ready.txt" || { echo "FAIL: setup: $(cat "$OUT/ready.txt")"; exit 1; }
-planetary_assert_only_dev_mapped "$SO" || exit 1
-sleep 1
+export PLANETARY_GUI_PROCESS=SERViewer   # gui-smoke-setup.js opens this process's interface
+planetary_gui_launch "$OUT" "$HERE/gui-smoke-setup.js" || exit 1
 
 python3 "$HERE/gui_drive.py" --open "$OUT" "$A" "$B" || { echo "FAIL: driver (see $OUT/windows.txt)"; exit 1; }
 expect_open_video "after opening B" "$B" || exit 1
@@ -257,7 +207,7 @@ timeout 60 "$PI" -x="$PLANETARY_SLOT:$HERE/gui-smoke-import.js" >"$OUT/ipc.log" 
    || { echo "FAIL: IPC launch of gui-smoke-import.js failed or timed out (rc $?; see $OUT/ipc.log)"; exit 1; }
 for _ in $(seq 120); do
    [ -f "$PLANETARY_GUI_DIR/imported" ] && break
-   kill -0 "$PI_PID" 2>/dev/null || break
+   kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null || break
    sleep 0.25
 done
 cp "$PLANETARY_GUI_DIR/imported" "$OUT/imported.txt" 2>/dev/null || true
@@ -279,18 +229,8 @@ check_saved_sidecar || exit 1
 python3 "$HERE/gui_drive.py" --close "$OUT" || { echo "FAIL: driver (close the interface; see $OUT/windows.txt)"; exit 1; }
 expect_open_video "after closing the interface" "" || exit 1
 
-python3 "$HERE/gui_drive.py" --quit "$OUT" || { echo "FAIL: driver (quit)"; exit 1; }
-for _ in $(seq 240); do kill -0 "$PI_PID" 2>/dev/null || break; sleep 0.25; done
-if kill -0 "$PI_PID" 2>/dev/null; then
-   import -window root "$OUT/hang.png" 2>/dev/null || true
-   echo "FAIL: PixInsight still running 60 s after Quit (see $OUT/hang.png)"; exit 1
-fi
-rc=0
-wait "$PI_PID" || rc=$?
-PI_PID=""
-
 ok=1
-[ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $OUT/pi.log)"; ok=0; }
+planetary_gui_quit "$OUT" || ok=0
 for png in 01-empty 01b-dialog 02-loaded 03-last-frame 03b-cfa 03c-debayer-on 04-second-file 05-import 06-closed \
            08-avi 09-bayer 09b-save-dialog 10-saved 11-reopened 12-nosidecar 13-rggb 13a-debayer-off 13c-last-frame \
            13b-confirm 14-pattern-saved \

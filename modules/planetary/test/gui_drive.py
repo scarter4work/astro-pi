@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Drives the SERViewer interface in test/gui-smoke.sh's Xvfb PixInsight
-(XTest via python-xlib) and checks the screenshots. Test-only.
+"""Drives the SERViewer interface in test/gui-smoke.sh's Xvfb PixInsight, and
+the PlanetaryStack interface in test/gui-smoke-stack.sh's (XTest via
+python-xlib), and checks the screenshots. Test-only.
 
   gui_drive.py --dismiss OUT          answer start-up notices with Return
   gui_drive.py --open OUT A B         01-empty.png, 01b-dialog.png, 02-loaded.png,
@@ -23,6 +24,19 @@
                                       pixel checks of the preview region and the Save pattern...
                                       button's box (exit 1 on failure)
 
+  PlanetaryStack (gui-smoke-stack.sh; screenshot names there):
+  gui_drive.py --stack-open OUT FILE  01-opened.png (+ preview.json); Open... FILE -> 02-loaded.png
+  gui_drive.py --stack-run OUT        Stack! mid-run, the preview at Fit / 100% / 200% / zoomed in /
+                                      dragged / Fit again, Execute (03 ... 07)
+  gui_drive.py --stack-cancel OUT     Stack! mid-run, Cancel (08, 09)
+  gui_drive.py --stack-file OUT FILE NAME   Open... FILE, Stack!, NAME once it ends
+  gui_drive.py --stack-bayer OUT AVI  Auto, then BGGR chosen and stacked (13, 13b, 14)
+  gui_drive.py --stack-pattern OUT AVI   RGGB chosen, stacked, Save pattern..., Yes (15, 15b, 16)
+  gui_drive.py --stack-close OUT FILE    Open... FILE, Stack! mid-run, the close button (17, 18)
+  gui_drive.py --stack-quit OUT       the relaunched interface in place, Stack! mid-run (18b, 19)
+  gui_drive.py --check-stack OUT      pixel checks of the preview, progress bar and Save pattern...
+                                      boxes (exit 1 on failure)
+
 PixInsight draws its interface windows inside the main window (no X window to
 query), so the preview is found in 01-empty.png: the empty preview is the only
 large pure-black rectangle on screen (FramePreview paints black; measured: the
@@ -31,8 +45,10 @@ interface layout (SERViewerInterface.cpp) puts two rows of controls above the
 preview (Open... / Debayer, then Bayer pattern [Save pattern...] / Save as SER...) and the frame
 row (label, slider, spin box) directly below it; the clicks are placed from the
 preview's edges (controls()). Native X windows (the Qt file dialogs, the Save pattern...
-confirmation) are found by name.
-Every mode but --check refuses (FAIL) unless $DISPLAY is served by Xvfb."""
+confirmation) are found by name. PlanetaryStack's controls are placed the same
+way (stack_controls()); whether a stack is running is read from its progress
+bar's fill colour.
+Every mode but --check and --check-stack refuses (FAIL) unless $DISPLAY is served by Xvfb."""
 import json, os, re, subprocess, sys, time
 from collections import Counter
 
@@ -77,7 +93,7 @@ def require_private_display():
                          % (disp, owner or "nothing"))
 
 
-if MODE != "--check":
+if MODE not in ("--check", "--check-stack"):
     require_private_display()
     try:
         from Xlib import X, XK, display
@@ -303,6 +319,23 @@ def close_button(png):
     return cx, ty
 
 
+def opened_shot(name):
+    """The first screenshot of an interface just opened empty: its empty preview
+    is found in it (find_preview) and recorded in preview.json for later modes.
+    The Process Console starts slid out over the left of the workspace (an
+    auto-hide panel reaching under the interface's Open... button); a click
+    elsewhere only collapses it, so that click is spent on empty workspace first."""
+    click(1500, 950)
+    park()
+    shot(name, 1.5)
+    box = find_preview(OUT + "/" + name)
+    if box is None:
+        raise SystemExit("FAIL: no empty preview (a >=350x250 pure-black rectangle) in %s" % name)
+    json.dump({"x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3]}, open(OUT + "/preview.json", "w"))
+    log.write("preview at %r\n" % (box,))
+    return box
+
+
 if MODE == "--dismiss":
     # Start-up notices (e.g. "Risky Temporary Folders"): any viewable
     # top-level window other than the main one gets a click and Return.
@@ -336,18 +369,7 @@ if MODE == "--quit":
 if MODE == "--open":
     path_a, path_b = sys.argv[3], sys.argv[4]
     dump("start")
-    # The Process Console starts slid out over the left of the workspace (an auto-hide
-    # panel reaching under the interface's Open... button); a click elsewhere only
-    # collapses it. Spend that click on empty workspace first.
-    click(1500, 950)
-    park()
-    shot("01-empty.png", 1.5)
-    box = find_preview(OUT + "/01-empty.png")
-    if box is None:
-        raise SystemExit("FAIL: no empty preview (a >=350x250 pure-black rectangle) in 01-empty.png")
-    x0, y0, x1, y1 = box
-    json.dump({"x0": x0, "y0": y0, "x1": x1, "y1": y1}, open(OUT + "/preview.json", "w"))
-    log.write("preview at %r\n" % (box,))
+    x0, y0, x1, y1 = box = opened_shot("01-empty.png")
     CTL = controls(box)
 
     open_file(path_a, True)
@@ -469,6 +491,206 @@ if MODE == "--save-pattern":
     open_file(path_avi, False)
     shot("15-reopened-sidecar.png", 1.5)
     dump("save-pattern end")
+    sys.exit(0)
+
+# ---- PlanetaryStack (test/gui-smoke-stack.sh) ------------------------------------------------
+
+# The progress bar's fill (StackProgressBar in PlanetaryStackInterface.cpp paints it in exactly
+# this colour; nothing else on the PI 1.9.5 desktop on Xvfb uses it, measured).
+FILL = (58, 110, 165)
+STACK_CONFIRM = "PlanetaryStack"   # Save pattern...'s MessageBox in the PlanetaryStack interface
+
+
+def stack_controls(box):
+    """Click targets and boxes of the PlanetaryStack interface, from the preview's
+    edges (x0, y0, x1, y1), measured from screenshots of the layout in
+    PlanetaryStackInterface.cpp: row 1 above the preview, Open... / Bayer pattern
+    combo / Save pattern...; row 2, Stack! / the progress bar / Cancel; below the
+    preview the zoom row (Fit, 100%, 200%, zoom out, zoom in), the text box, and
+    Execute at the bottom right."""
+    x0, y0, x1, y1 = box
+    return {k: (x0 + dx if dx >= 0 else x1 + dx, (y0 if base == "top" else y1) + dy)
+            for k, (dx, base, dy) in STACK_OFFSETS.items()}
+
+
+# (x offset: >= 0 from the preview's left edge, < 0 from its right edge; "top" / "bottom":
+# the preview edge the y offset is from). Measured 2026-10-22 (PI 1.9.5, Xvfb) on 01-opened.png.
+STACK_OFFSETS = {
+    "open": (24, "top", -44),
+    "bayer": (150, "top", -44),
+    "pattern": (270, "top", -44),
+    "stack": (24, "top", -17),
+    "cancel": (-30, "top", -17),
+    "fit": (16, "bottom", 17),
+    "z100": (60, "bottom", 17),
+    "z200": (104, "bottom", 17),
+    "zoomout": (146, "bottom", 17),
+    "zoomin": (180, "bottom", 17),
+    "execute": (-40, "bottom", 200),
+}
+# The progress bar's box and Save pattern...'s box (x0, y0, x1, y1 relative as above).
+BAR_BOX = ((90, "top", -27), (-80, "top", -7))
+PATTERN_BOX = ((220, "top", -54), (320, "top", -34))
+
+
+def rel_box(spec, box):
+    (ax, abase, ay), (bx, bbase, by) = spec
+    x0, y0, x1, y1 = box
+    px = lambda dx: x0 + dx if dx >= 0 else x1 + dx
+    py = lambda base, dy: (y0 if base == "top" else y1) + dy
+    return px(ax), py(abase, ay), px(bx), py(bbase, by)
+
+
+def grab(region=None):
+    """The screen (or a region of it) as an RGB array, straight from X (no PNG)."""
+    x, y, w, h = (0, 0, 1920, 1080) if region is None else (region[0], region[1],
+                                                              region[2] - region[0], region[3] - region[1])
+    raw = root.get_image(x, y, w, h, X.ZPixmap, 0xffffffff)
+    a = np.frombuffer(raw.data, dtype=np.uint8).reshape(h, w, 4)
+    return a[..., [2, 1, 0]].astype(np.int32)   # BGRX on a 24-bit TrueColor Xvfb
+
+
+def bar_fill(box, png=None):
+    """Fraction of the progress bar's width painted in the fill colour (its middle row), live
+    from the screen or from a screenshot."""
+    b = rel_box(BAR_BOX, box)
+    a = grab(b) if png is None else rgb(png)[b[1]:b[3], b[0]:b[2]]
+    row = a[a.shape[0] // 2]
+    return float((np.abs(row - np.array(FILL)) <= 3).all(axis=1).mean())
+
+
+def stack_mid_run(name):
+    """Stack!, then `name` shot once the bar shows the run under way; FAIL if the shot shows
+    the run (nearly) over."""
+    click(*CTL["stack"])
+    park()
+    wait_for(lambda: bar_fill(BOX) > 0.02, 15, "the progress bar to fill (Stack! running)")
+    shot(name, 0)
+    f = bar_fill(BOX, OUT + "/" + name)
+    log.write("%s: bar %.1f%% full\n" % (name, 100 * f))
+    if not 0.02 < f < 0.97:
+        raise SystemExit("FAIL: %s does not show the run under way (bar %.0f%% full)" % (name, 100 * f))
+
+
+def stack_and_wait(mid_shot=None, timeout=120):
+    """Stack! (with mid_shot: shot mid-run, stack_mid_run), then waits until the bar is empty
+    (the run ended) and at least 1.5 s have passed since the click (a small capture stacks
+    in well under one tick of the interface's progress timer, so its bar may never fill)."""
+    t0 = time.time()
+    if mid_shot:
+        stack_mid_run(mid_shot)
+    else:
+        click(*CTL["stack"])
+        park()
+    while time.time() - t0 < 1.5:
+        time.sleep(0.1)
+    wait_for(lambda: bar_fill(BOX) == 0.0, timeout, "the run to end (the progress bar empty)")
+
+
+def combo_down(n):
+    # The combo's list is mapped below PI's interface window on this WM-less Xvfb (see
+    # --open-avi): it is driven blind, Down n times, Return.
+    click(*CTL["bayer"])
+    time.sleep(0.5)
+    for _ in range(n):
+        key("Down")
+        time.sleep(0.2)
+    key("Return")
+    park()
+
+
+if MODE.startswith("--stack-"):
+    if MODE == "--stack-open":
+        BOX = opened_shot("01-opened.png")
+    else:
+        BOX = preview_box()
+    CTL = stack_controls(BOX)
+    dump(MODE)
+
+if MODE == "--stack-open":
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    shot("02-loaded.png", 1.5)
+    sys.exit(0)
+
+if MODE == "--stack-run":
+    stack_and_wait("03-progress.png")
+    shot("04-fit.png", 1.0)
+    for name, ctl in (("05-zoom-100.png", "z100"), ("06-zoom-200.png", "z200"), ("06b-zoom-in.png", "zoomin")):
+        click(*CTL[ctl])
+        park()
+        shot(name, 1.0)
+    # Drag from the preview's centre toward its top-left corner: the view follows the pointer.
+    cx, cy = (BOX[0] + BOX[2]) // 2, (BOX[1] + BOX[3]) // 2
+    drag((cx, cy), (cx - 120, cy - 90))
+    park()
+    shot("06c-pan.png", 1.0)
+    click(*CTL["fit"])
+    park()
+    shot("06d-fit-again.png", 1.0)
+    click(*CTL["execute"])
+    park()
+    shot("07-execute.png", 1.5)
+    sys.exit(0)
+
+if MODE == "--stack-cancel":
+    stack_mid_run("08-cancel-progress.png")
+    click(*CTL["cancel"])
+    park()
+    wait_for(lambda: bar_fill(BOX) == 0.0, 15, "the run to stop after Cancel (the progress bar empty)")
+    shot("09-cancelled.png", 1.0)
+    sys.exit(0)
+
+if MODE == "--stack-file":
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    stack_and_wait()
+    shot(sys.argv[4], 1.0)
+    sys.exit(0)
+
+if MODE == "--stack-bayer":
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    stack_and_wait()
+    shot("13-bayer-auto.png", 1.0)
+    combo_down(5)          # Auto -> None (mono) -> RGGB -> GRBG -> GBRG -> BGGR
+    shot("13b-bayer-changed.png", 1.5)
+    stack_and_wait()
+    shot("14-bayer-bggr.png", 1.0)
+    sys.exit(0)
+
+if MODE == "--stack-pattern":
+    path_avi = sys.argv[3]
+    file_dialog(CTL["open"], OPEN_DIALOG, path_avi)
+    combo_down(2)          # Auto -> None (mono) -> RGGB
+    stack_and_wait()
+    shot("15-pattern-rggb.png", 1.0)
+    click(*CTL["pattern"])
+    park()
+    wait_for(lambda: dialog_open(STACK_CONFIRM), 15, "the '%s' confirmation" % STACK_CONFIRM)
+    time.sleep(0.8)
+    shot("15b-confirm.png", 0)
+    key("Return")
+    wait_for(lambda: not dialog_open(STACK_CONFIRM), 15, "the confirmation to close after Return")
+    wait_for(lambda: os.path.exists(path_avi + ".txt"), 15, "%s.txt to be written" % path_avi)
+    park()
+    shot("16-pattern-saved.png", 1.5)
+    sys.exit(0)
+
+if MODE == "--stack-close":
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    stack_mid_run("17-close-progress.png")
+    click(*close_button(OUT + "/17-close-progress.png"))
+    park()
+    shot("18-closed.png", 1.5)
+    sys.exit(0)
+
+if MODE == "--stack-quit":
+    # Relaunched by IPC with filePath set (ImportProcess loads it, nothing stacked): PI puts the
+    # interface back where it was, so its empty preview must be exactly the recorded one.
+    park()
+    shot("18b-relaunched.png", 1.5)
+    if find_preview(OUT + "/18b-relaunched.png") != BOX:
+        raise SystemExit("FAIL: the relaunched interface's preview is not at %r (found %r)"
+                         % (BOX, find_preview(OUT + "/18b-relaunched.png")))
+    stack_mid_run("19-quit-progress.png")
     sys.exit(0)
 
 if MODE == "--check":
@@ -616,4 +838,110 @@ if MODE == "--check":
         sys.exit(1)
     sys.exit(0)
 
-raise SystemExit("usage: gui_drive.py --dismiss|--open|--open-avi|--shot|--close|--quit|--check OUT ...")
+if MODE == "--check-stack":
+    # gui-smoke-stack.sh's screenshots: the preview region (inset 2 px), the progress bar and
+    # the Save pattern... box, from preview.json and the measured offsets above.
+    box = preview_box()
+    x0, y0, x1, y1 = box
+    region = (x0 + 2, y0 + 2, x1 - 2, y1 - 2)
+
+    def crop(name, r):
+        return np.asarray(Image.open(OUT + "/" + name).convert("RGB").crop(r)).astype(np.float64)
+
+    def px(name):
+        return crop(name, region)
+
+    def lit(name):
+        return float((px(name).max(axis=2) > 24).mean())
+
+    def changed(a, b, r=region):
+        return float((np.abs(crop(a, r) - crop(b, r)).max(axis=2) > 12).mean())
+
+    def spread(name):
+        p = px(name)
+        return float((p.max(axis=2) - p.min(axis=2)).max())
+
+    def rb(name):
+        p = px(name)
+        m = p.max(axis=2) > 24
+        return float(p[..., 0][m].mean()), float(p[..., 2][m].mean())
+
+    fails, lines = [], []
+
+    def need(ok, text):
+        lines.append(("ok    " if ok else "FAIL  ") + text)
+        if not ok:
+            fails.append(text)
+
+    # Nothing stacked: the preview black. 01 is where it was found (pure black by definition).
+    for name in ("02-loaded.png", "09-cancelled.png", "13b-bayer-changed.png"):
+        need(lit(name) == 0.0, "%s: the preview is black (%.2f%% lit)" % (name, 100 * lit(name)))
+    # Mid-run: the bar partly filled and, while it runs, no preview.
+    for name in ("03-progress.png", "08-cancel-progress.png", "17-close-progress.png", "19-quit-progress.png"):
+        f = bar_fill(box, OUT + "/" + name)
+        need(0.02 < f < 0.97, "%s: the progress bar is part filled (%.1f%%)" % (name, 100 * f))
+        need(lit(name) == 0.0, "%s: no preview while it runs (%.2f%% lit)" % (name, 100 * lit(name)))
+    # Not running: the bar empty.
+    for name in ("02-loaded.png", "04-fit.png", "07-execute.png", "09-cancelled.png", "10-diagnosis.png",
+                 "11-warning-mosaic.png", "14-bayer-bggr.png", "16-pattern-saved.png"):
+        f = bar_fill(box, OUT + "/" + name)
+        need(f == 0.0, "%s: the progress bar is empty (%.1f%%)" % (name, 100 * f))
+
+    # The stack of gui-long.avi (a disc of radius 180 centred in 1024 x 768, RGGB, R gain 1.0, B 0.55).
+    f = lit("04-fit.png")
+    need(0.05 < f < 0.6, "04-fit.png: the disc lights part of the preview at Fit (%.1f%%)" % (100 * f))
+    p = px("04-fit.png")
+    ys, xs = np.nonzero(p.max(axis=2) > 24)
+    cxp, cyp = xs.mean() / p.shape[1], ys.mean() / p.shape[0]
+    need(abs(cxp - 0.5) < 0.05 and abs(cyp - 0.5) < 0.05,
+         "04-fit.png: the disc is centred in the preview (centroid at %.2f, %.2f of its size)" % (cxp, cyp))
+    r, b = rb("04-fit.png")
+    need(r > 1.2 * b, "04-fit.png: the RGGB stack is warm, R above B (mean R/B %.0f/%.0f)" % (r, b))
+    for name in ("05-zoom-100.png", "06-zoom-200.png", "06b-zoom-in.png"):
+        need(lit(name) > 0.9, "%s: zoomed into the disc, the preview is filled (%.1f%% lit)" % (name, 100 * lit(name)))
+    for a, b_, what in (("04-fit.png", "05-zoom-100.png", "Fit vs 100%"), ("05-zoom-100.png", "06-zoom-200.png", "100% vs 200%"),
+                        ("06-zoom-200.png", "06b-zoom-in.png", "200% vs zoomed in"),
+                        ("06b-zoom-in.png", "06c-pan.png", "zoomed in vs dragged")):
+        v = changed(a, b_)
+        need(v > 0.01, "%s: %s and %s differ (%.2f%% changed)" % (what, a, b_, 100 * v))
+    for a, b_, what in (("04-fit.png", "06d-fit-again.png", "Fit vs Fit again after zoom and pan"),
+                        ("06d-fit-again.png", "07-execute.png", "the preview before vs after Execute (no new stack)")):
+        v = changed(a, b_)
+        need(v == 0.0, "%s: %s and %s are the same (%.3f%% changed)" % (what, a, b_, 100 * v))
+
+    # Diagnosis: no stack drawn -- at most the preview's grey one-line note.
+    need(lit("10-diagnosis.png") < 0.03 and spread("10-diagnosis.png") <= 2,
+         "10-diagnosis.png: no preview, at most a grey note (%.2f%% lit, channel spread %.0f)"
+         % (100 * lit("10-diagnosis.png"), spread("10-diagnosis.png")))
+    # Warned stacks: made, and mono (the raw mosaic, the soft mono disc).
+    for name in ("11-warning-mosaic.png", "12-warning-focus.png"):
+        need(lit(name) > 0.01 and spread(name) <= 2,
+             "%s: a grey (mono) stack is shown (%.2f%% lit, channel spread %.0f)" % (name, 100 * lit(name), spread(name)))
+    # The Bayer pattern: Auto reads the RG sidecar (warm); BGGR chosen beats it (R and B swap).
+    r, b = rb("13-bayer-auto.png")
+    need(r > 1.2 * b, "13-bayer-auto.png: Auto (sidecar RG) stacks warm (R/B %.0f/%.0f)" % (r, b))
+    r, b = rb("14-bayer-bggr.png")
+    need(b > 1.2 * r, "14-bayer-bggr.png: BGGR chosen over the sidecar swaps R and B (R/B %.0f/%.0f)" % (r, b))
+    # Save pattern...: shown disabled for the sidecar-less mosaic under Auto (11), enabled with
+    # RGGB chosen and its stack shown (15), hidden once the sidecar exists (16, like 13: a sidecar).
+    pbox = rel_box(PATTERN_BOX, box)
+    for a, b_, what, want in (("13-bayer-auto.png", "11-warning-mosaic.png", "hidden (a sidecar) vs shown (none)", "differ"),
+                              ("11-warning-mosaic.png", "15-pattern-rggb.png", "disabled under Auto vs enabled for RGGB", "differ"),
+                              ("13-bayer-auto.png", "16-pattern-saved.png", "hidden vs hidden once the sidecar is written", "same")):
+        v = changed(a, b_, pbox)
+        need(v > 0.05 if want == "differ" else v == 0.0,
+             "Save pattern... box, %s: %s vs %s (%.1f%% changed)" % (what, a, b_, 100 * v))
+    r, b = rb("15-pattern-rggb.png")
+    need(r > 1.2 * b, "15-pattern-rggb.png: the mosaic stacked as RGGB is in colour, warm (R/B %.0f/%.0f)" % (r, b))
+    v = changed("15-pattern-rggb.png", "16-pattern-saved.png")
+    need(v == 0.0, "16-pattern-saved.png: the stack is kept after Save pattern... (%.3f%% changed)" % (100 * v))
+    v = changed("17-close-progress.png", "18-closed.png")
+    need(v > 0.5, "18-closed.png: the interface is gone (%.1f%% of the preview region changed)" % (100 * v))
+
+    print("\n".join("  " + l for l in lines))
+    open(OUT + "/checks.txt", "w").write("\n".join(lines) + "\n")
+    sys.exit(1 if fails else 0)
+
+raise SystemExit("usage: gui_drive.py --dismiss|--open|--open-avi|--save-pattern|--shot|--close|--quit|--check OUT ...\n"
+                 "       gui_drive.py --stack-open|--stack-run|--stack-cancel|--stack-file|--stack-bayer|--stack-pattern|"
+                 "--stack-close|--stack-quit|--check-stack OUT ...")

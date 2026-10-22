@@ -227,3 +227,92 @@ planetary_open_video_files()
    find "/proc/$pid/fd" -maxdepth 1 -type l -printf '%l\n' 2>/dev/null \
       | grep -E '\.(ser|avi|avi\.txt|partial)$' | sort -u || true
 }
+
+# ---- GUI smokes (gui-smoke.sh, gui-smoke-stack.sh) ------------------------
+# A REAL PixInsight GUI on a private Xvfb display (:100 + slot), isolated slot
+# PLANETARY_GUI_SLOT (default 97; 96 is the headless probes'), driven with
+# XTest by gui_drive.py. Call order:
+#   planetary_gui_setup                 # before fixtures: slot, run dir, display
+#   ... fixtures, planetary_sign, planetary_seed_slot_modules, caller's exports ...
+#   planetary_gui_launch OUT SETUP.js   # Xvfb + PixInsight -r=SETUP.js, ready, dev build mapped
+#   ... gui_drive.py modes, -x IPC scripts (after pi_require_private_display) ...
+#   planetary_gui_quit OUT              # File > Quit; PixInsight must exit 0 within 60 s
+planetary_gui_setup()
+{
+   local tool
+   for tool in Xvfb xprop import; do
+      command -v "$tool" >/dev/null || { echo "FAIL: $tool not found"; return 1; }
+   done
+   PLANETARY_TEST_SLOT="${PLANETARY_GUI_SLOT:-97}" planetary_slot_setup || return 1
+   planetary_private_tmp || return 1
+   PLANETARY_DISPLAY_NO=$(( 100 + PLANETARY_SLOT ))
+   if [ -e "/tmp/.X11-unix/X$PLANETARY_DISPLAY_NO" ]; then
+      echo "FAIL: display :$PLANETARY_DISPLAY_NO is already in use (another GUI smoke on slot $PLANETARY_SLOT?)"; return 1
+   fi
+   PLANETARY_GUI_XVFB_PID="" PLANETARY_GUI_PI_PID=""
+   planetary_on_exit planetary_gui_cleanup
+}
+
+planetary_gui_cleanup()
+{
+   [ -n "${PLANETARY_GUI_PI_PID:-}" ] && kill -9 "$PLANETARY_GUI_PI_PID" 2>/dev/null
+   pkill -9 -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " 2>/dev/null
+   [ -n "${PLANETARY_GUI_XVFB_PID:-}" ] && kill "$PLANETARY_GUI_XVFB_PID" 2>/dev/null
+   return 0
+}
+
+# Starts the Xvfb and PixInsight with the dev build $SO and the start-up script
+# $2, which must write "$PLANETARY_GUI_DIR/ready" holding launchInterface=true.
+# Display isolation beyond pi_headless_env: no desktop session variables and a
+# session-bus address that leads nowhere, so Qt cannot hand a file dialog to
+# the desktop portal (it would open on the user's real screen). A fresh slot
+# shows start-up notices (e.g. "Risky Temporary Folders"): each is answered
+# with Return until the script is ready.
+planetary_gui_launch()
+{
+   local out="$1" setup="$2" n=0
+   Xvfb ":$PLANETARY_DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$out/xvfb.log" 2>&1 & PLANETARY_GUI_XVFB_PID=$!
+   export DISPLAY=":$PLANETARY_DISPLAY_NO"
+   for _ in $(seq 50); do xprop -root >/dev/null 2>&1 && break; sleep 0.1; done
+
+   pi_headless_env
+   unset XDG_CURRENT_DESKTOP DESKTOP_SESSION KDE_FULL_SESSION KDE_SESSION_VERSION GNOME_DESKTOP_SESSION_ID \
+         QT_QPA_PLATFORMTHEME XDG_SESSION_TYPE
+   export DBUS_SESSION_BUS_ADDRESS="unix:path=$PLANETARY_RUN_DIR/no-session-bus"
+   export XDG_DATA_HOME="$PLANETARY_RUN_DIR/xdg"; mkdir -m 700 "$XDG_DATA_HOME"
+   export PLANETARY_GUI_DIR="$PLANETARY_RUN_DIR/gui"; mkdir -m 700 "$PLANETARY_GUI_DIR"
+
+   pi_require_private_display || return 1   # this run's own Xvfb, never the desktop
+   timeout 900 "$PI" -n="$PLANETARY_SLOT" --no-startup-scripts -m="$SO" -r="$setup" >"$out/pi.log" 2>&1 & PLANETARY_GUI_PI_PID=$!
+   for _ in $(seq 360); do
+      [ -f "$PLANETARY_GUI_DIR/ready" ] && break
+      kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null || break
+      n=$(( n + 1 ))
+      (( n % 10 == 0 )) && { python3 "$HERE/gui_drive.py" --dismiss "$out" || { echo "FAIL: driver (dismiss)"; return 1; }; }
+      sleep 0.5
+   done
+   if [ ! -f "$PLANETARY_GUI_DIR/ready" ]; then
+      import -window root "$out/not-ready.png" 2>/dev/null || true
+      echo "FAIL: the GUI script never became ready (see $out/pi.log, $out/not-ready.png)"; return 1
+   fi
+   cp "$PLANETARY_GUI_DIR/ready" "$out/ready.txt"
+   grep -q "launchInterface=true" "$out/ready.txt" || { echo "FAIL: setup: $(cat "$out/ready.txt")"; return 1; }
+   planetary_assert_only_dev_mapped "$SO" || return 1
+   sleep 1
+}
+
+# File > Quit PixInsight (gui_drive.py --quit); PixInsight must exit, with
+# status 0, within 60 s.
+planetary_gui_quit()
+{
+   local out="$1" rc=0
+   python3 "$HERE/gui_drive.py" --quit "$out" || { echo "FAIL: driver (quit)"; return 1; }
+   for _ in $(seq 240); do kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null || break; sleep 0.25; done
+   if kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null; then
+      import -window root "$out/hang.png" 2>/dev/null || true
+      echo "FAIL: PixInsight still running 60 s after Quit (see $out/hang.png)"; return 1
+   fi
+   wait "$PLANETARY_GUI_PI_PID" || rc=$?
+   PLANETARY_GUI_PI_PID=""
+   [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $out/pi.log)"; return 1; }
+}
