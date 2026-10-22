@@ -1,5 +1,7 @@
 #include "Select.h"
 
+#include "Align.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +25,14 @@ double Quantile(std::vector<double> v, double p) {
     return v[lo] + (pos - static_cast<double>(lo)) * (v[hi] - v[lo]);
 }
 
+// 1.4826 MAD: the standard deviation of a normal sample, robust to a minority of strays.
+double RobustSd(const std::vector<double>& v) {
+    const double m = Quantile(v, 0.5);
+    std::vector<double> dev;
+    for (double x : v) dev.push_back(std::fabs(x - m));
+    return 1.4826 * Quantile(dev, 0.5);
+}
+
 std::string Num(double v, int decimals) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
@@ -31,7 +41,7 @@ std::string Num(double v, int decimals) {
 
 std::string Count(int64_t v) { return std::to_string(v); }
 
-// "1 outlier", "2 outliers".
+// "1 suspect frame", "2 suspect frames".
 std::string Plural(int64_t v, const std::string& one, const std::string& many) {
     return Count(v) + " " + (v == 1 ? one : many);
 }
@@ -40,9 +50,22 @@ bool HasDetail(const FrameStats& s) { return std::isfinite(s.quality) && s.quali
 
 double Sigma(const FrameStats& s) { return std::isfinite(s.qualitySigma) && s.qualitySigma > 0 ? s.qualitySigma : 0.0; }
 
+// "used 612 of 4088 frames: <why>; not used: <groups>[<suspects' outcome>][<note>]".
+std::string ComposeLine(int64_t used, const Selection::Line& parts, const std::vector<std::string>& notUsed,
+                        const std::string& outcome) {
+    std::string line = "used " + Count(used) + " of " + Count(parts.measured) + " frames: " + parts.why;
+    if (!notUsed.empty()) {
+        line += "; not used: ";
+        for (size_t i = 0; i < notUsed.size(); ++i) line += (i ? ", " : "") + notUsed[i];
+    }
+    return line + outcome + parts.note;
+}
+
 Selection Diagnosed(Selection sel, DiagnosisKind kind, std::string message,
                     std::vector<std::pair<std::string, double>> numbers) {
     sel.frames.clear();
+    sel.suspects.clear();
+    sel.line = {};
     sel.threshold = 0;
     sel.diagnosis.kind = kind;
     sel.diagnosis.message = std::move(message);
@@ -135,8 +158,9 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         const double robustSd =
             std::max({1.4826 * Quantile(dev, 0.5), Quantile(relNoise, 0.5), kFenceMinLogSd});
         const double fence = med + kFenceSigmas * robustSd;
-        // Samples above the fence, sharpest first; the outliers are those above the lowest gap of at
-        // least kFenceGapSigmas robust sd among them (a glitch stands apart; the top of a real mode
+        out.fence = std::exp(fence);
+        // Samples above the fence, sharpest first; the fenced ones are those above the lowest gap of
+        // at least kFenceGapSigmas robust sd among them (a glitch stands apart; the top of a real mode
         // or tail is continuous and has no such gap).
         std::vector<size_t> order;
         for (size_t i = 0; i < lq.size(); ++i)
@@ -155,11 +179,16 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
                     band += v > fence - kFenceBandSigmas * robustSd;
                 }
             // Not the top of a population declining through the fence: every candidate goes.
-            if (band < above) cut = above;
+            if (band < above) {
+                cut = above;
+                out.fenceRule = FenceRule::Band;
+                out.fenceBand = band;
+            }
             for (int64_t k = above; k >= 1 && cut == 0; --k) {
                 const double next = k < above ? lq[order[static_cast<size_t>(k)]] : below;
                 if (lq[order[static_cast<size_t>(k - 1)]] - next >= kFenceGapSigmas * robustSd) {
                     cut = k;
+                    out.fenceRule = FenceRule::Gap;
                     break;
                 }
             }
@@ -167,7 +196,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         std::vector<bool> fenced(lq.size(), false);
         for (int64_t k = 0; k < cut; ++k) fenced[order[static_cast<size_t>(k)]] = true;
         for (size_t i = 0; i < nd; ++i)
-            if (!fenced[i]) left.push_back(i);
+            (fenced[i] ? out.fenced : left).push_back(i);
     }
     out.outliers = nd - left.size();
     out.left = left;
@@ -299,12 +328,30 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     // 2. Full-frame target or disc; a disc cut by the frame edge is never used.
     auto touches = [&](const FrameStats& s) { return s.bx0 <= 0 || s.by0 <= 0 || s.bx1 >= lw || s.by1 >= lh; };
     int64_t filling = 0, atEdge = 0;
+    std::vector<double> centreX, centreY;  // the frame-filling boxes' centres, in frame widths / heights
     for (const FrameStats* s : target) {
         if (touches(*s)) ++atEdge;
-        if (FillsFrame(*s, lw, lh)) ++filling;
+        if (FillsFrame(*s, lw, lh)) {
+            ++filling;
+            centreX.push_back((s->bx0 + s->bx1) / (2.0 * lw));
+            centreY.push_back((s->by0 + s->by1) / (2.0 * lh));
+        }
     }
-    sel.fullFrameTarget = static_cast<double>(filling) >= kFullFrameShare * static_cast<double>(nTarget) &&
-                          static_cast<double>(nTarget) >= kFullFramePresence * static_cast<double>(n);
+    const bool fillsShare = static_cast<double>(filling) >= kFullFrameShare * static_cast<double>(nTarget);
+    const bool staysPut = filling > 0 && RobustSd(centreX) <= kFullFrameMaxDrift && RobustSd(centreY) <= kFullFrameMaxDrift;
+    const bool present = static_cast<double>(nTarget) >= kFullFramePresence * static_cast<double>(n);
+    sel.fullFrameTarget = fillsShare && staysPut && present;
+    if (fillsShare && staysPut && !present) {
+        // A surface that stays put, seen too rarely: it is not leaving the frame, it is hidden.
+        return Diagnosed(sel, DiagnosisKind::NoTarget,
+                         "Too few frames show the target: a frame-filling target is seen in only " + Count(nTarget) +
+                             " of " + Count(n) + " frames (cloud or gaps?); at least " +
+                             Num(100 * kFullFramePresence, 0) + "% of the frames are needed.",
+                         {{"frames", static_cast<double>(n)},
+                          {"frames with a target", static_cast<double>(nTarget)},
+                          {"stray detections", static_cast<double>(nStray)},
+                          {"presence needed", kFullFramePresence}});
+    }
     std::vector<const FrameStats*> placed;
     if (sel.fullFrameTarget) {
         placed = target;
@@ -378,7 +425,20 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     const DetailRanking rank = RankByDetail(dq, ds, need, floorCount);
     std::vector<const FrameStats*> left;
     for (size_t i : rank.left) left.push_back(detailed[i]);
-    const int64_t nOutliers = static_cast<int64_t>(detailed.size() - left.size());
+    // 5. The frames RankByDetail fenced off are suspects (Ruling P6): they cannot be told from
+    // glitches by quality, so they are held out of the ranking until alignment decides (AdmitSuspects).
+    if (!rank.fenced.empty()) {
+        const std::string why =
+            rank.fenceRule == FenceRule::Band
+                ? "too few frames just under the fence (" + Count(rank.fenceBand) + " within " +
+                      Num(kFenceBandSigmas, 0) + " robust sd) to be the top of the capture's own spread"
+                : "standing apart from the rest by a gap of at least " + Num(kFenceGapSigmas, 0) + " robust sd";
+        const std::string fenceText = Num(rank.fence, 4);
+        for (size_t i : rank.fenced)
+            sel.suspects.push_back({detailed[i]->index, detailed[i]->quality,
+                                    "quality " + Num(detailed[i]->quality, 4) + " above the fence " + fenceText + ", " + why});
+    }
+    const int64_t nSuspects = static_cast<int64_t>(sel.suspects.size());  // ascending: `detailed` is in frame order
     const int64_t nLeft = static_cast<int64_t>(left.size());
     const double qRef = rank.qRef;
 
@@ -475,23 +535,51 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
 
     // Rounded down, so the stated bound holds for every kept frame.
     const double rel = std::floor(100 * sel.threshold / qRef) / 100;
-    std::string line = "used " + Count(keep) + " of " + Count(n) + " frames: the frames judged sharpest after allowing for measurement noise, quality >= " +
-                       Num(rel, 2) + " of the best";
-    std::vector<std::string> notUsed;
-    if (n - nFound > 0) notUsed.push_back(Count(n - nFound) + " without a target");
-    if (nStray > 0) notUsed.push_back(Plural(nStray, "stray detection", "stray detections"));
-    if (atEdge > 0) notUsed.push_back(Count(atEdge) + " at the frame edge");
-    if (nClipped > 0) notUsed.push_back(Count(nClipped) + " clipped");
-    if (nNoDetail > 0) notUsed.push_back(Count(nNoDetail) + " without detail");
-    if (nOutliers > 0) notUsed.push_back(Plural(nOutliers, "outlier", "outliers"));
-    if (nLeft - keep > 0) notUsed.push_back(Count(nLeft - keep) + " below the cut");
-    if (!notUsed.empty()) {
-        line += "; not used: ";
-        for (size_t i = 0; i < notUsed.size(); ++i) line += (i ? ", " : "") + notUsed[i];
-    }
-    if (sel.fullFrameTarget) line += "; frame-filling target, each region ranks its own frames";
-    sel.explanation = line;
+    Selection::Line& parts = sel.line;
+    parts.measured = n;
+    parts.why = "the frames judged sharpest after allowing for measurement noise, quality >= " + Num(rel, 2) + " of the best";
+    if (n - nFound > 0)
+        parts.notUsed.push_back(Count(n - nFound) + " without a target" + (sel.fullFrameTarget ? " (cloud or gaps?)" : ""));
+    if (nStray > 0) parts.notUsed.push_back(Plural(nStray, "stray detection", "stray detections"));
+    if (atEdge > 0) parts.notUsed.push_back(Count(atEdge) + " at the frame edge");
+    if (nClipped > 0) parts.notUsed.push_back(Count(nClipped) + " clipped");
+    if (nNoDetail > 0) parts.notUsed.push_back(Count(nNoDetail) + " without detail");
+    if (nLeft - keep > 0) parts.notUsed.push_back(Count(nLeft - keep) + " below the cut");
+    if (sel.fullFrameTarget) parts.note = "; frame-filling target, each region ranks its own frames";
+    std::vector<std::string> notUsed = parts.notUsed;
+    if (nSuspects > 0) notUsed.push_back(Plural(nSuspects, "suspect frame", "suspect frames") + " (alignment decides)");
+    sel.explanation = ComposeLine(keep, parts, notUsed, "");
     return sel;
+}
+
+Admission AdmitSuspects(const Selection& selection, const std::vector<Shift>& suspectShifts, double alignCut) {
+    if (suspectShifts.size() != selection.suspects.size())
+        throw std::invalid_argument("AdmitSuspects: " + std::to_string(suspectShifts.size()) + " shifts for " +
+                                    std::to_string(selection.suspects.size()) + " suspect frames");
+    Admission a;
+    a.frames = selection.frames;
+    if (selection.suspects.empty()) {
+        a.explanation = selection.explanation;
+        return a;
+    }
+    for (size_t i = 0; i < selection.suspects.size(); ++i) {
+        // `>=` is false for a NaN confidence: such a frame is rejected.
+        if (suspectShifts[i].confidence >= alignCut) a.admitted.push_back(selection.suspects[i].index);
+        else a.rejected.push_back(selection.suspects[i].index);
+    }
+    std::sort(a.admitted.begin(), a.admitted.end());
+    std::sort(a.rejected.begin(), a.rejected.end());
+    a.frames.insert(a.frames.end(), a.admitted.begin(), a.admitted.end());
+    std::sort(a.frames.begin(), a.frames.end());
+    std::vector<std::string> notUsed = selection.line.notUsed;
+    const auto nRejected = static_cast<int64_t>(a.rejected.size());
+    if (nRejected > 0) notUsed.push_back(Count(nRejected) + " rejected by alignment");
+    const auto nSuspects = static_cast<int64_t>(selection.suspects.size());
+    a.explanation = ComposeLine(static_cast<int64_t>(a.frames.size()), selection.line, notUsed,
+                                "; " + Plural(nSuspects, "suspect frame", "suspect frames") + " (sharper than the rest): " +
+                                    Count(static_cast<int64_t>(a.admitted.size())) + " admitted after alignment, " +
+                                    Count(nRejected) + " rejected");
+    return a;
 }
 
 }  // namespace planetary::stack

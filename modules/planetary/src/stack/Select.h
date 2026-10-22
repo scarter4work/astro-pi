@@ -18,11 +18,32 @@ struct Diagnosis {
     std::vector<std::pair<std::string, double>> numbers;   // the numbers behind it, named
 };
 
+struct Shift;  // Align.h
+
+// A frame sharper than the capture's quality fence (step 5, Ruling P6): a glitch (a torn frame, a
+// satellite in the box) or a genuinely lucky frame -- quality alone cannot tell them apart; alignment
+// can. Held out of `frames` (and so out of BuildReference) until AdmitSuspects decides.
+struct Suspect {
+    int64_t index = 0;
+    double quality = 0;   // its FrameStats::quality
+    std::string reason;   // one ASCII phrase: why it is suspect (the fence and which rule, 5a or 5b)
+};
+
 struct Selection {
     std::vector<int64_t> frames;  // selected frame indices, ascending; empty iff diagnosis.kind != None
     double threshold = 0;         // lowest selected quality (FrameStats::quality units); 0 when diagnosed
     std::string explanation;      // one ASCII result line; the diagnosis message when diagnosed
     Diagnosis diagnosis;
+    // Frames above the fence (step 5), ascending by index; never in `frames`; empty when diagnosed.
+    // Not lost: the caller aligns them against the clean reference and calls AdmitSuspects.
+    std::vector<Suspect> suspects;
+    // The explanation's parts, so AdmitSuspects can restate the line once the suspects are decided.
+    struct Line {
+        int64_t measured = 0;               // frames in the capture
+        std::string why;                    // "the frames judged sharpest ..., quality >= X of the best"
+        std::vector<std::string> notUsed;   // "3 without a target", ... (the suspects not included)
+        std::string note;                   // "; frame-filling target, ..." or empty
+    } line;
     bool fullFrameTarget = false; // the target fills the frame (lunar surface), step 2
     // Whether focus and seeing were judged here (step 7). False for a full-frame target: its
     // quality is texture, not a limb, so OutOfFocus / PoorSeeing for it belong to the region stage
@@ -53,20 +74,35 @@ constexpr double kFullFrameSpan = 0.5;
 // 9%. A TILTED trail's box is as wide as a sliver's (1.5 degrees across 640 x 480 is ~6%, 4 degrees
 // ~12%), so the box shape cannot refuse it; the presence rule below does.
 constexpr double kFullFrameMinSide = 0.05;
-// ... and the target is found (consistently, step 1) in at least this share of ALL frames. A
-// frame-filling target is in the field for the whole capture (the three NAS Moons: every frame); a
-// satellite or plane trail is a transient, crossing in a few frames of a capture, never in most.
-// A lunar capture whose surface is detected in under half its frames is treated as a disc (and,
-// its boxes touching the edge, diagnosed TargetLeavesFrame).
-constexpr double kFullFramePresence = 0.5;
+// ... and the frame-filling boxes stay put (Ruling P7): the robust sd (1.4826 MAD) of their centre,
+// over the frame's width and over its height, is at most this. A surface sits in the field and
+// drifts slowly; a trail crosses wherever it happens to, so its box sweeps. Measured 2026-10-21 on
+// the three NAS Moons: 0.000-0.015 (total drift range up to 8% of the frame); the planets 0-0.019.
+// A trail crossing at a uniformly random place in a band of the frame a wide has robust sd 0.37 a
+// (MAD of a uniform is a / 4), so 0.1 refuses any set of trails not confined to a band under 27% of
+// the frame, while a surface may drift through up to ~27% of the frame over the capture (6x the
+// measured worst).
+constexpr double kFullFrameMaxDrift = 0.1;
+// ... and the target is found (consistently, step 1) in at least this share of ALL frames (Ruling
+// P7). A low satellite or an aircraft moves ~0.5-1.5 degrees/s, so it crosses a planetary field (a
+// few arcminutes; 5' is crossed in 0.06-0.17 s) in 6-34 frames at 100-200 fps, under 2% of a
+// 2000-frame capture (the trail tests: 3.3%) -- a trail does not reach 10% unless dozens cross;
+// a surface is in the field whenever the sky is clear: the three NAS Moons
+// in every frame, a cloudy night in a third or half of them (the review's probes: 30-48%). Under
+// the position rule above, 10% only has to refuse trails that also stay put. A frame-filling,
+// position-stable target found in fewer frames than this is diagnosed NoTarget ("cloud or gaps?"),
+// never TargetLeavesFrame; at or over it, the frames without a target are just not used ("without
+// a target (cloud or gaps?)").
+constexpr double kFullFramePresence = 0.1;
 // The per-frame half of the box rule: a found target whose box touches an edge of the lumaWidth x
 // lumaHeight luma frame, spans at least kFullFrameSpan of its width or height, and at least
 // kFullFrameMinSide of both. Per frame, a tilted trail can pass it; only the capture-level rule
-// (share and presence) tells a trail from a surface.
+// (share, position and presence) tells a trail from a surface.
 bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight);
-// Upper fence on log quality, in robust standard deviations (1.4826 MAD) above the median; the
-// robust sd is floored at kFenceMinLogSd (1%: identical frames still differ by that much in
-// quality from frame to frame) and nothing is fenced in fewer than kMinFenceFrames frames.
+// Upper fence on log quality (frames over it can become suspects, step 5), in robust standard
+// deviations (1.4826 MAD) above the median; the robust sd is floored at kFenceMinLogSd (1%:
+// identical frames still differ by that much in quality from frame to frame) and nothing is fenced
+// in fewer than kMinFenceFrames frames.
 constexpr double kFenceSigmas = 6;
 // ... and only the frames above a gap of at least this many robust sd among them (step 5) -- unless
 // the band of this many robust sd just under the fence holds fewer frames than the fence has above
@@ -114,16 +150,23 @@ constexpr int kMinJudgedFrames = 30;
 //
 // 1. Target frames: targetFound, and the box within kBoxTolerance of the median box (else a "stray
 //    detection"). Fewer than floor -> NoTarget.
-// 2. Full-frame or disc (Ruling P2a, constants above). Disc: frames whose box touches an edge are
-//    dropped (never a cut limb, Review Focus 1); fewer than floor left -> TargetLeavesFrame.
-//    Full-frame: every frame is cut by the frame; usable parts are the region stage's job (Task 5).
+// 2. Full-frame or disc (Rulings P2a and P7, constants above): full-frame when FillsFrame holds in
+//    at least kFullFrameShare of the target frames, their box centres stay within kFullFrameMaxDrift
+//    and the target is found in at least kFullFramePresence of all frames. Disc: frames whose box
+//    touches an edge are dropped (never a cut limb, Review Focus 1); fewer than floor left ->
+//    TargetLeavesFrame -- unless the target frames are frame-filling and position-stable, found in
+//    too few frames to pass the presence rule: then NoTarget ("cloud or gaps?").
+//    Full-frame: every frame is cut by the frame; usable parts are the region stage's job (Task 5);
+//    the frames without a target are not used, worded "without a target (cloud or gaps?)".
 // 3. Clipped frames (clippedFraction >= kClippedFrame) are dropped; fewer than floor -> Clipped.
 // 4. Frames with quality 0 ("without detail") are dropped; fewer than floor with detail ->
 //    OutOfFocus.
-// 5. Upper fence: frames with log q > median + kFenceSigmas * max(1.4826 MAD, median relative
-//    qualitySigma, kFenceMinLogSd) are candidates. Only with at least kMinFenceFrames frames, only
-//    when the candidates number fewer than ceil(sqrt(N)) (a larger group is a real mode), and never
-//    leaving fewer than floor. The outliers (torn frames, a satellite in the box) among them:
+// 5. Upper fence -> suspects (Ruling P6). Frames with log q > median + kFenceSigmas * max(1.4826
+//    MAD, median relative qualitySigma, kFenceMinLogSd) are candidates. Only with at least
+//    kMinFenceFrames frames, only when the candidates number fewer than ceil(sqrt(N)) (a larger
+//    group is a real mode), and never leaving fewer than floor. The suspects among them -- frames
+//    that may be glitches (torn frames, a satellite in the box) or may be a small group of genuinely
+//    lucky frames; quality cannot tell which -- go to Selection::suspects, not to the ranking:
 //    a. All of them when the band of kFenceBandSigmas robust sd just under the fence holds fewer
 //       frames than the fence has above it. A real population whose top crosses the fence (a sharp
 //       mode straddling it, a lucky tail) declines through it, so it has at least as many frames
@@ -140,9 +183,17 @@ constexpr int kMinJudgedFrames = 30;
 //    b. Otherwise the candidates above the lowest gap of at least kFenceGapSigmas robust sd between
 //       consecutive frames (sharpest first, down to the sharpest frame under the fence): a compact
 //       group standing apart from the continuous top of a real mode.
-//    A glitch under the fence (within kFenceSigmas of the median) is not an outlier by this rule
-//    and ranks with the rest. A real sharp group of fewer than ceil(sqrt(N)) frames above the fence
-//    and not reaching down to it is fenced too: it cannot be told from glitches by count or shape.
+//    So a real sharp group of fewer than ceil(sqrt(N)) frames above the fence becomes suspect too
+//    (by count or shape it cannot be told from glitches; measured in review: 50 frames 8 sd above
+//    3000, no noise, 44 of them suspect) -- and being suspect costs it nothing when it aligns:
+//    AdmitSuspects puts every suspect whose global alignment confidence passes the clean frames'
+//    AlignmentCut back into the stack. A torn or foreign frame fails that cut (Align.h: real torn
+//    frames 0.51-0.81 of the median confidence against a cut of 0.85; another scene 0.05-0.27,
+//    under the 0.5 floor); a glitch that aligns well (a sharp frame with a
+//    satellite crossing it) gets in, where per-region ranking and the stack's outlier rejection
+//    still apply. Suspects do not enter steps 6-8: q_ref and the kept count are the clean frames'.
+//    A glitch under the fence (within kFenceSigmas of the median) is not suspect by this rule and
+//    ranks with the rest.
 // 6. Deconvolution (Ruling P5). Each observed q_i = true quality + noise N(0, qualitySigma_i^2).
 //    The distribution G of the true quality is estimated by nonparametric maximum likelihood
 //    (Kiefer-Wolfowitz NPMLE, heteroscedastic; EM on kPriorGrid points over the observed range);
@@ -189,28 +240,70 @@ constexpr int kMinJudgedFrames = 30;
 //
 // Explanation (one ASCII line, as FITS HISTORY needs):
 //   "used 612 of 4088 frames: the frames judged sharpest after allowing for measurement noise,
-//    quality >= 0.91 of the best; not used: 3 without a target, 12 at the frame edge, 2 outliers,
-//    3459 below the cut"
-// -- every frame accounted for (groups: without a target, stray detection(s), at the frame edge,
-// clipped, without detail, outlier(s), below the cut; empty groups omitted), plus "; frame-filling
-// target, each region ranks its own frames" for a full-frame target. "Judged sharpest": with noise,
-// a frame left out can have a higher raw quality than one kept. The quality bound is the lowest
-// kept raw quality over q_ref, rounded down.
+//    quality >= 0.91 of the best; not used: 3 without a target, 12 at the frame edge, 3459 below
+//    the cut, 2 suspect frames (alignment decides)"
+// -- every frame accounted for (groups: without a target -- "(cloud or gaps?)" added for a
+// full-frame target --, stray detection(s), at the frame edge, clipped, without detail, below the
+// cut, suspect frame(s) (alignment decides); empty groups omitted), plus "; frame-filling target,
+// each region ranks its own frames" for a full-frame target. "Judged sharpest": with noise, a frame
+// left out can have a higher raw quality than one kept. The quality bound is the lowest kept raw
+// quality over q_ref, rounded down. With suspects, the line is provisional: AdmitSuspects restates
+// it.
 Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo& info);
+
+// The suspects' outcome (Ruling P6).
+struct Admission {
+    std::vector<int64_t> frames;    // selection.frames plus the admitted suspects, ascending
+    std::vector<int64_t> admitted;  // suspects whose confidence passed alignCut, ascending
+    std::vector<int64_t> rejected;  // the others, ascending
+    std::string explanation;        // the selection's line restated (below)
+};
+
+// Decides the suspects once they are aligned: suspectShifts[i] is GlobalAligner::Align's result for
+// selection.suspects[i] against the reference built from the clean frames (BuildReference never
+// sees a suspect), and alignCut is AlignmentCut over the clean frames' shifts. A suspect is admitted
+// when its confidence >= alignCut (a NaN confidence is rejected). An admitted suspect joins the
+// stack like any kept frame -- it is sharper than every one of them -- without re-running steps 6-8:
+// q_ref and the kept count stay the clean frames' (with the admitted frames on top, S(k)'s optimum
+// could sit at a slightly smaller k; per-region ranking, Task 5, makes the finer choice anyway).
+//   "used 3047 of 3050 frames: the frames judged sharpest ..., quality >= 0.88 of the best; not
+//    used: 3 rejected by alignment; 50 suspect frames (sharper than the rest): 47 admitted after
+//    alignment, 3 rejected"
+// The quality bound is unchanged (admitted suspects are above it). Without suspects, the result is
+// the selection's frames and explanation as they are. Throws std::invalid_argument when
+// suspectShifts.size() != selection.suspects.size().
+Admission AdmitSuspects(const Selection& selection, const std::vector<Shift>& suspectShifts, double alignCut);
 
 // Steps 5, 6 and 8 of SelectFrames on bare samples -- the upper fence, the deconvolution and the
 // "maximise sum MTF / sqrt(k)" count -- for a caller that ranks something other than whole frames
 // (Task 5 ranks each region's frames with it, so a region keeps its own best frames by the same
 // rule). SelectFrames itself runs through it. Positions refer to the input vectors; ties break by
 // position, so pass samples in frame order to break them by frame index.
+//
+// Suspects (Ruling P6) are a frame-level idea and belong to SelectFrames alone: it turns `fenced`
+// into Selection::suspects, and AdmitSuspects lets alignment decide them. A region has no suspects:
+// its fenced samples are simply not kept (they are neither in `ranked` nor counted in `keep`), the
+// same outcome as before P6. A region sample reaches the ranking only after passing the region's
+// local-alignment confidence cut (PlanRegions), so there is no further alignment test that could
+// admit it; per-region stacking stays a pure ranking.
+enum class FenceRule {
+    None,  // nothing fenced
+    Band,  // 5a: too few samples in the band just under the fence -- every candidate fenced
+    Gap,   // 5b: the candidates above the lowest gap of kFenceGapSigmas robust sd
+};
 struct DetailRanking {
     std::vector<size_t> left;    // positions not fenced off (step 5), ascending
     std::vector<size_t> ranked;  // the same positions, highest expected contrast first (step 8's order)
     std::vector<double> mean;    // per ranked entry: posterior mean of the true quality
     std::vector<double> mtf;     // per ranked entry: expected contrast at the detail frequency
-    size_t outliers = 0;         // fenced off (step 5)
+    size_t outliers = 0;         // fenced off (step 5) == fenced.size()
     double qRef = 0;             // "the best" (step 6)
     size_t keep = 0;             // keep ranked[0 .. keep): step 8's count, at least min(need, left)
+    // Step 5's outcome, for SelectFrames' suspects (regions ignore it):
+    std::vector<size_t> fenced;  // positions fenced off, ascending; left and fenced partition the input
+    FenceRule fenceRule = FenceRule::None;  // which rule fenced them (None iff fenced is empty)
+    int64_t fenceBand = 0;       // 5a: the samples in the band just under the fence; 0 otherwise
+    double fence = 0;            // the fence in quality units (exp of the log fence); 0 for empty input
 };
 // `quality` must be finite and > 0 (std::invalid_argument otherwise, or when the sizes differ);
 // a non-finite or non-positive sigma counts as 0 (exact). need, floorCount: as in SelectFrames.

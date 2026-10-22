@@ -4,12 +4,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <regex>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "Align.h"
 #include "Measure.h"
 #include "Select.h"
 
@@ -96,21 +98,26 @@ std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameSta
     return {sel.frames.begin(), sel.frames.end()};
 }
 
-// The explanation accounts for every frame: used + every "not used" group == n.
-void CheckCountsAddUp(const Selection& sel, int64_t n) {
-    INFO(sel.explanation);
+// The explanation accounts for every frame: used + every "not used" group == n. The "not used"
+// list ends at the next "; " (the suspects' outcome and the frame-filling note follow it).
+void CheckCountsAddUp(const std::string& explanation, int64_t n) {
+    INFO(explanation);
     std::smatch m;
-    REQUIRE(std::regex_search(sel.explanation, m, std::regex(R"(^used (\d+) of)")));
+    REQUIRE(std::regex_search(explanation, m, std::regex(R"(^used (\d+) of)")));
     int64_t total = std::stoll(m[1]);
-    const auto pos = sel.explanation.find("not used: ");
+    const auto pos = explanation.find("not used: ");
     if (pos != std::string::npos) {
-        const std::string tail = sel.explanation.substr(pos);
-        const std::regex item(R"((\d+) (without a target|stray detections?|at the frame edge|clipped|outliers?|without detail|below the cut))");
+        std::string tail = explanation.substr(pos);
+        tail = tail.substr(0, tail.find("; "));
+        const std::regex item(
+            R"((\d+) (without a target|stray detections?|at the frame edge|clipped|without detail|below the cut|suspect frames? \(alignment decides\)|rejected by alignment))");
         for (auto it = std::sregex_iterator(tail.begin(), tail.end(), item); it != std::sregex_iterator(); ++it)
             total += std::stoll((*it)[1]);
     }
     CHECK(total == n);
 }
+
+void CheckCountsAddUp(const Selection& sel, int64_t n) { CheckCountsAddUp(sel.explanation, n); }
 
 void CheckDiagnosed(const Selection& sel, DiagnosisKind kind) {
     INFO(sel.explanation);
@@ -459,7 +466,7 @@ TEST_CASE("input order does not matter; the result is in frame order", "[select]
     CHECK(a.explanation == b.explanation);
 }
 
-// ---- review round 1 ------------------------------------------------------------------------------
+// ---- fix round 1: review findings 1-9 ------------------------------------------------------------
 
 namespace {
 // A disc frame with a given quality and its 1-sigma measurement noise.
@@ -487,7 +494,8 @@ FrameStats Streak(int64_t i, int lw, int lh) {
 }
 }  // namespace
 
-TEST_CASE("a small cluster of implausibly sharp frames is fenced off as outliers", "[select][outliers]") {
+TEST_CASE("a small cluster of implausibly sharp frames is fenced off as suspects", "[select][outliers]") {
+    // Round 5 (Ruling P6): fenced frames are suspects held for the alignment check, not "outliers".
     std::mt19937 rng(41);
     std::normal_distribution<double> n01(0, 1);
     std::vector<FrameStats> stats;
@@ -497,7 +505,13 @@ TEST_CASE("a small cluster of implausibly sharp frames is fenced off as outliers
     const auto kept = CheckSelected(sel, stats);
     for (int64_t f = 300; f < 305; ++f) CHECK(kept.count(f) == 0);
     CHECK(kept.size() >= 270);
-    CHECK(sel.explanation.find("5 outliers") != std::string::npos);
+    CHECK(sel.explanation.find("5 suspect frames (alignment decides)") != std::string::npos);
+    REQUIRE(sel.suspects.size() == 5);
+    for (size_t k = 0; k < 5; ++k) {
+        CHECK(sel.suspects[k].index == 300 + static_cast<int64_t>(k));
+        CHECK(sel.suspects[k].quality == 1.3);
+        CHECK_FALSE(sel.suspects[k].reason.empty());
+    }
 }
 
 TEST_CASE("a genuine lucky tail, or a real sharp mode, is not fenced", "[select][outliers]") {
@@ -507,7 +521,7 @@ TEST_CASE("a genuine lucky tail, or a real sharp mode, is not fenced", "[select]
     const auto poor = DiscCapture(3000, [&](int64_t) { return 1.5 * std::exp(0.3 * n01(rng)); });
     const Selection selPoor = SelectFrames(poor, Info(640, 480));
     CheckSelected(selPoor, poor);
-    CHECK(selPoor.explanation.find("outlier") == std::string::npos);
+    CHECK(selPoor.suspects.empty());
     // The sharpest frame of the night is among those used.
     const auto best = std::max_element(poor.begin(), poor.end(),
                                        [](const FrameStats& a, const FrameStats& b) { return a.quality < b.quality; });
@@ -685,7 +699,7 @@ TEST_CASE("few blurred frames: focus or seeing is worded as undetermined (review
     CHECK(Number(sel.diagnosis, "frames judged") == 20);
 }
 
-// ---- review round 2 ------------------------------------------------------------------------------
+// ---- fix round 2: re-review 1 (N1-N6) ------------------------------------------------------------
 
 namespace {
 // The reviewer's oracle: a capture whose true limb blur per frame is known. Score = the detail
@@ -792,7 +806,7 @@ TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[se
         const auto kept = CheckSelected(sel, stats);
         CHECK(kept.count(3) == 1);
         CHECK(kept.count(4) == 1);
-        CHECK(sel.explanation.find("outlier") == std::string::npos);
+        CHECK(sel.suspects.empty());
     }
     {
         const auto stats = capture({1.0, 1.01, 1.02, 1.0, 1.01, 1.0, 1.02, 1.25, 1.26, 1.27});
@@ -800,12 +814,12 @@ TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[se
         const auto kept = CheckSelected(sel, stats);
         for (int64_t f : {7, 8, 9}) CHECK(kept.count(f) == 1);
     }
-    // 100 frames, 99 identical and one 0.1% sharper: no outlier (differences under the floor).
+    // 100 frames, 99 identical and one 0.1% sharper: no suspect (differences under the floor).
     {
         std::vector<double> qs(100, 1.0);
         qs[42] = 1.001;
         const Selection sel = SelectFrames(capture(qs), Info(640, 480));
-        CHECK(sel.explanation.find("outlier") == std::string::npos);
+        CHECK(sel.suspects.empty());
     }
 }
 
@@ -873,6 +887,8 @@ TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[se
     CHECK(selNoisy.diagnosis.message.find("too large to tell") != std::string::npos);
 }
 
+// ---- fix round 3: re-review 2 (A-E) --------------------------------------------------------------
+
 TEST_CASE("lunar limb and crescent slivers are frame-filling; streaks are not (A)", "[select]") {
     // Full height, touching the right edge, 9% / 16% / 23% of the width: kept as frame-filling.
     for (const int w : {60, 100, 150}) {
@@ -912,7 +928,7 @@ TEST_CASE("lunar limb and crescent slivers are frame-filling; streaks are not (A
 
 TEST_CASE("the fence never cuts the top of a real sharp mode (E)", "[select][outliers]") {
     // 600 frames 30% sharper than 2400 others (3% spread each, 2% noise): the sharp mode is the
-    // selection, its sharpest frames included -- no outliers.
+    // selection, its sharpest frames included -- no suspects.
     std::mt19937 rng(5);
     std::normal_distribution<double> n01(0, 1);
     std::vector<FrameStats> stats;
@@ -922,7 +938,7 @@ TEST_CASE("the fence never cuts the top of a real sharp mode (E)", "[select][out
     }
     const Selection sel = SelectFrames(stats, Info(640, 480));
     const auto kept = CheckSelected(sel, stats);
-    CHECK(sel.explanation.find("outlier") == std::string::npos);
+    CHECK(sel.suspects.empty());
     for (int64_t f : kept) CHECK(f < 600);
     CHECK(kept.size() >= 540);
     const auto best = std::max_element(stats.begin(), stats.end(),
@@ -930,7 +946,7 @@ TEST_CASE("the fence never cuts the top of a real sharp mode (E)", "[select][out
     CHECK(kept.count(best->index) == 1);
 }
 
-// ---- review round 3 ------------------------------------------------------------------------------
+// ---- fix round 4: re-review 3 (glitch clusters, tilted trails) -----------------------------------
 
 namespace {
 // 3000 bulk frames (true quality 1, spread `spread`) and m glitch frames log-uniform in [lo, hi],
@@ -972,7 +988,7 @@ TEST_CASE("glitch clusters that reach down to the bulk are fenced, never the sel
                 CHECK(stats[static_cast<size_t>(f)].quality < 1.25);  // nothing far above the bulk
             }
             CHECK(keptBulk >= 2700);
-            CHECK(sel.explanation.find("outlier") != std::string::npos);
+            CHECK(sel.explanation.find("suspect frame") != std::string::npos);
         }
     }
 }
@@ -997,7 +1013,7 @@ TEST_CASE("a ladder of glitches starting under the fence is fenced (round 4)", "
         }
         CHECK(keptBulk >= 270);
         CHECK(keptRungs <= 2);
-        CHECK(sel.explanation.find("outlier") != std::string::npos);
+        CHECK(sel.explanation.find("suspect frame") != std::string::npos);
     }
 }
 
@@ -1034,4 +1050,298 @@ TEST_CASE("tilted trails are never a frame-filling target (round 4)", "[select]"
     CHECK_FALSE(sel.fullFrameTarget);
     CHECK(sel.frames.empty());
     CHECK(sel.diagnosis.kind != DiagnosisKind::None);
+}
+
+// ---- fix round 5: re-review 4 (Rulings P6 suspects, P7 cloudy full-frame targets) ---------------
+
+namespace {
+// Global alignment results with the given confidences (only the confidence matters to admission).
+std::vector<stack::Shift> Confidences(size_t n, double lo, double hi, std::mt19937& rng) {
+    std::uniform_real_distribution<double> u(lo, hi);
+    std::vector<stack::Shift> v(n);
+    for (auto& s : v) s.confidence = u(rng);
+    return v;
+}
+
+// The clean frames align as steady frames do (Align.h: 0.96-0.99); returns AlignmentCut over them.
+double CleanCut(const Selection& sel, std::mt19937& rng) {
+    return stack::AlignmentCut(Confidences(sel.frames.size(), 0.96, 0.99, rng));
+}
+
+// What every admission promises; returns the final frames as a set.
+std::set<int64_t> CheckAdmitted(const Selection& sel, const stack::Admission& adm, int64_t n) {
+    INFO(adm.explanation);
+    REQUIRE(std::is_sorted(adm.frames.begin(), adm.frames.end()));
+    REQUIRE(std::adjacent_find(adm.frames.begin(), adm.frames.end()) == adm.frames.end());
+    CHECK(adm.admitted.size() + adm.rejected.size() == sel.suspects.size());
+    std::set<int64_t> fin(adm.frames.begin(), adm.frames.end());
+    for (int64_t f : sel.frames) CHECK(fin.count(f) == 1);
+    for (int64_t f : adm.admitted) CHECK(fin.count(f) == 1);
+    for (int64_t f : adm.rejected) CHECK(fin.count(f) == 0);
+    CHECK(adm.frames.size() == sel.frames.size() + adm.admitted.size());
+    std::smatch m;
+    REQUIRE(std::regex_search(adm.explanation, m, std::regex(R"(^used (\d+) of (\d+) frames: )")));
+    CHECK(std::stoll(m[1]) == static_cast<long long>(adm.frames.size()));
+    CHECK(std::stoll(m[2]) == n);
+    CHECK(adm.explanation.find("(alignment decides)") == std::string::npos);
+    CheckCountsAddUp(adm.explanation, n);
+    if (!sel.suspects.empty()) {
+        const std::string outcome = std::to_string(sel.suspects.size()) +
+                                    (sel.suspects.size() == 1 ? " suspect frame" : " suspect frames") +
+                                    " (sharper than the rest): " + std::to_string(adm.admitted.size()) +
+                                    " admitted after alignment, " + std::to_string(adm.rejected.size()) + " rejected";
+        CHECK(adm.explanation.find(outcome) != std::string::npos);
+    } else {
+        CHECK(adm.explanation == sel.explanation);
+    }
+    return fin;
+}
+
+// The review's lucky-group capture: n - m bulk frames (true log-quality sd 1%) and m frames centred
+// c sd above it with width w sd, measured with relative noise ns (reported). Frames >= n - m are the
+// group.
+std::vector<FrameStats> LuckyGroup(int n, int m, double c, double w, double ns, uint32_t seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> n01(0, 1);
+    std::vector<FrameStats> v;
+    for (int i = 0; i < n - m; ++i) {
+        const double qt = std::exp(0.01 * n01(rng));
+        v.push_back(DiscQ(i, qt * (1 + ns * n01(rng)), ns * qt));
+    }
+    for (int i = 0; i < m; ++i) {
+        const double qt = std::exp(0.01 * (c + w * n01(rng)));
+        v.push_back(DiscQ(n - m + i, qt * (1 + ns * n01(rng)), ns * qt));
+    }
+    return v;
+}
+}  // namespace
+
+TEST_CASE("a small genuine lucky group is held as suspect, then admitted when it aligns (P6)", "[select][suspects]") {
+    // The review's cases: 15 of 300, 30 of 1000, 50 of 3000 frames 8 sd above the rest (width 1.5
+    // sd), with no noise reported (the band rule then holds most of the group as suspect: 50 of 3000
+    // kept only 5.9 of the group in round 4) and with 1% noise. Lucky frames show the target whole,
+    // so they align like the clean frames.
+    struct Case {
+        int n, m;
+    };
+    for (const Case c : {Case{300, 15}, Case{1000, 30}, Case{3000, 50}}) {
+        for (const double ns : {0.0, 0.01}) {
+            int64_t suspects = 0;
+            for (uint32_t seed = 1; seed <= 5; ++seed) {
+                const auto stats = LuckyGroup(c.n, c.m, 8, 1.5, ns, seed);
+                const Selection sel = SelectFrames(stats, Info(640, 480));
+                INFO(c.m << " of " << c.n << ", noise " << ns << ", seed " << seed << ": " << sel.explanation);
+                const auto kept = CheckSelected(sel, stats);
+                suspects += static_cast<int64_t>(sel.suspects.size());
+                for (size_t k = 0; k < sel.suspects.size(); ++k) {
+                    const stack::Suspect& s = sel.suspects[k];
+                    CHECK(s.index >= c.n - c.m);  // only the group is that sharp
+                    CHECK(kept.count(s.index) == 0);
+                    CHECK(s.quality == stats[static_cast<size_t>(s.index)].quality);
+                    CHECK_FALSE(s.reason.empty());
+                    if (k > 0) CHECK(sel.suspects[k - 1].index < s.index);
+                }
+                std::mt19937 rng(seed + 100);
+                const double cut = CleanCut(sel, rng);
+                const stack::Admission adm = AdmitSuspects(sel, Confidences(sel.suspects.size(), 0.96, 0.99, rng), cut);
+                const auto fin = CheckAdmitted(sel, adm, c.n);
+                CHECK(adm.rejected.empty());
+                for (int64_t f = c.n - c.m; f < c.n; ++f) CHECK(fin.count(f) == 1);  // the whole group stacks
+            }
+            INFO(c.m << " of " << c.n << ", noise " << ns);
+            if (ns == 0) CHECK(suspects > 0);  // the cases do exercise admission
+        }
+    }
+}
+
+TEST_CASE("glitch suspects are rejected by alignment: torn or foreign frames never stack (P6)", "[select][suspects]") {
+    // 5 glitches at 1.3 on 300 frames, torn (confidence 0.50-0.77, under any steady capture's cut).
+    {
+        std::mt19937 rng(41);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 300; ++i) stats.push_back(DiscQ(i, 1.0 * (1 + 0.01 * n01(rng)), 0.0));
+        for (int64_t i = 300; i < 305; ++i) stats.push_back(DiscQ(i, 1.3, 0.0));
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        REQUIRE(sel.suspects.size() == 5);
+        const double cut = CleanCut(sel, rng);
+        const stack::Admission adm = AdmitSuspects(sel, Confidences(5, 0.50, 0.77, rng), cut);
+        CheckAdmitted(sel, adm, 305);
+        CHECK(adm.frames == sel.frames);
+        CHECK(adm.rejected == std::vector<int64_t>{300, 301, 302, 303, 304});
+        CHECK(adm.explanation.find("5 rejected by alignment") != std::string::npos);
+
+        // Two of them align (a sharp frame that happens to be whole), three do not.
+        std::vector<stack::Shift> mixed = Confidences(5, 0.50, 0.77, rng);
+        mixed[0].confidence = 0.98;
+        mixed[1].confidence = 0.97;
+        const stack::Admission part = AdmitSuspects(sel, mixed, cut);
+        CheckAdmitted(sel, part, 305);
+        CHECK(part.admitted == std::vector<int64_t>{300, 301});
+        CHECK(part.rejected == std::vector<int64_t>{302, 303, 304});
+        CHECK(part.explanation.find("3 rejected by alignment") != std::string::npos);
+
+        // A confidence that is not a number is not a pass; the shifts must match the suspects.
+        std::vector<stack::Shift> nan = Confidences(5, 0.96, 0.99, rng);
+        nan[2].confidence = std::numeric_limits<double>::quiet_NaN();
+        const stack::Admission withNan = AdmitSuspects(sel, nan, cut);
+        CHECK(withNan.rejected == std::vector<int64_t>{302});
+        CHECK_THROWS_AS(AdmitSuspects(sel, Confidences(4, 0.96, 0.99, rng), cut), std::invalid_argument);
+    }
+    // Spread glitch clusters (round 4's shapes): foreign content (0.05-0.27), 5 seeds each.
+    struct Case {
+        int m;
+        double lo, hi, spread, noise;
+    };
+    for (const Case c : {Case{50, 1.05, 1.6, 0.01, 0.01}, Case{40, 1.1, 1.5, 0.02, 0.02}}) {
+        for (uint32_t seed = 1; seed <= 5; ++seed) {
+            const auto stats = BulkAndGlitches(c.m, c.lo, c.hi, c.spread, c.noise, seed);
+            const Selection sel = SelectFrames(stats, Info(640, 480));
+            INFO("glitches " << c.m << ", seed " << seed << ": " << sel.explanation);
+            REQUIRE_FALSE(sel.suspects.empty());
+            for (const stack::Suspect& s : sel.suspects) CHECK(s.index >= 3000);
+            std::mt19937 rng(seed);
+            const double cut = CleanCut(sel, rng);
+            const stack::Admission adm = AdmitSuspects(sel, Confidences(sel.suspects.size(), 0.05, 0.27, rng), cut);
+            CheckAdmitted(sel, adm, 3000 + c.m);
+            CHECK(adm.admitted.empty());
+            for (int64_t f : adm.frames) CHECK(stats[static_cast<size_t>(f)].quality < 1.25);
+        }
+    }
+    // The ladder: torn rungs.
+    {
+        std::mt19937 rng(41);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 300; ++i) stats.push_back(DiscQ(i, 1.0 * (1 + 0.01 * n01(rng)), 0.0));
+        for (int64_t i = 0; i < 10; ++i) stats.push_back(DiscQ(300 + i, std::exp(0.05 + 0.019 * static_cast<double>(i)), 0.0));
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        REQUIRE_FALSE(sel.suspects.empty());
+        const double cut = CleanCut(sel, rng);
+        const stack::Admission adm = AdmitSuspects(sel, Confidences(sel.suspects.size(), 0.5, 0.77, rng), cut);
+        CheckAdmitted(sel, adm, 310);
+        for (int64_t f : adm.frames) CHECK(f < 302);
+    }
+}
+
+TEST_CASE("no suspects: admission changes nothing; a diagnosed selection has none (P6)", "[select][suspects]") {
+    std::mt19937 rng(11);
+    std::normal_distribution<double> n01(0, 1);
+    const auto stats = DiscCapture(500, [&](int64_t) { return 1.0 * (1 + 0.02 * n01(rng)); });
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CheckSelected(sel, stats);
+    REQUIRE(sel.suspects.empty());
+    const stack::Admission adm = AdmitSuspects(sel, {}, 0.85);
+    CHECK(adm.frames == sel.frames);
+    CHECK(adm.explanation == sel.explanation);
+
+    std::vector<FrameStats> none;
+    for (int64_t i = 0; i < 21; ++i) none.push_back(NoTargetFrame(i));
+    const Selection diag = SelectFrames(none, Info(640, 480));
+    CHECK(diag.suspects.empty());
+    const stack::Admission admDiag = AdmitSuspects(diag, {}, 0.85);
+    CHECK(admDiag.frames.empty());
+    CHECK(admDiag.explanation == diag.explanation);
+}
+
+namespace {
+// The review's cloudy Moon: n frames of 640 x 480; with probability p a frame shows a frame-filling
+// box (0, 0)-(320, 200..206), quality log-normal 3%, noise 1%; otherwise cloud (no target).
+std::vector<FrameStats> CloudyMoon(int n, double p) {
+    std::mt19937 rng(7);
+    std::normal_distribution<double> n01(0, 1);
+    std::bernoulli_distribution clear(p);
+    std::vector<FrameStats> v;
+    for (int i = 0; i < n; ++i) {
+        FrameStats s;
+        s.index = i;
+        if (clear(rng)) {
+            s.targetFound = true;
+            s.bx0 = 0;
+            s.by0 = 0;
+            s.bx1 = 320;
+            s.by1 = 200 + i % 7;
+            s.cx = 160;
+            s.cy = 100;
+            s.quality = std::exp(0.03 * n01(rng));
+            s.qualitySigma = 0.01;
+            s.brightness = 0.5;
+        }
+        v.push_back(s);
+    }
+    return v;
+}
+}  // namespace
+
+TEST_CASE("a cloudy Moon stacks from its clear frames (P7)", "[select]") {
+    struct Case {
+        int n;
+        double p;
+    };
+    for (const Case c : {Case{2000, 0.48}, Case{2000, 0.30}, Case{200, 0.45}, Case{60, 0.40}}) {
+        const auto stats = CloudyMoon(c.n, c.p);
+        int64_t clear = 0;
+        for (const auto& s : stats) clear += s.targetFound;
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        INFO(c.n << " frames, clear " << clear << ": " << sel.explanation);
+        const auto kept = CheckSelected(sel, stats);
+        CHECK(sel.fullFrameTarget);
+        for (int64_t f : kept) CHECK(stats[static_cast<size_t>(f)].targetFound);
+        CHECK(static_cast<double>(kept.size()) >= 0.6 * static_cast<double>(clear));
+        CHECK(sel.explanation.find(std::to_string(c.n - clear) + " without a target (cloud or gaps?)") != std::string::npos);
+    }
+}
+
+TEST_CASE("a frame-filling surface that drifts is still frame-filling (P7)", "[select]") {
+    // The box (full height, 400 px wide) drifts steadily by 20% of the width over 2000 frames.
+    std::mt19937 rng(9);
+    std::normal_distribution<double> n01(0, 1);
+    std::vector<FrameStats> stats;
+    for (int64_t i = 0; i < 2000; ++i) {
+        FrameStats s;
+        s.index = i;
+        s.targetFound = true;
+        s.bx0 = static_cast<int>(128 * i / 2000);
+        s.bx1 = s.bx0 + 400;
+        s.by0 = 0;
+        s.by1 = 480;
+        s.cx = s.bx0 + 200;
+        s.cy = 240;
+        s.quality = 0.3 * (1 + 0.01 * n01(rng));
+        s.qualitySigma = 0.003;
+        stats.push_back(s);
+    }
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    const auto kept = CheckSelected(sel, stats);
+    CHECK(sel.fullFrameTarget);
+    CHECK(kept.size() >= 1800);
+}
+
+TEST_CASE("trails over 10% of the frames sweep: never a frame-filling target (P7)", "[select]") {
+    // Tilted trails in every 5th frame (20%) and in every frame: each box passes FillsFrame, but the
+    // boxes cross wherever they happen to.
+    for (const int every : {5, 1}) {
+        std::vector<FrameStats> stats;
+        for (int64_t i = 0; i < 2000; ++i)
+            stats.push_back(i % every == 0 ? TiltedTrail(i, 640, 480, 1.5 + 2.5 * static_cast<double>(i % 7) / 6) : NoTargetFrame(i));
+        const Selection sel = SelectFrames(stats, Info(640, 480));
+        INFO("a trail in every " << every << ": " << sel.explanation);
+        CHECK_FALSE(sel.fullFrameTarget);
+        CHECK(sel.frames.empty());
+        CHECK(sel.diagnosis.kind != DiagnosisKind::None);
+    }
+}
+
+TEST_CASE("a frame-filling surface seen in under 10% of the frames: no target, cloud or gaps (P7)", "[select][diagnosis]") {
+    const auto stats = CloudyMoon(2000, 0.05);
+    int64_t clear = 0;
+    for (const auto& s : stats) clear += s.targetFound;
+    const Selection sel = SelectFrames(stats, Info(640, 480));
+    CheckDiagnosed(sel, DiagnosisKind::NoTarget);
+    CHECK_FALSE(sel.fullFrameTarget);
+    CHECK(sel.diagnosis.message.find("cloud or gaps?") != std::string::npos);
+    CHECK(sel.diagnosis.message.find("keep it centred") == std::string::npos);
+    CHECK(Number(sel.diagnosis, "frames") == 2000);
+    CHECK(Number(sel.diagnosis, "frames with a target") == static_cast<double>(clear));
+    CHECK(Number(sel.diagnosis, "presence needed") == stack::kFullFramePresence);
 }
