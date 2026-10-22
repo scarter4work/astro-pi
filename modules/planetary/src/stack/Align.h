@@ -186,7 +186,8 @@ private:
 // at least kFullFrameSpan -- half -- of the frame's width or height, and its shorter side at least
 // kFullFrameMinSide -- 5% -- of the frame), or true when the reference has no target. SelectFrames
 // applies the same rule over the capture (Selection::fullFrameTarget: FillsFrame in at least
-// kFullFrameShare -- 75% -- of the target frames); for many frames prepare a GlobalAligner once,
+// kFullFrameShare -- 75% -- of the target frames, and a target found in at least
+// kFullFramePresence -- half -- of all frames); for many frames prepare a GlobalAligner once,
 // with Selection::fullFrameTarget.
 // Thin slivers: a full-frame target only 5-6% of the frame thick (a thin crescent along an edge)
 // aligns worse -- measured in Task 3's review 0.14-0.28 px error and confidence 0.86-0.90, against
