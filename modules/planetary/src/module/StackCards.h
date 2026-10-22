@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 //
 // PlanetaryStack's keyword plan and result text: which FITS cards and HISTORY
-// lines a stack carries, and the summary lines the console shows. PCL-free and
+// lines a stack carries, the summary lines the console shows, and the
+// PlanetaryStack window's info, result and progress text. PCL-free and
 // header-only, so it is unit tested without PixInsight
 // (test/unit/test_stack_cards.cpp); PlanetaryStackInstance turns the cards into
 // PCL keywords.
@@ -143,6 +144,72 @@ inline std::vector<std::string> StackHistory( const std::string& fileNameUtf8, c
       h.push_back( "PlanetaryStack warning: " +
                    (isAvi ? fits::FitsAscii( preview::StackWarning( w ) ) : fits::AsciiFromBytes( w )) );
    return h;
+}
+
+// ---- The PlanetaryStack window's text (PlanetaryStackInterface) ------------
+// UTF-8: file names are shown as they are; the engine's text is ASCII.
+
+// "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar RG)": an
+// AVI's pattern with its source (BayerText); a SER's colour from its header.
+inline std::string StackInfoLine( const std::string& fileNameUtf8, const ser::FileInfo& info )
+{
+   std::string colour;
+   if ( IsAvi( info ) )
+      colour = "Bayer " + preview::BayerText( info );
+   else if ( ser::IsBayer( info.colorId ) )
+      colour = std::string( "Bayer " ) + ser::BayerPatternKeyword( info.colorId );
+   else
+      colour = info.colorId == ser::ColorId::Mono ? "mono" : "RGB";
+   return fileNameUtf8 + ": " + std::to_string( info.frameCount ) + " frames, " + std::to_string( info.header.width ) +
+          " x " + std::to_string( info.header.height ) + ", " + std::to_string( info.header.depth ) + "-bit, " + colour;
+}
+
+// The result of a run, one fact per line. A stack: the frames used of those
+// measured and the time, every summary warning (an AVI's reader warnings
+// reworded for the window, StackWindowWarning), then the selection and
+// alignment lines. A diagnosis: "No image: <message>", its numbers one per
+// line (%.4g), the frames measured and the time, and the warnings.
+inline std::string ResultText( const stack::StackOutcome& outcome )
+{
+   const stack::StackSummary& s = outcome.summary;
+   std::string warnings;
+   for ( const std::string& w : s.warnings )
+      warnings += "\nWarning: " + (IsAvi( outcome.info ) ? preview::StackWindowWarning( w ) : w);
+   if ( outcome.image )
+      return "Stacked: " + std::to_string( s.used ) + " of " + std::to_string( s.measured ) + " frames used, in " +
+             Fixed( s.seconds, 2 ) + " s." + warnings + "\nFrames: " + s.selection + "\nAlignment: " + s.alignment;
+   std::string t = "No image: " + outcome.diagnosis.message;
+   if ( !outcome.diagnosis.numbers.empty() )
+   {
+      t += "\nThe numbers behind it:";
+      for ( const auto& [name, value] : outcome.diagnosis.numbers )
+      {
+         char v[64];
+         std::snprintf( v, sizeof v, "%.4g", value );
+         t += "\n  " + name + ": " + v;
+      }
+   }
+   return t + "\n" + std::to_string( s.measured ) + " frames measured in " + Fixed( s.seconds, 2 ) + " s." + warnings;
+}
+
+// The fraction of a phase done, 0..1 (0 for no total).
+inline double ProgressFraction( int64_t done, int64_t total )
+{
+   if ( total <= 0 )
+      return 0;
+   return done >= total ? 1.0 : done <= 0 ? 0.0 : double( done ) / double( total );
+}
+
+// The progress bar's text: "Step 2 of 3: Aligning  50%" for the engine's three
+// phases (Engine.h, in order); another name as it is.
+inline std::string ProgressText( const std::string& phase, int64_t done, int64_t total )
+{
+   const char* const phases[] = { stack::kPhaseMeasuring, stack::kPhaseAligning, stack::kPhaseStacking };
+   for ( int i = 0; i < 3; ++i )
+      if ( phase == phases[i] )
+         return "Step " + std::to_string( i + 1 ) + " of 3: " + phase + "  " +
+                std::to_string( int( 100 * ProgressFraction( done, total ) ) ) + "%";
+   return phase;
 }
 
 } // namespace planetary::stackcards

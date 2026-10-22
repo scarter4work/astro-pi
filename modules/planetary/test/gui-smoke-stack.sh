@@ -184,7 +184,12 @@ PI_PROC="$(pgrep -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " |
 drive --stack-open "$OUT" "$LONG" || exit 1
 expect_no_open_video "after Open..." || exit 1
 T0="$(threads)"
-drive --stack-run "$OUT" || exit 1
+# PixInsight's thread count every 0.1 s while it stacks, for the record: the run's own threads
+# (the worker and the engine's) are the peak less T0.
+( while :; do threads; sleep 0.1; done ) > "$OUT/threads-during-run.txt" 2>/dev/null & SAMPLER=$!
+drive --stack-run "$OUT" || { kill "$SAMPLER"; exit 1; }
+kill "$SAMPLER"
+echo "threads during the run: peak $(sort -n "$OUT/threads-during-run.txt" | tail -1) (before: $T0)"
 
 # Execute opened the stack Stack! made: the engine's size, counts and pixels.
 ipc '{"mode":"windows","out":"windows-execute.json","sample":[[512,384]],"close":true}' windows-execute.json || exit 1

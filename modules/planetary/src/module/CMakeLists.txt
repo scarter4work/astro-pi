@@ -22,6 +22,8 @@ set(MODULE_SOURCES
     PlanetaryStackProcess.cpp
     PlanetaryStackParameters.cpp
     PlanetaryStackInstance.cpp
+    PlanetaryStackInterface.cpp
+    VideoControls.cpp
 )
 
 add_library(Planetary SHARED ${MODULE_SOURCES})

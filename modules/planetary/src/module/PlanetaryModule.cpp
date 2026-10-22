@@ -12,6 +12,7 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "PlanetaryModule.h"
+#include "PlanetaryStackInterface.h"
 #include "PlanetaryStackProcess.h"
 #include "SERViewerInterface.h"
 #include "SERViewerProcess.h"
@@ -92,6 +93,12 @@ void PlanetaryModule::GetReleaseDate( int& year, int& month, int& day ) const
    day   = 21;
 }
 
+void PlanetaryModule::OnUnload()
+{
+   if ( ThePlanetaryStackInterface != nullptr )
+      ThePlanetaryStackInterface->JoinStack();
+}
+
 } // namespace pcl
 
 PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
@@ -102,6 +109,7 @@ PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
       new pcl::SERViewerProcess;
       new pcl::SERViewerInterface;
       new pcl::PlanetaryStackProcess;
+      new pcl::PlanetaryStackInterface;
    }
    return 0;
 }

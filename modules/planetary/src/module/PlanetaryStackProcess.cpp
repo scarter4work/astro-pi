@@ -3,6 +3,7 @@
 
 #include "PlanetaryStackProcess.h"
 #include "PlanetaryStackInstance.h"
+#include "PlanetaryStackInterface.h"
 #include "PlanetaryStackParameters.h"
 
 #include <pcl/ErrorHandler.h>
@@ -54,6 +55,11 @@ String PlanetaryStackProcess::Description() const
       "<p>Reads only the chosen file and its sidecar; no network, no external programs; writes nothing to "
       "disk.</p>"
       "</html>";
+}
+
+ProcessInterface* PlanetaryStackProcess::DefaultInterface() const
+{
+   return ThePlanetaryStackInterface;
 }
 
 ProcessImplementation* PlanetaryStackProcess::Create() const

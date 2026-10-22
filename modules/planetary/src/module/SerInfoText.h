@@ -45,6 +45,14 @@ inline std::string StackWarning( const std::string& warning )
                                       "SERViewer's Save pattern...) to stack in colour" );
 }
 
+// A reader warning reworded for the PlanetaryStack window, whose Bayer pattern
+// combo and Save pattern... are right there.
+inline std::string StackWindowWarning( const std::string& warning )
+{
+   return ReplaceRawCfaTail( warning, "; the raw CFA is stacked as mono -- choose the pattern under Bayer pattern "
+                                      "(Save pattern... remembers it) to stack in colour" );
+}
+
 // An AVI's effective Bayer pattern and where it came from, for people:
 // "BGGR (sidecar RG, Flip=Vert → BGGR)", "RGGB (chosen)", "none (chosen)". The
 // reader's "none" token (Auto found no pattern) becomes the reason: a sidecar

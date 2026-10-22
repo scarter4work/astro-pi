@@ -115,3 +115,72 @@ TEST_CASE("a diagnosis is written with its numbers", "[stackcards]") {
     d.numbers = {{"frames", 40}, {"frames with a target", 0}, {"median clipped fraction", 0.85123}};
     CHECK(stackcards::DiagnosisText(d) == d.message + " (frames 40, frames with a target 0, median clipped fraction 0.8512)");
 }
+
+TEST_CASE("the window's info line: file, frames, size, depth and colour; an AVI's Bayer source", "[stackcards][window]") {
+    ser::FileInfo ser;
+    ser.container = ser::Container::Ser;
+    ser.header.width = 128;
+    ser.header.height = 112;
+    ser.header.depth = 16;
+    ser.frameCount = 60;
+    ser.colorId = ser::ColorId::Mono;
+    CHECK(stackcards::StackInfoLine("Saturn.ser", ser) == "Saturn.ser: 60 frames, 128 x 112, 16-bit, mono");
+    ser.colorId = ser::ColorId::BayerGRBG;
+    CHECK(stackcards::StackInfoLine("Saturn.ser", ser) == "Saturn.ser: 60 frames, 128 x 112, 16-bit, Bayer GRBG");
+    ser.colorId = ser::ColorId::BGR;
+    CHECK(stackcards::StackInfoLine("Saturn.ser", ser) == "Saturn.ser: 60 frames, 128 x 112, 16-bit, RGB");
+
+    const stack::StackOutcome avi = Stacked(ser::Container::Avi);
+    ser::FileInfo a = avi.info;
+    a.header.width = 1024;
+    a.header.height = 768;
+    a.header.depth = 8;
+    a.frameCount = 1500;
+    CHECK(stackcards::StackInfoLine("Jupiter.avi", a) == "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar)");
+}
+
+TEST_CASE("the window's result: counts and time, each warning, the selection and alignment lines", "[stackcards][window]") {
+    stack::StackOutcome o = Stacked(ser::Container::Ser);
+    o.summary.seconds = 5.5;
+    CHECK(stackcards::ResultText(o) ==
+          "Stacked: 18 of 40 frames used, in 5.50 s.\n"
+          "Warning: image may be out of focus: detail 12.3 px\n"
+          "Frames: used 18 of 40 frames: the frames judged sharpest\n"
+          "Alignment: aligned 18 of 18 selected frames to the reference");
+    // An AVI's reader warnings are reworded for the window's own controls.
+    o = Stacked(ser::Container::Avi);
+    o.summary.warnings = {"no Bayer pattern known (no .avi.txt sidecar); showing the raw CFA as mono -- choose the pattern "
+                          "under Bayer pattern"};
+    CHECK(stackcards::ResultText(o).find("Warning: no Bayer pattern known (no .avi.txt sidecar); the raw CFA is stacked as "
+                                         "mono -- choose the pattern under Bayer pattern (Save pattern... remembers it)") !=
+          std::string::npos);
+}
+
+TEST_CASE("the window's diagnosis: no image, the message, and each number on its own line", "[stackcards][window]") {
+    stack::StackOutcome o;
+    o.info.container = ser::Container::Ser;
+    o.diagnosis.kind = stack::DiagnosisKind::NoTarget;
+    o.diagnosis.message = "No target: the frames hold only background (a target in 0 of 40 frames).";
+    o.diagnosis.numbers = {{"frames", 40}, {"frames with a target", 0}, {"limb blur (pixels)", 9.8564}};
+    o.summary.measured = 40;
+    o.summary.seconds = 0.004;
+    o.summary.warnings = {"a reader warning"};
+    CHECK(stackcards::ResultText(o) ==
+          "No image: No target: the frames hold only background (a target in 0 of 40 frames).\n"
+          "The numbers behind it:\n"
+          "  frames: 40\n"
+          "  frames with a target: 0\n"
+          "  limb blur (pixels): 9.856\n"
+          "40 frames measured in 0.00 s.\n"
+          "Warning: a reader warning");
+}
+
+TEST_CASE("the progress text names the step and how far it is", "[stackcards][window]") {
+    CHECK(stackcards::ProgressText(stack::kPhaseMeasuring, 0, 1564) == "Step 1 of 3: Measuring frames  0%");
+    CHECK(stackcards::ProgressText(stack::kPhaseAligning, 733, 1464) == "Step 2 of 3: Aligning  50%");
+    CHECK(stackcards::ProgressText(stack::kPhaseStacking, 1400, 1400) == "Step 3 of 3: Stacking  100%");
+    CHECK(stackcards::ProgressText("Something else", 1, 0) == "Something else");
+    CHECK(stackcards::ProgressFraction(733, 1464) == Catch::Approx(733.0 / 1464));
+    CHECK(stackcards::ProgressFraction(5, 0) == 0.0);
+    CHECK(stackcards::ProgressFraction(9, 4) == 1.0);
+}

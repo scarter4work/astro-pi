@@ -1,13 +1,14 @@
 // Planetary — Native PCL Module for PixInsight
 // Copyright (c) 2026 Scott Carter. MIT License.
 //
-// SERViewer preview pixel math. PCL-free and header-only, so it is unit
+// SERViewer and PlanetaryStack preview pixel math. PCL-free and header-only, so it is unit
 // tested without PixInsight (test/unit/test_preview.cpp); FramePreview.h
 // wraps it in a pcl::Bitmap.
 
 #ifndef __PreviewPixels_h
 #define __PreviewPixels_h
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -93,6 +94,89 @@ inline FitBox FitRect( int boxW, int boxH, int imgW, int imgH )
    }
    const int x0 = (boxW - w) / 2, y0 = (boxH - h) / 2;
    return { x0, y0, x0 + w, y0 + h };
+}
+
+// ---- PlanetaryStack's zoomable preview (ZoomPreview) ----------------------
+// Zoom = screen pixels per image pixel.
+
+// The zoom levels Zoom in / Zoom out step through.
+constexpr double kZoomLevels[] = { 1.0/16, 1.0/12, 1.0/8, 1.0/6, 1.0/4, 1.0/3, 1.0/2, 2.0/3,
+                                   1, 1.5, 2, 3, 4, 6, 8, 12, 16 };
+
+// The next level above (in) or below (out) `zoom`, which need not be a level
+// (Fit's zoom); the ladder's end when there is none.
+inline double ZoomStep( double zoom, bool in )
+{
+   const size_t n = sizeof kZoomLevels / sizeof kZoomLevels[0];
+   if ( in )
+   {
+      for ( size_t i = 0; i < n; ++i )
+         if ( kZoomLevels[i] > zoom * (1 + 1e-9) )
+            return kZoomLevels[i];
+      return kZoomLevels[n - 1];
+   }
+   for ( size_t i = n; i-- > 0; )
+      if ( kZoomLevels[i] < zoom * (1 - 1e-9) )
+         return kZoomLevels[i];
+   return kZoomLevels[0];
+}
+
+// The zoom at which the image fits the box (FitRect's scale); 0 when any size <= 0.
+inline double FitZoom( int boxW, int boxH, int imgW, int imgH )
+{
+   if ( boxW <= 0 || boxH <= 0 || imgW <= 0 || imgH <= 0 )
+      return 0;
+   return std::min( double( boxW ) / imgW, double( boxH ) / imgH );
+}
+
+// Keeps the view's centre (cx, cy, image coordinates) on the image at `zoom`:
+// on an axis where the zoomed image is no larger than the box, the image's
+// middle (it shows whole, centred); otherwise within half a view of its edges.
+inline void ClampCentre( int boxW, int boxH, int imgW, int imgH, double zoom, double& cx, double& cy )
+{
+   auto clamp = []( double c, int box, int img, double zoom )
+   {
+      const double half = box / (2 * zoom);
+      if ( img <= 2 * half )
+         return img / 2.0;
+      return std::min( std::max( c, half ), img - half );
+   };
+   if ( zoom > 0 )
+   {
+      cx = clamp( cx, boxW, imgW, zoom );
+      cy = clamp( cy, boxH, imgH, zoom );
+   }
+}
+
+// What a box shows of the image at `zoom` with image point (cx, cy) at its
+// centre: the whole image pixels that cover the box, src [sx0, sx1) x [sy0, sy1),
+// and where they land, dst [dx0, dx1) x [dy0, dy1) in box coordinates (rounded
+// to the nearest pixel; it may reach past the box, which the painter clips).
+struct ZoomView
+{
+   int sx0 = 0, sy0 = 0, sx1 = 0, sy1 = 0;
+   int dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0;
+   bool Empty() const
+   {
+      return sx1 <= sx0 || sy1 <= sy0;
+   }
+};
+
+inline ZoomView ZoomRect( int boxW, int boxH, int imgW, int imgH, double zoom, double cx, double cy )
+{
+   ZoomView v;
+   if ( boxW <= 0 || boxH <= 0 || imgW <= 0 || imgH <= 0 || !(zoom > 0) )
+      return v;
+   const double hw = boxW / (2 * zoom), hh = boxH / (2 * zoom);
+   v.sx0 = std::max( 0, int( std::floor( cx - hw ) ) );
+   v.sx1 = std::min( imgW, int( std::ceil( cx + hw ) ) );
+   v.sy0 = std::max( 0, int( std::floor( cy - hh ) ) );
+   v.sy1 = std::min( imgH, int( std::ceil( cy + hh ) ) );
+   v.dx0 = int( std::lround( boxW / 2.0 + (v.sx0 - cx) * zoom ) );
+   v.dx1 = int( std::lround( boxW / 2.0 + (v.sx1 - cx) * zoom ) );
+   v.dy0 = int( std::lround( boxH / 2.0 + (v.sy0 - cy) * zoom ) );
+   v.dy1 = int( std::lround( boxH / 2.0 + (v.sy1 - cy) * zoom ) );
+   return v;
 }
 
 } // namespace planetary::preview

@@ -46,16 +46,19 @@ String Num( int64_t n )
    return String( std::to_string( n ).c_str() );
 }
 
-// The context line before a run: what is about to be stacked, and how.
-String ContextLine( const String& fileName, const ser::FileInfo& info, int threads )
-{
-   return "<end><cbr>PlanetaryStack " PLANETARY_VERSION_STRING ": stacking " + fileName.EncodedHTMLSpecialChars() + ": " +
-          Num( info.frameCount ) + " frames, " + Num( info.header.width ) + "x" + Num( info.header.height ) +
-          ", " + String( ser::ColorIdName( info.colorId ) ) + ", " + Num( info.header.depth ) + "-bit; " +
-          Num( threads ) + " threads";
-}
-
 } // namespace
+
+void WriteStackContext( const String& path, const ser::FileInfo& info, int threads )
+{
+   const String fileName = File::ExtractNameAndExtension( path );
+   Console console;
+   console.WriteLn( "<end><cbr>PlanetaryStack " PLANETARY_VERSION_STRING ": stacking " + fileName.EncodedHTMLSpecialChars() + ": " +
+                    Num( info.frameCount ) + " frames, " + Num( info.header.width ) + "x" + Num( info.header.height ) +
+                    ", " + String( ser::ColorIdName( info.colorId ) ) + ", " + Num( info.header.depth ) + "-bit; " +
+                    Num( threads ) + " threads" );
+   if ( stackcards::IsAvi( info ) )
+      console.WriteLn( "PlanetaryStack: Bayer " + Html( preview::BayerText( info ) ) );
+}
 
 int StackThreads()
 {
@@ -212,10 +215,8 @@ bool PlanetaryStackInstance::ExecuteGlobal()
       throw Error( "PlanetaryStack: " + fileName + ": " + String::UTF8ToUTF16( e.what() ) );
    }
 
+   WriteStackContext( path, source->Info(), threads );
    Console console;
-   console.WriteLn( ContextLine( fileName, source->Info(), threads ) );
-   if ( stackcards::IsAvi( source->Info() ) )
-      console.WriteLn( "PlanetaryStack: Bayer " + Html( preview::BayerText( source->Info() ) ) );
 
    // Progress: one StatusMonitor run per engine phase, with the engine's fixed
    // total. The console's Abort button makes the monitor throw ProcessAborted;

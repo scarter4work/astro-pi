@@ -30,6 +30,7 @@ int StackThreads();
 // no trustworthy clock): the UTC times of the first and last frame stacked
 // when the file has a timestamp trailer; else the header's DateTime_UTC as the
 // start (no end). Empty for an AVI, a diagnosed outcome, or a SER without times.
+// PCL-free in body, so the interface's worker thread calls it too.
 using StackTimes = planetary::stackcards::StackTimes;
 StackTimes CaptureTimes( const planetary::ser::FrameSource& source, const planetary::stack::StackOutcome& outcome );
 
@@ -37,6 +38,11 @@ StackTimes CaptureTimes( const planetary::ser::FrameSource& source, const planet
 // NCOMBINE, DATE-OBS / DATE-END never for an AVI, INSTRUME / TELESCOP /
 // OBSERVER) and stackcards::StackHistory as HISTORY cards.
 FITSKeywordArray StackKeywords( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times );
+
+// Writes the context line before a run to the Process Console: version, file,
+// frames, size, colour, depth and threads; for an AVI, its Bayer pattern and
+// where it came from.
+void WriteStackContext( const String& path, const planetary::ser::FileInfo& info, int threads );
 
 // Writes the outcome to the Process Console: the summary warnings first (an
 // undeclared mosaic's among them, so it is not missed), then the selection and

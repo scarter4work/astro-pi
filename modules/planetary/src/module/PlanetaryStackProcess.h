@@ -18,6 +18,7 @@ public:
    IsoString Categories() const override;
    uint32 Version() const override;
    String Description() const override;
+   ProcessInterface* DefaultInterface() const override;
    ProcessImplementation* Create() const override;
    ProcessImplementation* Clone( const ProcessImplementation& ) const override;
 

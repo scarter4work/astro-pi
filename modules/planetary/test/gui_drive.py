@@ -514,23 +514,30 @@ def stack_controls(box):
 
 
 # (x offset: >= 0 from the preview's left edge, < 0 from its right edge; "top" / "bottom":
-# the preview edge the y offset is from). Measured 2026-10-22 (PI 1.9.5, Xvfb) on 01-opened.png.
+# the preview edge the y offset is from). Measured 2026-10-22 (PI 1.9.5, Xvfb) with the preview at
+# (695, 305, 1230, 605): Open... x 695..788 y 251..270; the Bayer combo x 892..1004; Stack! x 695..788
+# y 278..297; the bar x 794..1130 y 277..298; Cancel x 1137..1230; the zoom row y 612..631 (Fit,
+# 100%, 200%, -, + at x 695, 792, 889, 986, 1083, each 93 wide); Execute x 1137..1230, 249 px below
+# the preview (the info box 200 px high).
 STACK_OFFSETS = {
-    "open": (24, "top", -44),
-    "bayer": (150, "top", -44),
-    "pattern": (270, "top", -44),
-    "stack": (24, "top", -17),
-    "cancel": (-30, "top", -17),
-    "fit": (16, "bottom", 17),
-    "z100": (60, "bottom", 17),
-    "z200": (104, "bottom", 17),
-    "zoomout": (146, "bottom", 17),
-    "zoomin": (180, "bottom", 17),
-    "execute": (-40, "bottom", 200),
+    "open": (46, "top", -45),
+    "bayer": (253, "top", -45),
+    "pattern": (361, "top", -45),
+    "stack": (46, "top", -18),
+    "cancel": (-47, "top", -18),
+    "fit": (46, "bottom", 16),
+    "z100": (143, "bottom", 16),
+    "z200": (240, "bottom", 16),
+    "zoomout": (337, "bottom", 16),
+    "zoomin": (434, "bottom", 16),
+    "execute": (-47, "bottom", 249),
 }
-# The progress bar's box and Save pattern...'s box (x0, y0, x1, y1 relative as above).
-BAR_BOX = ((90, "top", -27), (-80, "top", -7))
-PATTERN_BOX = ((220, "top", -54), (320, "top", -34))
+# The progress bar's inside and Save pattern...'s box (x0, y0, x1, y1 relative as above).
+BAR_BOX = ((101, "top", -25), (-102, "top", -9))
+# Inside Stack! (x 697..786, y 279..296): its label is black (0) when enabled, grey (128 at its
+# darkest) while a stack runs, measured.
+STACK_BOX = ((2, "top", -26), (91, "top", -9))
+PATTERN_BOX = ((317, "top", -52), (405, "top", -37))
 
 
 def rel_box(spec, box):
@@ -559,6 +566,15 @@ def bar_fill(box, png=None):
     return float((np.abs(row - np.array(FILL)) <= 3).all(axis=1).mean())
 
 
+def stack_enabled(box):
+    """Stack! is enabled (no run): its label's darkest pixel is black, live from the screen."""
+    return int(grab(rel_box(STACK_BOX, box)).max(axis=2).min()) < 64
+
+
+def idle(box):
+    return bar_fill(box) == 0.0 and stack_enabled(box)
+
+
 def stack_mid_run(name):
     """Stack!, then `name` shot once the bar shows the run under way; FAIL if the shot shows
     the run (nearly) over."""
@@ -573,8 +589,8 @@ def stack_mid_run(name):
 
 
 def stack_and_wait(mid_shot=None, timeout=120):
-    """Stack! (with mid_shot: shot mid-run, stack_mid_run), then waits until the bar is empty
-    (the run ended) and at least 1.5 s have passed since the click (a small capture stacks
+    """Stack! (with mid_shot: shot mid-run, stack_mid_run), then waits until the bar is empty and Stack!
+    is enabled again (the run ended) and at least 1.5 s have passed since the click (a small capture stacks
     in well under one tick of the interface's progress timer, so its bar may never fill)."""
     t0 = time.time()
     if mid_shot:
@@ -584,7 +600,7 @@ def stack_and_wait(mid_shot=None, timeout=120):
         park()
     while time.time() - t0 < 1.5:
         time.sleep(0.1)
-    wait_for(lambda: bar_fill(BOX) == 0.0, timeout, "the run to end (the progress bar empty)")
+    wait_for(lambda: idle(BOX), timeout, "the run to end (the progress bar empty, Stack! enabled)")
 
 
 def combo_down(n):
@@ -636,7 +652,7 @@ if MODE == "--stack-cancel":
     stack_mid_run("08-cancel-progress.png")
     click(*CTL["cancel"])
     park()
-    wait_for(lambda: bar_fill(BOX) == 0.0, 15, "the run to stop after Cancel (the progress bar empty)")
+    wait_for(lambda: idle(BOX), 15, "the run to stop after Cancel (the progress bar empty, Stack! enabled)")
     shot("09-cancelled.png", 1.0)
     sys.exit(0)
 
@@ -897,7 +913,11 @@ if MODE == "--check-stack":
          "04-fit.png: the disc is centred in the preview (centroid at %.2f, %.2f of its size)" % (cxp, cyp))
     r, b = rb("04-fit.png")
     need(r > 1.2 * b, "04-fit.png: the RGGB stack is warm, R above B (mean R/B %.0f/%.0f)" % (r, b))
-    for name in ("05-zoom-100.png", "06-zoom-200.png", "06b-zoom-in.png"):
+    # 100 %: the disc (360 px across) at full size in a preview wider than it, so more than twice
+    # Fit's share; from 200 % the disc is larger than the preview both ways and fills it.
+    need(lit("05-zoom-100.png") > 2 * f, "05-zoom-100.png: at 100%% the disc is larger than at Fit (%.1f%% lit, "
+         "Fit %.1f%%)" % (100 * lit("05-zoom-100.png"), 100 * f))
+    for name in ("06-zoom-200.png", "06b-zoom-in.png"):
         need(lit(name) > 0.9, "%s: zoomed into the disc, the preview is filled (%.1f%% lit)" % (name, 100 * lit(name)))
     for a, b_, what in (("04-fit.png", "05-zoom-100.png", "Fit vs 100%"), ("05-zoom-100.png", "06-zoom-200.png", "100% vs 200%"),
                         ("06-zoom-200.png", "06b-zoom-in.png", "200% vs zoomed in"),
