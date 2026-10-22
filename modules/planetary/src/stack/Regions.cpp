@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -183,8 +184,10 @@ double NccAt(const float* img, int iw, int ih, int fx0, int fy0, int w, int h, c
 // Noise of a row-major w x h image from the responses of M = [1 -2 1] x [1 -2 1] over its interior:
 // white noise s gives responses of sd 6 s, and M is 0 on any linear-or-quadratic surface and on
 // anything varying along one axis only. Trimmed second moment: the responses up to their 80th
-// percentile (texture lives in the top 20%); for a normal response of sd 6 s, E[M^2 | |M| <= its 80th
-// percentile] = 0.4377 (6 s)^2. (A median would read 0 on quantised low-noise data: most responses of
+// percentile (texture lives in the top 20%); for a normal response of sd 6 s, E[M^2 | |M| <= z] / (6 s)^2
+// = 1 - 2 z phi(z) / p with p the share kept and z = Phi^-1((1 + p) / 2): 0.4377 at p = 0.8, taken at
+// the share actually kept (the cut element and its ties are kept: 721 of 900 responses at 32 x 32, which
+// read s^2 +1.0% with 0.4377). (A median would read 0 on quantised low-noise data: most responses of
 // a smooth 8-bit disc are exactly 0.) 0 for an image under 3 x 3.
 double MaskNoise(const float* p, size_t rowLen, int w, int h) {
     // At most ~2^17 responses: every step-th row and column (still an unbiased sample of the noise).
@@ -214,40 +217,67 @@ double MaskNoise(const float* p, size_t rowLen, int w, int h) {
             sum += static_cast<double>(v) * v;
             ++n;
         }
-    return n > 0 ? std::sqrt(sum / static_cast<double>(n) / 0.4377) / 6 : 0.0;
+    if (n == 0) return 0.0;
+    const double share = static_cast<double>(n) / static_cast<double>(r.size());
+    double lo = 0, hi = 8;  // z = Phi^-1((1 + share) / 2): 2 Phi(z) - 1 = erf(z / sqrt 2) rises with z
+    for (int it = 0; it < 60; ++it) {
+        const double mid = 0.5 * (lo + hi);
+        (std::erf(mid / std::sqrt(2.0)) < share ? lo : hi) = mid;
+    }
+    const double z = 0.5 * (lo + hi);
+    const double kept = 1 - 2 * z * std::exp(-0.5 * z * z) / std::sqrt(2 * M_PI) / share;
+    return std::sqrt(sum / static_cast<double>(n) / kept) / 6;
 }
 
-// Pixel noise blind to texture over the rectangle [x0, x1) x [y0, y1): the smaller of MaskNoise on the
-// pixels and twice MaskNoise on their 2 x 2 bins (white noise s gives s / 2 in a bin, so both read s).
-// Each one misreads a different texture as noise: a raw Bayer mosaic read as mono carries its colour
-// pattern at the Nyquist frequency in every frame -- the pixels' estimate sees it, a bin (one cell of
-// the pattern) cancels it; texture at 4-8 px, coarse for the pixels, is fine for the bins. Taken over
-// the target (the regions' extent), not the frame: an 8-bit sky clipped to black reads 0.
-double TextureBlindNoise(const ser::FloatImage& im, int x0, int y0, int x1, int y1) {
-    const int w = im.width;
+// The rectangle [x0, x1) x [y0, y1) clipped to the image; false when under 3 x 3.
+bool ClipNoiseRect(const ser::FloatImage& im, int& x0, int& y0, int& x1, int& y1) {
     x0 = std::max(x0, 0);
     y0 = std::max(y0, 0);
     x1 = std::min(x1, im.width);
     y1 = std::min(y1, im.height);
-    if (x1 - x0 < 3 || y1 - y0 < 3) return 0;
-    const float* p = im.data.data();
-    thread_local std::vector<float> bins;
-    const int cw = x1 - x0, ch = y1 - y0;
-    const float* crop = p + static_cast<size_t>(y0) * w + x0;
-    const double pixels = MaskNoise(crop, static_cast<size_t>(w), cw, ch);
-    const int bw = cw / 2, bh = ch / 2;
-    bins.resize(static_cast<size_t>(bw) * bh);
-    for (int j = 0; j < bh; ++j) {
-        const float* a = crop + static_cast<size_t>(2 * j) * w;
-        const float* b = a + w;
-        float* o = bins.data() + static_cast<size_t>(j) * bw;
-        for (int i = 0; i < bw; ++i) o[i] = 0.25f * (a[2 * i] + a[2 * i + 1] + b[2 * i] + b[2 * i + 1]);
+    return x1 - x0 >= 3 && y1 - y0 >= 3;
+}
+
+// MaskNoise on the pixels of the (clipped) rectangle, or twice MaskNoise on their 2 x 2 bins (white
+// noise s gives s / 2 in a bin, so both read s); `pixels` counts what was measured. 0 when too small.
+double MaskNoiseOn(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bool bins, double* pixels) {
+    if (pixels) *pixels = 0;
+    if (!ClipNoiseRect(im, x0, y0, x1, y1)) return 0;
+    const int w = im.width, cw = x1 - x0, ch = y1 - y0;
+    const float* crop = im.data.data() + static_cast<size_t>(y0) * w + x0;
+    if (!bins) {
+        if (pixels) *pixels = static_cast<double>(cw) * ch;
+        return MaskNoise(crop, static_cast<size_t>(w), cw, ch);
     }
-    if (bw < 3 || bh < 3) return pixels;
-    return std::min(pixels, 2 * MaskNoise(bins.data(), static_cast<size_t>(bw), bw, bh));
+    const int bw = cw / 2, bh = ch / 2;
+    if (bw < 3 || bh < 3) return 0;
+    thread_local std::vector<float> b;
+    b.resize(static_cast<size_t>(bw) * bh);
+    for (int j = 0; j < bh; ++j) {
+        const float* r0 = crop + static_cast<size_t>(2 * j) * w;
+        const float* r1 = r0 + w;
+        float* o = b.data() + static_cast<size_t>(j) * bw;
+        for (int i = 0; i < bw; ++i) o[i] = 0.25f * (r0[2 * i] + r0[2 * i + 1] + r1[2 * i] + r1[2 * i + 1]);
+    }
+    if (pixels) *pixels = static_cast<double>(bw) * bh;
+    return 2 * MaskNoise(b.data(), static_cast<size_t>(bw), bw, bh);
 }
 
 }  // namespace
+
+bool RegionNoiseOnBins(const ser::FloatImage& reference, int x0, int y0, int x1, int y1) {
+    const double onPixels = MaskNoiseOn(reference, x0, y0, x1, y1, false, nullptr);
+    const double onBins = MaskNoiseOn(reference, x0, y0, x1, y1, true, nullptr);
+    return onBins > 0 && onPixels > kRegionNoiseMosaicRatio * onBins;
+}
+
+NoiseEstimate RegionNoise(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bool onBins) {
+    double pixels = 0;
+    NoiseEstimate n;
+    n.sigma = MaskNoiseOn(im, x0, y0, x1, y1, onBins, &pixels);
+    n.varSigma2 = pixels > 0 ? kRegionNoiseVariance * std::pow(n.sigma, 4) / pixels : 0;
+    return n;
+}
 
 AxisWeight AxisWeightAt(const RegionLayout& layout, bool vertical, double u) {
     AxisWeight a;
@@ -318,7 +348,9 @@ RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& re
 
     // Structure: the predicted error of one frame's local shift (kMaxShiftNoise), from the window's
     // gradient energy less the reference's own noise share (2 s^2 per forward difference).
-    const double sRef = TextureBlindNoise(reference, bx0, by0, bx1, by1);
+    // The region-stage noise reading, chosen once for the capture from the reference (Ruling P25).
+    lay.noiseOnBins = RegionNoiseOnBins(reference, bx0, by0, bx1, by1);
+    const double sRef = RegionNoise(reference, bx0, by0, bx1, by1, lay.noiseOnBins).sigma;
     const double sf = std::max(sRef * std::sqrt(static_cast<double>(kReferenceFrames)), kMinFrameNoise);
     const float* p = reference.data.data();
     for (int j = 0; j < lay.ny; ++j)
@@ -429,12 +461,9 @@ FrameRegions RegionMeasurer::Measure(const ser::FloatImage& frameLuma, int64_t f
     if (layout_.regions.empty()) return out;
 
     // Texture-blind (MeasureFrame's smoothest-tile estimate reads a lunar surface's texture as noise and
-    // would zero the quality of every smooth region): s from TextureBlindNoise, the uncertainty of s^2
-    // that of a median over ~n / 4 independent responses (neighbouring 3 x 3 masks overlap):
-    // Var(s^2) = 4 s^2 Var(s) = 4 s^2 x 1.36 s^2 / (n / 4).
-    NoiseEstimate noise;
-    noise.sigma = TextureBlindNoise(frameLuma, ex0_, ey0_, ex1_, ey1_);
-    noise.varSigma2 = 21.8 * std::pow(noise.sigma, 4) / std::max(1.0, static_cast<double>(ex1_ - ex0_) * (ey1_ - ey0_));
+    // would zero the quality of every smooth region): RegionNoise over the windows' extent, on the
+    // pixels or the bins as the layout chose for the capture (Ruling P25).
+    const NoiseEstimate noise = RegionNoise(frameLuma, ex0_, ey0_, ex1_, ey1_, layout_.noiseOnBins);
     thread_local std::vector<ser::FloatImage> pyr;
     thread_local std::vector<float> sample, tmp;
     pyr.resize(kLocalLevels);
@@ -680,6 +709,19 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             const auto n = static_cast<int64_t>(q.size());
             d.candidates = n;
             if (n == 0) continue;
+            // Ruling P27: no detail to rank above the measurement noise -> no kept frame, so the region
+            // takes the fallback, the plain mean (Regions.h): fewer than kMinStackFrames candidates (a
+            // subset of those is no stack worth the name, and one or two candidates out of many aligned
+            // frames are the noise's tail -- or alignment collapsed there), or the median candidate's
+            // quality under kRegionDetailSigmas of its own qualitySigma.
+            std::vector<double> ratio;
+            for (size_t i = 0; i < q.size(); ++i)
+                ratio.push_back(sg[i] > 0 && std::isfinite(sg[i]) ? q[i] / sg[i] : std::numeric_limits<double>::infinity());
+            std::nth_element(ratio.begin(), ratio.begin() + static_cast<std::ptrdiff_t>(ratio.size() / 2), ratio.end());
+            if (n < kMinStackFrames || ratio[ratio.size() / 2] < kRegionDetailSigmas) {
+                d.noiseOnly = true;
+                continue;
+            }
             const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (n + 1) / 2));
             const int64_t floorCount =
                 std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));

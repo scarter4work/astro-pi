@@ -1487,10 +1487,12 @@ namespace {
 // jitter from frame to frame, noise 0.01: Task 6's case), or -- `convolve` -- as defocus acts on the
 // whole image: each sharp frame (seeing 0.6 px, 4% jitter) convolved with a Gaussian of sigma `blur`
 // (steady: the optics), pixel noise `noise` added after. Frames reach R + 3 blur + 30 px out from the
-// centre each way, so the blurred halo stays inside.
-Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed) {
+// centre each way, so the blurred halo stays inside. `sky`: the sky level when >= 0 (MakeDisc's is 0.02,
+// 2 noise sd above black at noise 0.01: the 16-bit capture clips 2.3% of it at 0).
+Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
     const int half = static_cast<int>(radius + 3 * blur + 30), w = 2 * half, h = 2 * half;
-    const testing::Scene s = testing::MakeDisc(seed, half + 0.3, half - 0.2, radius);
+    testing::Scene s = testing::MakeDisc(seed, half + 0.3, half - 0.2, radius);
+    if (sky >= 0) s.sky = sky;
     testing::Capture cap = testing::NewCapture(w, h);
     std::mt19937 rng(seed + 1);
     std::normal_distribution<double> n01(0, 1);
@@ -1549,14 +1551,27 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         bool convolve;
         double noise;
         bool diagnosed;
+        double sky = -1;  // MakeDisc's 0.02 unless given
     };
+    // Ruling P19 (an unbiased pixel noise): R 24 blurred 10 px at noise 0.01 read 0.245 and was stacked
+    // while the noise estimate read s^2 ~5% low (0.263 now), and the convolved R 24 / 12 px at noise 0.01
+    // sat on the limit (0.267; 0.312 now; noise-free 0.334). The faint blobs, at noise 0.01 over a sky of
+    // 0.06 that does not clip: R 40 / 20 px and R 24 / 24 px were stacked and are refused. Over the
+    // default sky of 0.02 the capture clips 2.3% of the sky at 0, its noise there reads low, and R 40 /
+    // 20 px stays stacked -- a known limit (Select.h step 7) that fails safe: a soft image, warned by the
+    // region stage.
     for (const Case& c : {Case{24, 0.6, false, 0.01, false}, Case{24, 2, false, 0.01, false}, Case{24, 3, false, 0.01, false},
                           Case{40, 4, false, 0.01, false}, Case{24, 2, true, 0.005, false}, Case{40, 3, true, 0.005, false},
-                          Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true}}) {
-        const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7);
+                          Case{24, 2, true, 0.01, false}, Case{40, 3, true, 0.01, false},
+                          Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true},
+                          Case{24, 10, false, 0.01, true}, Case{24, 12, true, 0.01, true},
+                          Case{40, 20, true, 0.01, true, 0.06}, Case{24, 24, true, 0.01, true, 0.06},
+                          Case{40, 3, true, 0.01, false, 0.06}, Case{40, 20, true, 0.01, false}}) {
+        const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7, c.sky);
         std::string numbers;
         for (const auto& [name, v] : sel.diagnosis.numbers) numbers += name + " " + std::to_string(v) + "; ";
-        INFO("R " << c.radius << ", blur " << c.blur << (c.convolve ? " (convolved)" : " (StackSynth limb)") << ": "
+        INFO("R " << c.radius << ", blur " << c.blur << (c.convolve ? " (convolved)" : " (StackSynth limb)") << ", noise "
+                  << c.noise << ", sky " << (c.sky >= 0 ? c.sky : 0.02) << ": "
                   << sel.explanation << " | " << numbers);
         CHECK(sel.focusJudged);
         CHECK(sel.targetRadius >= stack::kMinJudgedRadius);  // judged by the large-disc rule
@@ -1566,8 +1581,9 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         }
         CHECK(sel.diagnosis.kind == DiagnosisKind::OutOfFocus);
         if (sel.diagnosis.kind != DiagnosisKind::OutOfFocus) continue;
-        // The radius the judgement used is the disc's, not the blurred halo's.
-        CHECK(Number(sel.diagnosis, "target radius (pixels)") == Catch::Approx(c.radius).epsilon(0.15));
+        // The radius the judgement used is the disc's, not the blurred halo's -- up to a blur of R / 2;
+        // blurred by R the centre dims and the half-contrast radius moves out (R 24 by 24 px: 33.5).
+        if (c.blur <= 0.5 * c.radius) CHECK(Number(sel.diagnosis, "target radius (pixels)") == Catch::Approx(c.radius).epsilon(0.15));
         CHECK(Number(sel.diagnosis, "limb blur (pixels)") >= Number(sel.diagnosis, "blur limit (pixels)"));
     }
 }

@@ -23,6 +23,9 @@ constexpr int kGridCells = 256;              // detection grid: longest side in 
 constexpr double kBackgroundPercentile = 0.2;
 constexpr double kNoisePercentile = 0.2;     // of tile noise estimates
 constexpr int kMaxTile = 32;
+constexpr double kNoiseTileSigmas = 3;       // a noise tile: within 3 model sd of the noise mean
+constexpr int kNoiseRounds = 8;              // fixed-point rounds of the noise-tile count and kurtosis
+constexpr double kMaxNoiseKurtosis = 12;     // caps kappa (8-bit noise of ~0.3 DN reads 10.5)
 constexpr double kSeedSigmas = 4;            // component seeds: blocks above b + 4 s_b
 constexpr double kPeakSigmas = 10;           // a target's brightest block: >= b + 10 s_b ...
 constexpr double kMinContrast = 0.01;        // ... and >= b + 1% of full scale
@@ -40,46 +43,168 @@ double Quantile(std::vector<double>& v, double q) {
     return v[k];
 }
 
-// Pixel noise: from the smoothest tiles' mean squared horizontal neighbour difference
-// (white noise: E[d^2] = 2 s^2). Tiles with fewer than half a full tile's pairs are skipped.
-// Uncertainty of s^2: a tile of m pairs estimates 2 s^2 with variance 12 s^4 / m (8 s^4 per
-// squared difference, 2 s^4 covariance with each neighbouring pair); the 20th percentile of K
-// such (near-normal) estimates has variance 0.2 * 0.8 / (K phi(z_0.2)^2) * 12 s^4 / m
-// = 24.5 s^4 / (m K); halved twice for s^2 = q / 2: 6.12 s^4 / M, M = all pairs used.
-NoiseEstimate PixelNoise(const float* p, int w, int h) {
-    if (w < 2) return {};
+double NormalCdf(double z) { return 0.5 * std::erfc(-z / std::sqrt(2.0)); }
+double NormalPdf(double z) { return std::exp(-0.5 * z * z) / std::sqrt(2 * M_PI); }
+
+// The pixel-noise tiles of an image (Measure.h, "Background and noise"): per tile the mean squared
+// horizontal neighbour difference (white noise: E[d^2] = 2 s^2) and the mean d^4. Tiles with fewer
+// than half a full tile's pairs are skipped.
+struct NoiseTiles {
+    // A tile shape (pairs m, pairs per row L): full tiles, the last column's, the last row's, the corner.
+    struct Shape {
+        int64_t m = 0;
+        int len = 0;
+        double n = 0, nNext = 0, tau = 0, tau0 = 0;  // tau0: a Gaussian noise's (kurtosis 3)
+    };
+    struct Tile {
+        double d2 = 0, d4 = 0;  // mean d^2, mean d^4
+        int64_t m = 0;
+        size_t shape = 0;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // the tile's pixels, half-open
+    };
+    std::vector<Shape> shapes;
+    std::vector<Tile> tiles;
+    size_t k = 0;        // the order statistic read: the k-th smallest (0-based) of the tiles' d^2
+    double q = 0;        // its value
+    int64_t pairs = 0;   // pairs in all the tiles, M
+};
+
+NoiseTiles MeasureNoiseTiles(const float* p, int w, int h) {
+    NoiseTiles out;
+    if (w < 2) return out;
     const int tile = std::max(1, std::min({kMaxTile, std::max(8, std::min(w, h) / 4), std::min(w, h)}));
     const int tx = (w + tile - 1) / tile, ty = (h + tile - 1) / tile;
-    std::vector<double> sum(static_cast<size_t>(tx) * ty, 0.0);
+    std::vector<double> sum(static_cast<size_t>(tx) * ty, 0.0), sum4(sum.size(), 0.0);
     std::vector<int64_t> cnt(sum.size(), 0);
+    std::vector<int> rowPairs(sum.size(), 0);  // pairs per row in the tile (fewer in the last column)
     for (int y = 0; y < h; ++y) {
         const float* row = p + static_cast<size_t>(y) * w;
         const size_t trow = static_cast<size_t>(y / tile) * tx;
         for (int x0 = 0; x0 < w - 1; x0 += tile) {
             const int x1 = std::min(w - 1, x0 + tile);
-            double s = 0;
+            double s = 0, s4 = 0;
             for (int x = x0; x < x1; ++x) {
-                const double d = static_cast<double>(row[x + 1]) - row[x];
-                s += d * d;
+                const double d = static_cast<double>(row[x + 1]) - row[x], d2 = d * d;
+                s += d2;
+                s4 += d2 * d2;
             }
-            sum[trow + x0 / tile] += s;
-            cnt[trow + x0 / tile] += x1 - x0;
+            const size_t t = trow + x0 / tile;
+            sum[t] += s;
+            sum4[t] += s4;
+            cnt[t] += x1 - x0;
+            rowPairs[t] = x1 - x0;
         }
     }
     const int64_t full = static_cast<int64_t>(std::min(tile, w - 1)) * std::min(tile, h);
     std::vector<double> est;
+    out.tiles.reserve(sum.size());
     est.reserve(sum.size());
-    int64_t pairs = 0;
     for (size_t i = 0; i < sum.size(); ++i)
         if (cnt[i] > 0 && 2 * cnt[i] >= full) {
-            est.push_back(sum[i] / static_cast<double>(cnt[i]));
-            pairs += cnt[i];
+            size_t sh = 0;
+            while (sh < out.shapes.size() && !(out.shapes[sh].m == cnt[i] && out.shapes[sh].len == rowPairs[i])) ++sh;
+            if (sh == out.shapes.size()) out.shapes.push_back({cnt[i], rowPairs[i]});
+            const double m = static_cast<double>(cnt[i]);
+            const int x0 = static_cast<int>(i % tx) * tile, y0 = static_cast<int>(i / tx) * tile;
+            out.tiles.push_back({sum[i] / m, sum4[i] / m, cnt[i], sh, x0, y0, std::min(w, x0 + tile), std::min(h, y0 + tile)});
+            est.push_back(sum[i] / m);
+            out.pairs += cnt[i];
         }
-    if (est.empty()) return {};
+    if (est.empty()) return out;
+    out.k = static_cast<size_t>(kNoisePercentile * static_cast<double>(est.size() - 1));
+    out.q = Quantile(est, kNoisePercentile);
+    return out;
+}
+
+// A target's box (luma px, half-open): the tiles overlapping it are not sky.
+struct TargetBox {
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    bool Overlaps(const NoiseTiles::Tile& t) const { return t.x0 < x1 && t.x1 > x0 && t.y0 < y1 && t.y1 > y0; }
+};
+
+// Pixel noise from the tiles (Ruling P19; Measure.h, "Background and noise"): q is read as the k-th
+// smallest of the N noise tiles -- those whose d^2 lies within kNoiseTileSigmas of the noise mean --
+// and s^2 is the mean that puts it there. `target`: the sky is outside it (null: the whole image).
+NoiseEstimate PixelNoise(NoiseTiles t, const TargetBox* target) {
+    std::vector<NoiseTiles::Shape>& shapes = t.shapes;
+    const size_t k = t.k;
+    const double q = t.q;
+    if (t.tiles.empty() || !(q > 0)) return {};  // no tiles, or a constant (clipped) sky: no measurable noise
+
+    // Each tile's estimate of 2 s^2 is near-normal with relative sd tau = sqrt((kappa - (kappa - 1) / (2 L))
+    // / m), kappa = mu4 / s^4 of the noise (a row of L pairs has variance (4 kappa L - 2 kappa + 2) s^4).
+    // solve(): u = 2 s^2 such that q is where the k-th smallest of the counted tiles is expected (Blom),
+    // and the variance of that sample quantile, pr (1 - pr) / (N f(q)^2), f their density at q.
+    double kappa = 3, nTiles = 0;
+    auto solve = [&](double& u, double& pr, double& varQ) {
+        nTiles = 0;
+        for (NoiseTiles::Shape& s : shapes) {
+            nTiles += s.n;
+            s.tau = std::sqrt((kappa - (kappa - 1) / (2.0 * s.len)) / static_cast<double>(s.m));
+        }
+        pr = std::min(0.5, (static_cast<double>(k) + 0.625) / (nTiles + 0.25));
+        // x = q / u in (0, 1]: the expected share of noise tiles under q, sum n_g Phi((x - 1) / tau_g) / N,
+        // rises with x and is 1/2 at x = 1, so bisection finds the x where it is pr.
+        double lo = 0, hi = 1;
+        for (int it = 0; it < 60; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            double share = 0;
+            for (const NoiseTiles::Shape& s : shapes) share += s.n * NormalCdf((mid - 1) / s.tau);
+            (share / nTiles < pr ? lo : hi) = mid;
+        }
+        u = q / hi;
+        double density = 0;
+        for (const NoiseTiles::Shape& s : shapes) density += s.n * NormalPdf((hi - 1) / s.tau) / (u * s.tau);
+        density /= nTiles;
+        varQ = pr * (1 - pr) / (nTiles * density * density);
+    };
+    // Round 0: every tile taken as noise, kappa 3 -- the centre of the first noise band.
+    for (const NoiseTiles::Tile& tl : t.tiles) shapes[tl.shape].n += 1;
+    for (NoiseTiles::Shape& s : shapes) s.tau0 = std::sqrt((3 - 1.0 / s.len) / static_cast<double>(s.m));
+    double u = q, pr = 0.5, varQ = 0;
+    solve(u, pr, varQ);
+    // Then count the noise tiles in the band (Gaussian width, so texture does not widen it) and their
+    // kurtosis, and solve again, to a fixed point. No correction (s^2 = q / 2) when the sky outside the
+    // target holds fewer than k + 1 of them (q cannot be shown to be sky noise), or when there are at
+    // most 2k + 1 in all (pr capped at 1/2: q is not in their lower half) -- the smoothest tiles are then
+    // texture, not noise.
+    bool corrected = false;
+    for (int round = 1; round <= kNoiseRounds; ++round) {
+        for (NoiseTiles::Shape& s : shapes) s.nNext = 0;
+        double a2 = 0, a4 = 0, pairs = 0;
+        size_t sky = 0;
+        for (const NoiseTiles::Tile& tl : t.tiles) {
+            NoiseTiles::Shape& s = shapes[tl.shape];
+            if (tl.d2 > u * (1 + kNoiseTileSigmas * s.tau0)) continue;
+            s.nNext += 1;
+            const double m = static_cast<double>(tl.m);
+            a2 += tl.d2 * m;
+            a4 += tl.d4 * m;
+            pairs += m;
+            sky += !(target && target->Overlaps(tl));
+        }
+        corrected = sky > k;
+        if (!corrected) break;
+        for (NoiseTiles::Shape& s : shapes) s.n = s.nNext / NormalCdf(kNoiseTileSigmas);
+        // kappa from the noise tiles: E[d^4] = 2 mu4 + 6 s^4 and E[d^2] = 2 s^2.
+        kappa = std::clamp(2 * a4 * pairs / (a2 * a2) - 3, 1.0, kMaxNoiseKurtosis);
+        solve(u, pr, varQ);
+        corrected = pr < 0.5;
+        if (!corrected) break;
+    }
     NoiseEstimate n;
-    const double s2 = Quantile(est, kNoisePercentile) / 2;
-    n.sigma = std::sqrt(s2);
-    n.varSigma2 = 6.12 * s2 * s2 / static_cast<double>(pairs);
+    if (corrected) {
+        const double s2 = u / 2;
+        n.sigma = std::sqrt(s2);
+        n.varSigma2 = varQ * (s2 / q) * (s2 / q);  // s^2 = q / (2 x)
+    } else {
+        // Uncorrected, the reading as it always was: s^2 = q / 2, and the variance of the 20th percentile
+        // of K tile estimates taken as Gaussian noise, 0.2 x 0.8 / (K phi(z_0.2)^2) x 12 s^4 / m, halved
+        // twice: 6.12 s^4 / M (M = all pairs) (solve()'s for K like tiles at p = 0.2, u = q).
+        const double s2 = q / 2;
+        n.sigma = std::sqrt(s2);
+        n.varSigma2 = 6.12 * s2 * s2 / static_cast<double>(t.pairs);
+    }
     return n;
 }
 
@@ -195,7 +320,8 @@ int DetectionBlock(int width, int height) {
     return std::max(1, (std::max(width, height) + kGridCells - 1) / kGridCells);
 }
 
-FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale) {
+// MeasureFrame, also handing out the noise its quality used (EstimatePixelNoise).
+static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, double lumaScale, NoiseEstimate* qualityNoise) {
     if (luma.width <= 0 || luma.height <= 0)
         throw std::invalid_argument("MeasureFrame: empty image");
     if (luma.channels != 1)
@@ -221,8 +347,13 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
     Open3x3(p, w, h, openA, openB);
     const float* opened = openA.data();
     const Grid g = BlockMeans(opened, w, h);
-    const NoiseEstimate noise = PixelNoise(p, w, h);
-    const double sigma = noise.sigma;
+    const NoiseTiles tiles = MeasureNoiseTiles(p, w, h);
+    // Detection's floor s / d needs s before there is a box, so the whole image is taken as sky. On a
+    // frame-filling target that corrects texture as if it were noise, but the floor does not hold
+    // there: the opened grid's MAD estimate averages 8.7x / 21x s / d on the 2026-01-30 193142 / 2023-02-02
+    // 202030 Moons, and the floor holds in none of their first 300 frames (measured 2026-10-22).
+    const NoiseEstimate noiseImage = PixelNoise(tiles, nullptr);
+    const double sigma = noiseImage.sigma;
     std::vector<double> sorted = g.mean;
     const double b = Quantile(sorted, kBackgroundPercentile);
     const double sigmaB = std::max(BlockNoise(g), sigma / g.d);
@@ -270,6 +401,7 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
         }
         s.brightness = sum / static_cast<double>(npix);
         s.clippedFraction = static_cast<double>(clipped) / static_cast<double>(npix);
+        if (qualityNoise) *qualityNoise = noiseImage;  // no target: the whole image is sky
         return s;
     }
     s.targetFound = true;
@@ -331,17 +463,28 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
     const int margin = std::max(1, static_cast<int>(std::lround(kMarginFraction * std::max(s.bx1 - s.bx0, s.by1 - s.by0))));
     const int rx0 = std::max(0, s.bx0 - margin), ry0 = std::max(0, s.by0 - margin);
     const int rx1 = std::min(w, s.bx1 + margin), ry1 = std::min(h, s.by1 + margin);
+    // The quality's noise: corrected only when the sky outside the target's box holds more than k noise
+    // tiles ("Background and noise"; a frame-filling target leaves none, and its reading stays as it was).
+    const TargetBox box{s.bx0, s.by0, s.bx1, s.by1};
+    const NoiseEstimate noise = PixelNoise(tiles, &box);
+    if (qualityNoise) *qualityNoise = noise;
     const QualityEstimate q = RegionQuality(p, w, rx0, ry0, rx1, ry1, b, noise);
     s.quality = q.quality;
     s.qualitySigma = q.sigma;
     return s;
 }
 
+FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale) {
+    return MeasureWithNoise(luma, index, lumaScale, nullptr);
+}
+
 NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma) {
     if (luma.channels != 1 || luma.width <= 0 || luma.height <= 0 ||
         luma.data.size() != static_cast<size_t>(luma.width) * luma.height)
         throw std::invalid_argument("EstimatePixelNoise: expected a non-empty 1-channel image");
-    return PixelNoise(luma.data.data(), luma.width, luma.height);
+    NoiseEstimate n;
+    MeasureWithNoise(luma, 0, 1, &n);  // the target's box gates the correction, as for the quality
+    return n;
 }
 
 QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,

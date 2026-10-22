@@ -849,14 +849,14 @@ TEST_CASE("The alignment line's region phrase never claims a region stacks 0 fra
     CHECK(stack::RegionPhrase(detail({300}), 300, 300) ==
           "1 region placed on the target's detail, stacking its own sharpest 300 of 300 frames");
     // The 2026-01-30 Moon 193142: 7 of 326 regions (lunar-limb windows, mostly dark sky) measured no
-    // detail in any frame; they take the plain mean of the stacked frames (Accumulator's fallback).
+    // detail above the noise; they take the plain mean of the stacked frames (Accumulator's fallback).
     std::vector<int64_t> moon(319, 2043);
     moon[0] = 5;
     moon[1] = 2102;
     moon.insert(moon.end(), 7, 0);
     CHECK(stack::RegionPhrase(detail(moon), 2102, 2102) ==
           "326 regions placed on the target's detail: 319 stacking their own sharpest 5-2102 of 2102 frames (median "
-          "2043), 7 with no measurable detail in any frame taking the mean of the 2102 stacked frames");
+          "2043), 7 with no detail above the measurement noise taking the mean of the 2102 stacked frames");
     CHECK(stack::RegionPhrase({}, 40, 40) == "no region holds detail to rank on, so the 40 aligned frames are stacked whole");
 }
 

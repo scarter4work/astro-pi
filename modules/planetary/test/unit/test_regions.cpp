@@ -386,6 +386,173 @@ TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") 
     CHECK_THROWS_AS(stack::PlanRegions(lay, dup), std::invalid_argument);
 }
 
+TEST_CASE("A featureless region stacks every frame; textured ones keep their lucky frames (Ruling P27)", "[regions]") {
+    // The surface of "each region keeps the frames sharp there", with a 64-px patch replaced by a flat
+    // level and a faint smooth blob (amplitude 0.03, sigma 6 px): structure enough for a region to be
+    // placed and aligned there, but gradient energy far under the noise's, so its frames' quality is
+    // the noise floor's -- the Moon 193142's dark limb regions. Ranked, such a region kept a handful of
+    // noise-floor frames (sqrt(frames / kept) times the noise of the mean).
+    const int w = 256, h = 192, px0 = 64, py0 = 64, px1 = 128, py1 = 128;
+    const Scene s = testing::MakeSurface(21, w, h);
+    auto patch = [&](FloatImage& im, double noise, unsigned seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n(0, noise);
+        for (int y = py0; y < py1; ++y)
+            for (int x = px0; x < px1; ++x) {
+                const double dx = x - 96.3, dy = y - 95.7;
+                im.data[static_cast<size_t>(y) * w + x] =
+                    static_cast<float>(0.4 + 0.03 * std::exp(-(dx * dx + dy * dy) / 72.0) + (noise > 0 ? n(rng) : 0.0));
+            }
+    };
+    FloatImage ref = Truth(s, w, h, 0.6);
+    patch(ref, 0, 0);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionMeasurer m(ref, lay);
+    std::mt19937 rng(4);
+    std::uniform_real_distribution<double> uni(0, 1);
+    const int frames = 80;
+    std::vector<FrameRegions> measured;
+    for (int k = 0; k < frames; ++k) {
+        FrameSpec f;
+        f.hasLocal = true;
+        f.dx = Constant(0);
+        f.dy = Constant(0);
+        f.noise = 0.01;
+        std::vector<bool> sharp(64);
+        for (auto&& b : sharp) b = uni(rng) < 0.3;
+        f.sigma = Cells(w, h, 64, 0.5, 2.5, [&](int i, int j) { return sharp[static_cast<size_t>((j * 8 + i) % 64)]; });
+        FloatImage frame = Render(s, w, h, f, 300 + k);
+        patch(frame, 0.01, 700u + static_cast<unsigned>(k));
+        measured.push_back(m.Measure(frame, k, Shift{}));
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    int flat = 0, textured = 0;
+    for (size_t r = 0; r < plan.RegionCount(); ++r) {
+        const auto& reg = lay.regions[r];
+        const auto& d = plan.detail[r];
+        const bool inside = reg.x0 >= px0 && reg.x1 <= px1 && reg.y0 >= py0 && reg.y1 <= py1;
+        const bool clear = reg.x1 <= px0 || reg.x0 >= px1 || reg.y1 <= py0 || reg.y0 >= py1;
+        INFO("region at " << reg.x0 << "," << reg.y0 << ": candidates " << d.candidates << ", kept " << d.kept
+                          << (d.noiseOnly ? ", noise only" : ""));
+        if (inside) {
+            ++flat;
+            CHECK(d.candidates > 0);  // the case that matters: noise-floor "detail" in some frames
+            CHECK(d.noiseOnly);
+            CHECK(d.kept == 0);       // the fallback: the plain mean of the stacked frames
+        } else if (clear) {
+            ++textured;
+            CHECK_FALSE(d.noiseOnly);
+            CHECK(d.kept >= 1);
+            CHECK(d.kept < d.candidates);  // a lucky subset
+        }
+    }
+    CHECK(flat >= 1);
+    CHECK(textured >= 10);
+}
+
+TEST_CASE("A low-SNR region with real seeing variation keeps a lucky subset (P27 review round 3)", "[regions]") {
+    // The surface at half contrast, noise 0.01, seeing changing from frame to frame (sigma uniform in
+    // 0.5-2.5 px over the whole frame): per region a median q / qualitySigma of ~3.3-12, where
+    // qualitySigma overstates q's scatter (Ruling P26). An override that stacked every aligned frame
+    // when the spread looked like noise fired on ~40 of these regions and threw their sharper frames
+    // away. The ranking must keep a subset there, of frames truly sharper than the average.
+    const int w = 256, h = 192, frames = 150;
+    const Scene s = testing::MakeSurface(21, w, h);
+    FloatImage ref = Truth(s, w, h, 0.6);
+    double level = 0;
+    for (const float v : ref.data) level += v;
+    level /= static_cast<double>(ref.data.size());
+    for (float& v : ref.data) v = static_cast<float>(0.4 + 0.5 * (v - level));
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionMeasurer m(ref, lay);
+    std::mt19937 rng(9);
+    std::uniform_real_distribution<double> uni(0, 1);
+    std::normal_distribution<double> noise(0, 0.01);
+    std::vector<FrameRegions> measured;
+    std::vector<double> blur;
+    for (int k = 0; k < frames; ++k) {
+        FrameSpec f;
+        f.hasLocal = true;
+        f.dx = Constant(0);
+        f.dy = Constant(0);
+        f.noise = 0;
+        const double sg = 0.5 + 2.0 * uni(rng);
+        f.sigma = Constant(sg);
+        FloatImage frame = Render(s, w, h, f, 100u + static_cast<unsigned>(k));
+        for (float& v : frame.data) v = static_cast<float>(0.4 + 0.5 * (v - level) + noise(rng));
+        blur.push_back(sg);
+        measured.push_back(m.Measure(frame, k, Shift{}));
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    const size_t nr = plan.RegionCount();
+    int judged = 0, sharper = 0;
+    for (size_t r = 0; r < nr; ++r) {
+        const auto& d = plan.detail[r];
+        if (d.noiseOnly) continue;
+        double keptBlur = 0, allBlur = 0;
+        int64_t usable = 0;
+        for (size_t f = 0; f < plan.frames.size(); ++f) {
+            const uint8_t fl = plan.flags[f * nr + r];
+            if (!(fl & stack::RegionPlan::kShiftUsable)) continue;
+            ++usable;
+            allBlur += blur[static_cast<size_t>(plan.frames[f])];
+            if (fl & stack::RegionPlan::kKept) keptBlur += blur[static_cast<size_t>(plan.frames[f])];
+        }
+        REQUIRE(d.kept > 0);
+        keptBlur /= static_cast<double>(d.kept);
+        allBlur /= static_cast<double>(usable);
+        INFO("region " << r << ": kept " << d.kept << " of " << usable << " aligned, true blur kept " << keptBlur << " / all "
+                       << allBlur);
+        ++judged;
+        CHECK(d.kept < usable);              // a subset, never every aligned frame
+        sharper += keptBlur < allBlur - 0.25;  // of frames truly sharper
+    }
+    INFO(sharper << " of " << judged << " regions kept frames >= 0.25 px sharper than the average");
+    CHECK(judged >= 100);
+    CHECK(sharper >= 0.6 * judged);
+}
+
+TEST_CASE("A region with too few candidates takes the plain mean (P27 review round 3)", "[regions]") {
+    // Alignment collapsed in one region: 2 of 200 frames align there, both with a quality in the noise's
+    // tail (6 qualitySigma: the most of ~200 noise readings). The ratio test alone passed them and the
+    // region stacked them alone; with fewer than kMinStackFrames candidates it takes the plain mean.
+    const int w = 192, h = 160;
+    const Scene s = testing::MakeSurface(23, w, h);
+    const FloatImage ref = Truth(s, w, h, 0.6);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    REQUIRE(lay.regions.size() >= 2);
+    std::mt19937 rng(8);
+    std::normal_distribution<double> n(0, 1);
+    std::vector<FrameRegions> measured;
+    for (int k = 0; k < 200; ++k) {
+        FrameRegions fr;
+        fr.frameIndex = k;
+        for (size_t r = 0; r < lay.regions.size(); ++r) {
+            stack::RegionMeasure q;
+            q.confidence = 0.95f;
+            if (r == 0) {
+                q.aligned = k < 2;
+                q.quality = 0.06f;
+                q.qualitySigma = 0.01f;
+            } else {
+                q.aligned = true;
+                q.quality = static_cast<float>(0.3 * (1 + 0.05 * n(rng)));
+                q.qualitySigma = 0.002f;
+            }
+            fr.regions.push_back(q);
+        }
+        measured.push_back(fr);
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    CHECK(plan.detail[0].candidates == 2);
+    CHECK(plan.detail[0].noiseOnly);
+    CHECK(plan.detail[0].kept == 0);
+    for (size_t r = 1; r < plan.RegionCount(); ++r) {
+        CHECK_FALSE(plan.detail[r].noiseOnly);
+        CHECK(plan.detail[r].kept > 0);
+    }
+}
+
 TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (Ruling P8)", "[regions]") {
     // Select holds frames above its fence as suspects and admits those that align (Ruling P6); every
     // frame reaching the regions has passed alignment, and in a region a frame passes the region's own
@@ -415,4 +582,59 @@ TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (
     REQUIRE(pos >= 0);
     for (size_t r = 0; r < plan.RegionCount(); ++r)
         CHECK((plan.flags[static_cast<size_t>(pos) * plan.RegionCount() + r] & stack::RegionPlan::kKept) != 0);
+}
+
+TEST_CASE("RegionNoise is unbiased on pixels and on bins, chosen once per capture (Ruling P25)", "[regions][noise]") {
+    // The region stage used to take, per frame, the smaller of the two readings: s^2 0.923 / 0.961 /
+    // 0.981 / 0.989 / 0.995 of the truth over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (white noise), each
+    // frame taking whichever fluctuated low. Each reading alone, white noise 0.01:
+    for (const int n : {32, 48, 64, 128, 256, 512})
+        for (const bool onBins : {false, true}) {
+            const int runs = std::max(150, static_cast<int>(3e6 / (static_cast<double>(n) * n)));
+            double sum = 0, sum2 = 0, reported = 0;
+            for (int k = 0; k < runs; ++k) {
+                std::mt19937 rng(4000u + 31u * static_cast<unsigned>(k) + static_cast<unsigned>(n) + (onBins ? 7u : 0u));
+                std::normal_distribution<double> g(0, 0.01);
+                FloatImage im{n, n, 1, std::vector<float>(static_cast<size_t>(n) * n)};
+                for (float& v : im.data) v = static_cast<float>(0.3 + g(rng));
+                const stack::NoiseEstimate e = stack::RegionNoise(im, 0, 0, n, n, onBins);
+                const double v = e.sigma * e.sigma / 1e-4;
+                sum += v;
+                sum2 += v * v;
+                reported += e.varSigma2 / 1e-8;
+            }
+            const double mean = sum / runs, var = (sum2 - runs * mean * mean) / (runs - 1);
+            INFO(n << "^2 on " << (onBins ? "bins" : "pixels") << ": mean s^2 / truth " << mean << " over " << runs
+                   << " runs; variance " << var << ", reported " << reported / runs);
+            // Within 1%, but for 16 x 16 bins (196 responses, a mosaic's smallest extent): the trimmed
+            // moment's small-sample excess, +2.2% measured.
+            CHECK(mean == Catch::Approx(1).margin(onBins && n == 32 ? 0.025 : 0.01));
+            CHECK(var >= 0.65 * reported / runs);  // the formula is one constant for 32^2-1024^2: 0.71-1.23 of it
+            CHECK(var <= 1.5 * reported / runs);
+        }
+    // The choice, made on the reference: a mono disc (texture at a few px raises the bins' reading) is
+    // read on the pixels; the same disc as a mono-labelled colour mosaic (sites R 1 / G 0.5 / B 0.35),
+    // whose pattern the pixels read as noise, on the bins.
+    const int w = 160, h = 160;
+    const Scene s = testing::MakeDisc(3, 80.3, 79.8, 40);
+    auto cfa = [&](FloatImage& im) {
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                im.data[static_cast<size_t>(y) * w + x] *= y % 2 == 0 ? (x % 2 == 0 ? 1.0f : 0.5f) : (x % 2 == 0 ? 0.5f : 0.35f);
+    };
+    FrameSpec f;
+    f.noise = 0.0025;  // a reference: the mean of 16 frames of noise 0.01
+    const FloatImage mono{w, h, 1, testing::RenderFrame(s, w, h, f, 11)};
+    FloatImage mosaic = mono;
+    cfa(mosaic);
+    CHECK_FALSE(stack::RegionNoiseOnBins(mono, 30, 30, 130, 130));
+    CHECK(stack::RegionNoiseOnBins(mosaic, 30, 30, 130, 130));
+    // ... and a frame of that mosaic: the pixels read its pattern as noise, the bins do not.
+    f.noise = 0.01;
+    FloatImage frame{w, h, 1, testing::RenderFrame(s, w, h, f, 12)};
+    cfa(frame);
+    const double onBins = stack::RegionNoise(frame, 30, 30, 130, 130, true).sigma;
+    const double onPixels = stack::RegionNoise(frame, 30, 30, 130, 130, false).sigma;
+    INFO("mosaic frame: bins " << onBins << ", pixels " << onPixels);
+    CHECK(onPixels > 1.3 * onBins);
 }

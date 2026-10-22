@@ -89,7 +89,39 @@ struct RegionLayout {
     bool flatEdges = false;
     std::vector<Region> regions;  // the nodes that hold structure, in row-major node order
     std::vector<int> node;        // nx * ny: index into regions, -1 where no region was placed
+    // The region stage's noise is read on 2 x 2 bins instead of the pixels (RegionNoiseOnBins on the
+    // reference over the target's box, decided once by PlaceRegions; Ruling P25).
+    bool noiseOnBins = false;
 };
+
+// Region-stage pixel noise (Ruling P25), blind to texture: MaskNoise -- the trimmed second moment of
+// the [1 -2 1] x [1 -2 1] responses, Regions.cpp -- on the pixels of [x0, x1) x [y0, y1) (clipped to
+// the image), or with onBins twice that on their 2 x 2 bins (white noise s gives s / 2 in a bin).
+// Each reading misreads one texture as noise: a raw colour mosaic read as mono carries its pattern at
+// Nyquist in every frame, which the pixels see and a bin (one cell of the pattern) cancels; texture at
+// 4-8 px, coarse for the pixels, is fine for the bins. The capture's own data says which applies, so
+// the choice is made once, on the reference, and every frame is read the same way -- not per frame by
+// the smaller of the two, which read s^2 0.923 / 0.961 / 0.981 / 0.989 / 0.995 of the truth on white
+// noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured 2026-10-22), each frame taking whichever
+// fluctuated low. Each reading alone (test "RegionNoise is unbiased ...", white noise, 32^2-512^2):
+// pixels 1.000-1.006 of the truth (1.010 at 32^2 before the trimmed moment's constant was taken at the
+// share actually kept), bins 0.999-1.009 from 48^2 and 1.022 at 32^2 (16 x 16 bins, 196 responses: the
+// trimmed moment's small-sample excess).
+// varSigma2 = kRegionNoiseVariance s^4 / (pixels measured: the rectangle's, a quarter of it for
+// bins): measured Var(s^2) x pixels / s^4 = 8.6-11.6 on pixels and 8.8-12.3 on bins (bins counted),
+// 32^2 to 1024^2: 0.71-1.23 of the formula, 1.23 the 32^2 bins (the 21.8 s^4 / area it replaces was ~2x
+// high on pixels and ~2x low on bins). 0 for a rectangle under 3 x 3 (6 x 6 for bins).
+constexpr double kRegionNoiseVariance = 10.0;
+NoiseEstimate RegionNoise(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bool onBins);
+// Bins when the reference's pixel reading exceeds kRegionNoiseMosaicRatio times its bin reading: a
+// mosaic. Measured 2026-10-22 over the regions' extent of the references of the 2026-01-30 Jupiter
+// 195830 (AVI and SER), Neptune 204515 and Moon 193142, the 2023-02-02 Moon, the 2023-02-11 Jupiter and
+// the 2022-09-17 Jupiter 225418 (all measured on 2 x 2 luma, so no mosaic reaches the region stage):
+// pixels / bins 0.21-0.65 -- texture raises the bins' reading -- while a StackSynth disc as a
+// mono-labelled mosaic (sites R 1 / G 0.5 / B 0.35) reads 2.19 in one frame at noise 0.01 (0.93
+// without the mosaic).
+constexpr double kRegionNoiseMosaicRatio = 1.5;
+bool RegionNoiseOnBins(const ser::FloatImage& reference, int x0, int y0, int x1, int y1);
 
 // The (at most two) nodes covering coordinate u along one axis, and their weights (0 for a node
 // outside the grid; i0 may then be -1 or nx - 1 with w1 = 0 and so on). Shared by the measurement,
@@ -229,7 +261,20 @@ struct RegionDetail {
     // RMS spatial frequency inverted: for a Gaussian-blurred white texture it is about sqrt(2) x the
     // blur sigma, so it grows with defocus or seeing whatever the target's brightness.
     double detailScale = 0;
+    // Ruling P27 (PlanRegions): no detail to rank above the measurement noise (kept 0: the fallback's
+    // plain mean).
+    bool noiseOnly = false;
 };
+
+// A region's detail is real when its median candidate's quality is at least this many of its own
+// qualitySigma (Ruling P27). Measured 2026-10-22 (median q / qualitySigma over a region's candidates):
+// pure noise reads 2 Z on the frames whose noise-corrected gradient energy happens to be positive (derived:
+// q / qualitySigma ~ 2 SN / sd(SN)), a median of ~1.35; the Moon 193142's dark limb regions 0.02 / 1.72
+// / 1.79 (1, 203 and 24 candidates of 2102 frames) and the 2023-02-02 Moon's 1.71 (347 of 1482), while
+// the least detailed regions that keep a lucky subset read 7.44 / 12.8 (2023-02-02 Moon: 826 and 1072
+// candidates, keeping 88 and 131) and everything else 20 and up (Jupiter 195830 over 4000, Neptune
+// 204515 10.7-11.8).
+constexpr double kRegionDetailSigmas = 3;
 
 struct RegionPlan {
     RegionLayout layout;
@@ -270,6 +315,16 @@ struct RegionPlan {
 // quality distribution -- few where the region's sharpness comes and goes with the seeing, most where
 // it is steady (measured 2026-10-21: the steady 2026-01-30 Jupiter keeps 260-300 of 300 per region,
 // spread +-3%; the same night's Moon a median 199 of 300). Deterministic and order-independent.
+// Ruling P27, before the ranking: a region with fewer than kMinStackFrames candidates, or whose median
+// candidate's quality is under kRegionDetailSigmas of its qualitySigma, keeps no frame (noiseOnly: the
+// fallback's plain mean of the stacked frames -- ranked, its noise-floor "detail" kept a handful, once
+// a single frame of 2102 on the Moon 193142, sqrt(2102) times the noise; and one or two candidates out
+// of many aligned frames, or after alignment collapsed there, are the noise's tail, whatever their
+// ratio). That includes every region of a whole capture of 1-4 frames, which SelectFrames accepts:
+// ranking 2-4 frames per region gains nothing, so such a capture is the plain mean. A region whose detail is real but whose spread is noise is left to the ranking: step 6's
+// deconvolution keeps everything there (Neptune 204515: 93 of 93 per region). An override that kept
+// every aligned frame when the spread was within qualitySigma discarded real lucky frames at low SNR,
+// where qualitySigma overstates q's scatter (~1.25x at a median q / qualitySigma of 4-5; Ruling P26).
 // threads: regions are ranked on that many threads (< 1 counts as 1); the result is the same for any count.
 RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1);
 
