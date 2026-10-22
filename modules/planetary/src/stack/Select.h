@@ -46,9 +46,11 @@ constexpr double kClippedFrame = 0.25;
 // edge AND spans at least kFullFrameSpan of the frame's width or height.
 constexpr double kFullFrameShare = 0.75;
 constexpr double kFullFrameSpan = 0.5;
-// ... and its box's shorter side is at least this share of the frame's (a satellite streak's
-// frame-wide box is ~2% tall; the real lunar boxes measured 2026-10-21 are >= 48% on both sides).
-constexpr double kFullFrameMinSide = 0.25;
+// ... and its box's shorter side is at least this share of the frame's. A satellite or plane trail
+// is a line a few pixels wide; its box adds one detection block on each side, so it is 2-3% of the
+// frame across at any ROI (1080p: 3 px + 2 x 8 px of 1080; 320 x 240: 3 px + 2 x 2 px of 240). A
+// lunar limb or crescent sliver worth stacking is wider: the thinnest real framing kept is 9%.
+constexpr double kFullFrameMinSide = 0.05;
 // The per-frame half of that rule: a found target whose box touches an edge of the lumaWidth x
 // lumaHeight luma frame, spans at least kFullFrameSpan of its width or height, and at least
 // kFullFrameMinSide of both.
@@ -57,9 +59,17 @@ bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight);
 // robust sd is floored at kFenceMinLogSd (1%: identical frames still differ by that much in
 // quality from frame to frame) and nothing is fenced in fewer than kMinFenceFrames frames.
 constexpr double kFenceSigmas = 6;
+// ... and only the frames above a gap of at least this many robust sd among them (step 5).
+constexpr double kFenceGapSigmas = 2;
 constexpr double kFenceMinLogSd = 0.01;
 constexpr int kMinFenceFrames = 30;
-// Deconvolution grid and EM budget (step 6).
+// Deconvolution grid and EM budget (step 6). EM never converges on this problem (the NPMLE is a
+// spiky discrete distribution, reached only in the limit), so the fixed budget is a deliberate
+// regulariser: early-stopped EM from a uniform start is a smoothed G. Measured 2026-10-21 (3000
+// steady frames, true limb blur 12 px; 10 seeds): the winner's curse removed from q_ref at 6% / 10%
+// noise is 63% / 59% at 50 steps, 76% / 74% at 300, 87% / 86% at 3000 -- but the selection gets
+// worse as G sharpens (oracle-relative score at blur sd 0.2, 5% noise: mean .846 / .841 / .829,
+// minimum .823 / .815 / .741 at 50 / 300 / 3000). 300 balances the two.
 constexpr int kPriorGrid = 64;
 constexpr int kPriorIterations = 300;
 // The frequency the selection optimises, as the contrast the best frames keep there: e^-3 = 5%.
@@ -99,14 +109,17 @@ constexpr int kMinJudgedFrames = 30;
 // 4. Frames with quality 0 ("without detail") are dropped; fewer than floor with detail ->
 //    OutOfFocus.
 // 5. Upper fence: frames with log q > median + kFenceSigmas * max(1.4826 MAD, median relative
-//    qualitySigma, kFenceMinLogSd) are outliers (a torn frame, a satellite in the box) -- only with
-//    at least kMinFenceFrames frames, only when the frames above number fewer than ceil(sqrt(N)) (a
-//    larger group that far above the bulk is a real sharp mode, and a genuine lucky tail never
-//    reaches 6 sigma), and never leaving fewer than floor.
+//    qualitySigma, kFenceMinLogSd) are candidates; the outliers (a torn frame, a satellite in the
+//    box) are the candidates above the lowest gap of at least kFenceGapSigmas robust sd between
+//    consecutive frames (sharpest first, down to the sharpest frame under the fence). A glitch
+//    stands apart from everything; the top of a real sharp mode is continuous, so a mode that
+//    straddles the fence loses nothing. Only with at least kMinFenceFrames frames, only when the
+//    candidates number fewer than ceil(sqrt(N)) (a larger group is a real mode), and never leaving
+//    fewer than floor.
 // 6. Deconvolution (Ruling P5). Each observed q_i = true quality + noise N(0, qualitySigma_i^2).
 //    The distribution G of the true quality is estimated by nonparametric maximum likelihood
-//    (Kiefer-Wolfowitz NPMLE, heteroscedastic; EM on kPriorGrid points over the observed range, up
-//    to kPriorIterations steps); each frame's posterior over G then gives its expected true quality
+//    (Kiefer-Wolfowitz NPMLE, heteroscedastic; EM on kPriorGrid points over the observed range);
+//    each frame's posterior over G then gives its expected true quality
 //    and, in step 8, its expected contrast. G can be bimodal, so noise is removed inside each mode
 //    (a single Gaussian prior cannot: in a bimodal capture the gap between the modes swamps the
 //    noise). With no noise reported (qualitySigma 0, e.g. black-clipped 8-bit sky) every quality is
@@ -123,12 +136,14 @@ constexpr int kMinJudgedFrames = 30;
 //    R / 8: the coarsest planetary structure (belts, period P ~ R/4) then keeps under 1% contrast
 //    (exp(-2 pi^2 sigma^2 / P^2) < 0.01 at sigma > 0.48 P). The blur spread is that of the true
 //    quality: tau^2 = max(0, var(q) - mean(qualitySigma^2)), spread = (sigma(mu - 1.2816 tau) -
-//    sigma(mu + 1.2816 tau)) / sigma(mu); its upper bound uses tau^2 + 2 SE, SE = sqrt(2 / N) var(q).
-//    Blurred -> PoorSeeing when spread >= kSteadySpread; OutOfFocus when even the upper bound is
-//    under it; otherwise (or under kMinJudgedFrames frames) OutOfFocus worded "focus or seeing,
-//    can't tell". Measured 2026-10-21 on in-focus captures: sigma(q_ref) / R = 0.007-0.033 where
-//    R >= 15. No defocused or bad-seeing capture was available, so these limits rest on the
-//    reasoning above.
+//    sigma(mu + 1.2816 tau)) / sigma(mu); its bounds use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(q).
+//    Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE) gives a spread under
+//    kSteadySpread; PoorSeeing when even the lower bound (tau^2 - 2 SE) gives one at or over it;
+//    otherwise -- or under kMinJudgedFrames frames -- OutOfFocus worded "focus or seeing, ... to
+//    tell". Measured (200 seeds per cell, N = 100 / 500 / 3000, noise 3-15%): steady blur is called
+//    seeing in at most 3 of 200; 6% seeing under 3% noise is found in 185 / 200 / 200 of 200.
+//    On the in-focus NAS captures (2026-10-21): sigma(q_ref) / R = 0.007-0.033 where R >= 15. No
+//    defocused or bad-seeing capture was available, so these limits rest on the reasoning above.
 // 8. Selection. A frame of true quality q has, at the frequency where the best frames keep
 //    e^-kDetailDepth, the contrast MTF(q) = exp(-kDetailDepth max(1, (q_ref / q)^4)) ((q_ref / q)^2
 //    is sigma / sigma_ref; Gaussian blur; frames sharper than the best count as the best). Each frame
@@ -142,8 +157,8 @@ constexpr int kMinJudgedFrames = 30;
 //    full-frame target the whole-frame quality varies little (seeing averages out over the frame),
 //    so this keeps nearly every frame -- the lenient global cut of Ruling P2; the regions are ranked
 //    separately (Task 5). Checked against an oracle that knows each frame's true blur (3000 frames,
-//    blur log-sd 0.2 / 0.2 / 0.3, quality noise 2 / 5 / 10%): S of the chosen set is 0.975 / 0.872
-//    / 0.724 of the oracle's best.
+//    blur log-sd 0.2 / 0.2 / 0.3, quality noise 2 / 5 / 10%, 10 seeds): S of the chosen set is on
+//    average 0.967 / 0.841 / 0.644 of the oracle's best (minimum 0.951 / 0.815 / 0.602).
 //
 // Explanation (one ASCII line, as FITS HISTORY needs):
 //   "used 612 of 4088 frames: the frames judged sharpest after allowing for measurement noise,

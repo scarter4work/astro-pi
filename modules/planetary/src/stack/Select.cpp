@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -92,13 +93,7 @@ Prior FitPrior(const std::vector<const FrameStats*>& f) {
             if (!(d > 0)) continue;
             for (size_t j = 0; j < k; ++j) acc[j] += p.pi[j] * l[j] / d;
         }
-        double change = 0;
-        for (size_t j = 0; j < k; ++j) {
-            const double next = acc[j] / static_cast<double>(n);
-            change = std::max(change, std::fabs(next - p.pi[j]));
-            p.pi[j] = next;
-        }
-        if (change < 1e-9) break;
+        for (size_t j = 0; j < k; ++j) p.pi[j] = acc[j] / static_cast<double>(n);
     }
     return p;
 }
@@ -250,13 +245,33 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
         const double robustSd =
             std::max({1.4826 * Quantile(dev, 0.5), Quantile(relNoise, 0.5), kFenceMinLogSd});
         const double fence = med + kFenceSigmas * robustSd;
-        int64_t above = 0;
-        for (double v : lq) above += v > fence;
+        // Frames above the fence, sharpest first; the outliers are those above the lowest gap of at
+        // least kFenceGapSigmas robust sd among them (a glitch stands apart; the top of a real mode
+        // or tail is continuous and has no such gap).
+        std::vector<size_t> order;
+        for (size_t i = 0; i < lq.size(); ++i)
+            if (lq[i] > fence) order.push_back(i);
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return lq[a] != lq[b] ? lq[a] > lq[b] : a < b; });
+        const auto above = static_cast<int64_t>(order.size());
         const auto nDetailed = static_cast<int64_t>(detailed.size());
         const auto modeSize = static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(nDetailed))));
-        const bool fenced = nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount;
+        int64_t cut = 0;  // fence off the `cut` sharpest frames
+        if (above > 0 && nDetailed >= kMinFenceFrames && above < modeSize && nDetailed - above >= floorCount) {
+            double below = -std::numeric_limits<double>::infinity();  // sharpest frame under the fence
+            for (double v : lq)
+                if (!(v > fence)) below = std::max(below, v);
+            for (int64_t k = above; k >= 1; --k) {
+                const double next = k < above ? lq[order[static_cast<size_t>(k)]] : below;
+                if (lq[order[static_cast<size_t>(k - 1)]] - next >= kFenceGapSigmas * robustSd) {
+                    cut = k;
+                    break;
+                }
+            }
+        }
+        std::vector<bool> out(lq.size(), false);
+        for (int64_t k = 0; k < cut; ++k) out[order[static_cast<size_t>(k)]] = true;
         for (size_t i = 0; i < detailed.size(); ++i)
-            if (!fenced || !(lq[i] > fence)) left.push_back(detailed[i]);
+            if (!out[i]) left.push_back(detailed[i]);
     }
     const int64_t nOutliers = static_cast<int64_t>(detailed.size() - left.size());
     const int64_t nLeft = static_cast<int64_t>(left.size());
@@ -293,7 +308,9 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     const double tau = std::sqrt(std::max(0.0, var - noise2));
     // tau^2 is an estimate: its standard error ~ sqrt(2 / N) var (sample variance, normal data).
     // Two standard errors up is the largest true spread the data cannot rule out.
-    const double tauHi = std::sqrt(std::max(0.0, var - noise2) + 2 * std::sqrt(2.0 / static_cast<double>(nLeft)) * var);
+    const double seTau2 = std::sqrt(2.0 / static_cast<double>(nLeft)) * var;
+    const double tauHi = std::sqrt(std::max(0.0, var - noise2 + 2 * seTau2));
+    const double tauLo = std::sqrt(std::max(0.0, var - noise2 - 2 * seTau2));
 
     // 8's weight: contrast at the detail frequency of a frame of true quality q.
     auto mtfAt = [&](double q) {
@@ -343,7 +360,7 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
             auto spreadOf = [&](double t) {
                 return (limbBlur(std::max(mu - z * t, 0.01 * mu)) - limbBlur(mu + z * t)) / limbBlur(mu);
             };
-            const double spread = spreadOf(tau), spreadHi = spreadOf(tauHi);
+            const double spread = spreadOf(tau), spreadHi = spreadOf(tauHi), spreadLo = spreadOf(tauLo);
             const std::string blur = "blur the limb by " + Num(sigmaRef * scale, 1) + " px, " +
                                      Num(100 * sigmaRef / radius, 0) + "% of the target's radius (usable: under " +
                                      Num(limit * scale, 1) + " px)";
@@ -353,20 +370,22 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
                 kind = DiagnosisKind::OutOfFocus;
                 msg = "Too blurred: even the sharpest frames " + blur + " -- focus or seeing, too few frames to tell (" +
                       Count(nLeft) + ").";
-            } else if (spread < kSteadySpread && spreadHi >= kSteadySpread) {
-                kind = DiagnosisKind::OutOfFocus;
-                msg = "Too blurred: even the sharpest frames " + blur +
-                      " -- focus or seeing, the measurement noise is too large to tell (spread " +
-                      Num(100 * spread, 0) + "%, could be up to " + Num(100 * spreadHi, 0) + "%).";
-            } else if (spread < kSteadySpread) {
+            } else if (spreadHi < kSteadySpread) {
                 kind = DiagnosisKind::OutOfFocus;
                 msg = "Out of focus: even the sharpest frames " + blur +
                       ", and the blur is the same in every frame (spread " + Num(100 * spread, 0) +
-                      "% beyond the measurement noise) -- the optics, not the air.";
-            } else {
+                      "% beyond the measurement noise, at most " + Num(100 * spreadHi, 0) +
+                      "%) -- the optics, not the air.";
+            } else if (spreadLo >= kSteadySpread) {
                 kind = DiagnosisKind::PoorSeeing;
                 msg = "Seeing too poor: the blur changes from frame to frame (spread " + Num(100 * spread, 0) +
-                      "% beyond the measurement noise), and even the sharpest frames " + blur + ".";
+                      "% beyond the measurement noise, at least " + Num(100 * spreadLo, 0) +
+                      "%), and even the sharpest frames " + blur + ".";
+            } else {
+                kind = DiagnosisKind::OutOfFocus;
+                msg = "Too blurred: even the sharpest frames " + blur +
+                      " -- focus or seeing, the measurement noise is too large to tell (spread " +
+                      Num(100 * spreadLo, 0) + "-" + Num(100 * spreadHi, 0) + "%).";
             }
             return Diagnosed(sel, kind, msg,
                              {{"frames judged", static_cast<double>(nLeft)},
@@ -375,6 +394,7 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
                               {"target radius (pixels)", radius * scale},
                               {"blur / radius", sigmaRef / radius},
                               {"blur spread", spread},
+                              {"blur spread lower bound", spreadLo},
                               {"blur spread upper bound", spreadHi}});
         }
     }
