@@ -440,7 +440,7 @@ HotPixelMap::HotPixelMap(const ser::FileInfo& info) {
     width_ = info.header.width;
     height_ = info.header.height;
     channels_ = info.colorId == ser::ColorId::RGB || info.colorId == ser::ColorId::BGR ? 3 : 1;
-    step_ = ser::IsBayer(info.colorId) ? 2 : 1;
+    step_ = ser::IsBayer(info.colorId) || UndeclaredMosaic(info) ? 2 : 1;
     if (width_ <= 0 || height_ <= 0) throw std::invalid_argument("HotPixelMap: empty frame size");
     if (info.normDepth < 1 || info.normDepth > 16) throw std::invalid_argument("HotPixelMap: depth outside 1..16");
     fullScale_ = std::pow(2.0, info.normDepth) - 1;

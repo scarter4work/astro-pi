@@ -43,12 +43,25 @@ struct FrameStats {
     double clippedFraction = 0;
 };
 
-// Frame (sensor) pixels per measurement-luma pixel, along each axis. 2 for Bayer input
-// (LumaForMeasure sums each 2x2 CFA cell, so the luma image is width / 2 x height / 2, integer
-// division), 1 for mono and RGB. FrameStats coordinates times this
-// are frame (sensor) pixels; the luma image's size is header.width / LumaScale (integer part).
+// A raw colour mosaic read as mono (Ruling P9): an AVI whose Bayer pattern is unknown -- Auto found no
+// usable sidecar, FileInfo::avi->bayerSource "none" -- so frames come as 1-channel CFA data. Its
+// colour pattern sits at the Nyquist frequency in every frame and would dominate any detail measure;
+// measurement (frame statistics, reference, global and local alignment, region quality) therefore
+// works on 2 x 2-binned luma, as for Bayer input, while the stack itself stays raw mono at full
+// resolution (the user can still choose the pattern). A pattern chosen as "none" by the user
+// (bayerSource "chosen") is a mono camera and is measured as is.
+bool UndeclaredMosaic(const ser::FileInfo& info);
+
+// Frame (sensor) pixels per measurement-luma pixel, along each axis. 2 for Bayer input and for an
+// undeclared mosaic (the luma is each 2x2 cell's mean, so width / 2 x height / 2, integer division),
+// 1 for mono and RGB. FrameStats coordinates times this are frame (sensor) pixels; the luma image's
+// size is header.width / LumaScale (integer part).
 // The one place this factor is defined (Ruling P3): consumers never scale by 2 on their own.
 double LumaScale(const ser::FileInfo& info);
+
+// The measurement luma of a frame of this capture: LumaForMeasure, with an undeclared mosaic binned
+// 2 x 2 like a Bayer frame. Every measuring stage reads frames through this.
+ser::FloatImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& info);
 
 // Side d of the detection grid's square blocks for a luma image of width x height:
 // d = ceil(longest side / 256), at least 1 (see "Background and noise" below).

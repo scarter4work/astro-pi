@@ -180,7 +180,16 @@ void Flood(const Grid& g, double thr, size_t seed, int label, std::vector<int>& 
 
 }  // namespace
 
-double LumaScale(const ser::FileInfo& info) { return ser::IsBayer(info.colorId) ? 2.0 : 1.0; }
+bool UndeclaredMosaic(const ser::FileInfo& info) {
+    return info.colorId == ser::ColorId::Mono && info.avi && info.avi->bayerSource == "none";
+}
+
+double LumaScale(const ser::FileInfo& info) { return ser::IsBayer(info.colorId) || UndeclaredMosaic(info) ? 2.0 : 1.0; }
+
+ser::FloatImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& info) {
+    // LumaForMeasure's Bayer luma is the 2 x 2 cell mean whatever the pattern, so any Bayer id bins.
+    return LumaForMeasure(frame, UndeclaredMosaic(info) ? ser::ColorId::BayerRGGB : info.colorId, info.normDepth);
+}
 
 int DetectionBlock(int width, int height) {
     return std::max(1, (std::max(width, height) + kGridCells - 1) / kGridCells);
@@ -417,7 +426,7 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
                 const int64_t last = std::min(total, first + kRun);
                 for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
                     out[static_cast<size_t>(i)] =
-                        MeasureFrame(LumaForMeasure(src->ReadFrame(i), info.colorId, info.normDepth), i);
+                        MeasureFrame(MeasurementLuma(src->ReadFrame(i), info), i);
                     done.fetch_add(1);
                 }
             }

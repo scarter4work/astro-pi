@@ -108,7 +108,7 @@ Pipeline Run(const Capture& cap, bool allFrames = false, bool keepTorn = false, 
             if (st.targetFound) cand.push_back(st.index);
     }
     for (int64_t f : cand) {
-        lumas.push_back(stack::LumaForMeasure(src->ReadFrame(f), p.info.colorId, p.info.normDepth));
+        lumas.push_back(stack::MeasurementLuma(src->ReadFrame(f), p.info));
         all.push_back(aligner.Align(lumas.back(), p.stats[static_cast<size_t>(f)]));
     }
     const double cut = keepTorn ? 0.0 : stack::AlignmentCut(all);
@@ -445,7 +445,7 @@ TEST_CASE("A single-frame streak is rejected", "[accumulate]") {
                 auto src = clean.Factory()();
                 for (size_t i = 0; i < q.used.size(); ++i) {
                     const ser::Frame fr = q.used[i] == 17 ? one.Factory()()->ReadFrame(0) : src->ReadFrame(q.used[i]);
-                    rs.Observe(stack::LumaForMeasure(fr, q.info.colorId, q.info.normDepth), q.measured[i]);
+                    rs.Observe(stack::MeasurementLuma(fr, q.info), q.measured[i]);
                 }
             }
             stack::Accumulator acc(q.plan, q.reference, rs.Sigma(q.info.normDepth), q.info);
@@ -773,4 +773,71 @@ TEST_CASE("Hot pixel clusters on a mono sensor: an adjacent pair and a column se
     size_t changed = 0;
     for (size_t k = 0; k < f.samples.size(); ++k) changed += f.samples[k] != before.samples[k];
     CHECK(changed == hot.size());
+}
+
+TEST_CASE("A raw colour mosaic read as mono is measured binned, stacked raw (Ruling P9)", "[accumulate]") {
+    const int w = 224, h = 176;
+    const Scene s = testing::MakeSurface(51, w, h);
+    // The mosaic: the scene times a colour factor per CFA site (R 0.6, G 1.0, B 0.4 on RGGB).
+    auto mosaic = [&](const FrameSpec& f, unsigned seed) {
+        std::vector<float> v = testing::RenderFrame(s, w, h, f, seed);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const double k = (y % 2 == 0 && x % 2 == 0) ? 0.6 : (y % 2 == 1 && x % 2 == 1) ? 0.4 : 1.0;
+                v[static_cast<size_t>(y) * w + x] = static_cast<float>(v[static_cast<size_t>(y) * w + x] * k);
+            }
+        return v;
+    };
+    Capture cap = testing::NewCapture(w, h);
+    cap.info.avi = ser::AviDetails{};
+    cap.info.avi->bayerSource = "none";
+    REQUIRE(stack::UndeclaredMosaic(cap.info));
+    CHECK(stack::LumaScale(cap.info) == 2.0);
+
+    // Region quality: a sharp and a blurred frame of the same scene, scored on the raw mosaic and on
+    // the binned luma. The fixed pattern swamps the raw score; the binned one sees the blur.
+    FrameSpec sharp, blurred;
+    sharp.hasLocal = blurred.hasLocal = true;
+    sharp.dx = sharp.dy = blurred.dx = blurred.dy = testing::Field{};
+    sharp.dx.v = sharp.dy.v = blurred.dx.v = blurred.dy.v = {0.0};
+    sharp.sigma.v = {0.5};
+    blurred.sigma.v = {2.0};
+    sharp.noise = blurred.noise = 0.003;
+    Capture two = cap;
+    two.frames = std::make_shared<std::vector<std::vector<uint16_t>>>();
+    two.Add(mosaic(sharp, 1));
+    two.Add(mosaic(blurred, 2));
+    auto ratio = [&](bool binned) {
+        auto src = two.Factory()();
+        const FloatImage a = binned ? stack::MeasurementLuma(src->ReadFrame(0), two.info)
+                                    : stack::LumaForMeasure(src->ReadFrame(0), ser::ColorId::Mono, 16);
+        const FloatImage b = binned ? stack::MeasurementLuma(src->ReadFrame(1), two.info)
+                                    : stack::LumaForMeasure(src->ReadFrame(1), ser::ColorId::Mono, 16);
+        const stack::RegionLayout lay = stack::PlaceRegions(a, stack::MeasureFrame(a, 0), true);
+        const stack::RegionMeasurer m(a, lay);
+        const FrameRegions qa = m.Measure(a, 0, Shift{}), qb = m.Measure(b, 1, Shift{});
+        std::vector<double> rs;
+        for (size_t r = 0; r < lay.regions.size(); ++r)
+            if (qa.regions[r].quality > 0 && qb.regions[r].quality > 0) rs.push_back(qa.regions[r].quality / qb.regions[r].quality);
+        REQUIRE(!rs.empty());
+        std::sort(rs.begin(), rs.end());
+        return rs[rs.size() / 2];
+    };
+    const double raw = ratio(false), binned = ratio(true);
+    INFO("median sharp / blurred region quality: raw mosaic " << raw << ", binned " << binned);
+    CHECK(raw < 1.15);
+    CHECK(binned > 1.3);
+
+    // The whole flow: measured on bins, stacked at full resolution as mono.
+    std::mt19937 rng(91);
+    for (int k = 0; k < 40; ++k) cap.Add(mosaic(Seeing(rng, w, h, 2.0, 48), 3000u + k));
+    const Pipeline p = Run(cap, true);
+    CHECK(p.reference.width == w / 2);
+    CHECK(p.ours.width == w);
+    CHECK(p.ours.height == h);
+    CHECK(p.ours.channels == 1);
+    REQUIRE(p.plan.RegionCount() > 0);
+    int zeros = 0;
+    for (float v : p.ours.data) zeros += v == 0.f;
+    CHECK(zeros == 0);
 }

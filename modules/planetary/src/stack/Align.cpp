@@ -500,7 +500,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
         throw ser::SerError("BuildReference: the reader does not match the capture it was asked for");
     std::vector<ser::FloatImage> frames(k);
     for (size_t i : order) {
-        frames[i] = LumaForMeasure(src->ReadFrame(ranked[i]->index), info.colorId, info.normDepth);
+        frames[i] = MeasurementLuma(src->ReadFrame(ranked[i]->index), info);
         ++done;
         tick();
     }

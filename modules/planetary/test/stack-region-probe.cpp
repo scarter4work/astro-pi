@@ -154,7 +154,7 @@ int main(int argc, char** argv) try {
         const int64_t f = sel.frames[static_cast<size_t>(i)];
         ser::Frame rawA = src.ReadFrame(f);
         hot.Repair(rawA);
-        const ser::FloatImage luma = stack::LumaForMeasure(rawA, info.colorId, info.normDepth);
+        const ser::FloatImage luma = stack::MeasurementLuma(rawA, info);
         shifts[static_cast<size_t>(i)] = aligner.Align(luma, stats[static_cast<size_t>(f)]);
         const auto r0 = std::chrono::steady_clock::now();
         measured[static_cast<size_t>(i)] = measurer.Measure(luma, f, shifts[static_cast<size_t>(i)]);

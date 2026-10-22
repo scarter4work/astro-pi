@@ -110,7 +110,7 @@ int main(int argc, char** argv) try {
                 const auto src = factory();
                 for (size_t k; !failed && (k = next.fetch_add(1)) < sel.frames.size();) {
                     const int64_t i = sel.frames[k];
-                    const ser::FloatImage luma = stack::LumaForMeasure(src->ReadFrame(i), info.colorId, info.normDepth);
+                    const ser::FloatImage luma = stack::MeasurementLuma(src->ReadFrame(i), info);
                     const auto a = Clock::now();
                     shifts[k] = aligner.Align(luma, stats[static_cast<size_t>(i)]);
                     cpu[static_cast<size_t>(t)] += std::chrono::duration<double>(Clock::now() - a).count();
@@ -159,7 +159,7 @@ int main(int argc, char** argv) try {
         int torn = 0, both = 0;
         for (size_t k = 0; k < shifts.size(); ++k) {
             const int64_t i = sel.frames[k];
-            const ser::FloatImage luma = stack::LumaForMeasure(src->ReadFrame(i), info.colorId, info.normDepth);
+            const ser::FloatImage luma = stack::MeasurementLuma(src->ReadFrame(i), info);
             const stack::Shift a = top.Align(Rows(luma, 0, h2), stats[static_cast<size_t>(i)]);
             const stack::Shift b = bottom.Align(Rows(luma, h2, 2 * h2), stats[static_cast<size_t>(i)]);
             const double d = std::hypot(a.dx - b.dx, a.dy - b.dy);

@@ -15,7 +15,7 @@ namespace planetary::stack {
 // keeps its own best ones (RankByDetail, SelectFrames' rule -- no percentage); Accumulate.h stacks
 // them and blends the regions seamlessly.
 //
-// Scale. Everything here is in measurement-luma pixels (LumaForMeasure: half resolution for Bayer
+// Scale. Everything here is in measurement-luma pixels (MeasurementLuma: half resolution for Bayer and an undeclared mosaic
 // input), like FrameStats and Shift; the Accumulator works at full resolution and scales by
 // LumaScale(info) (Ruling P3). Shift convention as in Align.h: frame(x + dx, y + dy) ~ reference(x, y).
 //
@@ -186,7 +186,7 @@ public:
     // Throws std::invalid_argument when the reference is not a non-empty 1-channel image of the
     // layout's size.
     RegionMeasurer(const ser::FloatImage& reference, const RegionLayout& layout);
-    // frameLuma: LumaForMeasure of the frame (the reference's size, std::invalid_argument otherwise);
+    // frameLuma: MeasurementLuma of the frame (the reference's size, std::invalid_argument otherwise);
     // global: its GlobalAligner shift. Deterministic: the same inputs give bit-identical results.
     FrameRegions Measure(const ser::FloatImage& frameLuma, int64_t frameIndex, const Shift& global) const;
     const RegionLayout& Layout() const { return layout_; }

@@ -121,7 +121,7 @@ class ResidualScale {
 public:
     // Throws std::invalid_argument when the reference is not a 1-channel image of the layout's size.
     ResidualScale(const RegionLayout& layout, const ser::FloatImage& reference);
-    // frameLuma: LumaForMeasure of the frame; m: its RegionMeasurer::Measure result (aligned regions'
+    // frameLuma: MeasurementLuma of the frame; m: its RegionMeasurer::Measure result (aligned regions'
     // shifts are used). Throws std::invalid_argument on a size or region-count mismatch.
     void Observe(const ser::FloatImage& frameLuma, const FrameRegions& m);
     // Adds another instance's sums (same layout and reference size; std::invalid_argument otherwise).
@@ -142,7 +142,7 @@ private:
 
 // Hot pixels fixed on the sensor. A hot pixel that stays (nearly) still on the output -- a well-tracked
 // target, seeing jitter of a pixel or two -- is in most frames and in the reference, so the rejection
-// above cannot see it; it is found and repaired on the raw frames instead, before LumaForMeasure and
+// above cannot see it; it is found and repaired on the raw frames instead, before MeasurementLuma and
 // DemosaicHQ (Task 6 calls Repair on every frame it reads, measurement and stacking passes alike).
 // A site counts as isolated in a frame when it stands above its 8 same-colour neighbours (2 px away in
 // a Bayer mosaic, 1 px in mono and in each RGB channel) -- in mono and RGB above all but the two
