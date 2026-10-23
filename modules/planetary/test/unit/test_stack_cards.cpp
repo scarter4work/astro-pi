@@ -27,7 +27,7 @@ stack::StackOutcome Stacked(ser::Container container) {
     o.image = ser::FloatImage{4, 4, 3, std::vector<float>(48, 0.5f)};
     o.summary.measured = 40;
     o.summary.used = 18;
-    o.summary.selection = "used 18 of 40 frames: the frames judged sharpest";
+    o.summary.selection = "selected 18 of 40 frames: the frames judged sharpest";
     o.summary.alignment = "aligned 18 of 18 selected frames to the reference";
     o.summary.warnings = {"image may be out of focus: detail 12.3 px"};
     o.frames.stacked = {3, 7, 39};
@@ -145,7 +145,7 @@ TEST_CASE("the window's result: counts and time, each warning, the selection and
     CHECK(stackcards::ResultText(o) ==
           "Stacked: 18 of 40 frames used, in 5.50 s.\n"
           "Warning: image may be out of focus: detail 12.3 px\n"
-          "Frames: used 18 of 40 frames: the frames judged sharpest\n"
+          "Frames: selected 18 of 40 frames: the frames judged sharpest\n"
           "Alignment: aligned 18 of 18 selected frames to the reference");
     // An AVI's reader warnings are reworded for the window's own controls.
     o = Stacked(ser::Container::Avi);

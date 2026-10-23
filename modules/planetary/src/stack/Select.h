@@ -417,8 +417,8 @@ constexpr double kShrinkSnrNone = 15;
 //    average 0.967 / 0.841 / 0.644 of the oracle's best (minimum 0.951 / 0.815 / 0.602).
 //
 // Explanation (one ASCII line, as FITS HISTORY needs):
-//   "used 612 of 4088 frames: the frames judged sharpest after allowing for measurement noise,
-//    quality >= 0.91 of the best; not used: 3 without a target, 12 at the frame edge, 3459 below
+//   "selected 612 of 4088 frames: the frames judged sharpest after allowing for measurement noise,
+//    quality >= 0.91 of the best; not selected: 3 without a target, 12 at the frame edge, 3459 below
 //    the cut, 2 suspect frames (alignment decides)"
 // -- every frame accounted for (groups: without a target -- "(cloud or gaps?)" added for a
 // full-frame target --, stray detection(s), at the frame edge, clipped, without detail, below the
@@ -444,8 +444,8 @@ struct Admission {
 // stack like any kept frame -- it is sharper than every one of them -- without re-running steps 6-8:
 // q_ref and the kept count stay the clean frames' (with the admitted frames on top, S(k)'s optimum
 // could sit at a slightly smaller k; per-region ranking, Task 5, makes the finer choice anyway).
-//   "used 3047 of 3050 frames: the frames judged sharpest ..., quality >= 0.88 of the best; not
-//    used: 3 rejected by alignment; 50 suspect frames (sharper than the rest): 47 admitted after
+//   "selected 3047 of 3050 frames: the frames judged sharpest ..., quality >= 0.88 of the best; not
+//    selected: 3 rejected by alignment; 50 suspect frames (sharper than the rest): 47 admitted after
 //    alignment, 3 rejected"
 // The quality bound is unchanged (admitted suspects are above it). Without suspects, the result is
 // the selection's frames and explanation as they are. Throws std::invalid_argument when

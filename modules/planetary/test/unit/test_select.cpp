@@ -139,7 +139,7 @@ std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameSta
     CHECK(sel.threshold == lowest);
     // One line, the spec's style, numbers matching.
     std::smatch m;
-    const std::regex re(R"(^used (\d+) of (\d+) frames: the frames judged sharpest after allowing for measurement noise, quality >= ([01]\.\d\d) of the best)");
+    const std::regex re(R"(^selected (\d+) of (\d+) frames: the frames judged sharpest after allowing for measurement noise, quality >= ([01]\.\d\d) of the best)");
     INFO(sel.explanation);
     REQUIRE(std::regex_search(sel.explanation, m, re));
     CHECK(std::stoll(m[1]) == static_cast<long long>(sel.frames.size()));
@@ -149,14 +149,14 @@ std::set<int64_t> CheckSelected(const Selection& sel, const std::vector<FrameSta
     return {sel.frames.begin(), sel.frames.end()};
 }
 
-// The explanation accounts for every frame: used + every "not used" group == n. The "not used"
+// The explanation accounts for every frame: selected + every "not selected" group == n. The "not selected"
 // list ends at the next "; " (the suspects' outcome and the frame-filling note follow it).
 void CheckCountsAddUp(const std::string& explanation, int64_t n) {
     INFO(explanation);
     std::smatch m;
-    REQUIRE(std::regex_search(explanation, m, std::regex(R"(^used (\d+) of)")));
+    REQUIRE(std::regex_search(explanation, m, std::regex(R"(^selected (\d+) of)")));
     int64_t total = std::stoll(m[1]);
-    const auto pos = explanation.find("not used: ");
+    const auto pos = explanation.find("not selected: ");
     if (pos != std::string::npos) {
         std::string tail = explanation.substr(pos);
         tail = tail.substr(0, tail.find("; "));
@@ -268,7 +268,7 @@ TEST_CASE("frames without a target, cut by the edge or clipped are never selecte
     const auto kept = CheckSelected(sel, stats);
     for (int64_t f : kept) CHECK(bad.count(f) == 0);
     CHECK(kept.size() >= 180);  // nearly all of the 200 good frames
-    CHECK(sel.explanation.find("not used: 50 without a target, 50 at the frame edge, 50 clipped") != std::string::npos);
+    CHECK(sel.explanation.find("not selected: 50 without a target, 50 at the frame edge, 50 clipped") != std::string::npos);
     CheckCountsAddUp(sel, 350);
 }
 
@@ -1420,7 +1420,7 @@ std::set<int64_t> CheckAdmitted(const Selection& sel, const stack::Admission& ad
     for (int64_t f : adm.rejected) CHECK(fin.count(f) == 0);
     CHECK(adm.frames.size() == sel.frames.size() + adm.admitted.size());
     std::smatch m;
-    REQUIRE(std::regex_search(adm.explanation, m, std::regex(R"(^used (\d+) of (\d+) frames: )")));
+    REQUIRE(std::regex_search(adm.explanation, m, std::regex(R"(^selected (\d+) of (\d+) frames: )")));
     CHECK(std::stoll(m[1]) == static_cast<long long>(adm.frames.size()));
     CHECK(std::stoll(m[2]) == n);
     CHECK(adm.explanation.find("(alignment decides)") == std::string::npos);

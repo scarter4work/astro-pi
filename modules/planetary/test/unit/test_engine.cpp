@@ -692,6 +692,9 @@ TEST_CASE("RunStack: a small selection whose intact frames align is stacked, not
     }
     CHECK(o.summary.used == 3);
     CheckFinalLines(o);
+    // Engine M1: the selection line counts the frames SELECTED (5); the frames stacked (3) are summary.used.
+    CHECK(o.summary.selection.rfind("selected 5 of 10 frames: ", 0) == 0);
+    CHECK(o.summary.selection.find("used") == std::string::npos);
 }
 
 TEST_CASE("UnalignedBelow: half of a small selection, need for a large one; never reached with every clean frame over the floor",

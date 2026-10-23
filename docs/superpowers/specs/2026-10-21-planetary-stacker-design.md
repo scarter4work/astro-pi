@@ -78,7 +78,8 @@ The builder designs the algorithms; these are the requirements they must meet, m
    are recorded for the diagnosis and the HISTORY summary.
 2. **Select automatically** from the distribution of the statistic — no fixed percentage. The rule
    must adapt: a steady night keeps many frames, a poor night few. It must be explainable in one
-   result line ("used 612 of 4088 frames: the sharpest group, quality ≥ 0.71 of the best").
+   result line ("selected 612 of 4088 frames: the sharpest group, quality ≥ 0.71 of the best";
+   "selected", since the frames stacked can be fewer once alignment has spoken -- final review, engine M1).
 3. **Lucky imaging per region**: the image is split into regions automatically placed on structure
    (no user alignment points); each region is ranked and stacked from its own best frames, and the
    regions are blended seamlessly. Must work for a planet disc (target smaller than the frame,

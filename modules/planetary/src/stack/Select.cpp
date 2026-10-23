@@ -50,12 +50,14 @@ bool HasDetail(const FrameStats& s) { return std::isfinite(s.quality) && s.quali
 
 double Sigma(const FrameStats& s) { return std::isfinite(s.qualitySigma) && s.qualitySigma > 0 ? s.qualitySigma : 0.0; }
 
-// "used 612 of 4088 frames: <why>; not used: <groups>[<suspects' outcome>][<note>]".
+// "selected 612 of 4088 frames: <why>; not selected: <groups>[<suspects' outcome>][<note>]". "Selected", not
+// "used": the frames stacked are fewer whenever AlignmentCut excludes a clean frame or no region keeps one
+// (StackSummary::used, shown beside this line; final review, engine M1).
 std::string ComposeLine(int64_t used, const Selection::Line& parts, const std::vector<std::string>& notUsed,
                         const std::string& outcome) {
-    std::string line = "used " + Count(used) + " of " + Count(parts.measured) + " frames: " + parts.why;
+    std::string line = "selected " + Count(used) + " of " + Count(parts.measured) + " frames: " + parts.why;
     if (!notUsed.empty()) {
-        line += "; not used: ";
+        line += "; not selected: ";
         for (size_t i = 0; i < notUsed.size(); ++i) line += (i ? ", " : "") + notUsed[i];
     }
     return line + outcome + parts.note;
