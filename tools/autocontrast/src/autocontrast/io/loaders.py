@@ -10,6 +10,7 @@ XISF support is deferred; FITS is the Phase 0 baseline.
 from __future__ import annotations
 
 import warnings
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,9 +77,9 @@ _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 # source pixel of (65535, 40000, 257) comes back as (255, 156, 1) — the low
 # byte is gone and nothing says so. That is the one failure mode §12 forbids
 # outright, and it is exactly what the optimizer's candidate round trip would
-# have hit: `.tif` is already in `supported_suffixes()` (Pillow registers it),
-# so it passes `optimize_begin`'s validation and then silently quantizes every
-# candidate to 8 bits. Production must not optimize against an approximation
+# hit: `.tif` is in `supported_suffixes()`, so it passes `optimize_begin`'s
+# validation, and a Pillow decode would then silently quantize every candidate
+# to 8 bits. Production must not optimize against an approximation
 # (§2.2), and an 8-bit intermediate is one.
 _TIFF_SUFFIXES = {".tif", ".tiff"}
 
@@ -99,21 +100,97 @@ _TIFF_SUFFIXES = {".tif", ".tiff"}
 _INTEGER_FULL_SCALE = {np.dtype(np.uint8): 255.0, np.dtype(np.uint16): 65535.0}
 
 
-def supported_suffixes() -> frozenset[str]:
-    """Every file suffix :func:`load_image` can actually read back.
+# 16-bit PNG is decoded by `pypng`, NOT by Pillow, for the same measured reason
+# as TIFF. Pillow opens a 48-bit RGB PNG (AutoStakkert's output format) as mode
+# "RGB" / uint8: a pixel of (65535, 40000, 257) loads as (1.0, 0.61176, 0.00392)
+# where (1.0, 0.61036, 0.00392) is correct — 156/255 instead of 40000/65535, the
+# low byte gone, no warning (measured 2026-10-22, Pillow 12.3 and 13.0). PNG was
+# the format missed when TIFF was closed. 16-bit grayscale happens to survive
+# (Pillow gives mode "I;16"), but it is routed here too so every 16-bit PNG,
+# gray-alpha and RGBA included, goes through one decode with one known full scale.
+# 8-bit and lower PNG stays on Pillow, which is exact for it.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
-    ``load_image`` dispatches on suffix: FITS goes through astropy, TIFF through
-    ``tifffile``, everything else through Pillow's ``Image.open``. Each of those
-    three dispatch conditions contributes its own suffixes here, and each is the
-    single place that condition lives — the Pillow half is read off its own
-    registered plugins rather than hand-copied, so this can never drift from what
-    Pillow can actually open. Callers that hand a path to something outside this
-    set (a PixInsight-native ``.xisf``, say) need to fail immediately and loudly,
-    not discover it as a read error deep inside a run (§12).
+
+def _png_bit_depth(path: Path) -> int | None:
+    """Declared bit depth from a PNG's IHDR, or ``None`` if it is not a PNG.
+
+    Read from the file rather than guessed from the decoded array, because the
+    decoded array is exactly what Pillow has already truncated.
     """
-    Image.init()  # populate Image.registered_extensions(); idempotent
+    with open(path, "rb") as fh:
+        head = fh.read(25)
+    if len(head) < 25 or head[:8] != _PNG_SIGNATURE or head[12:16] != b"IHDR":
+        return None
+    return head[24]
+
+
+def _decode_png16(path: Path, max_dim: int | None) -> tuple[np.ndarray, float]:
+    """Decode a 16-bit PNG losslessly; returns the array and its full scale (65535).
+
+    Never falls back to Pillow: a file that cannot be decoded here raises, because
+    the fallback is the silent 8-bit truncation this exists to prevent (§12).
+    """
+    import png
+
+    try:
+        width, height, rows, info = png.Reader(filename=str(path)).asDirect()
+        planes = int(info["planes"])
+        arr = np.vstack([np.asarray(row, dtype=np.uint16) for row in rows])
+        arr = arr.reshape(height, width, planes)
+    except (png.Error, EOFError, ValueError, zlib.error) as exc:
+        raise ValueError(f"{path.name}: could not decode 16-bit PNG: {exc}") from exc
+    # gray(+alpha) -> one plane; RGB(+alpha) -> three. Alpha is dropped either way,
+    # as load_raster already does for every other format.
+    arr = arr[..., 0] if planes in (1, 2) else arr[..., :3]
+    return _resize_native(arr, max_dim), _INTEGER_FULL_SCALE[np.dtype(np.uint16)]
+
+
+# Which suffixes are loadable is an ALLOW-LIST, not "whatever Pillow registers".
+# `supported_suffixes()` used to be read off Pillow's plugin registry, which meant
+# every format Pillow can open was accepted whether or not its bit depth survives
+# the decode. Measured 2026-10-22, each with a 16-bit source and no warning:
+# 16-bit RGB PPM -> RGB uint8 (255, 156, 1); 16-bit PGM -> int32, which
+# `load_raster` would then rescale by inferring the range from the data (wrong
+# for a dark frame); 16-bit RGB JPEG 2000 -> RGB uint8 (0, 156, 1), even the high
+# byte off; 16-bit SGI the same shape of failure; AVIF stores 8/10/12 bits and
+# Pillow returns 8-bit RGB for all. Chasing those one by one leaves DDS, PSD and
+# whatever Pillow registers next as the same trap, so the default is closed
+# (§12): a format is in the set only when its depth handling is exact.
+#
+#   FITS            astropy, native float, normalized by its own range
+#   TIFF            tifffile at native depth
+#   PNG             8-bit and below exact via Pillow; 16-bit via pypng
+#   JPEG, WebP      8-bit by specification, so Pillow is exact; the project's
+#                   references ship as JPEG and ranking/degrade read WebP
+#
+# Adding a format means showing its depth survives and adding it here, with a test.
+_PNG_SUFFIXES = {".png"}
+_PILLOW_8BIT_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".jfif", ".webp"}
+
+
+def supported_suffixes() -> frozenset[str]:
+    """Every file suffix :func:`load_image` can read back at full fidelity.
+
+    The explicit allow-list described above, and the single place it lives.
+    ``optimize_begin`` validates ``candidate_suffix`` against it, so a path handed
+    to something outside this set (a PixInsight-native ``.xisf``, a 16-bit
+    ``.ppm``) fails immediately and loudly, not as a read error deep inside a run,
+    and never as a silently quantized image (§12).
+    """
     return (frozenset(_FITS_SUFFIXES) | frozenset(_TIFF_SUFFIXES)
-            | frozenset(Image.registered_extensions()))
+            | frozenset(_PNG_SUFFIXES) | frozenset(_PILLOW_8BIT_SUFFIXES))
+
+
+def _require_supported(path: Path) -> None:
+    """Raise ``ValueError`` naming the supported set if ``path`` is not loadable."""
+    if path.suffix.lower() not in supported_suffixes():
+        raise ValueError(
+            f"{path.name}: unsupported image format {path.suffix.lower() or '(no suffix)'!r}; "
+            f"supported: {', '.join(sorted(supported_suffixes()))}. Other formats are refused "
+            f"because their bit depth is not verified to survive decoding, and Pillow would "
+            f"silently reduce them to 8 bits"
+        )
 
 
 def _resize_native(arr: np.ndarray, max_dim: int | None) -> np.ndarray:
@@ -174,6 +251,7 @@ def image_dimensions(path: str | Path) -> tuple[int, int]:
     fingerprint (§2.2).
     """
     path = Path(path)
+    _require_supported(path)
     if path.suffix.lower() in _FITS_SUFFIXES:
         with fits.open(path) as hdul:
             header = hdul[0].header
@@ -260,11 +338,17 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
     TIFF is decoded by ``tifffile`` rather than Pillow so 16-bit data survives
     (see ``_TIFF_SUFFIXES``); everything downstream of the decode — channel
     promotion, alpha, normalization, clipping — is shared, deliberately, so the
-    two decoders cannot come to disagree about what a loaded image is.
+    two decoders cannot come to disagree about what a loaded image is. 16-bit PNG
+    is decoded by ``pypng`` for the same reason (see ``_decode_png16``), and
+    any suffix outside :func:`supported_suffixes` is refused with a ``ValueError``
+    rather than handed to Pillow to truncate.
     """
     path = Path(path)
+    _require_supported(path)
     if path.suffix.lower() in _TIFF_SUFFIXES:
         arr, full_scale = _decode_tiff(path, max_dim)
+    elif _png_bit_depth(path) == 16:
+        arr, full_scale = _decode_png16(path, max_dim)
     else:
         full_scale = None
         Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard

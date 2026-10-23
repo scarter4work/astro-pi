@@ -9,7 +9,8 @@ to the video, and Save as SER... writes the AVI out as a SER file. It reads only
 `.txt` sidecar), writes only the SER file you choose and, if you click Save pattern..., the `.txt` sidecar next to the
 AVI; it uses no network and runs no external programs.
 
-**Status:** 0.2.1.0 adds Save pattern... (a generated sidecar for an AVI that has none); 0.2.0.0 added AVI input and
+**Status:** 0.2.2.0 reads a Flip=Vert(unimplemented) AVI with its sidecar's Bayer pattern as is (0.2.0.0-0.2.1.0 rotated it
+180 degrees, RGGB to BGGR; see the SERViewer doc); 0.2.1.0 added Save pattern... (a generated sidecar for an AVI that has none); 0.2.0.0 added AVI input and
 Save as SER (0.1.0.0 was released 2026-10-21). The module id `Planetary` and process id `SERViewer` are
 permanent: existing installs update by these ids, so never rename them.
 
