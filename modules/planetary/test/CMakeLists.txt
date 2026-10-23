@@ -26,6 +26,20 @@ target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.
 planetary_add_test(test_preview unit/test_preview.cpp planetary_ser)
 target_include_directories(test_preview PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
 
+# NAS-free check that avi_real_check.py's fixed-pattern readout check (4b) fails closed
+# (synthetic data, numpy only). Without numpy it exits 77 and ctest shows it as Skipped, never
+# as passed; without python3 it is not registered, and configure says so.
+# The `python3` on PATH, as the test/*.sh scripts use (FindPython would prefer a newer-numbered
+# python3.X elsewhere, e.g. one without numpy).
+find_program(PLANETARY_PYTHON3 NAMES python3)
+if(PLANETARY_PYTHON3)
+    add_test(NAME fpn_verdict_fails_closed
+             COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_fpn_verdict.py")
+    set_tests_properties(fpn_verdict_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
+else()
+    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed is not registered")
+endif()
+
 # Test-only fixture writer for the headless PixInsight probe (test/run-probe.sh).
 add_executable(make-fixtures make-fixtures.cpp)
 target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
