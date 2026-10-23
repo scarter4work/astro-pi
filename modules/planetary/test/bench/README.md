@@ -24,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # TESTCOUNT_NAS
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # TESTCOUNT_SYN
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 183 tests + 32 strict xfails (C1), ~2.5 min with the NAS; the engine tests need the built probes
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 130 tests + 26 strict xfails without the NAS, ~1 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -277,7 +277,28 @@ model with those k still held at x0.81. With the half's 300 frames as k it would
 * **The tolerance** marks captures where the model is not confirmed. They are noted in the summary;
   the charge already holds what the halves measured.
 
-SPLIT2_RESULTS
+**The 2026-10-23 fix-round-2 run** (after the photon-transfer repair, the refinement and the per-kind
+calibration):
+
+| Capture | Kind | 0.21-0.30 measured / model | Tolerance | Ours' charge, 0.06-0.09 ... 0.27-0.30 |
+|---|---|---|---|---|
+| 2023-02-11 Jupiter | disc | x1.19 | outside (0.77-1.17) | 6.96 3.82 1.06 2.47 1.44 1.00 1.28 1.48 |
+| 2026-01-30 Jupiter | disc | x3.31 | outside | 22.5 15.0 9.07 11.1 1.62 4.50 3.59 1.90 |
+| Saturn | disc | x0.64 | outside (below) | - |
+| Mars | disc | x1.80 | outside | 5.46 18.3 18.5 12.3 4.13 1.36 2.00 2.32 |
+| 2023-02-12 Moon | lunar | x1.39 | agrees (0.00-1.44) | 53.3 28.0 14.9 8.18 4.38 2.54 1.79 1.46 |
+| 2024-02-01 Moon | lunar | x2.37 | outside | 21.5 16.3 11.6 8.78 6.15 4.16 3.23 2.50 |
+| 2023-08-22 Moon | lunar | x0.75 | agrees | 2.46 1.57 1.52 1.47 1.22 1.06 1.06 1.06 |
+| 2023-03-05 Moon | lunar | x0.57 | agrees | 24.4 9.85 2.71 1.26 1.06 1.00 1.00 1.00 |
+
+**The charge over-charges ours.** In the low bins the charge is 2.5-53 x, falling with frequency like
+the target's own spectrum. That is signal the two halves do not share: each half's regions keep
+their own frames. Global gain, shift and blur regressors leave it in place, because it is local.
+
+In the full stack that region-to-region PSF is a fixed blur, which END already charges, so charging it
+again as noise over-charges ours. A numeric pass under the charge is therefore sound. A numeric fail is
+sound only if it also holds with ours on the bare budget (which, through C1, can only favour ours).
+Otherwise it is review.
 
 ### What the interleaved halves share (fix round 2, review I-D)
 

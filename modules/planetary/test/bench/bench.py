@@ -25,7 +25,9 @@ numeric pass is sound and a numeric fail is not unless the reference is known to
               may be what beat us (C1_NOTE); or the numbers pass but ours could not be charged (no
               split halves: UNCHARGED_NOTE) or a review note applies (limb-only, noise regime, mosaic);
   fail:       END below the bar under both readings, against references whose files record no
-              processing (AutoStakkert raw stacks with their .as3);
+              processing (AutoStakkert raw stacks with their .as3), AND below it with ours on the bare
+              budget too -- the charge over-charges ours (the halves hold signal they do not share), so
+              a fail only under the charge is review (CHARGE_NOTE);
   pass:       END >= 0.97 under the charge on both readings, no review note. Scott's side-by-side is
               still the spec's final word.
 Split halves outside their kind's tolerance are noted (the charge already holds what they measured).
@@ -115,6 +117,9 @@ def _verdict(full, inner, judged):
 
 C1_NOTE = ("C1: a numeric fail is not sound here -- END cannot see noise or sharpening beyond the photon budget "
            "in a reference (metric.py KNOWN LIMIT), and this reference's processing is not known to be none")
+CHARGE_NOTE = ("the fail rests on our measured-noise charge: the split halves also hold signal they do not share "
+               "(each half's regions keep their own frames), which over-charges ours, so a fail is sound only if "
+               "it holds on the bare budget too")
 UNCHARGED_NOTE = ("our noise is not measured (no split halves): a pass needs ours charged its measured noise "
                   "(Ruling P28b), so the numbers cannot pass this capture")
 
@@ -150,6 +155,10 @@ def status_of(rows: List[dict], run_id: str = "", split_half: Optional[dict] = N
                           f"(END {own}), {v_alt} at the mean kept fraction's {ours['end_alt_frames']:.0f} (END {alt})"] \
             + notes + list(ours["review"])
     if v == "fail":
+        v_bare, _ = _verdict(ours.get("end_uncharged_ratio"), ours.get("end_interior_uncharged_ratio"), judged)
+        if ours.get("end_noise_factor") is not None and v_bare != "fail":
+            bare = f"{ours['end_uncharged_ratio']:.3f}" + (f" / {ours['end_interior_uncharged_ratio']:.3f}" if judged else "")
+            return "review", reasons + [f"{CHARGE_NOTE} (on the bare budget ours is {bare})"] + notes
         setters = _setters(rows, "end") + (_setters(rows, "end_interior") if judged else [])
         unsound = [r for r in setters if (r.get("provenance") or {}).get("state") != "none"]
         if unsound:

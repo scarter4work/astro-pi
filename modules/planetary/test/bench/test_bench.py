@@ -22,7 +22,8 @@ def _rows(full, inner, judged=True, review=(), alt=None, ref_end=1.0, ref_note=N
     ours.update({"end_ratio": full, "end_interior_ratio": inner if judged else None,
                  "end_alt_ratio": alt_full, "end_interior_alt_ratio": alt_inner if judged else None,
                  "end_frames": 100.0, "end_alt_frames": 60.0, "review": list(review),
-                 "end_noise_factor": [1.0] * 8 if charged else None, "provenance": None})
+                 "end_noise_factor": [1.0] * 8 if charged else None, "provenance": None,
+                 "end_uncharged_ratio": full, "end_interior_uncharged_ratio": inner if judged else None})
     return [ours, _row("AS_P20", end=ref_end, judged=judged, note=ref_note, prov=prov)]
 
 
@@ -48,6 +49,13 @@ def test_plan_covers_every_capture_once_all_rggb():
 ])
 def test_status_applies_the_bar_to_both_end_scores(full, inner, judged, want):
     assert bench.status_of(_rows(full, inner, judged))[0] == want
+
+
+def test_a_fail_only_under_our_charge_is_review():
+    rows = _rows(0.9, 0.9)
+    rows[0].update(end_uncharged_ratio=1.5, end_interior_uncharged_ratio=1.4)
+    st, why = bench.status_of(rows)
+    assert st == "review" and any(bench.CHARGE_NOTE in w and "1.500 / 1.400" in w for w in why)
 
 
 def test_a_pass_needs_ours_charged_its_measured_noise():

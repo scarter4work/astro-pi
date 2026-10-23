@@ -525,6 +525,9 @@ class Row:
     # The anchor measured with its ALTERNATIVE frame count (compare's anchor_frames_alt): the flip
     # check between the two readings of our effective count (bench.status_of).
     alt: Optional[metric.Result] = None
+    # The anchor on the bare budget (no measured-noise charge): a fail is sound only if it holds here
+    # too, since the charge can over-charge ours (bench.status_of).
+    uncharged: Optional[metric.Result] = None
 
 
 RefSpec = Union[str, Tuple[str, Optional[float]]]
@@ -588,7 +591,9 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior) or a reason
     a_kw = _end_kwargs(budget, anchor_frames, anchor_frames_why, note_is_reason=True)
     a_m = a_kw.pop("measure")
+    uncharged = None
     if anchor_noise_factor is not None and "noise_power" in a_m:
+        uncharged = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m), dict(a_kw))
         a_m["noise_factor"] = anchor_noise_factor
     a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m)
     alt = None
@@ -598,7 +603,7 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
         if anchor_noise_factor_alt is not None and "noise_power" in alt_m:
             alt_m["noise_factor"] = anchor_noise_factor_alt
         alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_m), alt_kw)
-    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt)]
+    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt, uncharged)]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
         k = (ref.info.percent / 100.0 * capture_frames) if (ref.info.percent and capture_frames) else None
@@ -751,6 +756,8 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
             "end_alt_ratio": _over(r.alt.end if r.alt else None, rows, "end"),
             "end_interior_alt": r.alt.end_interior if r.alt else None,
             "end_interior_alt_ratio": _over(r.alt.end_interior if r.alt else None, rows, "end_interior"),
+            "end_uncharged_ratio": _over(r.uncharged.end if r.uncharged else None, rows, "end"),
+            "end_interior_uncharged_ratio": _over(r.uncharged.end_interior if r.uncharged else None, rows, "end_interior"),
             "dan": res.value, "band_snr": res.band_snr,
             "noise_floor": res.noise_floor, "box": list(res.box), "mosaic": res.mosaic,
             "ratio_to_best_reference": full,
