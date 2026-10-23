@@ -16,6 +16,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 . "$HERE/harness.sh"
+# A PLANETARY_SO inside the PixInsight install or repository/ is refused before anything runs (harness.sh).
+[ -z "${PLANETARY_SO:-}" ] || planetary_check_so "$PLANETARY_SO" || exit 1
 
 planetary_require_signing_pass || exit 2
 

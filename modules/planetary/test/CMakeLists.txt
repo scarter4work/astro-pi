@@ -51,6 +51,16 @@ else()
     message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed is not registered")
 endif()
 
+# The PixInsight harness refuses to re-sign a shipped module (a PLANETARY_SO inside the PixInsight install
+# or repository/), in its functions and in every script that takes the override -- against a stand-in
+# install in a scratch directory; no PixInsight, no NAS (final review, module m6).
+find_program(PLANETARY_BASH NAMES bash)
+if(PLANETARY_BASH)
+    add_test(NAME harness_so_guard COMMAND "${PLANETARY_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/test-harness-so-guard.sh")
+else()
+    message(STATUS "planetary: bash not found -- harness_so_guard is not registered")
+endif()
+
 # Test-only fixture writer for the headless PixInsight probes (test/run-probe.sh, test/run-probe-stack.sh).
 # planetary_stack: the --stack fixtures are rendered with StackSynth.h (the engine tests' scenes);
 # PlanetaryVersion.h: the version their HISTORY expectations name.

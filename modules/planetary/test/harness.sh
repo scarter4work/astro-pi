@@ -9,7 +9,8 @@
 #   planetary_slot_setup                       # PLANETARY_SLOT/_SETTINGS, wiped now and on exit
 #   planetary_on_exit my_cleanup               # never `trap ... EXIT`: it would drop the helpers' cleanup
 #   planetary_private_tmp                      # PLANETARY_RUN_DIR (0700), private TMPDIR
-#   planetary_sign "$SO"                       # dev build signed with the developer key
+#   planetary_check_so "$PLANETARY_SO"         # refuses a module inside the PI install or repository/
+#   planetary_sign "$SO"                       # dev build signed with the developer key (checked the same way)
 #   planetary_seed_slot_modules                # slot settings WITHOUT any installed Planetary
 #   ... pi_headless timeout N "$PI" -n="$PLANETARY_SLOT" ... -m="$SO" -r=<probe> --force-exit
 #
@@ -152,9 +153,35 @@ planetary_private_tmp()
    export TMPDIR="$PLANETARY_RUN_DIR/tmp"
 }
 
+# The module a test loads is signed in place (its .xsgn deleted, then written
+# again), so it must be a build product, never a shipped module: refuse one
+# whose real path is inside the PixInsight install (the directory above
+# PLANETARY_PI_BIN_DIR: /opt/PixInsight is user-owned on the development
+# machine, so PLANETARY_SO=/opt/PixInsight/bin/Planetary-pxm.so would re-sign
+# the installed release) or inside the repository's repository/ (the published
+# packages). Every script that takes PLANETARY_SO runs this before anything
+# else, and planetary_sign again (final review, module m6).
+PLANETARY_ASTROPI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+planetary_check_so()
+{
+   local so="$1" real pi repo
+   real="$(realpath -m -- "$so")"
+   pi="$(realpath -m -- "$(dirname "$PLANETARY_PI_BIN_DIR")")"
+   repo="$(realpath -m -- "$PLANETARY_ASTROPI_ROOT/repository")"
+   case "$real" in
+      "$pi"/*)
+         echo "FAIL: refusing PLANETARY_SO=$so: it is inside the PixInsight install ($pi); the tests delete and re-sign the .xsgn of the module they load"
+         return 1 ;;
+      "$repo"/*)
+         echo "FAIL: refusing PLANETARY_SO=$so: it is inside repository/ ($repo), the published packages"
+         return 1 ;;
+   esac
+}
+
 planetary_sign()
 {
    local so="$1" pass
+   planetary_check_so "$so" || return 1
    pass="$(cat "$PLANETARY_PASS_FILE")"
    rm -f "${so%.so}.xsgn"
    pi_headless "$PI" --sign-module-file="$so" --xssk-file="$PLANETARY_KEYS" --xssk-password="$pass" \
