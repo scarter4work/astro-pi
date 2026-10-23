@@ -44,14 +44,14 @@ def test_recorded_facts_match_the_nas(c):
 @pytest.mark.ffmpeg
 @pytest.mark.parametrize("c", [c for c in benchset.BENCHMARK if c.bayer], ids=lambda c: c.id)
 def test_recorded_pattern_matches_the_frames(c):
-    """The green phase is measured on every capture; the red/blue assignment follows the warm-
-    target rule unless the record says why not (multi-band Lqef captures)."""
+    """The green phase is measured on every capture and must be the recorded pattern's. Red against blue
+    is the camera spec's (README, "Every colour capture is RGGB"), not measured: the warm-target rule
+    is not a valid source, and through the Lqef filter it does not apply at all."""
     m = bayer.measure_video(nas_path(c.video), c.size)
     print(f"\n{c.id}: recorded {c.bayer} ({c.bayer_source}); measured {m}")
     greens = lambda p: tuple(i for i, ch in enumerate(p) if ch == "G")   # noqa: E731
     assert greens(m.pattern) == greens(c.bayer)
-    if c.bayer_source.startswith("measured, warm-target rule"):
-        assert m.pattern == c.bayer
+    assert "camera spec" in c.bayer_source
 
 
 @pytest.mark.parametrize("c", benchset.BENCHMARK, ids=lambda c: c.id)
