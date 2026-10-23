@@ -8,23 +8,17 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     matched (Wiener) restoration. END is that restoration's quality on the box:
     1-4. Luminance, the target box, the normalisation x = (crop - b) / s, and the Hann-windowed
        periodogram P, exactly as DAN (below).
-    5. Noise. NOT read from the image's own high frequencies: a stacker's interpolation, drizzle,
-       resampling or denoising suppresses its noise toward Nyquist, and the half-stack ground truth
-       on our own stack showed the box's 0.40-0.50 power is 2.7-55 x its random noise (structure
-       common to disjoint halves) while sky noise is 600-54 000 x below the target's (README).
-       Instead every image -- ours and every reference -- is judged against ONE model: white noise of
-       power N = sigma_frame^2 / k, sigma_frame^2 the capture's per-frame noise on the box
-       (noise.py: photon transfer on the raw frames, independent of any stacker) and k the image's
-       effective frame count (ours: from stack-probe's region counts; a reference: its stacking
-       percentage x the capture's frames). Any smoothing, on either side, then counts as blur, as
-       in DAN and Ruling 1.
-       Plus the image's EXCESS noise, read where no detail can hide it: the white power of its own
-       signal-free sky at 0.40-0.50 cycles/px (sky_noise_floor) beyond the photon budget at the
-       sky's level (noise.sky_noise / k). A stack noisier than its frame count implies is charged
-       for it (so added noise can never raise END); detail at Nyquist on the target is never read
-       as noise (that would penalise a genuinely sharp image -- measured: it reversed the 20 %/50 %
-       synthetic ranking at low noise). N = budget + max(0, sky excess). Without a usable sky the
-       judged END is None (end_note says so; end_pure, the budget alone, is still reported).
+    5. Noise: ONE model for every image -- ours and every reference -- white noise of power
+       N = sigma_frame^2 / k: sigma_frame^2 the capture's per-frame noise on the box (noise.py: photon
+       transfer on the raw frames, independent of any stacker), k the image's effective frame count
+       (ours: the noise-power k_eff over the box, from the engine's own plan -- stack-region-probe
+       --keff-box; a reference: its stacking percentage x the capture's frames). Any smoothing, on
+       either side, then counts as blur, as in DAN and Ruling 1. Not read from the image itself: the
+       half-stack ground truth on our own stack showed the box's 0.40-0.50 power is 2.7-55 x its random
+       noise -- structure the interleaved halves share (on the 2026-01-30 Jupiter: real horizontal
+       structure, which ASIStudio shows too, and an isotropic part that is neither target-locked nor
+       sensor-fixed; README, "What the interleaved halves share") -- and the sky's noise is
+       600-54 000 x below the target's (README).
     6. Per END_EDGES bin (0.06-0.30 in steps of 0.03 cycles/px): SNR = max(mean P - N, 0) / N.
     7. END = sqrt( sum_f O(f) / sum_f O(f) / (1 + SNR(f)) ) over the band's frequency samples,
        O(f) = f^-3 (END_PRIOR): the band's object power over the error power of the matched Wiener
@@ -32,22 +26,38 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
        O / (1 + SNR) at each frequency; the object's spectrum is unknown but common to every image of
        a capture, and one fixed prior stands in for it. Higher is better; ratios between images are
        what Ruling 2's 0.97 bar judges.
-    Validation (test_end.py; numbers in README.md): blur at equal noise ranks strictly lower; added
-    noise never raises it; more frames at the same blur rank higher (x1.19 for 2x, x1.48 for 4x;
-    DAN moves 0.3 %); sharper-but-noisier pairs and a capture's 20 % / 50 % stacks rank as the
-    exact oracle Wiener restoration does (both directions occur); a random scan of 157 clear pairs
-    over object spectra f^-1.4..f^-4.4 agreed 157/157 (log-capacity: 96 %, so the restoration form
-    was chosen); a tool's smoothing never raises it (drizzle x3 + area resample x0.81, Gaussian 0.7
-    x0.75, B-spline half-pixel shift x0.98, where reading the image's own floor as its noise would
-    have RAISED it x2.06 / x3.08 / x1.62 -- the bias the photon budget removes).
+    Validation (test_end.py; numbers in README.md): blur at equal noise ranks strictly lower; more
+    frames at the same blur rank higher (x1.19 for 2x, x1.48 for 4x; DAN moves 0.3 %); sharper-but-
+    noisier pairs and a capture's 20 % / 50 % stacks rank as the exact oracle Wiener restoration does
+    (both outcomes occur in each set); a random scan of 157 clear pairs over object spectra
+    f^-1.4..f^-4.4 agreed 157/157 (log-capacity: 96 %, so the restoration form was chosen); a tool's
+    smoothing never raises it (drizzle x3 + area resample x0.81, Gaussian 0.7 x0.75, B-spline
+    half-pixel shift x0.98, where reading the box's own white floor as its noise RAISES it -- the bias
+    the photon budget removes).
+    KNOWN LIMIT -- NOISE AND SHARPENING THE BUDGET DOES NOT HOLD (C1; pinned in test_end.py as strict
+    xfails): END counts any power the photon budget does not explain as detail. Noise beyond the
+    budget (uniform, shot-like, target-only) and an unsharp mask RAISE it (measured x1.18-1.88 on
+    synthetic stacks, x1.02-1.94 on real AutoStakkert P20 stacks; README has the table). No
+    single-image estimator can charge it without also charging genuine sharpness: a linear sharpening
+    G of a stack whose own kernel is K is the same image, spectrum for spectrum, as an honest stack with
+    kernel G K, which END must rank higher whenever G K <= 1; and noise added to a smoothed stack
+    cannot be told from the stack's own (unknown) noise kernel. Measured headroom (the box's fitted
+    white level over the budget): a B-spline-interpolated synthetic 0.67, a drizzled one 0.10; the
+    real stacks 0.00-0.29 for ASIStudio and 0.03-0.29 for ours.
+    HOW THE BENCH JUDGES DESPITE IT (Ruling P28b): ours is not a single image -- the split halves
+    measure its noise -- so ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin
+    (noise_factor; halves.charge), the references stay on the budget. C1 then only inflates a
+    reference's END, which only lowers ours' ratio: a numeric pass is sound, a numeric fail is sound
+    only against a reference whose files record no processing (refs.provenance).
     END_INTERIOR: the same on the interior window's high-passed periodogram (DAN_INTERIOR below),
     the noise model times the high-pass's power gain, with sigma_frame^2 over the interior window.
-    LIMITS: our k is the frames used x the mean kept fraction over regions (the exact (sum w)^2 /
-    sum w^2 needs per-frame region membership RunStack does not return); the bench also scores the
-    harmonic-mean reading and sends a verdict that flips between them to review. AutoStakkert's
-    percentage is global, approximate per alignment point. sigma_frame reads 4-11 % high on a
-    textured target drifting 0.5 px per frame (noise.py), a factor common to every image. Detail
-    and fixed-pattern structure in the band count as signal for every image alike.
+    LIMITS: our k_eff comes from stack-region-probe's plan, which repeats RunStack's selection steps;
+    the bench checks its per-region kept counts against stack-probe's (RunStack's own) and reports END
+    unmeasured when they differ. The flip check is our k as the frames used x the unweighted mean kept
+    fraction over regions (benchset.ours_frames_mean). AutoStakkert's percentage is global,
+    approximate per alignment point. sigma_frame reads up to +7 % (+16 % on a 6 px disc) on a
+    textured target moving between frames (noise.py), a factor common to every image's budget; row or
+    column banding is invisible to it, and only ours is charged that (through the split halves).
 
 DAN -- SECONDARY SINCE RULING P28: it removes each image's own noise, so it gives no credit for SNR
 (a stack of 4x the frames at the same blur scores the same).
@@ -153,11 +163,6 @@ INTERIOR_TAPER = 2.0         # px, cosine edge of the interior window
 INTERIOR_MIN_DIAMETER = 20.0 # px, equivalent diameter of the eroded disc for the interior to be judged
 END_EDGES = (0.06, 0.09, 0.12, 0.15, 0.18, 0.21, 0.24, 0.27, 0.30)   # cycles/px: END's bins over BAND
 END_PRIOR = 3.0              # END's object power spectrum ~ f^-3 (one prior for every image)
-SKY_TILE = 48                # px: the sky tiles of the excess-noise check
-SKY_EDGE = 6                 # px kept clear of the frame edge
-SKY_GUARD = 10               # px between a sky tile and any structure
-SKY_STRUCTURE = 0.03         # structure = low-pass above the sky level + 3 % of (max - sky level)
-SKY_MIN_TILES = 8
 
 
 class Box(NamedTuple):
@@ -182,15 +187,11 @@ class Result:
     interior_diameter: Optional[float] = None
     # END (Ruling P28; see END in the module doc). None when no noise budget was given or in mosaic
     # mode -- end_note says why, loudly; never a fallback to the image's own noise alone.
-    end: Optional[float] = None               # judged: noise = max(budget, the box's white floor)
-    end_pure: Optional[float] = None          # the same with the budget alone (the flip check)
-    end_interior: Optional[float] = None      # judged, the interior (None when not judged)
-    end_interior_pure: Optional[float] = None
-    end_snr: Optional[tuple] = None           # judged per-bin SNR over END_EDGES
-    end_noise: Optional[float] = None         # the judged noise power on the box
+    end: Optional[float] = None               # END on the box, noise = the photon budget
+    end_interior: Optional[float] = None      # END of the interior (None when not judged)
+    end_snr: Optional[tuple] = None           # per-bin SNR over END_EDGES
     end_noise_budget: Optional[float] = None  # the photon budget given (sigma_frame^2 / k_eff)
-    end_excess: Optional[float] = None        # white noise the sky holds beyond its budget
-    end_sky_tiles: int = 0
+    end_noise_factor: Optional[tuple] = None  # our measured-noise charge per bin (Ruling P28b), when given
     end_frames: Optional[float] = None        # the k the budget used (refs.compare)
     end_note: Optional[str] = None
 
@@ -358,10 +359,9 @@ def interior_window(img, box: Box, limb: Optional[float] = None) -> InteriorWind
     return InteriorWindow(w, mask, diameter, erosion, sig)
 
 
-def _interior_scores(x, iw: InteriorWindow, budget: Optional[float], extra: Optional[float]):
-    """(DAN_interior, END_interior judged, END_interior pure) of normalised crop x on the interior
-    window; the END values are None without a noise budget (judged: also without the sky's excess
-    `extra`)."""
+def _interior_scores(x, iw: InteriorWindow, budget: Optional[float], factor=None):
+    """(DAN_interior, END_interior) of normalised crop x on the interior window; END_interior is
+    None without a noise budget."""
     m = iw.mask.astype(np.float64)
     num = ndimage.gaussian_filter(x * m, INTERIOR_HP_SIGMA)
     den = ndimage.gaussian_filter(m, INTERIOR_HP_SIGMA)
@@ -380,38 +380,52 @@ def _interior_scores(x, iw: InteriorWindow, budget: Optional[float], extra: Opti
     gain = float(np.mean((1.0 - np.exp(-2.0 * (math.pi * INTERIOR_HP_SIGMA * fc) ** 2)) ** 2))
     dan = math.sqrt(max(ms - n_int * gain, 0.0))
     if budget is None:
-        return dan, None, None
+        return dan, None
     # END of the interior: the periodogram of the windowed high-pass (without it the limb-darkening
     # slope times the window would leak into the low bins). The high-pass is linear, so it scales
     # signal and noise alike at every frequency: the noise model is multiplied by its power gain g.
     hw = hp[sl] * w
     ph = np.abs(np.fft.fft2(hw - hw.mean())) ** 2 / (w ** 2).sum()
     g = (1.0 - np.exp(-2.0 * (math.pi * INTERIOR_HP_SIGMA * f) ** 2)) ** 2
-    judged = None if extra is None else _end_from_periodogram(ph, budget + extra, g)[0]
-    pure, _ = _end_from_periodogram(ph, budget, g)
-    return dan, judged, pure
+    return dan, _end_from_periodogram(ph, budget, g, factor)[0]
 
 
-def _end_from_periodogram(p, noise_power, gain=None):
+def _end_from_periodogram(p, noise_power, gain=None, factor=None):
     """(END, per-bin SNR) of periodogram `p` (variance-per-pixel units, on its own fftfreq grid)
     against white noise of power `noise_power` (times the per-frequency power gain `gain` of a
-    linear pre-filter, when given): per END_EDGES bin, SNR = max(mean P - N, 0) / N, and
+    linear pre-filter, when given; times the per-bin `factor`, our measured-noise charge, when given):
+    per END_EDGES bin, SNR = max(mean P - N, 0) / N, and
     END = sqrt( sum_f O(f) / sum_f O(f) / (1 + SNR(f)) ) over the band's frequency samples, with
     the object prior O(f) = f^-END_PRIOR (see END in the module doc)."""
     f = _radial_frequency(p.shape)
     num = den = 0.0
     snrs = []
-    for a, b in zip(END_EDGES[:-1], END_EDGES[1:]):
+    for i, (a, b) in enumerate(zip(END_EDGES[:-1], END_EDGES[1:])):
         m = (f >= a) & (f < b)
         if not m.any():
             continue
-        noise = noise_power * (float(gain[m].mean()) if gain is not None else 1.0)
+        noise = noise_power * (float(gain[m].mean()) if gain is not None else 1.0) * (factor[i] if factor else 1.0)
         snr = max(float(p[m].mean()) - noise, 0.0) / noise
         snrs.append(snr)
         o = float((f[m] ** -END_PRIOR).sum())       # the bin's object power under the prior
         num += o
         den += o / (1.0 + snr)
     return math.sqrt(num / den), tuple(snrs)
+
+
+def periodogram(x) -> np.ndarray:
+    """The metric's periodogram of a crop: the 2-D Hann window, the window-weighted mean removed,
+    |FFT|^2 / sum(w^2) -- variance-per-pixel units (white noise of variance v gives v everywhere)."""
+    x = np.asarray(x, dtype=np.float64)
+    w = np.outer(np.hanning(x.shape[0]), np.hanning(x.shape[1]))
+    x = x - (w * x).sum() / w.sum()
+    return np.abs(np.fft.fft2(x * w)) ** 2 / (w ** 2).sum()
+
+
+def band_means(p, edges) -> list:
+    """Mean of periodogram `p` over each annulus [edges[i], edges[i + 1]) of radial frequency."""
+    f = _radial_frequency(p.shape)
+    return [float(p[(f >= a) & (f < b)].mean()) for a, b in zip(edges[:-1], edges[1:])]
 
 
 def _radial_frequency(shape):
@@ -422,15 +436,17 @@ def _radial_frequency(shape):
 
 def measure(img, box: Optional[Box] = None, *, mosaic=False,
             interior: Optional[InteriorWindow] = None, noise_power: Optional[float] = None,
-            noise_power_interior: Optional[float] = None, sky_noise_power: Optional[float] = None,
-            sky_floor=None) -> Result:
+            noise_power_interior: Optional[float] = None, noise_factor=None) -> Result:
     """DAN and END of `img` (HxW or HxWxC array, any linear units) on `box` (default: its own
     target_box), and DAN_interior / END_interior when an anchor's interior window is given (judged
     only when the window is >= INTERIOR_MIN_DIAMETER across). `noise_power` is the image's photon
     budget on the box, sigma_frame^2 / k_eff in the metric's units (a fraction of the box's mean
     target signal squared; noise.box_noise / k), and `noise_power_interior` the same over the
-    interior window (default: noise_power). Without it END is None and end_note says so. Raises
-    ValueError when there is no target signal to measure."""
+    interior window (default: noise_power). `noise_factor` (one per END_EDGES bin, >= 1) multiplies
+    the noise bin by bin: our stack's measured-noise charge (Ruling P28b, halves.charge). Without a
+    budget END is None and end_note says so. Raises ValueError when there is no target signal."""
+    if noise_factor is not None and (len(noise_factor) != len(END_EDGES) - 1 or min(noise_factor) < 1.0):
+        raise ValueError(f"noise_factor needs {len(END_EDGES) - 1} values >= 1, got {noise_factor}")
     lum = luminance(img)
     if box is None:
         box = target_box(lum)
@@ -444,18 +460,14 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False,
     signal = float(crop.mean()) - bg
     if not signal > 0 or not np.ptp(crop) > 0:
         raise ValueError("no target signal above the background in the crop")
-    x = (crop - bg) / signal
-    win = np.outer(np.hanning(crop.shape[0]), np.hanning(crop.shape[1]))
-    x = x - (win * x).sum() / win.sum()
-    power = np.abs(np.fft.fft2(x * win)) ** 2 / (win ** 2).sum()
+    power = periodogram((crop - bg) / signal)
     f = _radial_frequency(crop.shape)
     band = (f >= BAND[0]) & (f < BAND[1])
     noise = (f >= NOISE_BAND[0]) & (f <= NOISE_BAND[1])
     floor = float(np.median(power[noise]) / math.log(2))
     band_power = float(power[band].mean())
     excess = (float(power[band].sum()) - floor * int(band.sum())) / power.size
-    end = end_pure = end_snr = end_noise = end_note = extra = None
-    sky_tiles = 0
+    end = end_snr = end_note = None
     budget = noise_power
     if mosaic:
         end_note, budget = "END not computed in mosaic mode (a fallback, never a pass/fail)", None
@@ -464,22 +476,8 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False,
     elif not budget > 0:
         raise ValueError(f"noise budget must be positive, got {budget}")
     if budget is not None:
-        sky_budget = budget if sky_noise_power is None else sky_noise_power
-        try:
-            if sky_floor is None:
-                sky_floor, sky_tiles = sky_noise_floor(lum)
-            elif isinstance(sky_floor, str):          # the caller measured the sky and found none
-                raise SkyUnmeasurable(sky_floor)
-            else:
-                sky_floor, sky_tiles = sky_floor
-            extra = max(sky_floor / signal ** 2 - sky_budget, 0.0)
-        except SkyUnmeasurable as e:
-            end_note = f"judged END not computed: the excess-noise check needs sky ({e}); pure budget only"
-        end_pure, pure_snr = _end_from_periodogram(power, budget)
-        if extra is not None:
-            end_noise = budget + extra
-            end, end_snr = _end_from_periodogram(power, end_noise)
-    interior_value = end_int = end_int_pure = None
+        end, end_snr = _end_from_periodogram(power, budget, factor=noise_factor)
+    interior_value = end_int = None
     judged, diameter = False, None
     if interior is not None:
         if interior.window.shape != crop.shape:
@@ -487,75 +485,13 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False,
         diameter, judged = interior.diameter, interior.judged
         if judged:
             b_int = None if budget is None else (noise_power_interior if noise_power_interior is not None else budget)
-            interior_value, end_int, end_int_pure = _interior_scores((crop - bg) / signal, interior, b_int, extra)
+            interior_value, end_int = _interior_scores((crop - bg) / signal, interior, b_int, noise_factor)
     return Result(value=math.sqrt(max(excess, 0.0)), band_power=band_power, noise_floor=floor,
                   band_snr=(band_power - floor) / floor if floor > 0 else math.inf,
                   background=bg, signal=signal, box=box, mosaic=mosaic,
                   interior=interior_value, interior_judged=judged, interior_diameter=diameter,
-                  end=end, end_pure=end_pure, end_interior=end_int, end_interior_pure=end_int_pure,
-                  end_snr=end_snr, end_noise=end_noise, end_noise_budget=budget, end_excess=extra,
-                  end_sky_tiles=sky_tiles, end_note=end_note)
-
-
-class SkyUnmeasurable(ValueError):
-    """Too little signal-free, unclipped sky to read an image's own noise there."""
-
-
-def sky_mask(lum) -> np.ndarray:
-    """Signal-free sky of a whole image: further than SKY_GUARD px from any structure, where
-    structure = the 2 px low-pass above the sky level + SKY_STRUCTURE x (max - sky level). The sky
-    level is the 5th percentile of the low-pass over pixels above the image's minimum, so a zero
-    border or a clipped sky does not set it (ASIStudio's 2023-09-29 Saturn: zero borders under a
-    1043 DN sky pedestal)."""
-    lum = luminance(lum)
-    lp = ndimage.gaussian_filter(ndimage.median_filter(lum, size=3), 2.0)
-    above = lp[lum > lum.min()]
-    if above.size == 0:
-        return np.zeros(lum.shape, dtype=bool)
-    level, top = float(np.percentile(above, 5.0)), float(lp.max())
-    return ~ndimage.binary_dilation(lp > level + SKY_STRUCTURE * (top - level), iterations=SKY_GUARD)
-
-
-def _detrend(t):
-    n0, n1 = t.shape
-    yy, xx = np.meshgrid(np.linspace(-0.5, 0.5, n0), np.linspace(-0.5, 0.5, n1), indexing="ij")
-    a = np.stack([np.ones(t.size), yy.ravel(), xx.ravel(), (yy * yy).ravel(), (xx * xx).ravel(),
-                  (xx * yy).ravel()], 1)
-    coef, *_ = np.linalg.lstsq(a, t.ravel(), rcond=None)
-    return t - (a @ coef).reshape(t.shape)
-
-
-def sky_noise_floor(img, mask=None):
-    """(white noise power of the image's own sky at 0.40-0.50 cycles/px, in the image's units;
-    tiles used). Tiles of SKY_TILE px, half overlapping, wholly in sky_mask and SKY_EDGE px clear
-    of the frame edge; a tile holding the image's minimum value (a clipped sky, a black border) or
-    no variation is refused. Each tile: quadratic detrend (glow), 2-D Hann window, periodogram in
-    variance-per-pixel units, mean over the 0.40-0.50 annulus; the median over tiles (a star or a
-    moon cannot pull it). `mask` replaces sky_mask(img) (another image's sky on the same grid).
-    Raises SkyUnmeasurable below SKY_MIN_TILES usable tiles."""
-    lum = luminance(img)
-    sky = sky_mask(lum) if mask is None else np.asarray(mask, dtype=bool)
-    lo, t = lum.min(), SKY_TILE
-    win = np.outer(np.hanning(t), np.hanning(t))
-    f = _radial_frequency((t, t))
-    nb = (f >= NOISE_BAND[0]) & (f <= NOISE_BAND[1])
-    h, w = lum.shape
-    vals, cand, clipped = [], 0, 0
-    for y in range(SKY_EDGE, h - t - SKY_EDGE + 1, t // 2):
-        for x in range(SKY_EDGE, w - t - SKY_EDGE + 1, t // 2):
-            if not sky[y:y + t, x:x + t].all():
-                continue
-            cand += 1
-            tile = lum[y:y + t, x:x + t]
-            if (tile <= lo).any() or not np.ptp(tile) > 0:
-                clipped += 1
-                continue
-            p = np.abs(np.fft.fft2(_detrend(tile) * win)) ** 2 / (win ** 2).sum()
-            vals.append(float(p[nb].mean()))
-    if len(vals) < SKY_MIN_TILES:
-        raise SkyUnmeasurable(f"{len(vals)} usable sky tiles of {t} px, need {SKY_MIN_TILES} "
-                              f"({cand} clear of structure, {clipped} of them clipped or constant)")
-    return float(np.median(vals)), len(vals)
+                  end=end, end_interior=end_int, end_snr=end_snr, end_noise_budget=budget,
+                  end_noise_factor=tuple(noise_factor) if noise_factor else None, end_note=end_note)
 
 
 def measure_path(path, box: Optional[Box] = None, *, mosaic=False) -> Result:

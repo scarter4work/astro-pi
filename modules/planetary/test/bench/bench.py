@@ -13,22 +13,31 @@ RUNS. One run per benchmark capture (benchset.BENCHMARK), stacked with the captu
 pattern: RGGB for every colour capture (ZWO ASI585MC / ASI2400MC, camera spec; Scott 2026-10-22),
 Auto for the diagnosis cases.
 
-STATUS (Ruling 2 with Ruling P28's yardstick). The judged numbers are END_full and, where the
-interior is judged, END_interior (metric.py), each as ours over the best reference, against 0.97.
-  unmeasured: END is missing for ours or for some reference (no per-frame noise, an unknown
-              frame count, no usable sky) -- no verdict is drawn from the rest, loudly;
-  review:     the verdict flips between END with our frame count read two ways (benchset.ours_frames,
-              the judged one, and ours_frames_alt) -- Ruling P28 rule 5 -- or the numbers pass but
-              a review note applies (refs.review_notes: limb-only, noise regime, mosaic);
-  fail:       END below the bar under both readings;
-  pass:       none of the above.
-DAN_full / DAN_interior stay in every table as secondary figures; they decide nothing. Every
-capture still gets Scott's look at the side-by-side (Ruling 2's human).
+STATUS (Ruling 2 with Ruling P28b). The judged numbers are END_full and, where the interior is judged,
+END_interior (metric.py), each as ours over the best reference, against 0.97. Ours is charged its
+MEASURED noise -- N = budget x max(1, R(f) / R_cal(f)) per END bin, R the split halves' measured / model,
+R_cal the engine's frozen calibration for the target's kind (halves.charge) -- and the references stay
+on the photon budget: C1 can only inflate a reference's END, which only lowers ours' ratio, so a
+numeric pass is sound and a numeric fail is not unless the reference is known to be unprocessed.
+  unmeasured: END is missing for ours or for some reference -- no verdict, loudly;
+  review:     the verdict flips between our two frame counts (rule 5); or the numbers fail against a
+              reference whose provenance (refs.provenance) is not "none" -- processed or unknown, so C1
+              may be what beat us (C1_NOTE); or a fail that does not also hold with ours on the bare
+              budget, on both readings (CHARGE_NOTE); or the numbers pass but ours could not be charged
+              on both readings (UNCHARGED_NOTE), the split halves lie outside their kind's tolerance in
+              either direction (the charge is not confirmed), or a review note applies;
+  fail:       END below the bar under both readings, against references whose files record no
+              processing (AutoStakkert raw stacks with their .as3), AND below it with ours on the bare
+              budget too -- the charge over-charges ours (the halves hold signal they do not share), so
+              a fail only under the charge is review (CHARGE_NOTE);
+  pass:       END >= 0.97 under the charge on both readings, split halves within their kind's
+              tolerance, no review note. Scott's side-by-side is still the spec's final word.
+DAN_full / DAN_interior stay in every table as secondary figures; they decide nothing.
 
-SPLIT HALVES (Ruling P28 rule 3, validation only). When run-stack-bench.sh stacked the capture's
-even and odd frames separately (halfA/halfB.fits + .json in the run's directory), report compares
-their difference -- noise only, where the halves agree on the signal -- with END's model for it,
-sigma_frame^2 (1/k_A + 1/k_B) / 4, per END bin (split_half_check).
+SPLIT HALVES (Ruling P28 rule 3). When run-stack-bench.sh stacked the capture's even and odd frames
+separately (halfA/halfB .fits, .json, .keff.json in the run's directory, both k over A's box),
+report compares their difference with END's model for it (halves.check) against the kind's frozen
+tolerance (bench/calibration.json), and derives ours' charge from it.
 
 SIDE-BY-SIDE. One panel per image -- ours, then each reference in benchset order -- all cropped
 from the SAME region of ours' grid at each reference's registered integer offset (the crop the
@@ -107,27 +116,69 @@ def _verdict(full, inner, judged):
     return ("fail" if reasons else "pass"), reasons
 
 
-def status_of(rows: List[dict], run_id: str = "") -> Tuple[str, List[str]]:
-    """Ruling 2 / P28 from the compare rows (refs.rows_to_dicts(), ours first): (status, reasons)."""
+C1_NOTE = ("C1: a numeric fail is not sound here -- END cannot see noise or sharpening beyond the photon budget "
+           "in a reference (metric.py KNOWN LIMIT), and this reference's processing is not known to be none")
+CHARGE_NOTE = ("the fail rests on our measured-noise charge: the split halves also hold signal they do not share "
+               "(each half's regions keep their own frames), which over-charges ours, so a fail is sound only if "
+               "it holds on the bare budget too")
+UNCHARGED_NOTE = ("our noise is not measured (no split halves): a pass needs ours charged its measured noise "
+                  "(Ruling P28b), so the numbers cannot pass this capture")
+
+
+def _setters(rows: List[dict], key: str) -> List[dict]:
+    """The reference(s) holding the best `key` (END full or interior): what a fail is measured against."""
+    vals = [r[key] for r in rows[1:] if r[key] is not None]
+    return [r for r in rows[1:] if vals and r[key] == max(vals)]
+
+
+def status_of(rows: List[dict], run_id: str = "", split_half: Optional[dict] = None) -> Tuple[str, List[str]]:
+    """Ruling 2 with Ruling P28b, from the compare rows (refs.rows_to_dicts(), ours first) and the
+    split-half record (halves.check): (status, reasons). See STATUS in the module doc."""
     ours = rows[0]
     missing = [f"{r['label']}: {r['end_note'] or 'END missing'}" for r in rows
                if r["end"] is None or (ours["interior_judged"] and r["end_interior"] is None)]
     if missing or ours["end_ratio"] is None:
         return "unmeasured", ["NO VERDICT -- END unmeasurable for " + "; ".join(missing or ["the references"])]
+    if ours["end_alt_ratio"] is None:
+        return "unmeasured", ["NO VERDICT -- END with our mean-kept-fraction frame count (the flip check) is missing"]
     judged = ours["interior_judged"]
     v, reasons = _verdict(ours["end_ratio"], ours["end_interior_ratio"], judged)
     v_alt, _ = _verdict(ours["end_alt_ratio"], ours["end_interior_alt_ratio"], judged)
-    if ours["end_alt_ratio"] is None:
-        return "unmeasured", ["NO VERDICT -- END with the alternative frame count is missing"]
+    notes = []
+    if split_half is not None and split_half.get("status") not in ("agrees", None):
+        import halves
+        notes.append(f"split halves {split_half.get('status')}: {halves.summary_line(split_half)} -- the noise model and "
+                     f"ours' charge are not confirmed on this capture")
     if v != v_alt:
         alt = f"{ours['end_alt_ratio']:.3f}" + (f" / {ours['end_interior_alt_ratio']:.3f}" if judged else "")
         own = f"{ours['end_ratio']:.3f}" + (f" / {ours['end_interior_ratio']:.3f}" if judged else "")
-        return "review", [f"verdict flips with our frame count: {v} at k {ours['end_frames']:.0f} (END {own}), "
-                          f"{v_alt} at k {ours['end_alt_frames']:.0f} (END {alt})"] + list(ours["review"])
+        return "review", [f"verdict flips with our frame count: {v} at the box's noise-power k {ours['end_frames']:.0f} "
+                          f"(END {own}), {v_alt} at the mean kept fraction's {ours['end_alt_frames']:.0f} (END {alt})"] \
+            + notes + list(ours["review"])
     if v == "fail":
-        return "fail", reasons
-    review = list(ours["review"])
-    return ("review", review) if review else ("pass", [])
+        if ours.get("end_noise_factor") is not None:
+            v_bare, _ = _verdict(ours.get("end_uncharged_ratio"), ours.get("end_interior_uncharged_ratio"), judged)
+            v_bare_alt, _ = _verdict(ours.get("end_uncharged_alt_ratio"), ours.get("end_interior_uncharged_alt_ratio"), judged)
+            if v_bare != "fail" or v_bare_alt != "fail":       # P28c, on both readings (review N2-m1)
+                bare = f"{_f(ours.get('end_uncharged_ratio'), '{:.3f}')}" + (
+                    f" / {_f(ours.get('end_interior_uncharged_ratio'), '{:.3f}')}" if judged else "")
+                bare_alt = f"{_f(ours.get('end_uncharged_alt_ratio'), '{:.3f}')}" + (
+                    f" / {_f(ours.get('end_interior_uncharged_alt_ratio'), '{:.3f}')}" if judged else "")
+                return "review", reasons + [f"{CHARGE_NOTE} (on the bare budget ours is {bare}; with the mean-kept "
+                                            f"k {bare_alt})"] + notes
+        setters = _setters(rows, "end") + (_setters(rows, "end_interior") if judged else [])
+        unsound = [r for r in setters if (r.get("provenance") or {}).get("state") != "none"]
+        if unsound:
+            return "review", reasons + [C1_NOTE + ": " + "; ".join(
+                f"{r['label']}: {(r.get('provenance') or {}).get('text', 'no provenance')}" for r in unsound)] + notes
+        return "fail", reasons + [f"{r['label']}: {r['provenance']['text']}" for r in setters] + notes
+    if ours.get("end_noise_factor") is None or ours.get("end_alt_noise_factor") is None:
+        return "review", [UNCHARGED_NOTE] + notes + list(ours["review"])
+    if split_half is not None and split_half.get("status") == "outside":   # either direction (review I-G)
+        return "review", notes + list(ours["review"])
+    if ours["review"]:
+        return "review", list(ours["review"]) + notes
+    return "pass", notes
 
 
 # --- display ---------------------------------------------------------------------------------
@@ -269,7 +320,7 @@ def compose(rows_of_panels: Sequence[Sequence[np.ndarray]], headers: Sequence[Se
 
 
 def side_by_side(run: Run, rows: List["refs.Row"], dicts: List[dict], probe: dict, ours_path: str,
-                 out_path: str) -> dict:
+                 out_path: str, status: str) -> dict:
     """Write the side-by-side PNG; returns what it showed (regions, levels) for compare.json."""
     c = benchset.by_id(run.capture)
     ours = refs.load_image(ours_path)
@@ -320,8 +371,7 @@ def side_by_side(run: Run, rows: List["refs.Row"], dicts: List[dict], probe: dic
                             f"{probe['seconds']:.1f} s", score, dan])
         else:
             headers.append([dct["label"], score, dan, f"{dct['orientation']} ncc {dct['ncc']:.3f}"])
-    st, _ = status_of(dicts, run.id)
-    title = f"{run.id}: {st.upper()} -- same crop, scale and stretch (black per channel, one white at 99.5th pct, gamma 2.2)"
+    title = f"{run.id}: {status.upper()} -- same crop, scale and stretch (black per channel, one white at 99.5th pct, gamma 2.2)"
     compose(panel_rows, headers, row_titles, title, out_path)
     return {"shown": shown, "display_levels": [{"black": b, "white": w} for b, w in levels]}
 
@@ -368,26 +418,34 @@ def report_run(run: Run, run_dir: str) -> dict:
         rec["photon_transfer"] = str(frame_noise[0])
     except noise.NoiseUnmeasurable as e:   # loud: every row's end_note carries it, the status is unmeasured
         frame_noise = rec["photon_transfer"] = f"UNMEASURABLE: {e}"
-    rows = benchset.compare_capture(run.capture, ours, probe=probe, frame_noise=frame_noise)
+    keff_path = os.path.join(run_dir, "keff.json")
+    keff = _load_json(keff_path) if os.path.exists(keff_path) else None
+    import halves
+    sh = split_half_check(run_dir, frame_noise, halves.kind_of(c.kind))
+    if sh is not None:
+        rec["split_half"] = sh
+    measured = sh is not None and sh.get("status") in ("agrees", "outside")
+    rows = benchset.compare_capture(run.capture, ours, probe=probe, frame_noise=frame_noise, keff=keff,
+                                    noise_factor=sh["factor"] if measured else None,
+                                    noise_factor_alt=sh["factor_alt"] if measured else None)
     dicts = refs.rows_to_dicts(rows)
     rec["rows"] = dicts
-    rec["status"], rec["reasons"] = status_of(dicts, run.id)
-    halves = split_half_check(run_dir, frame_noise)
-    if halves is not None:
-        rec["split_half"] = halves
+    rec["status"], rec["reasons"] = status_of(dicts, run.id, sh)
     rec["side_by_side"] = os.path.join(run_dir, "side-by-side.png")
-    rec.update(side_by_side(run, rows, dicts, probe, ours, rec["side_by_side"]))
+    rec.update(side_by_side(run, rows, dicts, probe, ours, rec["side_by_side"], rec["status"]))
     with open(os.path.join(run_dir, "compare.json"), "w") as fh:
         json.dump(rec, fh, indent=1)
     return rec
 
 
-def split_half_check(run_dir: str, frame_noise):
-    """halves.check for the run (None when run-stack-bench.sh did not stack the halves)."""
+def split_half_check(run_dir: str, frame_noise, kind: str):
+    """halves.check for the run (None when run-stack-bench.sh did not stack the halves). A failure
+    of the check's own inputs is a loud record (ours is then uncharged, so no pass), never a gap."""
     import halves
+    import noise
     try:
-        return halves.check(run_dir, frame_noise)
-    except Exception as e:      # validation only: loud in the summary, never a silent gap
+        return halves.check(run_dir, frame_noise, kind)
+    except (refs.RegistrationFailed, refs.ScaleMismatch, noise.NoiseUnmeasurable, OSError, ValueError) as e:
         return {"status": "error", "reason": f"{type(e).__name__}: {e}"}
 
 
@@ -409,6 +467,9 @@ def _pair(full, inner):
 
 
 def summary_md(records: List[dict]) -> str:
+    import halves
+    cal = halves.load_calibration()["kinds"]
+    AGREEMENT_TEXT = "; ".join(f"{k} {v['tolerance'][0]:.2f}-{v['tolerance'][1]:.2f} x" for k, v in cal.items())
     out = ["# PlanetaryStack benchmark -- ours vs AutoStakkert (AS) and ASIStudio (ASI)", "",
            "Generated by `test/run-stack-bench.sh` (bench.py report). Every colour capture is stacked "
            "**RGGB** (ZWO ASI585MC / ASI2400MC camera spec, Scott 2026-10-22); the side-by-side colours "
@@ -416,32 +477,41 @@ def summary_md(records: List[dict]) -> str:
            "**The judged metric is END** (metric.py, Ruling P28): sharpness at equal noise -- the band "
            "detail a matched Wiener restoration recovers, every image judged against one noise model, the "
            "capture's per-frame noise (noise.py, from its raw frames) over the image's effective frame "
-           "count k. Ratio = ours / the best reference; the bar is 0.97 on END_full and, where the interior "
-           "is judged, END_interior. DAN_full / DAN_interior (the previous yardstick) are secondary columns "
-           "and decide nothing.", "",
-           "Status: **unmeasured** = END is missing for some image (no verdict at all; the reason is in the "
-           "notes); **review** = the verdict flips between our frame count read two ways (mean kept "
-           "fraction vs harmonic mean), or the numbers pass but a note sends it to Scott; **fail** = END "
-           "below 0.97 under both readings; **pass** = the numbers raise nothing. Every capture still needs "
-           "Scott's look at `<run>/side-by-side.png`.", ""]
+           "count k (ours: the noise-power k over the box, from the engine's plan; a reference: its "
+           "percentage x the frames). Ratio = ours / the best reference; the bar is 0.97 on END_full and, "
+           "where the interior is judged, END_interior. DAN_full / DAN_interior (the previous yardstick) "
+           "are secondary columns and decide nothing.", "",
+           "**Ruling P28b:** ours is charged its MEASURED noise (the split halves over the engine's frozen "
+           "calibration, per END bin: budget x max(1, R/R_cal)); the references stay on the photon budget, "
+           "since their noise cannot be measured from their image (C1: END cannot see noise or sharpening "
+           "beyond the budget). C1 can only raise a reference's END, so a numeric **pass** is sound; a "
+           "numeric fail against a reference whose processing is not known to be none is **review**.", "",
+           "Status: **unmeasured** = END is missing for some image (no verdict; the reason is in the notes); "
+           "**pass** = END >= 0.97 under the charge on both readings of our k, no review note; **fail** = "
+           "END below 0.97 under both readings, against references whose files record no processing; "
+           "**review** = the rest, with the reasons. Every capture still needs Scott's look at "
+           "`<run>/side-by-side.png`.", ""]
     stacked = [r for r in records if r["expect"] == "stack"]
     kinds = ("pass", "review", "fail", "unmeasured", "not run", "error")
     counts = {s: sum(1 for r in stacked if r["status"] == s) for s in kinds}
     out.append("Stacked runs: " + ", ".join(f"{counts[k]} {k}" for k in kinds if counts[k] or k in kinds[:3]) + ".")
     out.append("")
-    out.append("| Run | Bayer | Frames used | k ours (alt) | Time s (wall) | Peak RSS MB | END_full ours / AS / ASI | "
-               "END_interior ours / AS / ASI | END ratio full / int | alt k: ratio full / int | DAN ratio full / int "
-               "(secondary) | Status | Notes |")
-    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    out.append("| Run | Bayer | Frames used | k ours: box (mean kept) | Time s (wall) | Peak RSS MB | END_full ours / AS / ASI | "
+               "END_interior ours / AS / ASI | END ratio full / int | mean-kept k: ratio full / int | Split halves | "
+               "DAN ratio full / int (secondary) | Status | Notes |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in stacked:
         if r["status"] in ("not run", "error") or "rows" not in r:
-            out.append(f"| {r['run']} | {r['bayer']} | - | - | - | - | - | - | - | - | - | **{r['status']}** | "
+            out.append(f"| {r['run']} | {r['bayer']} | - | - | - | - | - | - | - | - | - | - | **{r['status']}** | "
                        f"{'; '.join(r.get('reasons', []))} |")
             continue
         p, rows, o = r["probe"], r["rows"], r["rows"][0]
         a, s = _best(rows, "AS", "end"), _best(rows, "ASI", "end")
         ai, si = _best(rows, "AS", "end_interior"), _best(rows, "ASI", "end_interior")
         notes = list(r["reasons"]) + ([r["note"]] if r["note"] else [])
+        sh = r.get("split_half") or {}
+        split = (f"{sh['status']} x{sh['judged']['high']:.2f}" if sh.get("status") in ("agrees", "outside")
+                 else sh.get("status", "not stacked"))
         notes += [f"engine: {w}" for w in p.get("warnings", [])]
         out.append(
             f"| {r['run']} | {r['bayer']} | {p['used']} / {p['measured']} | {_f(o['end_frames'], '{:.0f}')} "
@@ -449,39 +519,39 @@ def summary_md(records: List[dict]) -> str:
             f"{p['peakRssMB']:.0f} | {_f(o['end'], '{:.2f}')} / {_f(a and a['end'], '{:.2f}')} / {_f(s and s['end'], '{:.2f}')} | "
             f"{_f(o['end_interior'], '{:.2f}')} / {_f(ai and ai['end_interior'], '{:.2f}')} / "
             f"{_f(si and si['end_interior'], '{:.2f}')} | {_pair(o['end_ratio'], o['end_interior_ratio'])} | "
-            f"{_pair(o['end_alt_ratio'], o['end_interior_alt_ratio'])} | "
+            f"{_pair(o['end_alt_ratio'], o['end_interior_alt_ratio'])} | {split} | "
             f"{_pair(o['ratio_to_best_reference'], o['interior_ratio_to_best_reference'])} | "
             f"**{r['status']}** | {'; '.join(notes)} |")
     out += ["", "## Every image", "",
             "Per image: its frame count k (references: stacking percentage x the capture's frames -- "
-            "AutoStakkert's global percentage, approximate per alignment point), END and its ratio, END "
-            "with the budget alone (no sky excess), the noise END used (budget + the sky's excess over its "
-            "own budget), and DAN (secondary).", "",
-            "| Run | Image | Factor | k | END_full (ratio) | END_interior (ratio) | END pure budget | noise: budget + sky excess (tiles) | DAN_full (ratio) | DAN_interior (ratio) | Registration | END note |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            "AutoStakkert's global percentage, approximate per alignment point), the noise budget "
+            "sigma_frame^2 / k, END and its ratio, and DAN (secondary).", "",
+            "| Run | Image | Factor | k | Budget | Our charge per bin | END_full (ratio) | END_interior (ratio) | DAN_full (ratio) | DAN_interior (ratio) | Provenance | Registration | END note |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in stacked:
         for d in r.get("rows", []):
             reg = (f"{d['orientation']} shift ({d['shift'][0]:+.2f}, {d['shift'][1]:+.2f}) scale {d['scale']:.4f} "
                    f"ncc {d['ncc']:.3f}") if d["orientation"] else "anchor"
-            nz = (f"{d['end_noise_budget']:.3g} + {_f(d['end_excess'], '{:.3g}')} ({d['end_sky_tiles']})"
-                  if d["end_noise_budget"] is not None else "-")
+            chg = " ".join(f"{v:.2f}" for v in d["end_noise_factor"]) if d.get("end_noise_factor") else "-"
+            prov = (d.get("provenance") or {})
+            prov_t = f"{prov.get('state')}: {prov.get('text')}" if prov else "-"
             out.append(f"| {r['run']} | {d['label']} | x{d['factor']:g} | {_f(d['end_frames'], '{:.0f}')} | "
-                       f"{_f(d['end'], '{:.2f}')} ({_f(d['end_ratio'], '{:.3f}')}) | "
-                       f"{_f(d['end_interior'], '{:.2f}')} ({_f(d['end_interior_ratio'], '{:.3f}')}) | "
-                       f"{_f(d['end_pure'], '{:.2f}')} | {nz} | {d['dan']:.4f} "
+                       f"{_f(d['end_noise_budget'], '{:.3g}')} | {chg} | {_f(d['end'], '{:.2f}')} ({_f(d['end_ratio'], '{:.3f}')}) | "
+                       f"{_f(d['end_interior'], '{:.2f}')} ({_f(d['end_interior_ratio'], '{:.3f}')}) | {d['dan']:.4f} "
                        f"({_f(d['ratio_to_best_reference'], '{:.3f}')}) | {_f(d['dan_interior'])} "
-                       f"({_f(d['interior_ratio_to_best_reference'], '{:.3f}')}) | {reg} | {d['end_note'] or ''} |")
+                       f"({_f(d['interior_ratio_to_best_reference'], '{:.3f}')}) | {prov_t} | {reg} | {d['end_note'] or ''} |")
     out += ["", "## Per-frame noise and the split-half check (Ruling P28 rule 3; validation, not input)", "",
             "Photon transfer: the raw frames' noise variance v(m) = a m + c (noise.py). Split halves: our "
             "engine stacked the even and the odd frames separately; their difference D is compared with "
-            "END's model for it, sigma_frame^2 (1/k_A + 1/k_B) / 4, as measured / model (halves.py: under 1 "
-            "toward Nyquist is our interpolation's smoothing; far above 1 is signal the halves do not share).", "",
+            "END's model for it, sigma_frame^2 (1/k_A + 1/k_B) / 4 (each half's noise-power k over the box), "
+            "as measured / model over 0.21-0.30 cycles/px, after a least-squares gain and sub-pixel refinement "
+            "of the halves' registration. The tolerance per target kind, from the engine on synthetic captures "
+            f"of known noise (halves.calibrate, frozen in bench/calibration.json), is {AGREEMENT_TEXT}. Ours' "
+            "charge per END bin is max(1, R/R_cal).", "",
             "| Run | Photon transfer | Split halves: measured / model |", "|---|---|---|"]
-    import halves
     for r in stacked:
         sh = r.get("split_half")
-        out.append(f"| {r['run']} | {r.get('photon_transfer', '-')} | "
-                   f"{halves.summary_line(sh) if sh else 'not stacked (run-stack-bench.sh --no-split)'} |")
+        out.append(f"| {r['run']} | {r.get('photon_transfer', '-')} | {halves.summary_line(sh)} |")
     out += ["", "## Timing (ours; AutoStakkert's time on the same file is not available)", "",
             "| Run | Read from | Video GB | Frames | Engine s | Wall s | s per GB | Read GB | Read MB/s | Peak RSS MB | Phases (s) |",
             "|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -539,10 +609,29 @@ def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("plan")
+    bx = sub.add_parser("box", help="the compare box of a run's stack (y0,y1,x0,x1), for stack-region-probe --keff-box")
+    bx.add_argument("run")
+    bx.add_argument("ours")
+    tb = sub.add_parser("target-box", help="metric.target_box of a stack (y0,y1,x0,x1); with a second stack, "
+                        "that box moved into the second stack's grid (halves.box_in_b)")
+    tb.add_argument("fits")
+    tb.add_argument("other", nargs="?")
     r = sub.add_parser("report")
     r.add_argument("out_dir")
     r.add_argument("runs", nargs="*")
     a = ap.parse_args(argv)
+    if a.cmd == "box":
+        b = benchset.compare_capture(run_by_id(a.run).capture, a.ours)[0].result.box
+        print(f"{b.y0},{b.y1},{b.x0},{b.x1}")
+        return 0
+    if a.cmd == "target-box":
+        A = metric.luminance(refs.load_image(a.fits))
+        b = metric.target_box(A)
+        if a.other:
+            import halves
+            b = halves.box_in_b(A, metric.luminance(refs.load_image(a.other)), b)
+        print(f"{b.y0},{b.y1},{b.x0},{b.x1}")
+        return 0
     if a.cmd == "plan":
         for run in plan():
             w, h = benchset.by_id(run.capture).size

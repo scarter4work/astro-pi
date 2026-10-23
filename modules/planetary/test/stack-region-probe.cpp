@@ -1,10 +1,11 @@
 // Test-only CLI over the region stage (Task 5), for the real-data check. Never shipped, not a ctest
 // case. Reads the video only.
 //
-//   stack-region-probe <video> [--frames N] [--threads T] [--out DIR]
+//   stack-region-probe <video> [--frames N] [--threads T] [--out DIR] [--bayer auto|none|RGGB|GRBG|GBRG|BGGR]
+//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only]
 //
 // Runs the engine's flow on the first N frames (default: all) on T threads (default: hardware):
-// MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
+// FitNoiseModel -> MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
 // RegionMeasurer, ResidualScale) -> PlanRegions -> pass B (every planned frame: DemosaicHQ,
 // Accumulator::Add) -> Finish, plus the same frames stacked with the global shift only (a layout
 // without regions: the fallback stack alone) as the baseline. Prints the selection, the layout, the
@@ -12,7 +13,19 @@
 // DIR/ours.ppm, DIR/global.ppm, DIR/best-frame.ppm (the sharpest single frame, demosaiced) with one
 // shared display stretch (8-bit, black at the 0.1th percentile of ours, white at its 99.95th, gamma
 // 1/2.2) for a side-by-side. Exit 0 on success, 2 when the capture is diagnosed, 1 on error.
+//
+// --keff-box (Ruling P28, the bench's END noise model): our stack's effective frame count over a box
+// of the output (full-resolution) grid, from the plan's own per-frame kept flags and the blend
+// weights the Accumulator uses (AxisWeightAt; alpha_f(p) = sum over the regions keeping f of
+// w_r(p) / K_r + (1 - cover(p)) / K_fallback). Per pixel the stack's noise power is
+// sigma^2 sum_f alpha_f^2 / (sum_f alpha_f)^2; over the box it is averaged with the metric's Hann
+// window squared, and k_eff = 1 / that average (in units of sigma^2). Frame gains, rejected samples
+// and the outside-frame weight are left out. --json-out writes it with the plan's per-region kept
+// counts (the bench checks them against stack-probe's, the engine's own run). --plan-only stops
+// after the plan (no pass B). --bayer as stack-probe's (default Auto: the sidecar or the header).
 #include <algorithm>
+#include <array>
+#include <map>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -95,9 +108,163 @@ void WritePpm(const std::string& path, const ser::FloatImage& im, double lo, dou
     std::fclose(f);
 }
 
+ser::BayerChoice ParseBayer(const std::string& s) {
+    if (s == "auto" || s == "Auto") return ser::BayerChoice::Auto;
+    if (s == "none" || s == "None") return ser::BayerChoice::None;
+    if (s == "RGGB") return ser::BayerChoice::RGGB;
+    if (s == "GRBG") return ser::BayerChoice::GRBG;
+    if (s == "GBRG") return ser::BayerChoice::GBRG;
+    if (s == "BGGR") return ser::BayerChoice::BGGR;
+    throw std::invalid_argument("unknown --bayer " + s);
+}
+
+double Hann(int i, int n) { return n > 1 ? 0.5 - 0.5 * std::cos(2 * M_PI * i / (n - 1)) : 1.0; }
+
+// See --keff-box in the header.
+double BoxKeff(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, double s) {
+    const stack::RegionLayout& lay = plan.layout;
+    const size_t nr = plan.RegionCount();
+    std::vector<size_t> stacked;
+    for (size_t p = 0; p < plan.frames.size(); ++p)
+        if (plan.stacked[p]) stacked.push_back(p);
+    if (stacked.empty() || plan.stackedCount <= 0) throw std::runtime_error("plan stacks no frame");
+    const double fb = 1.0 / static_cast<double>(plan.stackedCount);
+    std::map<std::array<int, 4>, std::array<int64_t, 16>> cache;
+    double num = 0, den = 0;
+    const int h = y1 - y0, w = x1 - x0;
+    for (int y = y0; y < y1; ++y) {
+        const stack::AxisWeight ay = stack::AxisWeightAt(lay, true, (y + 0.5) / s - 0.5);
+        const double hy = Hann(y - y0, h);
+        for (int x = x0; x < x1; ++x) {
+            const stack::AxisWeight ax = stack::AxisWeightAt(lay, false, (x + 0.5) / s - 0.5);
+            std::array<int, 4> ids{-1, -1, -1, -1};
+            std::array<double, 4> wts{0, 0, 0, 0};
+            int m = 0;
+            double cover = 0;
+            for (int b = 0; b < 2; ++b) {
+                const int j = ay.i0 + b;
+                const double wy = b ? ay.w1 : ay.w0;
+                if (j < 0 || j >= lay.ny || wy == 0) continue;
+                for (int c = 0; c < 2; ++c) {
+                    const int i = ax.i0 + c;
+                    const double wx = c ? ax.w1 : ax.w0;
+                    if (i < 0 || i >= lay.nx || wx == 0) continue;
+                    const int r = lay.node[static_cast<size_t>(j) * lay.nx + i];
+                    if (r < 0 || plan.detail[static_cast<size_t>(r)].kept <= 0) continue;
+                    ids[static_cast<size_t>(m)] = r;
+                    wts[static_cast<size_t>(m)] = wx * wy;
+                    cover += wx * wy;
+                    ++m;
+                }
+            }
+            auto it = cache.find(ids);
+            if (it == cache.end()) {
+                std::array<int64_t, 16> counts{};
+                for (size_t p : stacked) {
+                    int bits = 0;
+                    for (int k = 0; k < m; ++k)
+                        if (plan.flags[p * nr + static_cast<size_t>(ids[static_cast<size_t>(k)])] & stack::RegionPlan::kKept) bits |= 1 << k;
+                    ++counts[static_cast<size_t>(bits)];
+                }
+                it = cache.emplace(ids, counts).first;
+            }
+            const double fbw = std::max(0.0, 1 - cover) * fb;
+            double s1 = 0, s2 = 0;
+            for (int bits = 0; bits < (1 << m); ++bits) {
+                const int64_t n = it->second[static_cast<size_t>(bits)];
+                if (!n) continue;
+                double a = fbw;
+                for (int k = 0; k < m; ++k)
+                    if (bits & (1 << k))
+                        a += wts[static_cast<size_t>(k)] / static_cast<double>(plan.detail[static_cast<size_t>(ids[static_cast<size_t>(k)])].kept);
+                s1 += static_cast<double>(n) * a;
+                s2 += static_cast<double>(n) * a * a;
+            }
+            if (!(s1 > 0)) continue;
+            const double hh = std::pow(hy * Hann(x - x0, w), 2);
+            num += hh * s2 / (s1 * s1);
+            den += hh;
+        }
+    }
+    if (!(num > 0)) throw std::runtime_error("the box holds no stacked pixel");
+    return den / num;
+}
+
+// --keff-selftest: BoxKeff against analytic layouts (review M2 / N-m6). Returns the number of failures.
+int KeffSelfTest() {
+    auto plan = [](int nx, int keptLeft, int keptRight, int n) {
+        stack::RegionPlan p;
+        stack::RegionLayout& L = p.layout;
+        L.width = 64 * nx;
+        L.height = 64;
+        L.size = 32;
+        L.step = 16;
+        L.nx = nx;
+        L.ny = 1;
+        L.flatEdges = true;
+        for (int i = 0; i < nx; ++i) {
+            stack::Region r;
+            r.x0 = i * 16;
+            r.x1 = r.x0 + 32;
+            r.y1 = 32;
+            r.gx = i;
+            L.regions.push_back(r);
+            L.node.push_back(i);
+        }
+        for (int f = 0; f < n; ++f) {
+            p.frames.push_back(f);
+            p.stacked.push_back(1);
+        }
+        p.stackedCount = n;
+        p.flags.assign(static_cast<size_t>(n) * nx, 0);
+        p.detail.resize(static_cast<size_t>(nx));
+        const int kept[2] = {keptLeft, keptRight};
+        for (int i = 0; i < nx; ++i) {
+            p.detail[static_cast<size_t>(i)].kept = kept[i];
+            for (int f = 0; f < kept[i]; ++f) p.flags[static_cast<size_t>(f) * nx + i] = stack::RegionPlan::kKept;
+        }
+        return p;
+    };
+    int fails = 0;
+    auto expect = [&](const char* what, double got, double want) {
+        const bool ok = std::abs(got - want) <= 1e-6 * want;
+        std::printf("selftest %-48s k_eff %.6f, expected %.6f: %s\n", what, got, want, ok ? "ok" : "FAIL");
+        fails += ok ? 0 : 1;
+    };
+    // 1. One node, flat edges: weight 1 everywhere; the region keeps 37 of 100 -> k_eff = 37.
+    expect("one region keeping 37 of 100", BoxKeff(plan(1, 37, 0, 100), 0, 64, 0, 64, 1.0), 37.0);
+    // 2. The region keeps no frame: the fallback (every stacked frame) everywhere -> 100.
+    expect("a region keeping none (the fallback)", BoxKeff(plan(1, 0, 0, 100), 0, 64, 0, 64, 1.0), 100.0);
+    // 3. Two nodes blended (sin^2): left keeps frames 0..39, right all 100 (nested). The weights are
+    //    written out from the layout's geometry, not from AxisWeightAt (review N2-m8): step 16, window 32,
+    //    flat edges, so for pixel centre t = x + 0.5 the right node's weight is 0 below t = 16,
+    //    sin^2(pi (t - 16) / 32) over 16..32 and 1 above, the left's its complement. (This restates the
+    //    engine's documented blend rule; it checks BoxKeff's sums over that rule, not the rule itself.)
+    //    Per pixel frames 0..39 carry wl / 40 + wr / 100, the other 60 wr / 100; noise power
+    //    40 a^2 + 60 b^2 (the weights sum to 1). Averaged with Hann^2 over the box.
+    {
+        const stack::RegionPlan p3 = plan(2, 40, 100, 100);
+        const int y0 = 0, y1 = 32, x0 = 0, x1 = 48;     // the left node, the blend, the start of the right
+        double num = 0, den = 0;
+        for (int y = y0; y < y1; ++y)
+            for (int x = x0; x < x1; ++x) {
+                const double t = x + 0.5;
+                const double sr = std::sin(M_PI * (t - 16) / 32);
+                const double wr = t < 16 ? 0.0 : t < 32 ? sr * sr : 1.0, wl = 1 - wr;
+                const double a = wl / 40 + wr / 100, b = wr / 100;
+                const double hh = std::pow(Hann(y - y0, y1 - y0) * Hann(x - x0, x1 - x0), 2);
+                num += hh * (40 * a * a + 60 * b * b);
+                den += hh;
+            }
+        expect("two blended regions, nested 40 / 100", BoxKeff(p3, y0, y1, x0, x1, 1.0), den / num);
+    }
+    return fails;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) try {
+    if (argc >= 2 && std::string(argv[1]) == "--keff-selftest") return KeffSelfTest() ? 1 : 0;
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-region-probe <video> [--frames N] [--threads T] [--out DIR]\n");
         return 1;
@@ -105,16 +272,27 @@ int main(int argc, char** argv) try {
     const std::string path = argv[1];
     int64_t limit = INT64_MAX;
     int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    std::string out;
+    std::string out, jsonOut;
+    ser::BayerChoice bayer = ser::BayerChoice::Auto;
+    bool planOnly = false;
+    std::optional<std::array<int, 4>> keffBox;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
+        if (a == "--bayer" && i + 1 < argc) bayer = ParseBayer(argv[++i]);
+        else if (a == "--plan-only") planOnly = true;
+        else if (a == "--json-out" && i + 1 < argc) jsonOut = argv[++i];
+        else if (a == "--keff-box" && i + 1 < argc) {
+            std::array<int, 4> b{};
+            if (std::sscanf(argv[++i], "%d,%d,%d,%d", &b[0], &b[1], &b[2], &b[3]) != 4 || b[1] <= b[0] || b[3] <= b[2])
+                throw std::invalid_argument("--keff-box Y0,Y1,X0,X1");
+            keffBox = b;
+        } else if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
         else if (a == "--threads" && i + 1 < argc) threads = std::max(1, std::atoi(argv[++i]));
         else if (a == "--out" && i + 1 < argc) out = argv[++i];
         else throw std::invalid_argument("unknown argument " + a);
     }
     const stack::SourceFactory factory = [&] {
-        return std::unique_ptr<ser::FrameSource>(new Truncated(ser::OpenVideo(path, ser::BayerChoice::Auto), limit));
+        return std::unique_ptr<ser::FrameSource>(new Truncated(ser::OpenVideo(path, bayer), limit));
     };
     const ser::FileInfo info = factory()->Info();
     const double scale = stack::LumaScale(info);
@@ -123,7 +301,12 @@ int main(int argc, char** argv) try {
                 info.header.width, info.header.height, ser::IsBayer(info.colorId) ? "Bayer" : "mono/RGB", scale, threads);
 
     auto t0 = std::chrono::steady_clock::now();
-    const std::vector<stack::FrameStats> stats = stack::MeasureAll(factory, info, threads, {});
+    const stack::NoiseModel noise = stack::FitNoiseModel(factory, info, threads, {});
+    int clippedKnots = 0;
+    for (const auto& k : noise.knots) clippedKnots += k.clipped;
+    std::printf("noise    var = %.4g + %.4g t (luma units^2), %zu bins (%d clipped), %d frame triples\n", noise.a, noise.b,
+                noise.knots.size(), clippedKnots, noise.frames);
+    const std::vector<stack::FrameStats> stats = stack::MeasureAll(factory, info, threads, {}, noise);
     const double tMeasure = Seconds(t0);
     t0 = std::chrono::steady_clock::now();
     const stack::Selection sel = stack::SelectFrames(stats, info);
@@ -142,38 +325,60 @@ int main(int argc, char** argv) try {
 
     t0 = std::chrono::steady_clock::now();
     const stack::GlobalAligner aligner(ref, sel.fullFrameTarget, stack::LumaScale(info));
-    const stack::RegionLayout layout = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, stack::LumaScale(info)), sel.fullFrameTarget);
+    const stack::RegionLayout layout = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, stack::LumaScale(info)), sel.fullFrameTarget, noise);
     const stack::RegionMeasurer measurer(ref, layout);
-    const int64_t n = static_cast<int64_t>(sel.frames.size());
+    // RunStack's own flow (Engine.cpp): the selected frames AND the suspects are aligned; a frame under
+    // the absolute floor is not region-measured; the clean frames' cut; AdmitSuspects decides the
+    // suspects against it; the kept frames are the clean ones over the cut plus the admitted suspects.
+    std::vector<int64_t> alignList = sel.frames;
+    for (const stack::Suspect& s : sel.suspects) alignList.push_back(s.index);
+    std::sort(alignList.begin(), alignList.end());
+    const int64_t n = static_cast<int64_t>(alignList.size());
     std::vector<stack::Shift> shifts(static_cast<size_t>(n));
     std::vector<stack::FrameRegions> measured(static_cast<size_t>(n));
+    std::vector<uint8_t> hasRegions(static_cast<size_t>(n), 0);
     std::vector<std::unique_ptr<stack::ResidualScale>> residuals;
     for (int w = 0; w < threads; ++w) residuals.push_back(std::make_unique<stack::ResidualScale>(layout, ref));
     std::atomic<int64_t> regionNs{0}, observeNs{0}, readNs{0}, demosaicNs{0}, addNs{0};
     ParallelFrames(n, threads, factory, [&](int w, ser::FrameSource& src, int64_t i) {
-        const int64_t f = sel.frames[static_cast<size_t>(i)];
+        const int64_t f = alignList[static_cast<size_t>(i)];
         ser::Frame rawA = src.ReadFrame(f);
         hot.Repair(rawA);
         const ser::FloatImage luma = stack::MeasurementLuma(rawA, info);
         shifts[static_cast<size_t>(i)] = aligner.Align(luma, stats[static_cast<size_t>(f)]);
+        if (!(shifts[static_cast<size_t>(i)].confidence >= stack::kMinAlignConfidence)) return;
         const auto r0 = std::chrono::steady_clock::now();
         measured[static_cast<size_t>(i)] = measurer.Measure(luma, f, shifts[static_cast<size_t>(i)]);
+        hasRegions[static_cast<size_t>(i)] = 1;
         regionNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
         const auto o0 = std::chrono::steady_clock::now();
         residuals[static_cast<size_t>(w)]->Observe(luma, measured[static_cast<size_t>(i)]);
         observeNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - o0).count();
     });
-    const double cut = stack::AlignmentCut(shifts);
+    std::vector<uint8_t> isSuspect(static_cast<size_t>(n), 0);
+    std::vector<stack::Shift> clean, suspectShifts;
+    for (const stack::Suspect& s : sel.suspects) {
+        const auto it = std::lower_bound(alignList.begin(), alignList.end(), s.index);
+        const size_t p = static_cast<size_t>(it - alignList.begin());
+        isSuspect[p] = 1;
+        suspectShifts.push_back(shifts[p]);
+    }
+    for (size_t p = 0; p < alignList.size(); ++p)
+        if (!isSuspect[p]) clean.push_back(shifts[p]);
+    const double cut = stack::AlignmentCut(clean);
+    const stack::Admission adm = stack::AdmitSuspects(sel, suspectShifts, cut);
     std::vector<stack::FrameRegions> kept;
     std::vector<stack::FrameRegions> keptGlobal;
-    for (int64_t i = 0; i < n; ++i)
-        if (shifts[static_cast<size_t>(i)].confidence >= cut) {
-            kept.push_back(measured[static_cast<size_t>(i)]);
-            stack::FrameRegions g = kept.back();
-            g.regions.clear();
-            g.gain = 1;
-            keptGlobal.push_back(g);
-        }
+    for (size_t p = 0; p < alignList.size(); ++p) {
+        const bool pass = shifts[p].confidence >= cut;
+        const bool use = isSuspect[p] ? std::binary_search(adm.admitted.begin(), adm.admitted.end(), alignList[p]) : pass;
+        if (!use || !hasRegions[p]) continue;
+        kept.push_back(measured[p]);
+        stack::FrameRegions g = kept.back();
+        g.regions.clear();
+        g.gain = 1;
+        keptGlobal.push_back(g);
+    }
     for (int w = 1; w < threads; ++w) residuals[0]->Merge(*residuals[static_cast<size_t>(w)]);
     const ser::FloatImage sigma = residuals[0]->Sigma(info.normDepth);
     const double tPassA = Seconds(t0);
@@ -216,6 +421,11 @@ int main(int argc, char** argv) try {
         std::printf("align    %3zu: aligned %d, confidence median %.3f, cut %.3f, candidates %lld, with detail %zu\n", r, al,
                     cf.empty() ? 0.0 : cf[cf.size() / 2], plan.detail[r].confidenceCut, static_cast<long long>(plan.detail[r].candidates), q.size());
         if (q.empty()) continue;
+        std::vector<double> ratio;
+        for (size_t i = 0; i < q.size(); ++i) ratio.push_back(s[i] > 0 ? q[i] / s[i] : 1e9);
+        std::sort(ratio.begin(), ratio.end());
+        std::printf("detail   %3zu: median q / qualitySigma %.2f%s\n", r, ratio[ratio.size() / 2],
+                    plan.detail[r].noiseOnly ? " (noise only: plain mean)" : "");
         std::sort(q.begin(), q.end());
         std::sort(s.begin(), s.end());
         const auto& d = plan.detail[r];
@@ -224,6 +434,24 @@ int main(int argc, char** argv) try {
                     reg.y0, q[q.size() / 10], q[q.size() / 2], q[q.size() * 9 / 10], q.back(), s[s.size() / 2], d.bestQuality,
                     static_cast<long long>(d.kept), static_cast<long long>(d.candidates));
     }
+    if (keffBox) {
+        const auto& b = *keffBox;
+        const double keff = BoxKeff(plan, b[0], b[1], b[2], b[3], scale);
+        std::printf("keff     %.2f over the box y %d-%d, x %d-%d (stacked %lld)\n", keff, b[0], b[1], b[2], b[3],
+                    static_cast<long long>(plan.stackedCount));
+        if (!jsonOut.empty()) {
+            std::FILE* f = std::fopen(jsonOut.c_str(), "w");
+            if (!f) throw std::runtime_error("cannot write " + jsonOut);
+            std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"box\": [%d, %d, %d, %d], \"regionKept\": [",
+                         static_cast<long long>(plan.stackedCount), keff, b[0], b[1], b[2], b[3]);
+            for (size_t r = 0; r < plan.detail.size(); ++r)
+                std::fprintf(f, "%s%lld", r ? ", " : "", static_cast<long long>(plan.detail[r].kept));
+            std::fprintf(f, "], \"regionSize\": %d, \"nodes\": [%d, %d], \"flatEdges\": %s}\n", layout.size, layout.nx,
+                         layout.ny, layout.flatEdges ? "true" : "false");
+            std::fclose(f);
+        }
+    }
+    if (planOnly) return 0;
     t0 = std::chrono::steady_clock::now();
     stack::Accumulator acc(plan, ref, sigma, info), accGlobal(global, ref, sigma, info);
     ParallelFrames(static_cast<int64_t>(plan.frames.size()), threads, factory, [&](int, ser::FrameSource& src, int64_t i) {

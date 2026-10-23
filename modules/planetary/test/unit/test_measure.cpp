@@ -672,9 +672,16 @@ TEST_CASE("MeasureAll matches per-frame measurement and is identical for 1 and 8
         INFO("bayer choice " << static_cast<int>(choice));
         REQUIRE(one.size() == static_cast<size_t>(kAviFrames));
         REQUIRE(eight.size() == static_cast<size_t>(kAviFrames));
+        // The capture's noise model (Ruling P26), the same for any thread count, is what MeasureAll uses.
+        const stack::NoiseModel model = stack::FitNoiseModel(factory, info, 1, {});
+        const stack::NoiseModel model8 = stack::FitNoiseModel(factory, info, 8, {});
+        CHECK(model.a == model8.a);
+        CHECK(model.b == model8.b);
+        CHECK(model.knots.size() == model8.knots.size());
         int found = 0;
         for (int64_t i = 0; i < kAviFrames; ++i) {
-            const FrameStats direct = MeasureFrame(stack::MeasurementLuma(probe->ReadFrame(i), info), i, stack::LumaScale(info));
+            const FrameStats direct =
+                MeasureFrame(stack::MeasurementLuma(probe->ReadFrame(i), info), i, stack::LumaScale(info), model);
             INFO("frame " << i);
             CHECK(SameStats(one[i], direct));
             CHECK(SameStats(eight[i], direct));
@@ -709,7 +716,11 @@ TEST_CASE("MeasureAll: cancel mid-run throws and leaves no thread or reader behi
     const int after = reads;
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     CHECK(reads == after);  // nothing reads any more
-    CHECK(after < kAviFrames * 3 / 4);  // it stopped early
+    // It stopped early: the noise model's runs of frames (Ruling P26) are read first, then under three
+    // quarters of the frames.
+    int64_t noiseReads = 0;
+    for (const stack::NoiseRun& r : stack::NoiseRuns(info)) noiseReads += stack::kNoisePasses * (r.triples + 3);
+    CHECK(after < noiseReads + kAviFrames * 3 / 4);
 }
 
 TEST_CASE("MeasureAll: a worker's failure is rethrown after all threads are joined") {

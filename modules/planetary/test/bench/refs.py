@@ -525,6 +525,10 @@ class Row:
     # The anchor measured with its ALTERNATIVE frame count (compare's anchor_frames_alt): the flip
     # check between the two readings of our effective count (bench.status_of).
     alt: Optional[metric.Result] = None
+    # The anchor on the bare budget (no measured-noise charge): a fail is sound only if it holds here
+    # too, since the charge can over-charge ours (bench.status_of).
+    uncharged: Optional[metric.Result] = None
+    uncharged_alt: Optional[metric.Result] = None    # the same with the alternative frame count
 
 
 RefSpec = Union[str, Tuple[str, Optional[float]]]
@@ -533,7 +537,9 @@ RefSpec = Union[str, Tuple[str, Optional[float]]]
 def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
             anchor_label: Optional[str] = None, frame_size=None, frame_noise=None,
             anchor_frames: Optional[float] = None, capture_frames: Optional[int] = None,
-            anchor_frames_alt: Optional[float] = None) -> List[Row]:
+            anchor_frames_alt: Optional[float] = None,
+            anchor_frames_why: str = "our stack's effective frame count is unknown",
+            anchor_noise_factor=None, anchor_noise_factor_alt=None) -> List[Row]:
     """Measure the anchor (normally OUR stack: a path, (path, factor) or an array) and each
     reference (path, or (path, measured_factor)) with metric.measure on one common box, with
     DAN_interior on the anchor's interior window. Row 0 is the anchor. `frame_size` (w, h) of
@@ -583,34 +589,36 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     limbs += [metric.limb_sigma(metric.luminance(crop_registered(ref.image, reg, box))) for ref, reg in loaded]
     window = metric.interior_window(a_lum, box, limb=min(limbs))
 
-    budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior, sky) or a reason
-    a_kw = _end_kwargs(budget, anchor_frames, "our stack's effective frame count")
-    a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_kw.pop("measure"))
-    alt = None
+    budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior) or a reason
+    a_kw = _end_kwargs(budget, anchor_frames, anchor_frames_why, note_is_reason=True)
+    a_m = a_kw.pop("measure")
+    uncharged = None
+    if anchor_noise_factor is not None and "noise_power" in a_m:
+        uncharged = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m), dict(a_kw))
+        a_m["noise_factor"] = anchor_noise_factor
+    a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m)
+    alt = uncharged_alt = None
     if anchor_frames_alt is not None:
-        alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's alternative effective frame count")
-        alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_kw.pop("measure")), alt_kw)
-    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt)]
+        alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's mean-kept-fraction frame count")
+        alt_m = alt_kw.pop("measure")
+        if "noise_power" in alt_m and (anchor_noise_factor is not None or anchor_noise_factor_alt is not None):
+            uncharged_alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_m), dict(alt_kw))
+        if anchor_noise_factor_alt is not None and "noise_power" in alt_m:
+            alt_m["noise_factor"] = anchor_noise_factor_alt
+        alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_m), alt_kw)
+    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt, uncharged, uncharged_alt)]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
         k = (ref.info.percent / 100.0 * capture_frames) if (ref.info.percent and capture_frames) else None
         kw = _end_kwargs(budget, k, f"{ref.info.label}'s stacking percentage x the capture's frames")
-        m = kw.pop("measure")
-        if "noise_power" in m and not mosaic:
-            # The reference's own sky, for the excess-noise check: its WHOLE image (the crop is mostly
-            # target). An unmeasurable sky leaves the judged END None (no fallback to the crop).
-            try:
-                m["sky_floor"] = metric.sky_noise_floor(ref.image)
-            except metric.SkyUnmeasurable as e:
-                m["sky_floor"] = f"{e}"
-        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window, **m)
+        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window,
+                           **kw.pop("measure"))
         rows.append(Row(ref.info.label, ref.path, ref.factor, reg, replace(_with_note(r, kw), box=box)))
     return rows
 
 
 def _noise_budget(frame_noise, a_lum, box, window, mosaic):
-    """(sigma_frame^2 on the box, on the interior window or None, at the sky's level), or the reason
-    there is none (a str)."""
+    """(sigma_frame^2 on the box, on the interior window or None), or the reason there is none (a str)."""
     if mosaic:
         return "mosaic fallback"
     if frame_noise is None:
@@ -623,19 +631,21 @@ def _noise_budget(frame_noise, a_lum, box, window, mosaic):
         raw = noise.raw_under(raw_mean, a_lum, box)
         s2 = noise.box_noise(ptc, raw)
         s2_int = noise.box_noise(ptc, raw, window.window) if window.judged else None
-        return s2, s2_int, noise.sky_noise(ptc, raw)
+        return s2, s2_int
     except noise.NoiseUnmeasurable as e:
         return f"per-frame noise unmeasurable on the box: {e}"
 
 
-def _end_kwargs(budget, frames, what):
-    """metric.measure keyword arguments for END, plus 'k' and a 'note' when END cannot be had."""
+def _end_kwargs(budget, frames, what, note_is_reason=False):
+    """metric.measure keyword arguments for END, plus 'k' and a 'note' when END cannot be had. `what`
+    names the frame count (or, with note_is_reason, is already the reason it is missing)."""
     if isinstance(budget, str):
         return {"measure": {}, "k": frames, "note": f"END not computed: {budget}"}
     if not frames or not frames > 0:
-        return {"measure": {}, "k": frames, "note": f"END not computed: {what} is unknown"}
-    s2, s2_int, s2_sky = budget
-    m = {"noise_power": s2 / frames, "sky_noise_power": s2_sky / frames}
+        return {"measure": {}, "k": frames,
+                "note": f"END not computed: {what}" + ("" if note_is_reason else " is unknown")}
+    s2, s2_int = budget
+    m = {"noise_power": s2 / frames}
     if s2_int is not None:
         m["noise_power_interior"] = s2_int / frames
     return {"measure": m, "k": frames, "note": None}
@@ -674,6 +684,46 @@ def _ratios(rows: Sequence[Row], key: str):
     return out, (len(known) == len(vals))
 
 
+def provenance(path: str) -> dict:
+    """What the reference's own files record of processing beyond stacking (Ruling P28b). state:
+    "none" -- AutoStakkert's raw stack (no _conv suffix) whose .as3 session file records no
+    row/column calibration, no pre-processing blur and no sharpening of this file (_stack_sharpened
+    writes the separate _conv copy); "processed" -- a _conv / sharpened file or such a setting on;
+    "unknown" -- no session file, or ASIStudio, whose .fit header records its noise reduction (PN) and
+    sharpening (SHARPEN) export settings without saying whether they reached the .fit."""
+    base = os.path.basename(path)
+    stem = os.path.splitext(base)[0]
+    info = parse_reference_name(path)
+    if info.processed or stem.endswith("_conv"):
+        return {"state": "processed", "text": "sharpened or stretched output (_conv / .jpg)"}
+    if info.tool == "ASI":
+        keys = {}
+        if path.lower().endswith((".fit", ".fits")):
+            from astropy.io import fits
+            h = fits.getheader(path)
+            keys = {k: h.get(k) for k in ("PN", "SHARPEN", "PB", "PC", "PS") if k in h}
+        return {"state": "unknown", "text": "ASIStudio .fit; header records " + (", ".join(f"{k} {v}" for k, v in keys.items()) or "nothing")
+                + " (export settings: whether the noise reduction reached the .fit is not established)"}
+    if info.tool == "AS":
+        as3 = os.path.join(os.path.dirname(path), stem + ".as3")
+        if not os.path.exists(as3):
+            return {"state": "unknown", "text": f"no AutoStakkert session file {os.path.basename(as3)}"}
+        settings = {}
+        with open(as3, errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) == 2 and parts[0].startswith("_"):
+                    settings[parts[0]] = parts[1]
+        on = [k for k in ("_menu_image_calibration_row_noise", "_menu_image_calibration_column_noise",
+                          "_experimental_pre_processing_vertical_blur_enabled",
+                          "_experimental_pre_processing_horizontal_blur_enabled") if settings.get(k) == "True"]
+        if on:
+            return {"state": "processed", "text": "AutoStakkert .as3: " + ", ".join(on)}
+        return {"state": "none", "text": "AutoStakkert raw stack (no _conv); .as3 records no calibration, pre-blur or "
+                "sharpening of this file"}
+    return {"state": "unknown", "text": "not a known tool's output"}
+
+
 def _over(value, rows: Sequence[Row], key: str):
     known = [getattr(r.result, key) for r in rows[1:] if getattr(r.result, key) is not None]
     return (value / max(known)) if (value is not None and known) else None
@@ -691,8 +741,6 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
     notes = review_notes(rows)
     e_full, ok_full = _ratios(rows, "end")
     e_int, ok_int = _ratios(rows, "end_interior")
-    p_full, _ = _ratios(rows, "end_pure")
-    p_int, _ = _ratios(rows, "end_interior_pure")
     out = []
     for i, r in enumerate(rows):
         g, res = r.registration, r.result
@@ -702,16 +750,20 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
             "label": r.label, "path": r.path, "factor": r.factor,
             "end": res.end, "end_ratio": e_full[i],
             "end_interior": res.end_interior, "end_interior_ratio": e_int[i],
-            "end_pure": res.end_pure, "end_pure_ratio": p_full[i],
-            "end_interior_pure": res.end_interior_pure, "end_interior_pure_ratio": p_int[i],
-            "end_frames": res.end_frames, "end_noise": res.end_noise, "end_noise_budget": res.end_noise_budget,
-            "end_excess": res.end_excess, "end_sky_tiles": res.end_sky_tiles,
+            "end_frames": res.end_frames, "end_noise_budget": res.end_noise_budget,
+            "end_noise_factor": list(res.end_noise_factor) if res.end_noise_factor else None,
+            "provenance": provenance(r.path) if (i > 0 and r.path) else None,
             "end_snr": list(res.end_snr) if res.end_snr else None, "end_note": res.end_note,
             "end_complete": ok_full and (ok_int or not res.interior_judged),
             "end_alt": r.alt.end if r.alt else None, "end_alt_frames": r.alt.end_frames if r.alt else None,
             "end_alt_ratio": _over(r.alt.end if r.alt else None, rows, "end"),
             "end_interior_alt": r.alt.end_interior if r.alt else None,
             "end_interior_alt_ratio": _over(r.alt.end_interior if r.alt else None, rows, "end_interior"),
+            "end_alt_noise_factor": list(r.alt.end_noise_factor) if (r.alt and r.alt.end_noise_factor) else None,
+            "end_uncharged_alt_ratio": _over(r.uncharged_alt.end if r.uncharged_alt else None, rows, "end"),
+            "end_interior_uncharged_alt_ratio": _over(r.uncharged_alt.end_interior if r.uncharged_alt else None, rows, "end_interior"),
+            "end_uncharged_ratio": _over(r.uncharged.end if r.uncharged else None, rows, "end"),
+            "end_interior_uncharged_ratio": _over(r.uncharged.end_interior if r.uncharged else None, rows, "end_interior"),
             "dan": res.value, "band_snr": res.band_snr,
             "noise_floor": res.noise_floor, "box": list(res.box), "mosaic": res.mosaic,
             "ratio_to_best_reference": full,

@@ -26,6 +26,7 @@ planetary_add_test(test_align unit/test_align.cpp planetary_stack)
 planetary_add_test(test_regions unit/test_regions.cpp planetary_stack)
 planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
 planetary_add_test(test_engine unit/test_engine.cpp planetary_stack)
+planetary_add_test(test_noise unit/test_noise.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
@@ -84,3 +85,27 @@ target_link_libraries(stack-region-probe PRIVATE planetary_stack)
 # NAS captures.
 add_executable(stack-probe stack-probe.cpp)
 target_link_libraries(stack-probe PRIVATE planetary_stack)
+
+# Test-only: Select's step-7 focus reading on a real capture (the in-focus survey and the defocus series
+# behind kGrossBlurLimit and kBlurLimit; test/run-focus-survey.sh runs it). Not a ctest case, it needs the
+# NAS captures.
+add_executable(focus-survey focus-survey.cpp)
+target_link_libraries(focus-survey PRIVATE planetary_stack)
+
+# Test-only: the in-focus limb read directly off a stack of a real capture's sharpest half, and each frame's
+# quality with and without the capture's noise model (Select.h step 7: why the in-focus reading doubled with
+# Ruling P26). Not a ctest case, it needs the NAS captures.
+add_executable(limb-probe limb-probe.cpp)
+target_include_directories(limb-probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+target_link_libraries(limb-probe PRIVATE planetary_stack)
+
+# Test-only: the calibration probes behind Ruling P26's measured figures (the noise model, qualitySigma, step 7's
+# classifier and reading, the region gate), one calib-<name> each; usage at the top of each source. Not ctest
+# cases: some read NAS captures, the rest render synthetic frames for minutes.
+foreach(probe classrate gapinj inject injtiles lowsnr mdq moon nm2 nm4 nreal p27 passes purer2 q2steady qcal2 regsig
+              modelerror purer regionnoise seedsel shot sigmafloor skynoise snr synthrate temporal winnoise)
+    add_executable(calib-${probe} calibration/${probe}.cpp)
+    target_include_directories(calib-${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}"
+                                                      "${CMAKE_CURRENT_SOURCE_DIR}/calibration")
+    target_link_libraries(calib-${probe} PRIVATE planetary_stack)
+endforeach()

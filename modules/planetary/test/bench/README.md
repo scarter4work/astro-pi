@@ -7,7 +7,7 @@ captures. Nothing here ships; the NAS (`/mnt/qnap/astro_data`) is only ever read
 
 | File | What it does |
 |---|---|
-| `metric.py` | END, the judged sharpness-at-equal-noise measure (Ruling P28), and END_interior; DAN and DAN_interior (secondary); the target box, interior window and sky excess-noise check |
+| `metric.py` | END, the judged sharpness-at-equal-noise measure (Ruling P28), and END_interior; DAN and DAN_interior (secondary); the target box and interior window |
 | `noise.py` | The capture's per-frame noise: a photon-transfer fit to its raw frames, and sigma_frame^2 on a stack's box (END's noise model) |
 | `halves.py` | The split-half validation of END's noise model: even/odd SER split, and the check of the halves' difference against the model |
 | `refs.py` | Loads AS/ASI/our images, area-resamples drizzled AS output to native (Ruling 1; the factor from the reference's size), registers each reference to an anchor (orientation, sub-pixel shift, measured scale), measures all on one box, and lists what needs human review |
@@ -24,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 175 tests, 2-4 min with the NAS
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 116 synthetic tests, ~1.5 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 183 tests + 32 strict xfails (C1), ~2.5 min with the NAS; the engine tests need the built probes
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 130 tests + 26 strict xfails without the NAS, ~1 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -86,23 +86,83 @@ allows, how much of the target's detail comes back? Full definition and reasonin
 docstring. In short:
 
 1. Same box, normalisation and Hann periodogram as DAN.
-2. **One noise model for every image**: white noise of power sigma_frame^2 / k.
+2. **One noise model for every image**, computed identically for ours and every reference: white
+   noise of power sigma_frame^2 / k.
    * sigma_frame^2 is the capture's per-frame noise on the box, from a photon-transfer fit to its raw
      frames (`noise.py`; independent of any stacker).
-   * k is the image's effective frame count. For ours, the frames used x the mean kept fraction over
-     regions, from stack-probe's `regionDetail`. For a reference, its stacking percentage x the
-     capture's frames; AutoStakkert's percentage is global, so this is approximate per alignment point.
+   * k is the image's effective frame count.
+     * For ours it is the **noise-power k over the box**: 1 / (the box's Hann^2-weighted mean of
+       sum_f alpha_f^2 / (sum_f alpha_f)^2), with alpha_f(p) the accumulator's blend weight of frame f
+       at pixel p. `stack-region-probe --keff-box` computes it from the engine's own plan (per-frame
+       kept flags, `AxisWeightAt`). That probe repeats RunStack's selection steps, so its stacked and
+       per-region kept counts must equal stack-probe's (RunStack's own), or END is unmeasured.
+     * For a reference it is the stacking percentage x the capture's frames. AutoStakkert's
+       percentage is global, so this is approximate per alignment point.
    * Any smoothing (interpolation, drizzle, resampling, denoising) therefore counts as blur, on our
      side and the references' alike, as in DAN and Ruling 1.
-3. **Plus any excess**: the white power of the image's own signal-free sky beyond the photon budget at
-   the sky's level. A stack that is noisier than its frame count implies is charged for it. Detail on
-   the target is never read as noise.
-4. Per bin (0.06-0.30 cycles/px, steps of 0.03): SNR = max(P - N, 0) / N.
+3. Per bin (0.06-0.30 cycles/px, steps of 0.03): SNR = max(P - N, 0) / N.
    END = sqrt( sum O(f) / sum O(f) / (1 + SNR) ) with the object prior O(f) = f^-3. That is the band's
    detail over the error of a matched Wiener restoration, as an amplitude ratio.
-5. **END_interior**: the same on the interior window's high-pass, judged where DAN_interior was
+4. **END_interior**: the same on the interior window's high-pass, judged where DAN_interior was
    (the eroded disc is at least 20 px).
-6. Ruling 2's 0.97 bar applies to END_full and, where judged, END_interior.
+5. Ruling 2's 0.97 bar applies to END_full and, where judged, END_interior.
+
+### Known limit: noise and sharpening the budget does not hold (C1)
+
+END counts as detail any power the photon budget does not explain. Noise beyond the budget raises
+END, whether uniform, shot-like or on the target only, and so does a linear sharpening. This holds on
+our stack and on the references alike. `test_end.py` pins every case as a strict xfail: if a fix lands
+they XPASS and fail, so this README and `metric.py` get revisited.
+
+Measured, on synthetic stacks (the noise in multiples of the stack's own):
+
+| Stack | Uniform x1 / x2 | Shot-like x1 / x2 | Target-only x1 / x2 | Unsharp mask 0.5 / 1 |
+|---|---|---|---|---|
+| Unsmoothed | x1.19 / x1.55 | x1.19 / x1.34 | x1.18 / x1.55 | x1.45 / x1.88 |
+| Ours-like (B-spline frames) | x1.20 / x1.56 | x1.20 / x1.35 | x1.19 / x1.56 | x1.45 / x1.88 |
+| Reference-like (drizzled) | x1.23 / x1.75 | x1.24 / x1.46 | x1.23 / x1.75 | x1.32 / x1.72 |
+
+On real AutoStakkert P20 stacks:
+* uniform noise of 0.005 / 0.02 of the signal raises END x1.02 / x1.38 on the Jupiter and x1.09 /
+  x1.75 on the Moon;
+* an unsharp mask raises it x1.94 and x1.92.
+
+Seeing 2.0 plus 3 x the budget's noise scores 5.67, above seeing 1.0's 5.14: unmodelled noise can buy
+back blur.
+
+**No single-image estimator can fix this.** Two cases are not separable:
+* A linear sharpening G of a stack with its own kernel K is, spectrum for spectrum, the image of an
+  honest stack with kernel G K. END must rank that honest stack higher whenever G K <= 1.
+* Noise added to a smoothed stack cannot be told from the stack's own noise kernel, which is unknown.
+
+Tried and measured: a guard that raises the noise to the box's own fitted white level (a joint fit of
+a smooth signal roll-off plus white noise). It catches every case on an unsmoothed stack. A stack's
+smoothing leaves headroom below its budget, though, and the guard is blind inside it:
+
+| Stack | Fitted white level / budget | What still raises END |
+|---|---|---|
+| Ours-like synthetic | 0.67 | Unsharp mask: x1.12-1.18 |
+| Drizzled synthetic | 0.10 | Uniform noise x1: x1.12; unsharp mask: x1.32-2.53 |
+| Real ASIStudio stacks | 0.00-0.29 | blind |
+| Real ours | 0.03-0.29 | blind, except the 2026-01-30 Jupiter's fixed pattern (25.8) and a failed fit on Mars's 48 px box (907) |
+
+The first P28 design's sky guard read 0 on all 22 real images. Neither ships.
+
+**How the bench judges despite it (Ruling P28b).** Ours is not a single image: the split halves
+measure its noise. So ours is charged its measured noise per END bin, budget x max(1, R/R_cal) (below),
+and the references stay on the photon budget. The metric, crop, registration and normalisation stay
+identical; only the noise charge differs, and only ever against ours.
+
+C1 can then only inflate a reference's END, which lowers ours' ratio:
+* a numeric **pass** is sound (Scott's side-by-side is still the spec's final word);
+* a numeric **fail** is sound only against a reference whose own files record no processing.
+
+The references' provenance (`refs.provenance`):
+* **AutoStakkert:** raw (non-`_conv`) stacks whose `.as3` session files record no row/column
+  calibration, no pre-blur and no sharpening of that file. That reads as "none".
+* **ASIStudio:** each `.fit` header records PN (noise reduction) and SHARPEN export settings (1 / 20 up
+  to 100 / 37) without saying whether they reached the `.fit`. That reads as "unknown", and a fail
+  against it is review.
 
 ### Why not read each image's own noise (measured 2026-10-22)
 
@@ -112,6 +172,9 @@ instead.
 * **The box's own 0.40-0.50 cycles/px power is not noise.** Our engine stacked the even and odd
   frames separately, on the 2026-01-30 Jupiter and the 2023-02-12 Moon. The box's floor was 55 x and
   2.7 x the halves' difference: it is structure common to disjoint frames.
+  * On the Jupiter it is real horizontal structure (the belts and the limb's horizontal arcs, which
+    ASIStudio's stack shows too), plus an isotropic part that is neither target-locked nor
+    sensor-fixed. See "What the interleaved halves share" below.
 * **Every stack's noise is coloured, ours included.** Sky noise at 0.21-0.24 cycles/px is 1.1-38 x its
   0.40-0.50 floor. A white floor under-reads the in-band noise by that factor, differently per tool.
   * Under the white floor, ASIStudio led the 2026-01-30 Jupiter 4.5 x: its target floor is 80 x below
@@ -134,48 +197,142 @@ not an assertion:
 
 | 2_12_2023 Moon | k | END | DAN |
 |---|---|---|---|
-| AS_P20 | 471 | 13.27 | 0.06876 |
+| AS_P20 | 471 | 13.28 | 0.06876 |
 | AS_P50 | 1177 | 16.89 | 0.05266 |
 
-The assertion moved to an unconfounded synthetic (`test_end.py`): one 200-frame capture, its sharpest
-20 % and sharpest 50 % stacked. END must rank them as the exact matched restoration does, and the set
-holds a case each way:
-* where the seeing drifts smoothly (log-normal), P50 wins;
-* where a quarter of the frames are steady moments, P20 wins.
+The assertion moved to a synthetic (`test_end.py`): one 200-frame capture, its sharpest 20 % and
+sharpest 50 % stacked. END must rank them as the exact matched restoration does, and the set holds a
+case each way:
+* where the seeing drifts smoothly (log-normal, median sigma 1.4 px, log-sd 0.45), P50 wins;
+* where a quarter of the frames are steady moments (bimodal, 1.0 / 3.0 px), P20 wins.
 
 DAN ranks P20 first in all four cases, wrongly in the log-normal ones.
 
-### Validation (test_end.py, measured 2026-10-22)
+Ruling 4 asked for "a capture with real seeing spread". The seeing here is parametric, not taken from
+a real capture's per-frame quality: stack-probe does not export per-frame quality, so the two shapes
+stand in for it.
+
+### Validation (test_end.py, measured 2026-10-22/23)
 
 | Property | Measured |
 |---|---|
 | Blur at equal noise ranks lower (seeing 1.0 / 1.5 / 2.0 / 3.0) | END 5.141 / 2.946 / 2.296 / 1.720 |
-| Added noise never raises it (0.5 / 1 / 2 / 4 x the stack's noise) | 5.141 -> 4.877 / 4.114 / 3.161 / 2.390 (the photon budget alone would have risen to 5.30-9.75) |
-| More frames, same blur (2 x / 4 x) | x1.191 / x1.481 (DAN x1.003) |
-| Sharper but noisier, against the exact matched restoration | 4 of 4 cases rank as the restoration does, including A seeing 2.0 noise 1 vs B 1.2 / 3 (B), and 1.1 / 1 vs 1.0 / 4 (A) |
+| Added noise or sharpening never raises it | **fails, C1** (table above; strict xfail) |
+| More frames, same blur (2 x / 4 x) | x1.191 / x1.481. DAN moves x1.003 and fails the test. |
+| Sharper but noisier, against the exact matched restoration | 4 of 4 agree, with a win each way. DAN gets at least one wrong (asserted). |
 | Random scan: 157 clear pairs, object spectra f^-1.4..f^-4.4 | 157 / 157 agree with the restoration (log-capacity: 96 %; END's restoration form was chosen on this) |
-| 20 % vs 50 % of one capture (4 cases, both outcomes) | 4 of 4 |
-| Smoothing counts as blur: drizzle x3 + area resample / Gaussian 0.7 / B-spline half-pixel shift | x0.809 / x0.746 / x0.978. Reading the image's own floor as its noise would have raised it x2.06 / x3.08 / x1.62. That is the reference-side bias the photon budget removes, quantified. |
-| Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact | 19.91 / 15.07 / 5.47 / 3.11 and 13.27 / 10.14 / 4.37 / 2.39 |
-| Real AS_P20, added noise 0.005 / 0.01 / 0.02 of the signal | Jupiter 19.91 -> 14.16 / 9.59 / 6.48; Moon 13.27 -> 7.37 / 4.86 / 3.39 |
-| Interior: an interior blur of sigma 1 behind a crisp limb / 2 x noise | 19.51 -> 15.62 / 10.70 |
-| `noise.photon_transfer` on synthetic CFA frames (known line) | slope within 1 %; v(m) 4-11 % high on a textured disc drifting 0.5 px per frame |
+| 20 % vs 50 % of one capture (4 cases, both outcomes) | 4 of 4. DAN fails the 2 log-normal ones (asserted). |
+| Smoothing counts as blur: drizzle x3 + area resample / Gaussian 0.7 / B-spline half-pixel shift | x0.809 / x0.746 / x0.978. Taking the box's own 0.40-0.50 floor as the noise instead raises it x2.12 / x3.21 / x1.84: the reference-side bias the photon budget removes. |
+| Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact | 19.99 / 15.13 / 5.49 / 3.11 and 13.28 / 10.14 / 4.37 / 2.39 |
+| Interior: an interior blur of sigma 1 behind a crisp limb | 19.75 -> 15.62 (2 x noise raises it to 21.34: C1) |
+| `noise.photon_transfer` (symmetric fit, fix round 2): textured disc drifting 0.5 px per frame / a 6 px disc / lunar texture under 0-1.5 px jitter | a +7 % / +16 % / within 0.4 % |
+| `noise.photon_transfer` refuses: fewer than half the bins on the line; a collapsed slope; `box_noise` past 1.5 x the fitted levels | NoiseUnmeasurable (tests) |
+| `stack-region-probe --keff-selftest`: one region keeping 37 of 100 / the fallback / two blended nested regions | 37 / 100 / 62.83, all exact |
+| End to end through the engine: synthetic RGGB, known noise, the measured photon-transfer line, the region probe's k | disc x0.958 (calibrated 0.971); lunar, k 12 and 220, x0.816 (0.711). With the half's 300 frames as k it would read x10.8. |
+| Ours charged its true added noise (the Ruling P28b mechanism) | uniform x1 / x2, target-only x2: END no longer rises |
 
-**Split-half check** (Ruling P28, rule 3; validation only). The runner also stacks each capture's even
-and odd frames separately. The summary compares the power of their difference with END's model,
-sigma_frame^2 (1/k_A + 1/k_B) / 4:
-* under 1 toward Nyquist is our interpolation's smoothing;
-* far above 1, highest in the low bins, is signal the halves do not share. Each half's own frame
-  choice and local alignment move fine structure by hundredths of a pixel.
+### Split-half check and our measured noise (Ruling P28 rule 3, Ruling P28b)
 
-The 2026-10-23 run, measured over model at 0.21-0.30 cycles/px with the judged k:
-* **0.71-1.12 x:** the 2023-02-11 Jupiter and the 2023-02-12, 2023-08-22 and 2023-03-05 Moons. With
-  the harmonic k the same captures read 0.33-0.88 x, so the halves favour the judged reading.
-* **0.31 x:** Saturn, where our smoothing puts the noise under the model.
-* **2.9-73 x:** the 2026-01-30 Jupiter, Mars and the 2024-02-01 Moon. On these, D's disc-to-sky power
-  is 22-1 000 x the photon budget's, so the excess is signal the halves do not share, not noise.
+The runner also stacks each capture's even and odd frames separately. Both halves' noise-power k are
+taken over half A's target box, where the difference is measured (review N-m3). B is registered to A,
+moved by an exact Fourier shift, and then refined by least squares: A ~ g B + dy dA/dy + dx dA/dx. D is
+(A - g B') / 2 on the box, and its power per END bin is compared with the model, sigma_frame^2 (1/k_A +
+1/k_B) / 4. Without the refinement, a residual misregistration of hundredths of a pixel leaks signal
+into D. On the 13 px Mars disc, 0.017 px of it read as x10 the model (x1.8 once removed).
 
-Per-capture ratios are in summary.md.
+**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`):
+* 16 synthetic RGGB captures, 8 per target kind (a banded disc; a lunar field with a limb);
+* static scenes, jitter 0.2 / 0.4 / 0.6 / 0.8 px per frame, two seeds;
+* 8-bit, noise a m + c, 600 frames;
+* split, stacked by stack-probe, k from the region probe over A's box;
+* the ratio taken with the true photon-transfer line and the noise-free mean.
+
+There D holds only the engine's own noise. The synthetics are static, so the halves never choose
+different frames: unshared signal is absent by construction. On real data it can only raise R.
+
+| Kind | 0.21-0.30: mean / sd (ddof 1) | Tolerance (mean ± 4.91 sd) | R_cal per END bin (0.06 ... 0.30) |
+|---|---|---|---|
+| disc | 0.971 / 0.041 | 0.77-1.17 | 1.07 0.74 1.01 0.95 1.04 1.09 0.94 0.89 |
+| lunar | 0.711 / 0.148 | 0.00-1.44 | 0.83 0.78 0.79 0.74 0.75 0.76 0.71 0.67 |
+
+4.91 is the two-sided normal tolerance factor for n = 8 at 99 % coverage and 95 % confidence (Howe).
+The lunar runs split by scene seed: 0.81-0.86 against 0.56-0.60. That spread is the residual leak of
+the charge below.
+
+The lunar run with 0.6 px jitter kept 12 frames over the box in one half and 220 in the other. The
+model with those k still held at x0.81. With the half's 300 frames as k it would read x10.8, so
+`test_end.py` uses that run to check the region probe's k end to end.
+
+**How "before any real data is read" is guaranteed:**
+* `calibrate` opens no capture (`synthetic_frames` only).
+* `calibration.json` is committed before the real-data run that uses it, which git history shows.
+* Earlier rounds did read real split-half ratios. The frozen procedure (its conditions, statistics
+  and factor) is fixed in code, not tuned to them.
+
+**Use:**
+* **The charge (Ruling P28b).** Ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin,
+  with R this capture's measured ratio and R_cal its kind's.
+  * Unmodelled noise (shot-like, banding, an engine excess), unshared signal and any sharpening of
+    ours all raise R, and are charged. Unshared signal over-charges ours, which is conservative.
+  * The residual leak is the calibration spread: lunar 0.56-0.86 against an R_cal of 0.71.
+* **The tolerance** marks captures where the model is not confirmed. They are noted in the summary;
+  the charge already holds what the halves measured.
+
+**The 2026-10-23 fix-round-2 run** (after the photon-transfer repair, the refinement and the per-kind
+calibration):
+
+| Capture | Kind | 0.21-0.30 measured / model | Tolerance | Ours' charge, 0.06-0.09 ... 0.27-0.30 |
+|---|---|---|---|---|
+| 2023-02-11 Jupiter | disc | x1.19 | outside (0.77-1.17) | 6.96 3.82 1.06 2.47 1.44 1.00 1.28 1.48 |
+| 2026-01-30 Jupiter | disc | x3.31 | outside | 22.5 15.0 9.07 11.1 1.62 4.50 3.59 1.90 |
+| Saturn | disc | x0.64 | outside (below) | - |
+| Mars | disc | x1.80 | outside | 5.46 18.3 18.5 12.3 4.13 1.36 2.00 2.32 |
+| 2023-02-12 Moon | lunar | x1.39 | agrees (0.00-1.44) | 53.3 28.0 14.9 8.18 4.38 2.54 1.79 1.46 |
+| 2024-02-01 Moon | lunar | x2.37 | outside | 21.5 16.3 11.6 8.78 6.15 4.16 3.23 2.50 |
+| 2023-08-22 Moon | lunar | x0.75 | agrees | 2.46 1.57 1.52 1.47 1.22 1.06 1.06 1.06 |
+| 2023-03-05 Moon | lunar | x0.57 | agrees | 24.4 9.85 2.71 1.26 1.06 1.00 1.00 1.00 |
+
+**The charge over-charges ours.** In the low bins the charge is 2.5-53 x, falling with frequency like
+the target's own spectrum. That is signal the two halves do not share: each half's regions keep
+their own frames. Global gain, shift and blur regressors leave it in place, because it is local.
+
+In the full stack that region-to-region PSF is a fixed blur, which END already charges, so charging it
+again as noise over-charges ours. A numeric pass under the charge is therefore sound. A numeric fail is
+sound only if it also holds with ours on the bare budget (which, through C1, can only favour ours).
+Otherwise it is review.
+
+### What the interleaved halves share (fix round 2, review I-D)
+
+Interleaved halves share structure that D cannot see. On the 2026-01-30 Jupiter, the off-axis
+0.30-0.50 power of a half is 122 x the halves' difference.
+
+Round 1 called it a sensor-fixed pattern (pixel-response non-uniformity or warm pixels). **That is
+withdrawn: a discriminating test falsifies it.** A pattern fixed in sensor coordinates must follow the
+sensor drift between the capture's first and second halves (about (-1.6, +1.4) px). The test
+cross-correlated the off-axis high-pass of the two time-half stacks, registered on the target, on the
+disc:
+* the correlation is 0.033 at zero shift;
+* it is at most 0.008, and mostly negative, at every shift of 1-2 px along the drift;
+* the time halves therefore share neither target-locked structure (only 3 %) nor sensor-locked
+  structure.
+
+Frame differences at lags 1 to 32 show the per-pixel noise is temporally white: the disc's
+high-passed difference variance is 2.77-2.91 DN² at every lag. The leading hypothesis, **untested**,
+is that adjacent frames see nearly the same atmosphere, so even and odd frames average the same
+residual seeing distortions while the two time halves do not. No dark or flat for that night is on
+the NAS (`processing-archive-2026-10-03`).
+
+Whatever it is, the interleaved split cannot measure it. Ours carries it uncharged, and so do the
+references, which stacked the same frames.
+
+**Row banding (found by the same triage).** The raw frames' sky row means drift:
+* the row-mean variance of frame differences grows from 0.0063 DN² at lag 1 to 0.023 DN² at lag 32 on
+  the 2026-01-30 Jupiter (0.014 to 0.030 on the 2024-02-01 Moon);
+* that is noise constant along a row of a frame, which the photon-transfer line's separable high-pass
+  cannot see;
+* it is most of the 2026-01-30 Jupiter's split-half excess: rows x28, off-axis x1.8.
+
+Ours is charged it through the split halves. A reference is not.
 
 ## The secondary metric: DAN and DAN_interior
 
@@ -278,6 +435,9 @@ The noise floors move the right way too: on the 2_12_2023 Moon, AS_P50's floor i
 (8.7e-6 vs 1.7e-5), yet its DAN is lower. The metric is not paying for noise.
 
 ### Known limit: sharpening
+
+Under END, a sharpened image gains directly: an unsharp mask raises END x1.3-1.9 (see "Known limit:
+noise and sharpening the budget does not hold (C1)" above). The rest of this section is DAN's case.
 
 DAN is valid only between **unsharpened linear stacks**. A disc softened sigma 1.6 and then
 unsharp-masked scores 0.95-1.01 x the genuinely sharp disc (above the bar at R 7 and R 15; pinned
@@ -403,6 +563,9 @@ For each run, stack-probe writes `test/output/bench/<run>/` (gitignored): `ours.
 Unless `--no-split` is given, the runner then stacks the capture's even and odd frames separately,
 for the split-half check. `halves.py split` writes two SER files to the stage directory (or the run
 directory), and they are deleted afterwards; `halfA` and `halfB` (`.fits`, `.json`, `.log`) are kept.
+For ours (on the compare box, from `bench.py box`) and for each half (on its own target box),
+`stack-region-probe --plan-only --keff-box` writes the noise-power k (`keff.json`,
+`halfA/halfB.keff.json`).
 
 `bench.py report` then writes `compare.json` (every row of `compare --json`, plus the status, the
 photon-transfer fit and the split-half record) and `side-by-side.png`. It builds one `summary.md`
@@ -415,14 +578,18 @@ over all runs:
 
 * **Status (Ruling 2 with Ruling P28's yardstick).**
   * **unmeasured**: END is missing for ours or for any reference (no per-frame noise, an unknown frame
-    count, no usable sky). No verdict is drawn and the reason is printed.
-  * **review**: the END verdict flips between our frame count read two ways (rule 5). The two readings
-    are the mean kept fraction, which is judged, and the harmonic mean of the regions' kept counts.
-    A capture also goes to review when the numbers pass but a review note applies (limb-only, noise
-    regime, mosaic fallback).
+    count, a region-probe plan that differs from RunStack's). No verdict is drawn and the reason is
+    printed.
   * **fail**: END_full, or END_interior where judged, is below 0.97 x the best reference under both
-    readings.
-  * **pass**: none of the above.
+    readings of our k, against references whose provenance is "none". The two readings are the box's
+    noise-power k, which is judged, and the unweighted mean kept fraction, the flip check.
+  * **review**: everything else, with its reasons:
+    * a verdict that flips between the two readings (rule 5);
+    * a numeric fail against a reference whose provenance is not "none" (C1);
+    * a pass with ours uncharged (no split halves);
+    * a review note (limb-only, noise regime, mosaic fallback).
+  * **pass**: END >= 0.97 under ours' measured-noise charge, on both readings, with no review note.
+  Split halves outside their kind's tolerance are noted.
 
   DAN is shown and decides nothing. Every capture still needs Scott's look at its side-by-side.
 * **Side-by-side.** Ours is shown, then each reference, all cropped from the same region of ours'
@@ -463,10 +630,10 @@ stack-probe "<video>" --bayer <bayer> --out ours.fits --json    # a diagnosis ca
 python3 -I $B/benchset.py compare <id> ours.fits --json
 ```
 
-`compare --json` (with `--probe probe.json` for END) prints one object per image, ours first:
-* END: `end, end_ratio, end_interior, end_interior_ratio, end_pure(_ratio), end_alt(_ratio),
-  end_interior_alt(_ratio), end_frames, end_alt_frames, end_noise, end_noise_budget, end_excess,
-  end_sky_tiles, end_snr [per bin], end_note, end_complete`;
+`compare --json` (with `--probe probe.json --keff keff.json` for END) prints one object per image,
+ours first:
+* END: `end, end_ratio, end_interior, end_interior_ratio, end_alt(_ratio), end_interior_alt(_ratio),
+  end_frames, end_alt_frames, end_noise_budget, end_snr [per bin], end_note, end_complete`;
 * DAN: `dan, ratio_to_best_reference, dan_interior, interior_ratio_to_best_reference, dan_bar`;
 * `band_snr, noise_floor, box, mosaic, interior_judged, interior_diameter, bar {full, interior},
   review [...], orientation, shift, scale, ncc`.
@@ -478,16 +645,19 @@ for those the script checks stack-probe's diagnosis kind against `expect` from `
 
 The Python functions behind it, for the side-by-side and summary code:
 
-* `benchset.compare_capture(id, ours, probe=None, frame_noise=None) -> list[refs.Row]` -- `ours` is a
-  path or an array; with stack-probe's JSON as `probe`, END is measured (the capture's photon transfer
-  from its first frames, `benchset.ours_frames` / `ours_frames_alt` for our k); rows carry
+* `benchset.compare_capture(id, ours, probe=None, frame_noise=None, keff=None) -> list[refs.Row]` --
+  `ours` is a path or an array; with stack-probe's JSON as `probe` and stack-region-probe's as `keff`,
+  END is measured. The capture's photon transfer comes from its first frames, our k from
+  `benchset.ours_frames_box`, and the flip check from `ours_frames_mean`. Rows carry
   `label, path, factor, registration (orientation, shift, scale, ncc), result (metric.Result:
   value, interior, interior_judged, the common box, ...)`. `refs.rows_to_dicts(rows)` gives the JSON
   form; `refs.review_notes(rows)` the review list.
 * `refs.compare(anchor, [path | (path, factor)], mosaic=False, anchor_label=None, frame_size=None,
-  frame_noise=None, anchor_frames=None, capture_frames=None, anchor_frames_alt=None)` -- the general form.
+  frame_noise=None, anchor_frames=None, capture_frames=None, anchor_frames_alt=None,
+  anchor_frames_why=...)` -- the general form.
 * `noise.measure_video(path, (w, h)) -> (PhotonTransfer, raw mean)`, `noise.raw_under(raw_mean,
-  stack_lum, box)`, `noise.box_noise(ptc, raw, window=None)`, `noise.sky_noise(ptc, raw)`.
+  stack_lum, box)`, `noise.box_noise(ptc, raw, window=None)`; `halves.calibrate(work, stack_probe,
+  region_probe)`, `halves.check(run_dir, frame_noise)`.
 * `refs.load_reference(path, factor=None, frame_size=None) -> Reference(image at native scale, factor, info)`,
   `refs.crop_registered(image, registration, box)` -- a reference's pixels under ours' box at the
   registered integer offset: the same crop the metric used, ready for a side-by-side at one scale.
@@ -499,14 +669,16 @@ The Python functions behind it, for the side-by-side and summary code:
 
 * Sharpened images: see "Known limit: sharpening" above.
 * END's noise model:
-  * Our k is the frames used x the mean kept fraction over regions. The exact (sum w)^2 / sum w^2 of
-    the accumulator's weights needs per-frame region membership, which RunStack does not return. The
-    harmonic reading is scored too, and a verdict that depends on the choice goes to review.
+  * C1: noise and sharpening beyond the photon budget raise END, and no single-image estimator can
+    see them. Ours is charged what its split halves measure, and the references stay on the budget,
+    so a pass is sound and a fail only against an unprocessed reference.
+  * The interleaved split cannot see what adjacent frames share; see "What the interleaved halves
+    share".
+  * Our k comes from stack-region-probe, which repeats RunStack's selection steps. END is unmeasured
+    when its kept counts differ from stack-probe's.
+  * The flip check reads our k as the frames used x the unweighted mean kept fraction over regions.
   * AutoStakkert's percentage is global, so it is approximate per alignment point.
   * sigma_frame comes from the first 128 frames.
-  * Detail and fixed-pattern structure in the band count as signal for every image alike.
-  * A tool that denoises non-linearly gains no budget (it is modelled from its frame count), but any
-    real structure its processing adds in the band counts as detail.
 * DAN's white floor (secondary): interpolated or resampled stacks have less noise near Nyquist than
   mid-band, so some of their mid-band noise counts as detail (measured above: 1.1-38 x).
 * Small discs: below a 20 px eroded interior (Mars, and the 2_12_2023 Jupiter at 18.8 px) only the

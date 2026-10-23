@@ -16,6 +16,7 @@
 
 #include "AviWriter.h"
 #include "Engine.h"
+#include "Noise.h"
 #include "StackSynth.h"
 #include "TestUtil.h"
 
@@ -196,7 +197,7 @@ TEST_CASE("RunStack: an end-to-end synthetic AVI stacks closer to the truth than
     CHECK(o.summary.readMBps > 0);
     std::vector<std::string> steps;
     for (const auto& p : o.summary.phaseSeconds) steps.push_back(p.first);
-    CHECK(steps == std::vector<std::string>{"Hot pixels", "Measuring frames", "Selecting", "Building reference",
+    CHECK(steps == std::vector<std::string>{"Hot pixels", "Measuring noise", "Measuring frames", "Selecting", "Building reference",
                                             "Aligning frames", "Planning regions", "Judging focus", "Stacking"});
     for (const auto& wtext : o.summary.warnings) CHECK(wtext != stack::kUndeclaredMosaicWarning);
 
@@ -547,21 +548,21 @@ TEST_CASE("RunStack: a frame-filling surface is judged by its detail scale -- cl
 namespace {
 
 // A Bayer (RGGB) capture of a textured disc of `radius` luma px (2 x in sensor px) blurred by `blur`
-// sensor px, with a little jitter.
-Capture BayerDisc(int w, int h, double radiusLuma, double blur, unsigned seed) {
+// sensor px, `frames` frames, the blur jittering by a log-sd of `jitter` per 40-px cell of each frame.
+Capture BayerDisc(int w, int h, double radiusLuma, double blur, unsigned seed, double jitter = 0.05, int frames = 40) {
     const double cx = w / 2.0 + 0.3, cy = h / 2.0 - 0.4;
     const Scene s = testing::MakeDisc(seed, cx, cy, 2 * radiusLuma);
     Capture cap = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
     std::mt19937 rng(seed + 7);
     std::normal_distribution<double> n(0, 1);
-    RenderMosaic(cap, s, 40, [&](int) {
+    RenderMosaic(cap, s, frames, [&](int) {
         FrameSpec f;
         f.gx = 1.2 * n(rng);
         f.gy = 1.2 * n(rng);
         f.hasLocal = true;
         f.dx = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
         f.dy = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
-        f.sigma = testing::RandomField(rng, w, h, 40, [&] { return blur * std::exp(0.05 * n(rng)); });
+        f.sigma = testing::RandomField(rng, w, h, 40, [&] { return blur * std::exp(jitter * n(rng)); });
         return f;
     });
     return cap;
@@ -605,12 +606,36 @@ TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- cle
         // The region stage never refuses a disc (Ruling P20; a blob's half-level radius grows with its blur, holding
         // its measure at 0.57-0.67 -- real Jupiter blurred by 16 px: 0.566; this synthetic: 0.61). Select does: the
         // blob's half-contrast radius (~15.6 luma px) puts it in the large-disc class, where sigma(q_ref) / R_h reads
-        // 0.47 against kGrossBlurLimit 0.25 (Select.h step 7) -- the one refusal for a disc's gross defocus.
-        const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82).Factory(), 8, {});
-        INFO(o.diagnosis.message << " | " << o.summary.selection);
-        CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
-        CHECK(o.diagnosis.message.find("Out of focus") != std::string::npos);
-        CHECK_FALSE(o.image.has_value());
+        // over kGrossBlurLimit (Select.h step 7) -- the one refusal for a disc's gross defocus.
+        auto blurOverRadius = [](const StackOutcome& o) {
+            for (const auto& [name, v] : o.diagnosis.numbers)
+                if (name == "blur / radius") return v;
+            return 0.0;
+        };
+        // The capture as it comes: 40 frames, its blur jittering 5% per 40-px cell. Refused, and worded as the
+        // data allow: with qualitySigma the frames' real scatter (Ruling P26) 40 frames cannot rule out a
+        // spread over kSteadySpread (6-8%), so "focus or seeing" -- the hedged verdict, ruled acceptable
+        // (P26 fix round 2; the "optics" wording before P26 came from an overstated qualitySigma).
+        {
+            const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82).Factory(), 8, {});
+            INFO(o.diagnosis.message << " | " << o.summary.selection);
+            CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+            CHECK(o.diagnosis.message.find("Too blurred: even the sharpest frames blur the limb by") == 0);
+            CHECK(o.diagnosis.message.find("focus or seeing, the measurement noise is too large to tell") != std::string::npos);
+            CHECK(blurOverRadius(o) >= stack::kGrossBlurLimit);
+            CHECK_FALSE(o.image.has_value());
+        }
+        // A steady defocus over enough frames to show it: 200 frames of one blur read a spread of 0%, at most 3%
+        // -- the confident verdict.
+        {
+            const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82, 0.0, 200).Factory(), 8, {});
+            INFO(o.diagnosis.message << " | " << o.summary.selection);
+            CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+            CHECK(o.diagnosis.message.find("Out of focus") == 0);
+            CHECK(o.diagnosis.message.find("the optics, not the air") != std::string::npos);
+            CHECK(blurOverRadius(o) >= stack::kGrossBlurLimit);
+            CHECK_FALSE(o.image.has_value());
+        }
     }
 }
 TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, with no image", "[engine]") {
@@ -674,6 +699,38 @@ TEST_CASE("PlanMemory caps ResidualScale observers and workers so the engine sta
     CHECK(mono4k.focusBytes == static_cast<size_t>(stack::kFocusFrames) * 4 * 3840 * 2160);
     CHECK(mono4k.peakBytes >= mono4k.focusBytes);
     CHECK(mono4k.peakBytes <= stack::kMemoryBudget);
+}
+
+TEST_CASE("PlanMemory counts the noise model's scratch: the quality's variance and the noise phase (Ruling P26 fix round 1)",
+          "[engine]") {
+    auto info = [](int w, int h) {
+        ser::FileInfo i;
+        i.header.width = w;
+        i.header.height = h;
+        i.colorId = ser::ColorId::Mono;
+        i.normDepth = 16;
+        i.planes = 1;
+        i.bytesPerSample = 2;
+        return i;
+    };
+    // 4K mono (8 294 400 luma px): measuring holds 4 + 16 per luma px and PixelVariance's rows of doubles
+    // (the quality's variance over the box: 4 per px); aligning 2 + 12 and the rows (the regions'
+    // variance over their extent), plus the correlation scratch. 941ab4e7 counted 4 + 12 and 2 + 8, and
+    // held a whole-frame variance (4 per px) and a double plane (8 per px) on every worker.
+    const size_t px = 3840ull * 2160, rows = 3 * 8 * 3840;
+    const stack::MemoryPlan p = stack::PlanMemory(info(3840, 2160), 32);
+    CHECK(p.measureWorkerBytes == 4 * px + 16 * px + rows);
+    CHECK(p.alignWorkerBytes == 2 * px + 12 * px + rows + stack::kWorkerScratchBytes);
+    // The noise phase samples every 3rd centre there: four NoisePlanes of 8 bytes per sampled centre.
+    const size_t sampled = 1279ull * 719;
+    CHECK(p.noiseWorkerBytes == 2 * px + 4 * px + 37 * sampled + 65536);
+    CHECK(p.noiseWorkerBytes <= p.measureWorkerBytes);
+    const stack::NoisePlane plane(ser::FloatImage{3840, 2160, 1, std::vector<float>(px, 0.3f)});
+    CHECK(plane.response.size() + plane.level.size() == 2 * sampled);
+    // A small frame: the noise phase's planes are what a measuring worker holds at most.
+    const stack::MemoryPlan s = stack::PlanMemory(info(64, 64), 32);
+    CHECK(s.measureWorkerBytes == s.noiseWorkerBytes);
+    CHECK(s.noiseWorkerBytes == 2 * 4096 + 4 * 4096 + 37 * 60 * 60 + 65536);
 }
 
 TEST_CASE("RunStack opens no more readers at once than the memory plan's workers", "[engine]") {

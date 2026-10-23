@@ -134,65 +134,26 @@ void ForFrames(int64_t n, int workers, const SourceFactory& factory, const ser::
     const int count = static_cast<int>(std::min<int64_t>(std::max(1, workers), (n + kRun - 1) / kRun));
     std::atomic<int64_t> next{0}, done{0};
     std::atomic<bool> stop{false};
-    std::mutex m;
-    std::condition_variable cv;
-    std::exception_ptr error;
-    int finished = 0;
-
-    auto work = [&](int w) {
-        try {
-            const std::unique_ptr<ser::FrameSource> src = factory();
-            CheckReader(src.get(), info);
-            while (!stop.load(std::memory_order_relaxed)) {
-                const int64_t first = next.fetch_add(kRun);
-                if (first >= n) break;
-                const int64_t last = std::min(n, first + kRun);
-                for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
-                    body(w, *src, i);
-                    done.fetch_add(1);
-                }
+    // A thread that cannot be started (std::system_error) leaves through RunPool, which stops and joins
+    // the threads already running.
+    const PoolOutcome pool = RunPool(count, stop, [&](int w) {
+        const std::unique_ptr<ser::FrameSource> src = factory();
+        CheckReader(src.get(), info);
+        while (!stop.load(std::memory_order_relaxed)) {
+            const int64_t first = next.fetch_add(kRun);
+            if (first >= n) break;
+            const int64_t last = std::min(n, first + kRun);
+            for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
+                body(w, *src, i);
+                done.fetch_add(1);
             }
-        } catch (...) {
-            std::lock_guard<std::mutex> lock(m);
-            if (!error) error = std::current_exception();
-            stop = true;
         }
-        std::lock_guard<std::mutex> lock(m);
-        ++finished;
-        cv.notify_all();
-    };
-
-    std::vector<std::thread> pool;
-    struct Joiner {
-        std::vector<std::thread>& pool;
-        std::atomic<bool>& stop;
-        ~Joiner() {
-            stop = true;
-            for (std::thread& t : pool)
-                if (t.joinable()) t.join();
-        }
-    } joiner{pool, stop};
-    pool.reserve(static_cast<size_t>(count));
-    // A thread that cannot be started (std::system_error): the exception leaves through Joiner, which
-    // stops and joins the threads already running.
-    for (int k = 0; k < count; ++k) pool.emplace_back(work, k);
-
-    bool cancelled = false;
-    std::unique_lock<std::mutex> lock(m);
-    while (finished < count) {
-        cv.wait_for(lock, std::chrono::milliseconds(10), [&] { return finished == count; });
-        lock.unlock();
+    }, [&] {
         phase.Report(offset + done.load());
-        if (!cancelled && phase.Cancelled()) {
-            cancelled = true;
-            stop = true;
-        }
-        lock.lock();
-    }
-    lock.unlock();
-    for (std::thread& t : pool) t.join();
-    if (cancelled) throw StackCancelled(std::string("cancelled while ") + phase.Name());
-    if (error) std::rethrow_exception(error);
+        return phase.Cancelled();
+    });
+    if (pool.cancelled) throw StackCancelled(std::string("cancelled while ") + phase.Name());
+    if (pool.error) std::rethrow_exception(pool.error);
     phase.Report(offset + n);
     phase.ThrowIfCancelled();
 }
@@ -708,10 +669,23 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
 
     MemoryPlan p;
     p.observerBytes = 20 * lumaPx;  // ResidualScale: 16 per luma pixel + its copy of the reference
+    const size_t lw = w / static_cast<size_t>(scale), lh = h / static_cast<size_t>(scale);
+    const size_t varianceRows = 3 * 8 * lw;  // PixelVariance's three rows of doubles
+    // Noise phase (FitNoiseModel, on the measuring workers): the raw frame and its luma, four frames'
+    // NoisePlanes (8 bytes per sampled centre), the tiles' sums, and the two runs' samples a worker may
+    // hold for the in-order merge (the fine bins, 32 KB, and 2 bytes per sampled centre of tiles).
+    if (lw >= 5 && lh >= 5) {
+        const size_t step = static_cast<size_t>(NoiseStep(static_cast<int>(lw), static_cast<int>(lh)));
+        const size_t sampled = ((lw - 4 + step - 1) / step) * ((lh - 4 + step - 1) / step);
+        p.noiseWorkerBytes = 2 * samples + 4 * lumaPx + 37 * sampled + 65536;
+    }
     // Hot-pixel pass: the raw frame and the worker's own HotPixelMap (2 + 2 bytes per sample); measuring:
-    // the raw frame, its luma and MeasureFrame's opened-image scratch (2 per sample, 4 + 8 per luma px).
-    p.measureWorkerBytes = 4 * samples + 12 * lumaPx;
-    p.alignWorkerBytes = 2 * samples + 8 * lumaPx + kWorkerScratchBytes;  // raw, luma, regions; correlation
+    // the raw frame, its luma, MeasureFrame's opened-image scratch and its quality's variance over the box
+    // (2 per sample, 4 + 8 + 4 per luma px, plus PixelVariance's rows); the noise phase's when larger.
+    p.measureWorkerBytes = std::max(4 * samples + 16 * lumaPx + varianceRows, p.noiseWorkerBytes);
+    // Raw, luma, regions (with the regions' variance over their extent, 4 per luma px, and its rows);
+    // correlation.
+    p.alignWorkerBytes = 2 * samples + 12 * lumaPx + varianceRows + kWorkerScratchBytes;
     p.stackWorkerBytes = 2 * samples + 8 * px + 8 * outSamples;           // raw, demosaic planes, frame + prefilter
     const size_t lumaImages = 24 * lumaPx;  // reference, residual scale, the Accumulator's copies of both
     p.fixedBytes = 8 * (outSamples + px) + lumaImages;
@@ -795,7 +769,8 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     // ---- Measuring: hot pixels, then every frame -----------------------------------------------------
     const int64_t nHot = std::min<int64_t>(n, kHotPixelFrames);
-    Phase measuring(progress, kPhaseMeasuring, nHot + n);
+    const int64_t nNoise = kNoisePasses * static_cast<int64_t>(NoiseRuns(info).size());
+    Phase measuring(progress, kPhaseMeasuring, nHot + nNoise + n);
     measuring.Report(0);
     Clock::time_point t0 = Clock::now();
     auto hot = std::make_shared<HotPixelMap>(info);
@@ -814,8 +789,15 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     step("Hot pixels", t0);
     const SourceFactory factory = RepairingFactory(metered, hot);
 
+    // The capture's noise model (Noise.h, Ruling P26): every detail measure's noise, frames and regions.
     t0 = Clock::now();
-    const std::vector<FrameStats> stats = MeasureAll(factory, info, mem.measureWorkers, measuring.Mapped(nHot, n));
+    const NoiseModel noise = FitNoiseModel(factory, info, mem.measureWorkers, measuring.Mapped(nHot, nNoise));
+    measuring.ThrowIfCancelled();
+    step("Measuring noise", t0);
+
+    t0 = Clock::now();
+    const std::vector<FrameStats> stats =
+        MeasureAll(factory, info, mem.measureWorkers, measuring.Mapped(nHot + nNoise, n), noise);
     measuring.Finish();
     measuring.ThrowIfCancelled();
     step("Measuring frames", t0);
@@ -849,7 +831,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     t0 = Clock::now();
     const GlobalAligner aligner(reference, sel.fullFrameTarget, scale);
     const FrameStats refStats = MeasureFrame(reference, 0, scale);
-    const RegionLayout layout = PlaceRegions(reference, refStats, sel.fullFrameTarget);
+    const RegionLayout layout = PlaceRegions(reference, refStats, sel.fullFrameTarget, noise);
     const RegionMeasurer measurer(reference, layout);
     std::vector<Shift> shifts(static_cast<size_t>(nAlign));
     std::vector<FrameRegions> measured(static_cast<size_t>(nAlign));
@@ -1040,7 +1022,10 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     // Only with an image: a diagnosed capture stacked nothing (Ruling P9's warning is about the result).
     if (UndeclaredMosaic(info)) sum.warnings.push_back(kUndeclaredMosaicWarning);
+    // One focus warning: the region stage's when it warns (it reads the stack made), else step 7's warn band
+    // (Ruling P15b: for a large disc the gross reading separates a moderate defocus the region stage cannot).
     if (sum.focus.outcome == FocusOutcome::Warned) sum.warnings.push_back(FocusWarning(sum.focus));
+    else if (!sel.focusWarning.empty()) sum.warnings.push_back(sel.focusWarning);
     out.image = std::move(image);
     return finish(std::move(out));
 }

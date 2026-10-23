@@ -3,7 +3,7 @@
 point run-stack-bench.sh calls, and a survey that verifies every reference against its own
 video before any stack exists.
 
-    python3 -I benchset.py list | show <id> | compare <id> <ours.fits|ours.tif> [--probe probe.json] [--json]
+    python3 -I benchset.py list | show <id> | compare <id> <ours.fits|ours.tif> [--probe probe.json --keff keff.json] [--json]
     python3 -I benchset.py survey <out-dir> [--only ID ...]
 
 Every capture that is stacked is stacked DEBAYERED (stack-probe --bayer <Capture.bayer>):
@@ -145,61 +145,74 @@ def reference_paths(c: Capture) -> List[str]:
     return [nas(p) for p in c.references]
 
 
-def ours_frames(probe: dict) -> Optional[float]:
-    """Our stack's effective frame count for END's noise budget (Ruling P28, rule 2): the frames
-    used x the region-weighted mean kept fraction, from stack-probe's JSON (`used`, `regionDetail`).
-    Every region counts equally (they are equal windows on one grid); a region that keeps no frame
-    (noiseOnly, Ruling P27) takes the fallback stack -- every used frame -- so it counts 1. The
-    exact count, (sum w)^2 / sum w^2 of the accumulator's per-pixel weights over the box, needs the
-    per-frame region membership, which RunStack does not return; this is the ruling's stated
-    alternative. None when the probe has no regionDetail (an older stack-probe)."""
+def ours_frames_box(probe: dict, keff: Optional[dict]) -> Tuple[Optional[float], str]:
+    """Our stack's effective frame count for END's noise budget (Ruling P28 fix round 1, ruling 2): the
+    NOISE-POWER k_eff over the compare box -- 1 / (the box's Hann^2-weighted mean of sum_f alpha_f(p)^2
+    / (sum_f alpha_f(p))^2), alpha the accumulator's per-frame blend weight -- which
+    stack-region-probe --keff-box computes from the engine's own plan (its per-frame kept flags and
+    AxisWeightAt). That probe repeats RunStack's selection steps rather than being RunStack, so its
+    plan is accepted only when its stacked count and every region's kept count equal stack-probe's
+    (RunStack's own run). (k, why): k None with the reason when it cannot be had."""
+    if keff is None:
+        return None, "our noise-power k_eff over the box was not computed (stack-region-probe --keff-box)"
+    used, detail = probe.get("used"), probe.get("regionDetail")
+    if detail is None:
+        return None, "stack-probe gave no regionDetail to check the region probe's plan against"
+    mine = [int(d["kept"]) for d in detail]
+    if keff.get("stacked") != used or list(keff.get("regionKept", [])) != mine:
+        return None, (f"the region probe's plan differs from RunStack's (stacked {keff.get('stacked')} vs {used}; "
+                      f"kept {keff.get('regionKept')} vs {mine})")
+    return float(keff["keffBox"]), ""
+
+
+def ours_frames_mean(probe: dict) -> Optional[float]:
+    """The flip check's reading of our count (bench.status_of): the frames used x the UNWEIGHTED mean
+    kept fraction over every placed region (regions that keep no frame -- noiseOnly, Ruling P27 --
+    take the fallback stack, so they count 1), from stack-probe's JSON. It ignores where the regions
+    lie against the box and how noise power averages (as 1 / k); ours_frames_box does both. None
+    when the probe has no regionDetail."""
     used = probe.get("used")
     detail = probe.get("regionDetail")
     if not used or detail is None:
         return None
     if not detail:
         return float(used)
-    return float(used) * float(np.mean(_kept_fractions(used, detail)))
+    fr = [1.0 if (d.get("noiseOnly") or not d["kept"]) else d["kept"] / used for d in detail]
+    return float(used) * float(np.mean(fr))
 
 
-def ours_frames_alt(probe: dict) -> Optional[float]:
-    """The other defensible reading of our effective count (the flip check, bench.status_of): the
-    harmonic mean of the regions' kept counts, used / mean(used / kept). Noise POWER averages as
-    1 / k over the box, so a few regions that keep few frames weigh more than in ours_frames; it is
-    the lower of the two (ours noisier), so a verdict that holds under both does not rest on how
-    our count is read."""
-    used = probe.get("used")
-    detail = probe.get("regionDetail")
-    if not used or detail is None:
-        return None
-    if not detail:
-        return float(used)
-    return float(used) / float(np.mean([1.0 / f for f in _kept_fractions(used, detail)]))
-
-
-def _kept_fractions(used, detail):
-    return [1.0 if (d.get("noiseOnly") or not d["kept"]) else d["kept"] / used for d in detail]
-
-
-def compare_capture(cid: str, ours, probe: Optional[dict] = None, frame_noise=None) -> List["refs.Row"]:
+def compare_capture(cid: str, ours, probe: Optional[dict] = None, frame_noise=None,
+                    keff: Optional[dict] = None, noise_factor=None, noise_factor_alt=None) -> List["refs.Row"]:
     """THE call for run-stack-bench.sh: our debayered stack (FITS/TIFF path or array) against
     this capture's references on one box, reference factors from their size. Row 0 is ours.
     With stack-probe's JSON for ours (`probe`), END is measured too: the capture's per-frame noise
     from its first frames (noise.measure_video, unless `frame_noise` is given), our frame count
-    from `probe` (ours_frames), each reference's from its percentage. A diagnosis capture has no
-    stack to compare and is refused."""
+    from stack-region-probe's `keff` JSON checked against `probe` (ours_frames_box; the flip check:
+    ours_frames_mean), each reference's from its percentage. A diagnosis capture has no stack to
+    compare and is refused."""
     c = by_id(cid)
     if c.expect != "stack":
         raise ValueError(f"{cid} is a diagnosis case (expect {c.expect}); there is no stack to compare")
     k = k_alt = None
+    why = "our stack's effective frame count is unknown (no stack-probe JSON)"
     if probe is not None:
         import noise
-        k, k_alt = ours_frames(probe), ours_frames_alt(probe)
+        k, why = ours_frames_box(probe, keff)
+        k_alt = ours_frames_mean(probe)
         if frame_noise is None:
             frame_noise = noise.measure_video(nas(c.video), c.size)
-    return refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
+    rows = refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
                         frame_noise=frame_noise, anchor_frames=k, capture_frames=c.frames,
-                        anchor_frames_alt=k_alt)
+                        anchor_frames_alt=k_alt, anchor_frames_why=why,
+                        anchor_noise_factor=noise_factor, anchor_noise_factor_alt=noise_factor_alt)
+    if k is not None and list(keff.get("box", [])) != list(rows[0].result.box):
+        # the region probe averaged over another box: our k does not apply, loudly
+        why = f"the region probe's box {keff.get('box')} is not the compare box {list(rows[0].result.box)}"
+        rows = refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
+                            frame_noise=frame_noise, anchor_frames=None, capture_frames=c.frames,
+                            anchor_frames_alt=k_alt, anchor_frames_why=why,
+                            anchor_noise_factor=noise_factor, anchor_noise_factor_alt=noise_factor_alt)
+    return rows
 
 
 def video_mean(c: Capture, n: int = SURVEY_FRAMES) -> np.ndarray:
@@ -271,6 +284,7 @@ def _main(argv=None):
     cp.add_argument("id")
     cp.add_argument("ours", help="our debayered stack, FITS or TIFF")
     cp.add_argument("--probe", help="stack-probe's JSON for ours: END is measured too (reads the video's first frames)")
+    cp.add_argument("--keff", help="stack-region-probe --json-out for ours (our noise-power k over the box)")
     cp.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "list":
@@ -285,11 +299,14 @@ def _main(argv=None):
                           "references": reference_paths(c)}, indent=2))
         return 0
     if args.cmd == "compare":
-        probe = None
+        probe = keff = None
         if args.probe:
             with open(args.probe) as fh:
                 probe = json.load(fh)
-        d = refs.rows_to_dicts(compare_capture(args.id, args.ours, probe=probe))
+        if args.keff:
+            with open(args.keff) as fh:
+                keff = json.load(fh)
+        d = refs.rows_to_dicts(compare_capture(args.id, args.ours, probe=probe, keff=keff))
         if args.json:
             print(json.dumps(d, indent=2, default=float))
         else:
