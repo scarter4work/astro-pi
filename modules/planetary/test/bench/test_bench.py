@@ -231,3 +231,135 @@ def test_a_fail_keeps_its_review_notes_in_the_reasons():
                    end_interior_uncharged_ratio=1.2, end_uncharged_alt_ratio=1.2, end_interior_uncharged_alt_ratio=1.2)
     st, why = bench.status_of(rows)
     assert st == "review" and any(bench.CHARGE_NOTE in w for w in why) and "limb-only: human review decides" in why
+
+
+# --- Ruling F2 (final review, bench I1): the identity guard; bench I2: no record is lost -------------
+
+def _tree(root):
+    """A stand-in modules/planetary tree holding every file identity.py hashes."""
+    import identity
+    for rel in ["src/stack/Engine.cpp", "src/ser/SerFile.cpp", *identity.PROBE_SOURCES, *identity.PROCEDURE]:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"// {rel}\n")
+    return root
+
+
+def test_identity_tracks_every_part_and_words_each_mismatch(tmp_path):
+    import identity
+    root = _tree(tmp_path)
+    a = identity.source_parts(str(root))
+    assert set(a) == {"engine", "probe_sources", "procedure"}
+    assert identity.source_parts(str(root)) == a                          # deterministic
+    (root / "src/ser/SerFile.cpp").write_text("// changed\n")
+    b = identity.source_parts(str(root))
+    assert b["engine"] != a["engine"] and b["probe_sources"] == a["probe_sources"] and b["procedure"] == a["procedure"]
+    (root / "src/stack/New.h").write_text("")                             # a new engine file counts too
+    assert identity.source_parts(str(root))["engine"] != b["engine"]
+    used = dict(b, probe_binaries={"stack-probe": "1" * 64, "stack-region-probe": "2" * 64})
+    assert identity.mismatches(used, used) == []
+    assert identity.mismatches(None, used) == ["no identity is recorded"]
+    assert [m.split(":")[0] for m in identity.mismatches(dict(used, engine=a["engine"]), used)] == ["engine"]
+    assert [m.split(":")[0] for m in identity.mismatches(dict(used, probe_binaries=None), used)] == ["probe_binaries"]
+    # a probe older than a source it is built from is stale
+    probe = tmp_path / "stack-probe"
+    probe.write_bytes(b"binary")
+    os.utime(probe, (1, 1))
+    assert any("older than src/" in s for s in identity.stale(str(probe), str(root)))
+    os.utime(probe, None)
+    assert identity.stale(str(probe), str(root)) == []
+    assert identity.stale(str(tmp_path / "missing"), str(root)) == [f"{tmp_path / 'missing'} does not exist"]
+
+
+def test_the_identity_at_a_commit_is_the_tree_identity_of_that_commit():
+    """identity.py --at hashes the files git holds at a commit as the working tree is hashed: at HEAD the
+    engine part equals the working tree's whenever src/stack and src/ser are committed as they are."""
+    import subprocess
+    import identity
+    repo = os.path.dirname(os.path.dirname(identity.MODULE))
+    dirty = subprocess.run(["git", "-C", repo, "status", "--porcelain", "--", "modules/planetary/src"],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        pytest.skip("src/ has uncommitted changes: HEAD and the working tree differ by design")
+    assert identity.source_parts_at("HEAD")["engine"] == identity.source_parts()["engine"]
+
+
+def test_a_calibration_with_another_identity_cannot_judge(tmp_path):
+    import halves
+    used = {"engine": "e" * 64, "probe_sources": "p" * 64, "procedure": "q" * 64,
+            "probe_binaries": {"stack-probe": "1" * 64, "stack-region-probe": "2" * 64}, "stale": []}
+    cal = tmp_path / "calibration.json"            # outside git: not a committed freeze either
+    cal.write_text("{}")
+    probs = halves.calibration_problems({"identity": dict(used, engine="f" * 64)}, used, str(cal))
+    assert any(p.startswith("calibration identity: engine") for p in probs)
+    assert any("git has not committed" in p for p in probs)
+    assert any("stale probe" in p for p in halves.calibration_problems({"identity": used}, dict(used, stale=["x is older"]), str(cal)))
+
+
+def _ctx(engine="e"):
+    used = {"engine": engine * 64, "probe_sources": "p" * 64, "procedure": "q" * 64,
+            "probe_binaries": {"stack-probe": "1" * 64, "stack-region-probe": "2" * 64}, "stale": []}
+    cal = {"generated": "2099-01-01T00:00:00", "identity": {k: used[k] for k in bench.identity.PARTS},
+           "kinds": {"disc": {"tolerance": [0.5, 1.5]}, "lunar": {"tolerance": [0.3, 2.4]}}}
+    return bench.Context(used, cal, [])
+
+
+def _diagnosed(out, run_id, kind, ctx, ident=None):
+    import json
+    d = out / run_id
+    d.mkdir(parents=True)
+    (d / "probe.json").write_text(json.dumps({"diagnosis": {"kind": kind, "message": f"{kind} (test)", "numbers": {}},
+                                              "output": None, "seconds": 0.5, "frames": 21, "phaseSeconds": {},
+                                              "bytesRead": 1e6, "readMBps": 50.0, "peakRssMB": 50.0}))
+    (d / "identity.json").write_text(json.dumps(ident if ident is not None else ctx.used))
+
+
+def test_a_partial_report_never_erases_a_fail_and_flags_a_stale_record(tmp_path):
+    """Review I2: a stack run the engine refused (no stack: fail) wrote no compare.json, so reporting
+    another run alone turned it into "not run" and the fail left summary.md."""
+    import json
+    ctx = _ctx()
+    _diagnosed(tmp_path, "2023-02-11-mars", "OutOfFocus", ctx)
+    _diagnosed(tmp_path, "2026-01-30-saturn-empty", "NoTarget", ctx)
+    first = {r["run"]: r for r in bench.report(str(tmp_path), ["2023-02-11-mars"], ctx)}
+    assert first["2023-02-11-mars"]["status"] == "fail"
+    rec = json.loads((tmp_path / "2023-02-11-mars" / "compare.json").read_text())
+    assert rec["status"] == "fail" and rec["identity"]["engine"] == ctx.used["engine"]
+    assert rec["calibration_generated"] == ctx.calibration["generated"]
+    again = {r["run"]: r for r in bench.report(str(tmp_path), ["2026-01-30-saturn-empty"], ctx)}
+    assert again["2023-02-11-mars"]["status"] == "fail" and not again["2023-02-11-mars"]["stale"]
+    assert again["2026-01-30-saturn-empty"]["status"] == "pass"
+    md = (tmp_path / "summary.md").read_text()
+    assert "1 fail" in md and "| 2023-02-11-mars |" in md
+    # The engine changed since: the kept fail stands, flagged stale, until its run is reported again.
+    later = {r["run"]: r for r in bench.report(str(tmp_path), ["2026-01-30-saturn-empty"], _ctx("f"))}
+    assert later["2023-02-11-mars"]["status"] == "fail" and later["2023-02-11-mars"]["stale"]
+    md = (tmp_path / "summary.md").read_text()
+    assert "**fail** (stale)" in md and "judged with another identity or calibration" in md
+
+
+def test_a_run_stacked_with_another_identity_gets_no_verdict(tmp_path):
+    ctx = _ctx()
+    _diagnosed(tmp_path, "2026-01-30-saturn-empty", "NoTarget", ctx, ident=dict(ctx.used, engine="0" * 64))
+    rec = {r["run"]: r for r in bench.report(str(tmp_path), ["2026-01-30-saturn-empty"], ctx)}["2026-01-30-saturn-empty"]
+    assert rec["status"] == "unmeasured"
+    assert rec["reasons"][0].startswith("NO VERDICT -- the run was stacked with another identity: engine")
+    assert "the numbers alone would say pass" in rec["reasons"][0]
+    _diagnosed(tmp_path, "2023-02-11-venus-clipped", "Clipped", ctx, ident={})      # stacked before identities
+    rec = {r["run"]: r for r in bench.report(str(tmp_path), ["2023-02-11-venus-clipped"], ctx)}["2023-02-11-venus-clipped"]
+    assert rec["status"] == "unmeasured" and "no identity is recorded" in rec["reasons"][0]
+
+
+def test_an_error_writes_its_record_and_a_mismatched_calibration_is_announced(tmp_path):
+    import json
+    ctx = _ctx()
+    d = tmp_path / "2023-02-11-mars"
+    d.mkdir()
+    (d / "probe.json").write_text("{not json")              # a harness failure
+    recs = {r["run"]: r for r in bench.report(str(tmp_path), ["2023-02-11-mars"], ctx)}
+    assert recs["2023-02-11-mars"]["status"] == "error"
+    assert json.loads((d / "compare.json").read_text())["status"] == "error"
+    bad = bench.Context(ctx.used, ctx.calibration, ["calibration identity: engine: recorded x, in use y"])
+    md = bench.summary_md([], bad)
+    assert "**NO VERDICT on any stacked run: the calibration does not describe what is in use**" in md
+    assert "Judged with: engine eeeeeeeeeeee" in md
