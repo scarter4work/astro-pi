@@ -84,6 +84,11 @@ constexpr double kBoxTolerance = 2.0;
 // Ruling P9 had lost (they read Venus 0.109-0.357, 1558 of 6485 frames clipped, and both others 0): the
 // 2026-01-30 Neptune 204515 0.048-0.087 (median 0.068) and Jupiter 195137 (1080p) 0.113-0.123, both
 // usable; the Venus 0.239-0.452 (median 0.352), 6483 of 6485 frames clipped, diagnosed Clipped.
+// The edge: one colour saturated over the whole target reads 0.25 for red or blue (a quarter of the sites;
+// RGB weighs its channels 1 : 2 : 1 the same way, MeasurementImage) and is dropped (>=), so a disc whose
+// red clips everywhere -- a Mars exposed for green -- is refused, as per raw pixel it always was; red
+// clipped over less than all of the target stays under the limit. The one Mars on the NAS (2023-02-11 192403,
+// run-focus-survey.sh's list) reads at most 0.016 over its 13250 frames (2026-10-23, focus-survey --dump-stats).
 constexpr double kClippedFrame = 0.25;
 // Full-frame target (Ruling P2a): in at least this share of the target frames, the box touches an
 // edge AND spans at least kFullFrameSpan of the frame's width or height.

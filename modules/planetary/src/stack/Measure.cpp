@@ -339,12 +339,14 @@ MeasurementImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& i
                 o[x] = static_cast<uint8_t>((r0[2 * x] >= at) + (r0[2 * x + 1] >= at) + (r1[2 * x] >= at) + (r1[2 * x + 1] >= at));
         }
     } else {
+        // RGB: R, G and B weigh 1 : 2 : 1 out of 4 (the Bayer sites' split, which kClippedFrame was set on); mono 1.
         const int c = frame.channels;
-        out.samplesPerPixel = c;
+        out.samplesPerPixel = c == 3 ? 4 : 1;
         const size_t n = static_cast<size_t>(w) * h;
         for (size_t i = 0; i < n; ++i) {
             int k = 0;
-            for (int ch = 0; ch < c; ++ch) k += s[i * c + ch] >= at;
+            if (c == 3) k = (s[3 * i] >= at) + 2 * (s[3 * i + 1] >= at) + (s[3 * i + 2] >= at);
+            else k = s[i] >= at;
             out.clippedSamples[i] = static_cast<uint8_t>(k);
         }
     }

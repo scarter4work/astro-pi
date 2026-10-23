@@ -93,10 +93,14 @@ double LumaScale(const ser::FileInfo& info);
 // by it (MeasurementImage); an image without counts is tested on its luma.
 constexpr double kClippedLuma = 0.999;
 
-// A frame's measurement luma with, per luma pixel, how many of the sensor samples it averages are at
+// A frame's measurement luma with, per luma pixel, how much of the sensor samples it averages is at
 // full scale (>= kClippedLuma of it, after the same normalisation; a sample above the depth's range
-// counts): 0..samplesPerPixel -- 4 per 2 x 2 cell of Bayer input or an undeclared mosaic, 3 for RGB (one
-// per channel), 1 for mono. Counted on the samples, not on the luma: a cell mean reaches kClippedLuma
+// counts), out of samplesPerPixel: 4 per 2 x 2 cell of Bayer input or an undeclared mosaic (one per
+// site); 4 per RGB pixel, its R, G and B weighing 1, 2 and 1 -- the Bayer sites' split, which kClippedFrame
+// was calibrated on, so one saturated colour reads alike from an RGB and a raw Bayer capture of the same
+// scene (at 1 per channel a red-saturated disc read 4/3 of its Bayer value: test "One saturated colour
+// reads the same clipped fraction as RGB and as RGGB", RGB 0.200 against RGGB 0.146 at 809278ab); 1 for
+// mono. Counted on the samples, not on the luma: a cell mean reaches kClippedLuma
 // only when all four of its sites are saturated, so the 2023-02-11 Venus (an undeclared mosaic, R and
 // G saturated over its centre, B not) read a median 0.225 of its disc clipped on cells (29099f63, all
 // 6485 frames, focus-survey --dump-stats), where 0.37 had been measured per raw pixel, and the engine
@@ -267,6 +271,10 @@ int DetectionBlock(int width, int height);
 // energy (pure noise reads 2.9-3.2: test/calibration/purer.cpp), and Regions.h's noise-only gate takes
 // over.
 // One image alone: the quality's noise is its sky's (NoiseModel::FromSkyNoise of EstimatePixelNoise).
+// Not for the frames of a capture SelectFrames will judge: on a FloatImage clippedFraction is the luma's own
+// test, which on a binned luma (Bayer, an undeclared mosaic) counts a cell only when all four sites are
+// saturated. A frame's MeasurementLuma kept as a MeasurementImage picks the counted overloads below; copied
+// into a ser::FloatImage (as the alignment and focus passes do, which read no clippedFraction) it loses them.
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
 // A frame of a capture: the quality's noise is the capture's model (Noise.h); MeasureAll's form. An unmeasured
 // model (NoiseModel::Measured false: a capture of 1-3 frames) is taken as none: the form above.
