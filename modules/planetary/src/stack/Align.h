@@ -11,8 +11,8 @@ namespace planetary::stack {
 
 // Global alignment (spec "The engine", step 4: follow the target as it drifts, sub-pixel).
 //
-// Scale. Everything here is in measurement-luma pixels (LumaForMeasure: half resolution for Bayer
-// input), the same pixels as FrameStats. A consumer working on full-resolution frames multiplies a
+// Scale. Everything here is in measurement-luma pixels (MeasurementLuma, Measure.h: half resolution for
+// Bayer input and an undeclared mosaic, which it bins 2 x 2), the same pixels as FrameStats. A consumer working on full-resolution frames multiplies a
 // Shift's dx, dy by LumaScale(info) (Ruling P3) -- never by its own factor.
 //
 // Convention. Shift (dx, dy) says where the reference's content sits in the frame:
@@ -199,12 +199,13 @@ private:
 Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frameLuma, const FrameStats& frameStats,
                   double lumaScale);
 
-// The reference every frame is aligned to, in measurement-luma scale (same size as LumaForMeasure's
+// The reference every frame is aligned to, in measurement-luma scale (same size as MeasurementLuma's
 // output) -- the scale FrameStats and GlobalAligner work in; full-resolution consumers scale shifts
 // by LumaScale(info).
 // Built from the kReferenceFrames sharpest selected frames (FrameStats::quality, ties by index; only
 // Selection::frames -- a suspect frame, Ruling P6, is never part of the reference):
-//  1. read them (one reader from `factory`, in frame order) as LumaForMeasure luma;
+//  1. read them (one reader from `factory`, in frame order) as MeasurementLuma luma (an undeclared mosaic
+//     binned, as every frame aligned to it is);
 //  2. pass 1: align each to an anchor and average those with confidence >= AlignmentCut (the anchor
 //     always) on the anchor's grid. The anchor is the sharpest frame unless the others do not
 //     confirm it: when fewer than half of them reach AlignmentCut against it (the cut taken over

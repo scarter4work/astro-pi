@@ -22,8 +22,7 @@ void CheckLuma(const ser::FloatImage& im, const char* what) {
                                     std::to_string(im.width) + "x" + std::to_string(im.height) + " image");
 }
 
-// Luma rows per locked band of the accumulator.
-// Luma rows per lock of the sums.
+// Luma rows per lock of the sums (one band of the accumulator per lock).
 constexpr int kLockRows = 16;
 
 // Catmull-Rom weights for fractional offset t in [0, 1).

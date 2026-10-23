@@ -424,7 +424,8 @@ struct RegionPlan {
     std::vector<float> dx, dy;    // local shift
     std::vector<uint8_t> flags;   // kShiftUsable | kKept
     std::vector<RegionDetail> detail;  // per region
-    // The region with the highest bestQuality (-1 without regions), for a one-line verdict.
+    // The region with the highest bestQuality (-1 without regions). For the record only: no engine output
+    // reads it (stack-region-probe prints it, and a test checks it).
     int bestRegion = -1;
     static constexpr uint8_t kShiftUsable = 1;  // aligned and confidence >= the region's cut
     static constexpr uint8_t kKept = 2;         // stacked in this region

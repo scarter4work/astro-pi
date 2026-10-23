@@ -125,9 +125,10 @@ void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWei
 // frames there -- review finding). Observe every frame the stack uses (the tests do; a subset would
 // make the leave-one-out guard weaker against a bird spanning frames). Memory per instance: 16 bytes
 // per luma pixel (double sum, float max and count) plus the reference -- 1080p Bayer (960 x 540) 10 MB,
-// 1080p mono 41 MB -- so Task 6 should use one instance per worker (16-32: 0.3-1.3 GB for mono 1080p;
-// cap the workers observing to 8 there, or Merge as each worker finishes a run of frames). Not
-// thread-safe: one instance per thread, then Merge. Cost: 26 ms per 1920 x 1080 mono frame (one thread).
+// 1080p mono 41 MB (20 bytes x 960 x 540 and x 1920 x 1080) -- so RunStack does not give every worker one:
+// its ObserverPool holds PlanMemory's `observers` instances (as many as kResidualBudget allows, at most
+// the workers; Engine.h), each worker checking one out per Observe, then merges them. Not thread-safe:
+// one instance per thread at a time, then Merge. Cost: 26 ms per 1920 x 1080 mono frame (one thread).
 class ResidualScale {
 public:
     // Throws std::invalid_argument when the reference is not a 1-channel image of the layout's size.
