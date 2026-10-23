@@ -112,6 +112,12 @@ if len(sys.argv) > 2 and sys.argv[1] == "--dismiss":
             key("Return")
     sys.exit(0)
 
+if len(sys.argv) > 4 and sys.argv[1] == "--click":
+    # One click at X Y, sent without waiting for PixInsight to handle it (test/quit-mid-tick.sh
+    # queues it while the main thread is busy).
+    click(int(sys.argv[2]), int(sys.argv[3]))
+    sys.exit(0)
+
 dump("start")
 shot("00-ready.png")
 if len(sys.argv) > 2 and sys.argv[1] == "--quit":

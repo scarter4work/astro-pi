@@ -35,6 +35,10 @@ Before PixInsight starts, the harness runs two static guards: `test/check-pcl-mo
 
 Also: `bash test/run-load.sh` — loads the module headlessly without running self-test.
 
+GUI tests (a real PixInsight on a private Xvfb, XTest-driven; not part of the self-test):
+- `bash test/gui-smoke.sh <out-dir>` (slot 95) — the panel, its dialogs, and Quit with a keeper write-up in flight.
+- `bash test/quit-mid-tick.sh <out-dir>` (slot 94) — File > Quit handled inside a journey tick: the tick's busy gate (`Console::AbortEnabled()`) pumps events, so PixInsight can run `OnUnload` while `JourneyTracker::Tick` is on the stack. Needs gdb (ptrace scope 0), which proves the Quit really landed there; passes only if the tracker is never destroyed under its tick and PixInsight exits 0. No Planetary module is loaded. `PICOPILOT_SO=` tests another build.
+
 ## Design & Increment 1 Scope
 
 Full specification: [`docs/superpowers/specs/2026-09-20-pi-copilot-native-pcl-design.md`](../../docs/superpowers/specs/2026-09-20-pi-copilot-native-pcl-design.md)
