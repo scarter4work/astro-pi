@@ -36,10 +36,14 @@ R_cal(f), the engine's honest ratio per END bin (the mean over every run), and t
 0.21-0.30 (tolerance): exp(mean -+ k s) of log R (s ddof 1; on log R since fix round 4, N3-m1), k the
 two-sided normal tolerance factor at 99 % coverage and 95 % confidence for n_eff = the number of SCENES
 (the scene, not the jitter or the pedestal, dominates the spread: review N2-m2).
-`calibrate --write` freezes it in bench/calibration.json.
+`calibrate --write` freezes it in bench/calibration.json, with the IDENTITY it was frozen against
+(identity.py: the engine's sources, the probes' sources and binaries, this procedure and its scene
+generators; Ruling F2). calibrate refuses stale probes (older than a source they are built from).
 What is guaranteed about real data: calibrate opens no capture (synthetic_frames only), and
 calibration.json is committed on its own, before the real-data run that uses it -- git history shows
-the order. What is NOT claimed: that the procedure predates real data. Earlier rounds read real
+the order. The bench enforces it: calibration_problems lists every way the frozen calibration does not
+describe what is in use (an identity part that differs or is missing, uncommitted changes to the file,
+stale probes), and bench.py report gives every stacked run NO VERDICT (unmeasured) while it is not empty. What is NOT claimed: that the procedure predates real data. Earlier rounds read real
 split-half ratios, and procedure changes followed real results: the global refinement in
 refined_difference after Mars's real x10.3 (review N2-m7); the photon-transfer fit's free intercept
 after a through-origin refit read Mars's real END ratio as 0.950 (re-review 3 N3-m2); the tile shifts,
@@ -67,6 +71,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import benchset  # noqa: E402
+import identity  # noqa: E402
 import metric    # noqa: E402
 import noise     # noqa: E402
 import refs      # noqa: E402
@@ -96,6 +101,16 @@ def load_calibration(path=CALIBRATION_FILE):
     engine's honest measured / model ratio per END bin (r_cal) and the tolerance over 0.21-0.30."""
     with open(path) as fh:
         return json.load(fh)
+
+
+def calibration_problems(cal, used, path=CALIBRATION_FILE):
+    """Why the frozen calibration `cal` cannot judge with the identity in use `used` (identity.current),
+    worded; empty when it can (Ruling F2)."""
+    out = [f"calibration identity: {m}" for m in identity.mismatches(cal.get("identity"), used)]
+    if identity.git_dirty(path):
+        out.append(f"{os.path.basename(path)} has changes git has not committed (a freeze is a commit)")
+    out += [f"stale probe: {s}" for s in used.get("stale", [])]
+    return out
 
 
 def kind_of(capture_kind: str) -> str:
@@ -436,6 +451,10 @@ def _main(argv=None):
         n = split(a.video, (w, h), a.even, a.odd)
         print(f"even {n[0]} odd {n[1]} frames")
         return 0
+    ident = identity.current(a.stack_probe, a.region_probe)
+    if ident["stale"]:
+        print("calibrate: refusing stale probes -- rebuild them first: " + "; ".join(ident["stale"]), file=sys.stderr)
+        return 1
     res = calibrate(a.work, a.stack_probe, a.region_probe)
     kinds = {}
     for kind in ("disc", "lunar"):
@@ -460,6 +479,7 @@ def _main(argv=None):
             json.dump({"generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                        "by": "halves.py calibrate: synthetic captures only (synthetic_frames), the engine's stack-probe "
                              "and stack-region-probe, the MEASURED photon-transfer line; no real capture is read",
+                       "identity": {p: ident[p] for p in identity.PARTS},
                        "coverage": COVERAGE, "confidence": CONFIDENCE, "bins": "END_EDGES bins, then 0.40-0.50",
                        "kinds": kinds}, fh, indent=1)
         print(f"wrote {a.write}")

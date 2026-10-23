@@ -7,7 +7,7 @@
 #
 # For each run of `bench.py plan` (every benchmark capture, stacked RGGB) it stacks the video with
 # stack-probe at the run's Bayer pattern into test/output/bench/<run>/ (ours.fits, probe.json,
-# probe.log, wall.txt, source.txt), then -- the split-half check of END's noise model (Ruling P28,
+# probe.log, wall.txt, source.txt, identity.json: what it was stacked with, bench/identity.py), then -- the split-half check of END's noise model (Ruling P28,
 # validation only) -- the capture's even and odd frames separately (halves.py split -> two SER files
 # in PLANETARY_BENCH_STAGE, or the run's directory, deleted afterwards; halfA/halfB .fits/.json/.log
 # kept). For ours and for each half, stack-region-probe --plan-only --keff-box computes our noise-power
@@ -66,6 +66,13 @@ if [ -n "$STAGE" ]; then
     case "$(realpath "$STAGE")" in /mnt/qnap*) echo "FAIL: PLANETARY_BENCH_STAGE must be local, not on the NAS"; exit 1 ;; esac
 fi
 mkdir -p "$OUT"
+# The identity the runs are stacked with (bench/identity.py, Ruling F2): recorded in each run's
+# identity.json; bench.py report refuses to judge a run stacked with another, or against a calibration
+# frozen with another. Stale probes (older than a source they are built from) are refused here.
+IDENT="$("$PY" -I "$BENCH/identity.py" --stack-probe "$PROBE" --region-probe "$RPROBE")" \
+    || { echo "FAIL: identity.py"; exit 1; }
+STALE="$(jq -r '.stale[]' <<<"$IDENT")"
+[ -z "$STALE" ] || { echo "FAIL: stale probes -- rebuild them (cmake --build modules/planetary/build): $STALE"; exit 1; }
 
 PLAN="$("$PY" -I "$BENCH/bench.py" plan)" || { echo "FAIL: bench.py plan"; exit 1; }
 status=0
@@ -111,6 +118,7 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
         rc=$?
         t1=$(date +%s.%N)
         echo "$t0 $t1" | awk '{printf "%.3f\n", $2 - $1}' >"$dir/wall.txt"
+        printf '%s\n' "$IDENT" >"$dir/identity.json"
         # Our noise-power k over the compare box (END's budget, Ruling P28): the region probe repeats the
         # engine's plan; bench.py report checks its kept counts against probe.json.
         keff_for() {   # <video> <stack.fits> <out.json> <box-command...>
@@ -153,6 +161,6 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
     done <<<"$PLAN"
 fi
 
-"$PY" -I "$BENCH/bench.py" report "$OUT" "${ONLY[@]}" || status=1
+"$PY" -I "$BENCH/bench.py" report --stack-probe "$PROBE" --region-probe "$RPROBE" "$OUT" "${ONLY[@]}" || status=1
 echo "summary: $OUT/summary.md"
 exit $status

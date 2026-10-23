@@ -1,6 +1,13 @@
 {
  "generated": "2026-10-23T14:41:09-04:00",
  "by": "halves.py calibrate: synthetic captures only (synthetic_frames), the engine's stack-probe and stack-region-probe, the MEASURED photon-transfer line; no real capture is read",
+ "identity": {
+  "engine": "ed9447cd276bc1d8408252643849b88ea7673b20b63b82ab116e2cfab9f7c9a4",
+  "probe_sources": "55be837e360c3791e265e0ded1fd6896d762eacfeb36f5aa457c449e1bc7c19c",
+  "procedure": "553d93bb97c79c466b0e7fb1f60c794ef99e3630ca4708fc3de0c211771e50a5",
+  "probe_binaries": null,
+  "backfilled": "recomputed at 862a0cd9 (identity.py --at 862a0cd9) for the freeze made there; the probe binaries were not recorded then, so this calibration can judge no run (Ruling F2)"
+ },
  "coverage": 0.99,
  "confidence": 0.95,
  "bins": "END_EDGES bins, then 0.40-0.50",

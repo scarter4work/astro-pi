@@ -34,6 +34,15 @@ numeric pass is sound and a numeric fail is not unless the reference is known to
               tolerance, no review note. Scott's side-by-side is still the spec's final word.
 DAN_full / DAN_interior stay in every table as secondary figures; they decide nothing.
 
+IDENTITY (Ruling F2; final review, bench I1). Freeze-before-use is enforced, not assumed. report takes
+the identity in use (identity.current: the engine's and the probes' sources, the probe binaries, the
+calibration procedure) and gives a run NO VERDICT -- unmeasured, with every reason -- when the frozen
+calibration does not describe it (halves.calibration_problems: an identity part that differs or is
+missing, calibration.json not committed as it stands, a stale probe), or when the run's directory was
+stacked with another identity (its identity.json, written by run-stack-bench.sh; missing = unknown).
+Every compare.json carries the identity it was judged with and the calibration's; summary.md prints
+both, and flags a record kept from an earlier report whose identity is not the one in use.
+
 SPLIT HALVES (Ruling P28 rule 3). When run-stack-bench.sh stacked the capture's even and odd frames
 separately (halfA/halfB .fits, .json, .keff.json in the run's directory, both k over A's box),
 report compares their difference with END's model for it (halves.check) against the kind's frozen
@@ -68,6 +77,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import benchset  # noqa: E402
+import identity  # noqa: E402
 import metric    # noqa: E402
 import refs      # noqa: E402
 from metric import Box  # noqa: E402
@@ -385,11 +395,51 @@ def _load_json(path):
         return json.load(fh)
 
 
-def report_run(run: Run, run_dir: str) -> dict:
+@dataclass
+class Context:
+    """What a report judges with (IDENTITY in the module doc): the identity in use, the frozen
+    calibration and why it cannot judge (empty: it can)."""
+    used: dict
+    calibration: dict
+    calibration_problems: List[str]
+
+    @staticmethod
+    def make(stack_probe=None, region_probe=None) -> "Context":
+        import halves
+        used = identity.current(stack_probe, region_probe)
+        cal = halves.load_calibration()
+        return Context(used, cal, halves.calibration_problems(cal, used))
+
+    def stamp(self, rec: dict) -> dict:
+        rec["identity"] = {p: self.used.get(p) for p in identity.PARTS}
+        rec["calibration_identity"] = self.calibration.get("identity")
+        rec["calibration_generated"] = self.calibration.get("generated")
+        return rec
+
+    def run_problems(self, run_dir: str) -> List[str]:
+        """Why the run's stacks were not made with the identity in use (its identity.json)."""
+        path = os.path.join(run_dir, "identity.json")
+        stacked = _load_json(path) if os.path.exists(path) else None
+        return [f"the run was stacked with another identity: {m}" for m in identity.mismatches(stacked, self.used)]
+
+
+def _no_verdict(rec: dict, problems: List[str]) -> dict:
+    """A record judged against a calibration or stacks that do not describe the engine in use: NO VERDICT."""
+    if problems:
+        was = rec.get("status")
+        rec["status"] = "unmeasured"
+        rec["reasons"] = (["NO VERDICT -- " + "; ".join(problems) + (f" (the numbers alone would say {was})" if was else "")]
+                          + list(rec.get("reasons", [])))
+    return rec
+
+
+def report_run(run: Run, run_dir: str, ctx: Optional[Context] = None) -> dict:
     """compare.json (+ side-by-side.png) for one stacked run; the diagnosis check for a diagnosis
-    run. Returns the record summary.md is built from."""
+    run. Returns the record summary.md is built from. ctx: what it is judged with (Context.make() when
+    None)."""
+    ctx = ctx or Context.make()
     probe_path = os.path.join(run_dir, "probe.json")
-    rec = {"run": run.id, "capture": run.capture, "bayer": run.bayer, "expect": run.expect, "note": run.note}
+    rec = ctx.stamp({"run": run.id, "capture": run.capture, "bayer": run.bayer, "expect": run.expect, "note": run.note})
     if not os.path.exists(probe_path):
         rec["status"] = "not run"
         return rec
@@ -401,18 +451,17 @@ def report_run(run: Run, run_dir: str) -> dict:
     src = os.path.join(run_dir, "source.txt")
     rec["source"] = open(src).read().strip() if os.path.exists(src) else None
     kind = probe["diagnosis"]["kind"]
+    run_problems = ctx.run_problems(run_dir)
     if run.expect != "stack":
         rec["status"] = "pass" if kind == run.expect else "fail"
         rec["reasons"] = [f"diagnosis {kind} (expected {run.expect}): {probe['diagnosis']['message']}"]
         rec["image_written"] = probe.get("output") is not None
-        with open(os.path.join(run_dir, "compare.json"), "w") as fh:
-            json.dump(rec, fh, indent=1)
-        return rec
+        return _write_record(_no_verdict(rec, run_problems), run_dir)
     ours = os.path.join(run_dir, "ours.fits")
     if kind != "None" or not os.path.exists(ours):
         rec["status"] = "fail"
         rec["reasons"] = [f"no stack: diagnosis {kind}: {probe['diagnosis']['message']}"]
-        return rec
+        return _write_record(_no_verdict(rec, run_problems), run_dir)
     c = benchset.by_id(run.capture)
     import noise
     try:
@@ -433,10 +482,17 @@ def report_run(run: Run, run_dir: str) -> dict:
     dicts = refs.rows_to_dicts(rows)
     rec["rows"] = dicts
     rec["status"], rec["reasons"] = status_of(dicts, run.id, sh)
+    _no_verdict(rec, ctx.calibration_problems + run_problems)
     rec["side_by_side"] = os.path.join(run_dir, "side-by-side.png")
     rec.update(side_by_side(run, rows, dicts, probe, ours, rec["side_by_side"], rec["status"]))
-    with open(os.path.join(run_dir, "compare.json"), "w") as fh:
-        json.dump(rec, fh, indent=1)
+    return _write_record(rec, run_dir)
+
+
+def _write_record(rec: dict, run_dir: str) -> dict:
+    """compare.json: every record a report makes is kept, whatever its status (final review, bench I2)."""
+    if os.path.isdir(run_dir):
+        with open(os.path.join(run_dir, "compare.json"), "w") as fh:
+            json.dump(rec, fh, indent=1)
     return rec
 
 
@@ -468,9 +524,16 @@ def _pair(full, inner):
     return f"{_f(full, '{:.3f}')} / {_f(inner, '{:.3f}')}"
 
 
-def summary_md(records: List[dict]) -> str:
+def _identity_text(ident) -> str:
+    if not ident:
+        return "none recorded"
+    return ", ".join(f"{p} {identity._short(ident.get(p))}" for p in identity.PARTS)
+
+
+def summary_md(records: List[dict], ctx: Optional[Context] = None) -> str:
     import halves
-    cal = halves.load_calibration()["kinds"]
+    ctx = ctx or Context.make()
+    cal = ctx.calibration["kinds"]
     AGREEMENT_TEXT = "; ".join(f"{k} {v['tolerance'][0]:.2f}-{v['tolerance'][1]:.2f} x" for k, v in cal.items())
     out = ["# PlanetaryStack benchmark -- ours vs AutoStakkert (AS) and ASIStudio (ASI)", "",
            "Generated by `test/run-stack-bench.sh` (bench.py report). Every colour capture is stacked "
@@ -502,19 +565,33 @@ def summary_md(records: List[dict]) -> str:
     counts = {s: sum(1 for r in stacked if r["status"] == s) for s in kinds}
     out.append("Stacked runs: " + ", ".join(f"{counts[k]} {k}" for k in kinds if counts[k] or k in kinds[:3]) + ".")
     out.append("")
+    # Ruling F2: what this report judged with, and whether the frozen calibration describes it.
+    out.append(f"Judged with: {_identity_text(ctx.used)}. Calibration frozen {ctx.calibration.get('generated')} "
+               f"against: {_identity_text(ctx.calibration.get('identity'))}.")
+    if ctx.calibration_problems:
+        out.append("")
+        out.append("**NO VERDICT on any stacked run: the calibration does not describe what is in use** -- "
+                   + "; ".join(ctx.calibration_problems) + ".")
+    stale = [r["run"] for r in records if r.get("stale")]
+    if stale:
+        out.append("")
+        out.append(f"**{len(stale)} record(s) kept from an earlier report were judged with another identity or "
+                   f"calibration** ({', '.join(stale)}): their status stands until they are reported again.")
+    out.append("")
     out.append("| Run | Bayer | Frames used | k ours: box (mean kept) | Time s (wall) | Peak RSS MB | END_full ours / AS / ASI | "
                "END_interior ours / AS / ASI | END ratio full / int | mean-kept k: ratio full / int | Split halves | "
                "DAN ratio full / int (secondary) | Status | Notes |")
     out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in stacked:
+        flag = " (stale)" if r.get("stale") else ""
         if r["status"] in ("not run", "error") or "rows" not in r:
-            out.append(f"| {r['run']} | {r['bayer']} | - | - | - | - | - | - | - | - | - | - | **{r['status']}** | "
-                       f"{'; '.join(r.get('reasons', []))} |")
+            out.append(f"| {r['run']} | {r['bayer']} | - | - | - | - | - | - | - | - | - | - | **{r['status']}**{flag} | "
+                       f"{'; '.join(list(r.get('stale', [])) + list(r.get('reasons', [])))} |")
             continue
         p, rows, o = r["probe"], r["rows"], r["rows"][0]
         a, s = _best(rows, "AS", "end"), _best(rows, "ASI", "end")
         ai, si = _best(rows, "AS", "end_interior"), _best(rows, "ASI", "end_interior")
-        notes = list(r["reasons"]) + ([r["note"]] if r["note"] else [])
+        notes = list(r.get("stale", [])) + list(r["reasons"]) + ([r["note"]] if r["note"] else [])
         sh = r.get("split_half") or {}
         split = (f"{sh['status']} x{sh['judged']['high']:.2f}" if sh.get("status") in ("agrees", "outside")
                  else sh.get("status", "not stacked"))
@@ -527,7 +604,7 @@ def summary_md(records: List[dict]) -> str:
             f"{_f(si and si['end_interior'], '{:.2f}')} | {_pair(o['end_ratio'], o['end_interior_ratio'])} | "
             f"{_pair(o['end_alt_ratio'], o['end_interior_alt_ratio'])} | {split} | "
             f"{_pair(o['ratio_to_best_reference'], o['interior_ratio_to_best_reference'])} | "
-            f"**{r['status']}** | {'; '.join(notes)} |")
+            f"**{r['status']}**{flag} | {'; '.join(notes)} |")
     out += ["", "## Every image", "",
             "Per image: its frame count k (references: stacking percentage x the capture's frames -- "
             "AutoStakkert's global percentage, approximate per alignment point), the noise budget "
@@ -580,34 +657,54 @@ def summary_md(records: List[dict]) -> str:
             continue
         dg = r["probe"]["diagnosis"]
         nums = ", ".join(f"{k} {v}" for k, v in dg["numbers"].items())
+        why = list(r.get("stale", [])) + ([r["reasons"][0]] if r["status"] == "unmeasured" and r.get("reasons") else [])
         out.append(f"| {r['run']} | {r['expect']} | {dg['kind']} | {'yes' if r['image_written'] else 'no'} | "
-                   f"**{r['status']}** | {dg['message']}{' (' + nums + ')' if nums else ''} |")
+                   f"**{r['status']}**{' (stale)' if r.get('stale') else ''} | {dg['message']}{' (' + nums + ')' if nums else ''}"
+                   f"{' -- ' + '; '.join(why) if why else ''} |")
     out.append("")
     return "\n".join(out)
 
 
-def report(out_dir: str, only: Sequence[str] = ()) -> List[dict]:
+def stale_record(rec: dict, ctx: Context) -> List[str]:
+    """Why a record kept from an earlier report was not judged with what is in use now (its identity
+    or its calibration's): it stands, flagged, until its run is reported again."""
+    out = [f"judged with another identity: {m}" for m in identity.mismatches(rec.get("identity"), ctx.used)]
+    if rec.get("calibration_identity") != ctx.calibration.get("identity"):
+        out.append(f"judged with another calibration (frozen {rec.get('calibration_generated') or 'unknown'}, "
+                   f"now {ctx.calibration.get('generated')})")
+    return out
+
+
+def report(out_dir: str, only: Sequence[str] = (), ctx: Optional[Context] = None) -> List[dict]:
+    """Every run's record, then summary.md. `only`: report these runs again; every other run keeps its
+    last record (its compare.json, written on every path -- a fail, an error, a diagnosis), flagged
+    when it was judged with another identity or calibration, so a partial re-report never erases a
+    verdict (final review, bench I2). A run with no record at all is "not run"."""
+    ctx = ctx or Context.make()
     records = []
     for run in plan():
         run_dir = os.path.join(out_dir, run.id)
         cached = os.path.join(run_dir, "compare.json")
-        if only and run.id not in only and os.path.exists(cached):
-            records.append(_load_json(cached))
-            continue
         if only and run.id not in only:
-            records.append({"run": run.id, "capture": run.capture, "bayer": run.bayer, "expect": run.expect,
-                            "note": run.note, "status": "not run"})
+            if os.path.exists(cached):
+                rec = _load_json(cached)
+                rec["stale"] = stale_record(rec, ctx)
+            else:
+                rec = {"run": run.id, "capture": run.capture, "bayer": run.bayer, "expect": run.expect,
+                       "note": run.note, "status": "not run"}
+            records.append(rec)
             continue
         try:
-            rec = report_run(run, run_dir)
+            rec = report_run(run, run_dir, ctx)
         except Exception as e:          # a harness failure is a row, loudly, not a missing row
-            rec = {"run": run.id, "capture": run.capture, "bayer": run.bayer, "expect": run.expect,
-                   "note": run.note, "status": "error", "reasons": [f"{type(e).__name__}: {e}"]}
+            rec = _write_record(ctx.stamp({"run": run.id, "capture": run.capture, "bayer": run.bayer, "expect": run.expect,
+                                           "note": run.note, "status": "error", "reasons": [f"{type(e).__name__}: {e}"]}),
+                                run_dir)
             print(f"ERROR {run.id}: {type(e).__name__}: {e}", file=sys.stderr)
         records.append(rec)
         print(f"{run.id}: {rec['status']}" + (f" -- {'; '.join(rec.get('reasons', []))}" if rec.get("reasons") else ""))
     with open(os.path.join(out_dir, "summary.md"), "w") as fh:
-        fh.write(summary_md(records))
+        fh.write(summary_md(records, ctx))
     return records
 
 
@@ -625,6 +722,8 @@ def _main(argv=None):
     r = sub.add_parser("report")
     r.add_argument("out_dir")
     r.add_argument("runs", nargs="*")
+    r.add_argument("--stack-probe", default=identity.DEFAULT_PROBES[0], help="the stack-probe the runs were stacked with")
+    r.add_argument("--region-probe", default=identity.DEFAULT_PROBES[1], help="the stack-region-probe likewise")
     a = ap.parse_args(argv)
     if a.cmd == "box":
         b = benchset.compare_capture(run_by_id(a.run).capture, a.ours)[0].result.box
@@ -643,7 +742,7 @@ def _main(argv=None):
             w, h = benchset.by_id(run.capture).size
             print("\t".join((run.id, run.capture, run.bayer, run.expect, run.video, f"{w}x{h}")))
         return 0
-    records = report(a.out_dir, a.runs)
+    records = report(a.out_dir, a.runs, Context.make(a.stack_probe, a.region_probe))
     return 1 if any(r["status"] == "error" for r in records) else 0
 
 
