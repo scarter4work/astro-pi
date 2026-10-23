@@ -803,6 +803,48 @@ TEST_CASE("PlanMemory counts the noise model's scratch: the quality's variance a
     CHECK(s.noiseWorkerBytes == 2 * 4096 + 4 * 4096 + 37 * 60 * 60 + 65536);
 }
 
+TEST_CASE("PlanMemory counts what grows with frames x regions: the measurements, the plan (held once), PlanRegions' scratch (final review, engine M3)",
+          "[engine]") {
+    ser::FileInfo info;
+    info.header.width = 3840;
+    info.header.height = 2160;
+    info.colorId = ser::ColorId::Mono;
+    info.normDepth = 16;
+    info.planes = 1;
+    info.bytesPerSample = 2;
+    info.frameCount = 10000;
+    // The largest 4K mono layout: kMaxRegionSize windows at half overlap over the whole frame.
+    const size_t regions = 59 * 33;
+    const stack::MemoryPlan before = stack::PlanMemory(info, 32), p = stack::PlanMemory(info, 32, regions);
+    // Before the layout is placed only the per-frame parts are counted.
+    CHECK(before.measureStoreBytes == 10000 * (2 * sizeof(stack::FrameRegions) + sizeof(stack::Shift) + 2));
+    CHECK(before.planBytes == 10000 * (sizeof(int64_t) + sizeof(stack::Shift) + sizeof(float) + 1));
+    CHECK(before.planScratchBytes == 0);
+    // The per-entry sizes the comments quote, measured.
+    CHECK(sizeof(stack::RegionMeasure) == 28);
+    CHECK(p.measureStoreBytes ==
+          10000 * (regions * sizeof(stack::RegionMeasure) + 2 * sizeof(stack::FrameRegions) + sizeof(stack::Shift) + 2));
+    CHECK(p.measureStoreBytes >= 545000000);  // 10 000 x 1947 x 28 = 545 MB
+    CHECK(p.planBytes >= 10000 * regions * 9);  // 175 MB
+    CHECK(p.planScratchBytes == 6 * 8 * 10000);
+    // The real storage of one frame's measurements: its FrameRegions and the region array it owns.
+    std::vector<stack::FrameRegions> real(2);
+    for (auto& f : real) f.regions.resize(regions);
+    size_t realBytes = real.capacity() * sizeof(stack::FrameRegions);
+    for (const auto& f : real) realBytes += f.regions.capacity() * sizeof(stack::RegionMeasure);
+    CHECK(realBytes <= 2 * (regions * sizeof(stack::RegionMeasure) + 2 * sizeof(stack::FrameRegions)));
+    // Counted, they cap the alignment pass's workers and keep the peak within the budget; measuring is unchanged.
+    CHECK(p.measureWorkers == before.measureWorkers);
+    CHECK(p.alignWorkers < before.alignWorkers);
+    CHECK(p.peakBytes > before.peakBytes);
+    CHECK(p.peakBytes <= stack::kMemoryBudget);
+    for (int threads : {1, 8, 64, 256}) {
+        const stack::MemoryPlan q = stack::PlanMemory(info, threads, regions);
+        INFO(threads << " threads: peak " << q.peakBytes);
+        CHECK(q.peakBytes <= stack::kMemoryBudget);
+    }
+}
+
 TEST_CASE("RunStack opens no more readers at once than the memory plan's workers", "[engine]") {
     const Capture cap = DiscCapture(112, 96, 55.6, 48.3, 22, 50, 43);
     for (int threads : {1, 3, 8}) {

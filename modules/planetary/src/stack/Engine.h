@@ -110,10 +110,19 @@ constexpr int kHotPixelFrames = 64;
 //    ~16 bytes per luma px, ~130 MB on 4K mono), freed before the alignment pass.
 //  - The focus measure: its kFocusFrames luma frames (focusBytes; 4K mono 531 MB), held after the
 //    residual scale is computed and its observers released, so never beside them.
-// Not in the plan (they grow with the frame count, not the frame size, and are small): the frame
-// statistics (~100 bytes per frame), the per-frame region measurements (20 bytes per frame and region,
-// held from the alignment pass to PlanRegions) and the plan (9 bytes per frame and region) -- 4000
-// frames x 324 regions: 26 + 12 MB.
+//  - What grows with frames x regions (final review, engine M3), planned once the layout is placed
+//    (PlanMemory's `regions`; frames: the capture's, an upper bound on the alignment pass's):
+//    measureStoreBytes, the alignment pass's region measurements -- sizeof(RegionMeasure) per frame and
+//    region plus per frame its FrameRegions (twice: the pass's array and the frames kept), Shift and two
+//    flags -- held from the pass, beside its workers and observers, to PlanRegions; planBytes, the plan --
+//    two floats and a flag per frame and region (local shift, flags) plus per frame its index, Shift, gain
+//    and stacked flag, and per region its detail and window -- held from PlanRegions to the end of the
+//    stack, once (the Accumulator takes it by move); planScratchBytes, PlanRegions' per-region arrays (six
+//    of 8 bytes per frame) on each of its workers. A 4K mono surface places up to 59 x 33 = 1947 regions
+//    (kMaxRegionSize, half overlap): at 10 000 frames 545 MB of measurements and 175 MB of plan (unit test
+//    "PlanMemory counts what grows with frames x regions"), so the alignment pass's workers are capped to
+//    fit beside them. The per-frame statistics (sizeof(FrameStats) per frame) are counted with them.
+// After Finish the shared HotPixelMap holds only its sites (Accumulate.h), not 2 bytes per sample.
 constexpr size_t kMemoryBudget = 4000000000ull;
 constexpr size_t kResidualBudget = 512000000ull;
 constexpr size_t kWorkerScratchBytes = 8u << 20;
@@ -126,13 +135,18 @@ struct MemoryPlan {
     size_t noiseWorkerBytes = 0;  // one noise-phase worker (FitNoiseModel), within measureWorkerBytes
     size_t fixedBytes = 0;             // Accumulator sums, reference, residual scale
     size_t focusBytes = 0;             // the focus measure's kFocusFrames luma frames
+    // Frames x regions (see above; before the layout is placed, the per-frame parts only): the alignment
+    // pass's measurements, the plan, and PlanRegions' scratch per worker.
+    size_t measureStoreBytes = 0, planBytes = 0, planScratchBytes = 0;
     // The largest of the three passes' totals (fixed + observers + workers): what the engine itself holds
     // at its peak, beside the program's own code and the reader's buffers.
     size_t peakBytes = 0;
 };
 // Deterministic; threads < 1 counts as 1. Every count is at least 1, so a frame too large for the
 // budget still stacks on one worker (peakBytes then exceeds kMemoryBudget and says by how much).
-MemoryPlan PlanMemory(const ser::FileInfo& info, int threads);
+// regions: the layout's region count once placed (RunStack plans again with it before the alignment
+// pass); 0 counts the per-frame parts of that storage only. The measuring workers do not depend on it.
+MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions = 0);
 
 // ---- Hot-pixel repair as a reader -----------------------------------------------------------------
 

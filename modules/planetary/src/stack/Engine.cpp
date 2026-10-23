@@ -678,7 +678,7 @@ int64_t UnalignedBelow(int64_t frames, int64_t selected) {
     return std::max<int64_t>(1, std::min<int64_t>(need, (std::max<int64_t>(0, selected) + 1) / 2));
 }
 
-MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
+MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     threads = std::max(1, threads);
     const int scale = static_cast<int>(LumaScale(info));
     const size_t w = static_cast<size_t>(std::max(0, info.header.width));
@@ -714,6 +714,13 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
     // shared by the layout's copies) and the Accumulator's samples of it (4 per kWarpGrid^2 px: at most 1 per luma px).
     const size_t lumaImages = 29 * lumaPx;
     p.fixedBytes = 8 * (outSamples + px) + lumaImages;
+    // Frames x regions (Engine.h). The per-frame statistics are held for the whole run.
+    const size_t frames = static_cast<size_t>(std::max<int64_t>(0, info.frameCount));
+    const size_t statsBytes = frames * sizeof(FrameStats);
+    p.measureStoreBytes = frames * (regions * sizeof(RegionMeasure) + 2 * sizeof(FrameRegions) + sizeof(Shift) + 2);
+    p.planBytes = frames * (regions * (2 * sizeof(float) + 1) + sizeof(int64_t) + sizeof(Shift) + sizeof(float) + 1) +
+                  regions * (sizeof(RegionDetail) + sizeof(Region) + sizeof(int));
+    p.planScratchBytes = regions > 0 ? 6 * sizeof(double) * frames : 0;
 
     auto fit = [&](size_t avail, size_t each) {
         if (each == 0) return threads;
@@ -721,18 +728,22 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
         return static_cast<int>(std::clamp<size_t>(n, 1, static_cast<size_t>(threads)));
     };
     auto rest = [](size_t total, size_t used) { return total > used ? total - used : 0; };
-    p.measureWorkers = fit(kMemoryBudget, p.measureWorkerBytes);
-    p.alignWorkers = fit(rest(kMemoryBudget, kResidualBudget + lumaImages), p.alignWorkerBytes);
+    p.measureWorkers = fit(rest(kMemoryBudget, statsBytes), p.measureWorkerBytes);
+    // The alignment pass's workers share the budget with the observers and the measurements they fill;
+    // PlanRegions' with the observers (released after it), the measurements and the plan it builds.
+    const size_t alignFixed = statsBytes + lumaImages + p.measureStoreBytes;
+    p.alignWorkers = fit(rest(kMemoryBudget, kResidualBudget + alignFixed), p.alignWorkerBytes);
     p.observers = static_cast<int>(
         std::clamp<size_t>(p.observerBytes ? kResidualBudget / p.observerBytes : 1, 1, static_cast<size_t>(p.alignWorkers)));
-    p.stackWorkers = fit(rest(kMemoryBudget, p.fixedBytes), p.stackWorkerBytes);
-    const size_t measurePeak = p.measureWorkers * p.measureWorkerBytes;
-    const size_t alignPeak = lumaImages + p.observers * p.observerBytes + p.alignWorkers * p.alignWorkerBytes;
-    const size_t stackPeak = p.fixedBytes + p.stackWorkers * p.stackWorkerBytes;
+    p.stackWorkers = fit(rest(kMemoryBudget, statsBytes + p.fixedBytes + p.planBytes), p.stackWorkerBytes);
+    const size_t measurePeak = statsBytes + p.measureWorkers * p.measureWorkerBytes;
+    const size_t alignPeak = alignFixed + p.observers * p.observerBytes + p.alignWorkers * p.alignWorkerBytes;
+    const size_t planPeak = alignFixed + p.observers * p.observerBytes + p.planBytes + p.alignWorkers * p.planScratchBytes;
+    const size_t stackPeak = statsBytes + p.fixedBytes + p.planBytes + p.stackWorkers * p.stackWorkerBytes;
     // The focus measure holds its frames after the residual scale's observers are gone (RunStack).
     p.focusBytes = static_cast<size_t>(kFocusFrames) * 4 * lumaPx;
-    const size_t focusPeak = lumaImages + p.focusBytes;
-    p.peakBytes = std::max({measurePeak, alignPeak, stackPeak, focusPeak});
+    const size_t focusPeak = statsBytes + lumaImages + p.planBytes + p.focusBytes;
+    p.peakBytes = std::max({measurePeak, alignPeak, planPeak, stackPeak, focusPeak});
     return p;
 }
 
@@ -782,7 +793,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     StackSummary& sum = out.summary;
     sum.measured = n;
     sum.warnings = info.warnings;
-    sum.memory = PlanMemory(info, threads);
+    sum.memory = PlanMemory(info, threads);  // planned again once the regions are placed (below)
     const MemoryPlan& mem = sum.memory;
     auto step = [&](const char* name, Clock::time_point t0) { sum.phaseSeconds.emplace_back(name, Since(t0)); };
     auto finish = [&](StackOutcome o) {
@@ -857,6 +868,9 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     const GlobalAligner aligner(reference, sel.fullFrameTarget, scale);
     const FrameStats refStats = MeasureFrame(reference, 0, scale);
     const RegionLayout layout = PlaceRegions(reference, refStats, sel.fullFrameTarget, noise);
+    // The frames x regions storage (Engine.h) is known now: the alignment pass's workers are capped to fit
+    // beside it. The measuring pass, already run, does not depend on it.
+    sum.memory = PlanMemory(info, threads, layout.regions.size());
     const RegionMeasurer measurer(reference, layout);
     std::vector<Shift> shifts(static_cast<size_t>(nAlign));
     std::vector<FrameRegions> measured(static_cast<size_t>(nAlign));
@@ -935,7 +949,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     }
 
     t0 = Clock::now();
-    const RegionPlan plan = PlanRegions(layout, kept, mem.alignWorkers);
+    RegionPlan plan = PlanRegions(layout, kept, mem.alignWorkers);
     const int64_t nKept = static_cast<int64_t>(kept.size());
     kept = {};
     step("Planning regions", t0);
@@ -1005,7 +1019,6 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     // ---- Stacking ------------------------------------------------------------------------------------
     t0 = Clock::now();
-    Accumulator acc(plan, reference, residualSigma, info);
     std::vector<int64_t> stackList;
     for (size_t p = 0; p < plan.frames.size(); ++p)
         if (plan.stacked[p]) {
@@ -1015,6 +1028,8 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
                 keeping += (plan.flags[p * static_cast<size_t>(regions) + static_cast<size_t>(r)] & RegionPlan::kKept) != 0;
             out.frames.regionsKeeping.push_back(keeping);
         }
+    // The plan moves into the Accumulator: held once from here (PlanMemory's planBytes).
+    Accumulator acc(std::move(plan), reference, residualSigma, info);
     Phase stacking(progress, kPhaseStacking, static_cast<int64_t>(stackList.size()));
     stacking.Report(0);
     ForFrames(static_cast<int64_t>(stackList.size()), mem.stackWorkers, factory, info, stacking, 0,
@@ -1037,7 +1052,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     if (excluded > 0)
         line += "; " + Plural(excluded, "frame", "frames") + " could not be aligned (torn, shaken or not the target) and " +
                 (excluded == 1 ? "was" : "were") + " left out";
-    line += "; " + RegionPhrase(plan.detail, nKept, sum.used);
+    line += "; " + RegionPhrase(out.frames.regionDetail, nKept, sum.used);
     const double cells = static_cast<double>(sum.used) * static_cast<double>(info.header.width / static_cast<int>(scale)) *
                          static_cast<double>(info.header.height / static_cast<int>(scale));
     line += "; " + Num(cells > 0 ? 100.0 * static_cast<double>(sum.rejectedCells) / cells : 0.0, 3) +

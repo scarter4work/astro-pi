@@ -212,8 +212,9 @@ private:
 // sensor with drift and jitter and is not on one site that often).
 // Repair replaces it with the median of its same-colour neighbours. Observing ~50-100 frames spread
 // over the capture is enough (kMinHotFrames at least; fewer observed marks nothing). Memory per
-// instance: 2 bytes per sample (1080p mono 4 MB, 1080p RGB 12 MB), so one instance per worker,
-// merged, is cheap. Not thread-safe: one instance per thread, then Merge.
+// instance: 2 bytes per sample until Finish (1080p mono 4 MB, 1080p RGB 12 MB: 1920 x 1080 x 2 and x 6),
+// so one instance per worker, merged, is cheap; after Finish only the sites. Not thread-safe: one instance
+// per thread, then Merge.
 constexpr double kHotMin = 0.02;
 constexpr double kHotRatio = 0.9;
 constexpr double kHotShare = 0.8;
@@ -226,8 +227,12 @@ public:
     // A raw frame of the capture (std::invalid_argument on a size or channel mismatch).
     void Observe(const ser::Frame& frame);
     void Merge(const HotPixelMap& other);
-    // Decides the hot sites from the frames observed so far (call once, after the last Observe).
+    // Decides the hot sites from the frames observed so far, then releases the per-sample counts (so a
+    // finished map holds only its sites). Call after the last Observe and Merge (either afterwards is a
+    // std::logic_error); a second call does nothing.
     void Finish();
+    // Bytes held: the per-sample counts until Finish, the sites after.
+    size_t BytesHeld() const { return isolated_.capacity() * sizeof(uint16_t) + hot_.capacity() * sizeof(size_t); }
     // Hot sites (after Finish).
     size_t Count() const { return hot_.size(); }
     // Hot sample indices ((y * width + x) * channels + channel), ascending (after Finish).
@@ -238,20 +243,25 @@ public:
 
 private:
     int width_, height_, channels_, step_;
+    size_t samples_ = 0;              // per frame
+    bool finished_ = false;
     double fullScale_;
-    std::vector<uint16_t> isolated_;  // per sample: frames in which it stood alone
+    std::vector<uint16_t> isolated_;  // per sample: frames in which it stood alone (released by Finish)
     std::vector<size_t> hot_;         // sample indices
     int64_t frames_ = 0;
 };
 
 class Accumulator {
 public:
-    // plan: PlanRegions' result; reference: BuildReference's luma image; residualSigma: ResidualScale::
-    // Sigma (both the plan's luma size); info: the capture -- full-resolution size header.width x
-    // header.height, channels 3 for Bayer and RGB, 1 for mono; luma scale LumaScale(info).
+    // plan: PlanRegions' result, held for the Accumulator's life -- taken by value, so a caller done with it
+    // moves it in and its per-frame and per-region arrays are not held twice (RunStack does; final review,
+    // engine M3), while a caller that keeps using it passes a copy; reference: BuildReference's luma image;
+    // residualSigma: ResidualScale::Sigma (both the plan's luma size); info: the capture -- full-resolution
+    // size header.width x header.height, channels 3 for Bayer and RGB, 1 for mono; luma scale LumaScale(info).
     // Throws std::invalid_argument on any size mismatch or a plan without frames.
-    Accumulator(const RegionPlan& plan, const ser::FloatImage& reference, const ser::FloatImage& residualSigma,
+    Accumulator(RegionPlan plan, const ser::FloatImage& reference, const ser::FloatImage& residualSigma,
                 const ser::FileInfo& info);
+    const RegionPlan& Plan() const { return plan_; }
     ~Accumulator();
     Accumulator(const Accumulator&) = delete;
     Accumulator& operator=(const Accumulator&) = delete;

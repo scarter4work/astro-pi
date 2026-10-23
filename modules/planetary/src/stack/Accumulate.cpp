@@ -445,12 +445,14 @@ HotPixelMap::HotPixelMap(const ser::FileInfo& info) {
     if (width_ <= 0 || height_ <= 0) throw std::invalid_argument("HotPixelMap: empty frame size");
     if (info.normDepth < 1 || info.normDepth > 16) throw std::invalid_argument("HotPixelMap: depth outside 1..16");
     fullScale_ = std::pow(2.0, info.normDepth) - 1;
-    isolated_.assign(static_cast<size_t>(width_) * height_ * channels_, 0);
+    samples_ = static_cast<size_t>(width_) * height_ * channels_;
+    isolated_.assign(samples_, 0);
 }
 
 void HotPixelMap::Observe(const ser::Frame& frame) {
+    if (finished_) throw std::logic_error("HotPixelMap::Observe: after Finish");
     if (frame.width != width_ || frame.height != height_ || frame.channels != channels_ ||
-        frame.samples.size() != isolated_.size())
+        frame.samples.size() != samples_)
         throw std::invalid_argument("HotPixelMap::Observe: the frame does not match the capture");
     const int d = step_, C = channels_, W = width_;
     const double minExcess = kHotMin * fullScale_;
@@ -537,6 +539,7 @@ void HotPixelMap::Observe(const ser::Frame& frame) {
 }
 
 void HotPixelMap::Merge(const HotPixelMap& other) {
+    if (finished_ || other.finished_) throw std::logic_error("HotPixelMap::Merge: after Finish");
     if (other.isolated_.size() != isolated_.size()) throw std::invalid_argument("HotPixelMap::Merge: another capture");
     for (size_t k = 0; k < isolated_.size(); ++k)
         isolated_[k] = static_cast<uint16_t>(std::min<int>(65535, isolated_[k] + other.isolated_[k]));
@@ -544,17 +547,23 @@ void HotPixelMap::Merge(const HotPixelMap& other) {
 }
 
 void HotPixelMap::Finish() {
+    if (finished_) return;
+    finished_ = true;
     hot_.clear();
-    if (frames_ < kMinHotFrames) return;
-    const double need = kHotShare * static_cast<double>(frames_);
-    for (size_t k = 0; k < isolated_.size(); ++k)
-        if (isolated_[k] >= need) hot_.push_back(k);
+    if (frames_ >= kMinHotFrames) {
+        const double need = kHotShare * static_cast<double>(frames_);
+        for (size_t k = 0; k < isolated_.size(); ++k)
+            if (isolated_[k] >= need) hot_.push_back(k);
+    }
+    // The counts are not needed once the sites are decided: the map RunStack shares with every reader then
+    // holds only the sites, not 2 bytes per sample for the whole run (final review, engine M3).
+    std::vector<uint16_t>().swap(isolated_);
 }
 
 void HotPixelMap::Repair(ser::Frame& frame) const {
     if (hot_.empty()) return;
     if (frame.width != width_ || frame.height != height_ || frame.channels != channels_ ||
-        frame.samples.size() != isolated_.size())
+        frame.samples.size() != samples_)
         throw std::invalid_argument("HotPixelMap::Repair: the frame does not match the capture");
     const int d = step_, C = channels_, W = width_;
     // Neighbours are read from the frame as given: two hot sites next to each other (2 px apart in a
@@ -580,12 +589,12 @@ void HotPixelMap::Repair(ser::Frame& frame) const {
 
 // ---- Accumulator -----------------------------------------------------------------------------------
 
-Accumulator::Accumulator(const RegionPlan& plan, const ser::FloatImage& reference, const ser::FloatImage& residualSigma,
+Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, const ser::FloatImage& residualSigma,
                          const ser::FileInfo& info)
-    : plan_(plan) {
+    : plan_(std::move(plan)) {
     CheckLuma(reference, "Accumulator");
     CheckLuma(residualSigma, "Accumulator");
-    if (plan.frames.empty()) throw std::invalid_argument("Accumulator: the plan has no frames");
+    if (plan_.frames.empty()) throw std::invalid_argument("Accumulator: the plan has no frames");
     width_ = info.header.width;
     height_ = info.header.height;
     const bool bayer = ser::IsBayer(info.colorId);
@@ -596,7 +605,7 @@ Accumulator::Accumulator(const RegionPlan& plan, const ser::FloatImage& referenc
     lumaH_ = height_ / scale_;
     if (lumaW_ < 1 || lumaH_ < 1) throw std::invalid_argument("Accumulator: empty frame");
     if (reference.width != lumaW_ || reference.height != lumaH_ || residualSigma.width != lumaW_ ||
-        residualSigma.height != lumaH_ || plan.layout.width != lumaW_ || plan.layout.height != lumaH_)
+        residualSigma.height != lumaH_ || plan_.layout.width != lumaW_ || plan_.layout.height != lumaH_)
         throw std::invalid_argument("Accumulator: the reference, residual scale and plan must be the capture's luma size (" +
                                     std::to_string(lumaW_) + "x" + std::to_string(lumaH_) + ")");
     if (bayer) {

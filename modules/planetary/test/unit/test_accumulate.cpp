@@ -652,6 +652,48 @@ TEST_CASE("ResidualScale and Accumulator argument errors", "[accumulate]") {
     CHECK_THROWS_AS(stack::Accumulator(empty, ref, ref, testing::NewCapture(w, h).info), std::invalid_argument);
 }
 
+TEST_CASE("The Accumulator holds a moved-in plan without copying it; HotPixelMap releases its counts at Finish (final review, engine M3)",
+          "[accumulate]") {
+    const int w = 64, h = 48;
+    FloatImage im{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.4f)};
+    stack::RegionLayout none;
+    none.width = w;
+    none.height = h;
+    std::vector<FrameRegions> measured(3);
+    for (int k = 0; k < 3; ++k) measured[static_cast<size_t>(k)].frameIndex = k;
+    stack::RegionPlan plan = stack::PlanRegions(none, measured);
+    const int64_t* frames = plan.frames.data();
+    const stack::Accumulator moved(std::move(plan), im, im, testing::NewCapture(w, h).info);
+    CHECK(moved.Plan().frames.data() == frames);  // the same storage: moved, not copied
+    CHECK(moved.Plan().frames.size() == 3);
+    const stack::RegionPlan kept = stack::PlanRegions(none, measured);
+    const stack::Accumulator copied(kept, im, im, testing::NewCapture(w, h).info);  // an lvalue is copied
+    CHECK(copied.Plan().frames == kept.frames);
+    CHECK(copied.Plan().frames.data() != kept.frames.data());
+
+    const ser::FileInfo info = testing::NewCapture(w, h).info;
+    stack::HotPixelMap map(info);
+    CHECK(map.BytesHeld() >= static_cast<size_t>(w) * h * 2);  // 2 bytes per sample while observing
+    ser::Frame f;
+    f.width = w;
+    f.height = h;
+    f.channels = 1;
+    f.samples.assign(static_cast<size_t>(w) * h, 6000);
+    f.samples[static_cast<size_t>(20) * w + 30] = 40000;
+    for (int k = 0; k < 20; ++k) map.Observe(f);
+    map.Finish();
+    REQUIRE(map.Count() == 1);
+    CHECK(map.BytesHeld() < 64);  // only the site
+    ser::Frame g = f;
+    map.Repair(g);
+    CHECK(g.samples[static_cast<size_t>(20) * w + 30] == 6000);  // still repairs
+    CHECK_THROWS_AS(map.Observe(f), std::logic_error);
+    stack::HotPixelMap other(info);
+    CHECK_THROWS_AS(map.Merge(other), std::logic_error);
+    map.Finish();  // a second call does nothing
+    CHECK(map.Count() == 1);
+}
+
 TEST_CASE("B-spline resampling: exact at integer shifts, little softening at half a pixel", "[accumulate]") {
     const int w = 96, h = 40;
     auto stackOne = [&](double period, double shift) {
