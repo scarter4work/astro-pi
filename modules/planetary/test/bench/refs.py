@@ -533,7 +533,8 @@ RefSpec = Union[str, Tuple[str, Optional[float]]]
 def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
             anchor_label: Optional[str] = None, frame_size=None, frame_noise=None,
             anchor_frames: Optional[float] = None, capture_frames: Optional[int] = None,
-            anchor_frames_alt: Optional[float] = None) -> List[Row]:
+            anchor_frames_alt: Optional[float] = None,
+            anchor_frames_why: str = "our stack's effective frame count is unknown") -> List[Row]:
     """Measure the anchor (normally OUR stack: a path, (path, factor) or an array) and each
     reference (path, or (path, measured_factor)) with metric.measure on one common box, with
     DAN_interior on the anchor's interior window. Row 0 is the anchor. `frame_size` (w, h) of
@@ -583,34 +584,26 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     limbs += [metric.limb_sigma(metric.luminance(crop_registered(ref.image, reg, box))) for ref, reg in loaded]
     window = metric.interior_window(a_lum, box, limb=min(limbs))
 
-    budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior, sky) or a reason
-    a_kw = _end_kwargs(budget, anchor_frames, "our stack's effective frame count")
+    budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior) or a reason
+    a_kw = _end_kwargs(budget, anchor_frames, anchor_frames_why, note_is_reason=True)
     a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_kw.pop("measure"))
     alt = None
     if anchor_frames_alt is not None:
-        alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's alternative effective frame count")
+        alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's mean-kept-fraction frame count")
         alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_kw.pop("measure")), alt_kw)
     rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt)]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
         k = (ref.info.percent / 100.0 * capture_frames) if (ref.info.percent and capture_frames) else None
         kw = _end_kwargs(budget, k, f"{ref.info.label}'s stacking percentage x the capture's frames")
-        m = kw.pop("measure")
-        if "noise_power" in m and not mosaic:
-            # The reference's own sky, for the excess-noise check: its WHOLE image (the crop is mostly
-            # target). An unmeasurable sky leaves the judged END None (no fallback to the crop).
-            try:
-                m["sky_floor"] = metric.sky_noise_floor(ref.image)
-            except metric.SkyUnmeasurable as e:
-                m["sky_floor"] = f"{e}"
-        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window, **m)
+        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window,
+                           **kw.pop("measure"))
         rows.append(Row(ref.info.label, ref.path, ref.factor, reg, replace(_with_note(r, kw), box=box)))
     return rows
 
 
 def _noise_budget(frame_noise, a_lum, box, window, mosaic):
-    """(sigma_frame^2 on the box, on the interior window or None, at the sky's level), or the reason
-    there is none (a str)."""
+    """(sigma_frame^2 on the box, on the interior window or None), or the reason there is none (a str)."""
     if mosaic:
         return "mosaic fallback"
     if frame_noise is None:
@@ -623,19 +616,21 @@ def _noise_budget(frame_noise, a_lum, box, window, mosaic):
         raw = noise.raw_under(raw_mean, a_lum, box)
         s2 = noise.box_noise(ptc, raw)
         s2_int = noise.box_noise(ptc, raw, window.window) if window.judged else None
-        return s2, s2_int, noise.sky_noise(ptc, raw)
+        return s2, s2_int
     except noise.NoiseUnmeasurable as e:
         return f"per-frame noise unmeasurable on the box: {e}"
 
 
-def _end_kwargs(budget, frames, what):
-    """metric.measure keyword arguments for END, plus 'k' and a 'note' when END cannot be had."""
+def _end_kwargs(budget, frames, what, note_is_reason=False):
+    """metric.measure keyword arguments for END, plus 'k' and a 'note' when END cannot be had. `what`
+    names the frame count (or, with note_is_reason, is already the reason it is missing)."""
     if isinstance(budget, str):
         return {"measure": {}, "k": frames, "note": f"END not computed: {budget}"}
     if not frames or not frames > 0:
-        return {"measure": {}, "k": frames, "note": f"END not computed: {what} is unknown"}
-    s2, s2_int, s2_sky = budget
-    m = {"noise_power": s2 / frames, "sky_noise_power": s2_sky / frames}
+        return {"measure": {}, "k": frames,
+                "note": f"END not computed: {what}" + ("" if note_is_reason else " is unknown")}
+    s2, s2_int = budget
+    m = {"noise_power": s2 / frames}
     if s2_int is not None:
         m["noise_power_interior"] = s2_int / frames
     return {"measure": m, "k": frames, "note": None}
@@ -691,8 +686,6 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
     notes = review_notes(rows)
     e_full, ok_full = _ratios(rows, "end")
     e_int, ok_int = _ratios(rows, "end_interior")
-    p_full, _ = _ratios(rows, "end_pure")
-    p_int, _ = _ratios(rows, "end_interior_pure")
     out = []
     for i, r in enumerate(rows):
         g, res = r.registration, r.result
@@ -702,10 +695,7 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
             "label": r.label, "path": r.path, "factor": r.factor,
             "end": res.end, "end_ratio": e_full[i],
             "end_interior": res.end_interior, "end_interior_ratio": e_int[i],
-            "end_pure": res.end_pure, "end_pure_ratio": p_full[i],
-            "end_interior_pure": res.end_interior_pure, "end_interior_pure_ratio": p_int[i],
-            "end_frames": res.end_frames, "end_noise": res.end_noise, "end_noise_budget": res.end_noise_budget,
-            "end_excess": res.end_excess, "end_sky_tiles": res.end_sky_tiles,
+            "end_frames": res.end_frames, "end_noise_budget": res.end_noise_budget,
             "end_snr": list(res.end_snr) if res.end_snr else None, "end_note": res.end_note,
             "end_complete": ok_full and (ok_int or not res.interior_judged),
             "end_alt": r.alt.end if r.alt else None, "end_alt_frames": r.alt.end_frames if r.alt else None,

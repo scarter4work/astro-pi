@@ -10,7 +10,8 @@
 # probe.log, wall.txt, source.txt), then -- the split-half check of END's noise model (Ruling P28,
 # validation only) -- the capture's even and odd frames separately (halves.py split -> two SER files
 # in PLANETARY_BENCH_STAGE, or the run's directory, deleted afterwards; halfA/halfB .fits/.json/.log
-# kept). Then `bench.py report` measures ours, AS and ASI (END, the judged metric; DAN, secondary),
+# kept). For ours and for each half, stack-region-probe --plan-only --keff-box computes our noise-power
+# frame count over the box (keff.json, halfA/halfB.keff.json): END's budget. Then `bench.py report` measures ours, AS and ASI (END, the judged metric; DAN, secondary),
 # writes <run>/compare.json and <run>/side-by-side.png, and one test/output/bench/summary.md.
 # Diagnosis runs (empty Saturn, clipped Venus) stack with --bayer auto and are checked against the
 # expected diagnosis. test/output/ is gitignored.
@@ -23,6 +24,7 @@
 #   PLANETARY_BENCH_PYTHON  Python with numpy scipy astropy tifffile Pillow opencv-python-headless
 #                           (test/bench/README.md, Setup); default python3
 #   PLANETARY_STACK_PROBE   the stack-probe binary; default build/test/stack-probe
+#   PLANETARY_REGION_PROBE  the stack-region-probe binary; default build/test/stack-region-probe
 #   PLANETARY_BENCH_OUT     output directory; default test/output/bench
 #   PLANETARY_BENCH_STAGE   a LOCAL-disk directory: each video is copied there, flushed and evicted
 #                           from the page cache before stacking (cold local-disk timing, the spec's
@@ -38,6 +40,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 BENCH="$HERE/bench"
 PY="${PLANETARY_BENCH_PYTHON:-python3}"
 PROBE="${PLANETARY_STACK_PROBE:-$ROOT/build/test/stack-probe}"
+RPROBE="${PLANETARY_REGION_PROBE:-$ROOT/build/test/stack-region-probe}"
 OUT="${PLANETARY_BENCH_OUT:-$HERE/output/bench}"
 STAGE="${PLANETARY_BENCH_STAGE:-}"
 
@@ -54,6 +57,7 @@ for a in "$@"; do
 done
 
 [ -x "$PROBE" ] || { echo "FAIL: stack-probe not built at $PROBE (cmake --build modules/planetary/build --target stack-probe)"; exit 1; }
+[ -x "$RPROBE" ] || { echo "FAIL: stack-region-probe not built at $RPROBE (cmake --build modules/planetary/build --target stack-region-probe)"; exit 1; }
 [ -d /mnt/qnap/astro_data ] || { echo "FAIL: /mnt/qnap/astro_data is not mounted"; exit 1; }
 "$PY" -I -c "import numpy, scipy, astropy, tifffile, PIL, cv2" 2>/dev/null \
     || { echo "FAIL: $PY lacks the bench dependencies (test/bench/README.md, Setup); set PLANETARY_BENCH_PYTHON"; exit 1; }
@@ -107,6 +111,17 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
         rc=$?
         t1=$(date +%s.%N)
         echo "$t0 $t1" | awk '{printf "%.3f\n", $2 - $1}' >"$dir/wall.txt"
+        # Our noise-power k over the compare box (END's budget, Ruling P28): the region probe repeats the
+        # engine's plan; bench.py report checks its kept counts against probe.json.
+        keff_for() {   # <video> <stack.fits> <out.json> <box-command...>
+            local box
+            box="$("${@:4}")" || { echo "FAIL $run: box for $(basename "$3"): $box"; status=1; return; }
+            "$RPROBE" "$1" --bayer "$bayer" "${THREADS[@]}" --plan-only --keff-box "$box" --json-out "$3" \
+                >"${3%.json}.log" 2>&1 || { echo "FAIL $run: stack-region-probe for $(basename "$3"): $(tail -2 "${3%.json}.log")"; status=1; rm -f "$3"; }
+        }
+        if [ "$expect" = stack ] && [ "$rc" -eq 0 ]; then
+            keff_for "$src" "$dir/ours.fits" "$dir/keff.json" "$PY" -I "$BENCH/bench.py" box "$run" "$dir/ours.fits"
+        fi
         if [ "$SPLIT" -eq 1 ] && [ "$expect" = stack ] && [ "$rc" -eq 0 ]; then
             hdir="${STAGE:-$dir}"
             even="$hdir/$run.even.ser"
@@ -114,9 +129,12 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
             if "$PY" -I "$BENCH/halves.py" split "$src" "$size" "$even" "$odd" >"$dir/halves.log" 2>&1; then
                 for h in A B; do
                     f="$even"; [ "$h" = B ] && f="$odd"
-                    "$PROBE" "$f" --bayer "$bayer" "${THREADS[@]}" --out "$dir/half$h.fits" --json \
-                        >"$dir/half$h.json" 2>"$dir/half$h.log" \
-                        || { echo "FAIL $run: half $h stack-probe: $(tail -2 "$dir/half$h.log")"; rm -f "$dir/half$h.json"; status=1; }
+                    if "$PROBE" "$f" --bayer "$bayer" "${THREADS[@]}" --out "$dir/half$h.fits" --json \
+                        >"$dir/half$h.json" 2>"$dir/half$h.log"; then
+                        keff_for "$f" "$dir/half$h.fits" "$dir/half$h.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/half$h.fits"
+                    else
+                        echo "FAIL $run: half $h stack-probe: $(tail -2 "$dir/half$h.log")"; rm -f "$dir/half$h.json"; status=1
+                    fi
                 done
             else
                 echo "FAIL $run: split: $(tail -2 "$dir/halves.log")"; status=1

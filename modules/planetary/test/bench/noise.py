@@ -28,11 +28,10 @@ THE MEASUREMENT (photon_transfer)
     c_trim), c_trim the same trimmed mean of a chi-square with one degree of freedom, so the
     minority of samples where the scene changed between the frames (edges) does not move it. (A
     median would read 0 on an 8-bit sky that rounds to one value in most pixels.) v(m) = a m + c is
-    fitted to the bins (unweighted least squares, a and c >= 0), the photon-transfer line: shot noise
-    grows with the level, read noise (and the 8-bit quantisation) does not. Bins more than
-    PTC_OUTLIER x above the line (a planet's limb, where every sample moves) are dropped and the
-    line refitted once. Synthetic check (test_end.py): a textured disc drifting ~0.5 px per frame
-    reads 4-11 % high -- scene change the high-pass leaves.
+    fitted to the bins (unweighted least squares, a >= 0, c >= 1/12 DN^2 -- the 8-bit rounding alone),
+    the photon-transfer line: shot noise grows with the level, read noise and quantisation do not.
+    Bins more than PTC_OUTLIER (1.15) x above the line (a planet's limb, where every sample moves) are
+    dropped and the line refitted, until the set is stable. Synthetic check (test_end.py).
 
 ON A BOX (raw_under, box_noise, sky_noise)
     The stack's target box is mapped onto the raw frames by registering the frames' mean (the CFA
@@ -45,8 +44,7 @@ ON A BOX (raw_under, box_noise, sky_noise)
     sites' different gains drop out (as metric.flatten_cfa does). The result is in the metric's
     units: the power of white noise per pixel, as a fraction of the mean target signal squared.
     This is the noise of an UNSMOOTHED frame -- one raw sample per pixel. A debayered frame holds
-    less (the demosaic interpolates); that, like every other smoothing, counts as blur. sky_noise
-    is the same budget at the sky's level (for metric.measure's excess-noise check).
+    less (the demosaic interpolates); that, like every other smoothing, counts as blur.
 
 LIMITS
     * Frames: the first `frames` of the capture (default 128), read from the start of the file:
@@ -54,8 +52,8 @@ LIMITS
       target's brightness at the start (haze later in a capture is not followed).
     * The line is a 2-parameter fit; gain changes or non-linear sensor response are not modelled.
     * Fixed-pattern noise is excluded by construction (it does not average down with frames and
-      is not part of sigma_frame^2 / k); whatever of it a stack keeps in its sky is charged by
-      metric.measure's excess-noise check; on the target it counts as signal for every image alike.
+      is not part of sigma_frame^2 / k); whatever of it a stack keeps counts as detail for every image
+      alike (metric.py, KNOWN LIMIT).
 """
 import argparse
 import os
@@ -78,7 +76,9 @@ SATURATED = 250
 PTC_BINS = 40               # level bins, geometric from the lowest level to the 99.9th percentile
 PTC_MIN_SAMPLES = 2000
 TRIM = 0.75                # r^2 above this quantile per bin is dropped (scene change at edges)
-PTC_OUTLIER = 1.5
+PTC_OUTLIER = 1.15           # bins above 1.15 x the line (a limb: the scene moved) are dropped, refitting
+PTC_ITERATIONS = 5
+QUANTISATION = 1.0 / 12.0    # DN^2: the rounding variance of an 8-bit sample
 MIN_COVER = 0.5           # box_noise: the raw frames must cover half the box window's weight
 RAW_SCALE_TOLERANCE = 0.08  # raw_under: the survey's planets read 0.2-4.7 % against blurred raw means
 HP = np.outer([1.0, -2.0, 1.0], [1.0, -2.0, 1.0])
@@ -116,13 +116,15 @@ def _trim_constant():
 
 
 def _fit(levels, var):
-    """v = a m + c, unweighted least squares over the bins (a, c >= 0)."""
+    """v = a m + c, unweighted least squares over the bins, a >= 0 and c >= QUANTISATION (an 8-bit
+    sample's rounding alone carries 1/12 DN^2, whatever the read noise)."""
     A = np.stack([levels, np.ones_like(levels)], 1)
     (a, c), *_ = np.linalg.lstsq(A, var, rcond=None)
-    if c < 0:
-        a, c = float((levels * var).sum() / (levels * levels).sum()), 0.0
+    if c < QUANTISATION:
+        c = QUANTISATION
+        a = float((levels * (var - c)).sum() / (levels * levels).sum())
     if a < 0:
-        a, c = 0.0, float(var.mean())
+        a, c = 0.0, max(float(var.mean()), QUANTISATION)
     return float(a), float(c)
 
 
@@ -159,10 +161,13 @@ def photon_transfer(frames) -> PhotonTransfer:
         raise NoiseUnmeasurable(f"only {len(bins)} level bins with {PTC_MIN_SAMPLES} or more unsaturated samples")
     L = np.array([b[0] for b in bins])
     V = np.array([b[1] for b in bins])
-    a, c = _fit(L, V)
-    keep = V <= PTC_OUTLIER * (a * L + c)
-    if keep.sum() >= 3 and not keep.all():
+    keep = np.ones(L.size, dtype=bool)
+    for _ in range(PTC_ITERATIONS):
         a, c = _fit(L[keep], V[keep])
+        new = V <= PTC_OUTLIER * (a * L + c)
+        if new.sum() < 3 or (new == keep).all():
+            break
+        keep = new
     return PhotonTransfer(a, c, tuple(bins), int(keep.sum()), f.shape[0] - 1)
 
 
@@ -251,27 +256,6 @@ def box_noise(ptc: PhotonTransfer, raw, window: Optional[np.ndarray] = None) -> 
     window) replaces the Hann window."""
     raw = _as_rawbox(raw)
     return _site_terms(raw.crop, _weights(raw, window), lambda site, sy, sx: ptc.variance(site))
-
-
-def sky_noise(ptc: PhotonTransfer, raw: RawBox) -> float:
-    """sigma_frame^2 of the SKY, in the box's units (the same per-site signal normalisation as
-    box_noise): v at each site's sky level -- the median of that site over the frames' sky
-    (metric.sky_mask of the whole flattened mean) -- over the site's mean signal on the box squared.
-    It is the photon budget at the sky's level, against which metric.measure reads an image's own
-    sky for noise beyond its budget."""
-    full = raw.full
-    sky = metric.sky_mask(metric.flatten_cfa(full))
-    if sky.sum() < 64:
-        raise NoiseUnmeasurable("the raw frames have no signal-free sky")
-    levels = {}
-    for sy, sx in SITES:
-        levels[(sy, sx)] = float(np.median(full[sy::2, sx::2][sky[sy::2, sx::2]]))
-    oy, ox = raw.origin
-
-    def var(site, sy, sx):     # the crop's site (sy, sx) is the full mean's ((sy + oy) % 2, (sx + ox) % 2)
-        return np.full(site.shape, ptc.variance(levels[((sy + oy) % 2, (sx + ox) % 2)]))
-
-    return _site_terms(raw.crop, _weights(raw, None), var)
 
 
 def _main(argv=None):

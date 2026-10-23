@@ -1,7 +1,8 @@
 // Test-only CLI over the region stage (Task 5), for the real-data check. Never shipped, not a ctest
 // case. Reads the video only.
 //
-//   stack-region-probe <video> [--frames N] [--threads T] [--out DIR]
+//   stack-region-probe <video> [--frames N] [--threads T] [--out DIR] [--bayer auto|none|RGGB|GRBG|GBRG|BGGR]
+//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only]
 //
 // Runs the engine's flow on the first N frames (default: all) on T threads (default: hardware):
 // MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
@@ -12,7 +13,19 @@
 // DIR/ours.ppm, DIR/global.ppm, DIR/best-frame.ppm (the sharpest single frame, demosaiced) with one
 // shared display stretch (8-bit, black at the 0.1th percentile of ours, white at its 99.95th, gamma
 // 1/2.2) for a side-by-side. Exit 0 on success, 2 when the capture is diagnosed, 1 on error.
+//
+// --keff-box (Ruling P28, the bench's END noise model): our stack's effective frame count over a box
+// of the output (full-resolution) grid, from the plan's own per-frame kept flags and the blend
+// weights the Accumulator uses (AxisWeightAt; alpha_f(p) = sum over the regions keeping f of
+// w_r(p) / K_r + (1 - cover(p)) / K_fallback). Per pixel the stack's noise power is
+// sigma^2 sum_f alpha_f^2 / (sum_f alpha_f)^2; over the box it is averaged with the metric's Hann
+// window squared, and k_eff = 1 / that average (in units of sigma^2). Frame gains, rejected samples
+// and the outside-frame weight are left out. --json-out writes it with the plan's per-region kept
+// counts (the bench checks them against stack-probe's, the engine's own run). --plan-only stops
+// after the plan (no pass B). --bayer as stack-probe's (default Auto: the sidecar or the header).
 #include <algorithm>
+#include <array>
+#include <map>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -95,6 +108,88 @@ void WritePpm(const std::string& path, const ser::FloatImage& im, double lo, dou
     std::fclose(f);
 }
 
+ser::BayerChoice ParseBayer(const std::string& s) {
+    if (s == "auto" || s == "Auto") return ser::BayerChoice::Auto;
+    if (s == "none" || s == "None") return ser::BayerChoice::None;
+    if (s == "RGGB") return ser::BayerChoice::RGGB;
+    if (s == "GRBG") return ser::BayerChoice::GRBG;
+    if (s == "GBRG") return ser::BayerChoice::GBRG;
+    if (s == "BGGR") return ser::BayerChoice::BGGR;
+    throw std::invalid_argument("unknown --bayer " + s);
+}
+
+double Hann(int i, int n) { return n > 1 ? 0.5 - 0.5 * std::cos(2 * M_PI * i / (n - 1)) : 1.0; }
+
+// See --keff-box in the header.
+double BoxKeff(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, double s) {
+    const stack::RegionLayout& lay = plan.layout;
+    const size_t nr = plan.RegionCount();
+    std::vector<size_t> stacked;
+    for (size_t p = 0; p < plan.frames.size(); ++p)
+        if (plan.stacked[p]) stacked.push_back(p);
+    if (stacked.empty() || plan.stackedCount <= 0) throw std::runtime_error("plan stacks no frame");
+    const double fb = 1.0 / static_cast<double>(plan.stackedCount);
+    std::map<std::array<int, 4>, std::array<int64_t, 16>> cache;
+    double num = 0, den = 0;
+    const int h = y1 - y0, w = x1 - x0;
+    for (int y = y0; y < y1; ++y) {
+        const stack::AxisWeight ay = stack::AxisWeightAt(lay, true, (y + 0.5) / s - 0.5);
+        const double hy = Hann(y - y0, h);
+        for (int x = x0; x < x1; ++x) {
+            const stack::AxisWeight ax = stack::AxisWeightAt(lay, false, (x + 0.5) / s - 0.5);
+            std::array<int, 4> ids{-1, -1, -1, -1};
+            std::array<double, 4> wts{0, 0, 0, 0};
+            int m = 0;
+            double cover = 0;
+            for (int b = 0; b < 2; ++b) {
+                const int j = ay.i0 + b;
+                const double wy = b ? ay.w1 : ay.w0;
+                if (j < 0 || j >= lay.ny || wy == 0) continue;
+                for (int c = 0; c < 2; ++c) {
+                    const int i = ax.i0 + c;
+                    const double wx = c ? ax.w1 : ax.w0;
+                    if (i < 0 || i >= lay.nx || wx == 0) continue;
+                    const int r = lay.node[static_cast<size_t>(j) * lay.nx + i];
+                    if (r < 0 || plan.detail[static_cast<size_t>(r)].kept <= 0) continue;
+                    ids[static_cast<size_t>(m)] = r;
+                    wts[static_cast<size_t>(m)] = wx * wy;
+                    cover += wx * wy;
+                    ++m;
+                }
+            }
+            auto it = cache.find(ids);
+            if (it == cache.end()) {
+                std::array<int64_t, 16> counts{};
+                for (size_t p : stacked) {
+                    int bits = 0;
+                    for (int k = 0; k < m; ++k)
+                        if (plan.flags[p * nr + static_cast<size_t>(ids[static_cast<size_t>(k)])] & stack::RegionPlan::kKept) bits |= 1 << k;
+                    ++counts[static_cast<size_t>(bits)];
+                }
+                it = cache.emplace(ids, counts).first;
+            }
+            const double fbw = std::max(0.0, 1 - cover) * fb;
+            double s1 = 0, s2 = 0;
+            for (int bits = 0; bits < (1 << m); ++bits) {
+                const int64_t n = it->second[static_cast<size_t>(bits)];
+                if (!n) continue;
+                double a = fbw;
+                for (int k = 0; k < m; ++k)
+                    if (bits & (1 << k))
+                        a += wts[static_cast<size_t>(k)] / static_cast<double>(plan.detail[static_cast<size_t>(ids[static_cast<size_t>(k)])].kept);
+                s1 += static_cast<double>(n) * a;
+                s2 += static_cast<double>(n) * a * a;
+            }
+            if (!(s1 > 0)) continue;
+            const double hh = std::pow(hy * Hann(x - x0, w), 2);
+            num += hh * s2 / (s1 * s1);
+            den += hh;
+        }
+    }
+    if (!(num > 0)) throw std::runtime_error("the box holds no stacked pixel");
+    return den / num;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) try {
@@ -105,16 +200,27 @@ int main(int argc, char** argv) try {
     const std::string path = argv[1];
     int64_t limit = INT64_MAX;
     int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    std::string out;
+    std::string out, jsonOut;
+    ser::BayerChoice bayer = ser::BayerChoice::Auto;
+    bool planOnly = false;
+    std::optional<std::array<int, 4>> keffBox;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
+        if (a == "--bayer" && i + 1 < argc) bayer = ParseBayer(argv[++i]);
+        else if (a == "--plan-only") planOnly = true;
+        else if (a == "--json-out" && i + 1 < argc) jsonOut = argv[++i];
+        else if (a == "--keff-box" && i + 1 < argc) {
+            std::array<int, 4> b{};
+            if (std::sscanf(argv[++i], "%d,%d,%d,%d", &b[0], &b[1], &b[2], &b[3]) != 4 || b[1] <= b[0] || b[3] <= b[2])
+                throw std::invalid_argument("--keff-box Y0,Y1,X0,X1");
+            keffBox = b;
+        } else if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
         else if (a == "--threads" && i + 1 < argc) threads = std::max(1, std::atoi(argv[++i]));
         else if (a == "--out" && i + 1 < argc) out = argv[++i];
         else throw std::invalid_argument("unknown argument " + a);
     }
     const stack::SourceFactory factory = [&] {
-        return std::unique_ptr<ser::FrameSource>(new Truncated(ser::OpenVideo(path, ser::BayerChoice::Auto), limit));
+        return std::unique_ptr<ser::FrameSource>(new Truncated(ser::OpenVideo(path, bayer), limit));
     };
     const ser::FileInfo info = factory()->Info();
     const double scale = stack::LumaScale(info);
@@ -224,6 +330,24 @@ int main(int argc, char** argv) try {
                     reg.y0, q[q.size() / 10], q[q.size() / 2], q[q.size() * 9 / 10], q.back(), s[s.size() / 2], d.bestQuality,
                     static_cast<long long>(d.kept), static_cast<long long>(d.candidates));
     }
+    if (keffBox) {
+        const auto& b = *keffBox;
+        const double keff = BoxKeff(plan, b[0], b[1], b[2], b[3], scale);
+        std::printf("keff     %.2f over the box y %d-%d, x %d-%d (stacked %lld)\n", keff, b[0], b[1], b[2], b[3],
+                    static_cast<long long>(plan.stackedCount));
+        if (!jsonOut.empty()) {
+            std::FILE* f = std::fopen(jsonOut.c_str(), "w");
+            if (!f) throw std::runtime_error("cannot write " + jsonOut);
+            std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"box\": [%d, %d, %d, %d], \"regionKept\": [",
+                         static_cast<long long>(plan.stackedCount), keff, b[0], b[1], b[2], b[3]);
+            for (size_t r = 0; r < plan.detail.size(); ++r)
+                std::fprintf(f, "%s%lld", r ? ", " : "", static_cast<long long>(plan.detail[r].kept));
+            std::fprintf(f, "], \"regionSize\": %d, \"nodes\": [%d, %d], \"flatEdges\": %s}\n", layout.size, layout.nx,
+                         layout.ny, layout.flatEdges ? "true" : "false");
+            std::fclose(f);
+        }
+    }
+    if (planOnly) return 0;
     t0 = std::chrono::steady_clock::now();
     stack::Accumulator acc(plan, ref, sigma, info), accGlobal(global, ref, sigma, info);
     ParallelFrames(static_cast<int64_t>(plan.frames.size()), threads, factory, [&](int, ser::FrameSource& src, int64_t i) {
