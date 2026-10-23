@@ -898,7 +898,7 @@ TEST_CASE("MeasurementLuma counts the clipped samples of each luma pixel -- per 
             const bool c = r < 12;
             centre += c;
             mono.samples[i] = c ? 255 : 160;
-            // RGB: the centre's R channel saturated, G and B not -- a third of its samples.
+            // RGB: the centre's R channel saturated, G and B not -- a quarter of its samples (R : G : B 1 : 2 : 1).
             rgb.samples[3 * i] = c ? 255 : 160;
             rgb.samples[3 * i + 1] = c ? 230 : 150;
             rgb.samples[3 * i + 2] = c ? 200 : 140;
@@ -916,11 +916,11 @@ TEST_CASE("MeasurementLuma counts the clipped samples of each luma pixel -- per 
     CHECK(counted.clippedFraction == Catch::Approx(static_cast<double>(centre) / disc).margin(0.01));
     info.colorId = ser::ColorId::RGB;
     const stack::MeasurementImage mr = stack::MeasurementLuma(rgb, info);
-    CHECK(mr.samplesPerPixel == 3);
+    CHECK(mr.samplesPerPixel == 4);
     const FrameStats sr = MeasureFrame(mr, 0, 1);
     REQUIRE(sr.targetFound);
     INFO("RGB clipped fraction " << sr.clippedFraction << ", centre share " << static_cast<double>(centre) / disc);
-    CHECK(sr.clippedFraction == Catch::Approx(static_cast<double>(centre) / disc / 3).margin(0.01));
+    CHECK(sr.clippedFraction == Catch::Approx(static_cast<double>(centre) / disc / 4).margin(0.01));
     CHECK(MeasureFrame(static_cast<const FloatImage&>(mr), 0, 1).clippedFraction == 0);  // the luma (mean) never reaches it
     // Counts that do not match the image are an error, not a silent fallback.
     stack::MeasurementImage bad = m;
