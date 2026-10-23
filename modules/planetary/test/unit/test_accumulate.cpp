@@ -1222,3 +1222,71 @@ TEST_CASE("The sky under a region keeps the fallback's noise (Task 9: the 2023-0
                                           << fallback.size() << " px), ratio " << a / b << "; stacked " << p.plan.stackedCount);
     CHECK(a < 1.25 * b);
 }
+
+TEST_CASE("The sky beside a frame-filling target keeps the fallback's noise (E1 fix round 1: the 2023-08-22 Moon)", "[accumulate]") {
+    // The real case: the 2023-08-22 and 2023-03-05 Moons run as frame-filling targets, whose regions cover the
+    // whole frame (flat edges), sky included; on the 2023-08-22 one the sky's high-pass RMS reached 1.91x the
+    // global-only stack's (27 of 784 sky tiles over 1.15; stack-region-probe at 149178d7). Here: a disc
+    // larger than the frame is high, cut by the bottom edge (frame-filling), sky above it; every frame with a
+    // target goes to the regions, as for a real lunar capture. The sky past R + 6 under the central half of
+    // the regions keeping under half their candidates must carry the noise of the fallback alone -- the same
+    // stacked frames on the global shift, the same gains.
+    const int w = 224, h = 176;
+    const double cx = 112.3, cy = 150.4, R = 110;
+    const Scene s = testing::MakeDisc(23, cx, cy, R);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(57);
+    RenderCapture(cap, s, 120, [&](int) { return Seeing(rng, w, h, 2.0, 40); });
+    const Pipeline p = Run(cap, true);
+    REQUIRE(p.sel.fullFrameTarget);
+    REQUIRE(p.plan.layout.flatEdges);
+    stack::RegionLayout none = p.plan.layout;
+    none.regions.clear();
+    std::fill(none.node.begin(), none.node.end(), -1);
+    std::vector<FrameRegions> bare;
+    for (const FrameRegions& m : p.measured)
+        if (p.plan.Uses(m.frameIndex)) {
+            FrameRegions b = m;
+            b.regions.clear();
+            bare.push_back(b);
+        }
+    const stack::RegionPlan fallbackPlan = stack::PlanRegions(none, bare);
+    stack::Accumulator fb(fallbackPlan, p.reference, p.sigma, p.info);
+    {
+        auto src = cap.Factory()();
+        for (const FrameRegions& b : bare)
+            fb.Add(b.frameIndex, stack::DemosaicHQ(src->ReadFrame(b.frameIndex), p.info.colorId, p.info.normDepth));
+    }
+    const FloatImage base = fb.Finish();
+    const auto& lay = p.plan.layout;
+    // High-pass (pixel minus its 3 x 3 mean) RMS, so the glow-free sky's level does not count.
+    auto hp = [&](const FloatImage& im, int x, int y) {
+        double m = 0;
+        for (int j = -1; j <= 1; ++j)
+            for (int i = -1; i <= 1; ++i) m += im.data[static_cast<size_t>(y + j) * w + x + i];
+        return im.data[static_cast<size_t>(y) * w + x] - m / 9;
+    };
+    double a = 0, b = 0;
+    int64_t n = 0;
+    for (int y = 2; y < h - 2; ++y)
+        for (int x = 2; x < w - 2; ++x) {
+            if (std::hypot(x - cx, y - cy) <= R + 6) continue;
+            bool lucky = false;
+            for (size_t r = 0; r < lay.regions.size() && !lucky; ++r) {
+                const auto& g = lay.regions[r];
+                const int q = (g.x1 - g.x0) / 4;
+                const auto& d = p.plan.detail[r];
+                lucky = d.kept > 0 && 2 * d.kept < d.candidates && x >= g.x0 + q && x < g.x1 - q && y >= g.y0 + q && y < g.y1 - q;
+            }
+            if (!lucky) continue;
+            const double u = hp(p.ours, x, y), v = hp(base, x, y);
+            a += u * u;
+            b += v * v;
+            ++n;
+        }
+    REQUIRE(n >= 200);  // the case: regions keeping a lucky few over sky
+    const double ratio = std::sqrt(a / b);
+    INFO("sky high-pass RMS under lucky regions over the fallback alone's: " << ratio << " (" << n << " px); stacked "
+                                                                            << p.plan.stackedCount);
+    CHECK(ratio < 1.25);
+}
