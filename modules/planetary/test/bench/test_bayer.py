@@ -35,9 +35,11 @@ def test_a_saturated_disc_is_unmeasurable():
 @pytest.mark.nas
 @pytest.mark.ffmpeg
 def test_real_capture_agrees_with_the_readers_sidecar_resolution():
-    """3_6_2023 Moon: ASIAIR sidecar Bayer = RG with Flip=Vert, which the reader resolves to BGGR
-    (Ruling 10); the frames measure BGGR, red/blue far apart."""
+    """3_6_2023 Moon: the frames' GREEN PHASE is the RGGB / BGGR one (greens on the anti-diagonal,
+    0.0 % apart) -- what the bench relies on. Red against blue is not asserted: bayer.py calls it by
+    the warm-target rule (it reads BGGR here), which is not a valid source; the camera spec says
+    RGGB for every colour capture in the set (Scott, 2026-10-22; benchset.CAMERA_RGGB)."""
     p = nas_path("3_6_2023", "moon", "2023-03-05-224808-Moon-Bin1 18.3F.avi")
     m = bayer.measure_video(p, (1920, 1080))
     print(f"\n{m}")
-    assert m.pattern == "BGGR" and m.red_blue_split > 0.3 and m.green_split < 0.01
+    assert m.pattern in ("RGGB", "BGGR") and m.green_split < 0.01

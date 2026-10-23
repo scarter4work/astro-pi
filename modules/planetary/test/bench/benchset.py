@@ -3,7 +3,7 @@
 point run-stack-bench.sh calls, and a survey that verifies every reference against its own
 video before any stack exists.
 
-    python3 -I benchset.py list | show <id> | compare <id> <ours.fits|ours.tif> [--json]
+    python3 -I benchset.py list | show <id> | compare <id> <ours.fits|ours.tif> [--probe probe.json --keff keff.json] [--json]
     python3 -I benchset.py survey <out-dir> [--only ID ...]
 
 Every capture that is stacked is stacked DEBAYERED (stack-probe --bayer <Capture.bayer>):
@@ -44,9 +44,8 @@ import refs    # noqa: E402
 NAS = os.environ.get("PLANETARY_BENCH_NAS", "/mnt/qnap/astro_data")
 SURVEY_FRAMES = 32
 VIDEOS = "processing-archive-2026-10-03/videos"
-LQEF = ("red/blue unverified: the Lqef filter passes only H-beta/OIII and H-alpha/SII, so the "
-        "warm-target rule does not apply; an R/B swap leaves the luminance metric unchanged")
-
+CAMERA_RGGB = ("camera spec: ZWO ASI585MC / ASI2400MC are RGGB (Scott, 2026-10-22: every colour capture in "
+               "the set came from one of them); green phase measured")
 
 @dataclass(frozen=True)
 class Capture:
@@ -66,57 +65,53 @@ class Capture:
 BENCHMARK: List[Capture] = [
     # --- planets ---------------------------------------------------------------------------
     Capture("2023-02-11-jupiter", "planet", "2_12_2023/2023-02-11-191831-Jupiter-Bin1 13.3F.avi",
-            (640, 480), 6516, False, "BGGR",
-            "measured, warm-target rule (greens 0.2 % apart, red/blue 53 %); AutoStakkert debayered the same",
+            (640, 480), 6516, False, "RGGB",
+            CAMERA_RGGB + " (greens 0.2 % apart); AutoStakkert debayered BGGR (red and blue swapped against ours)",
             ["2_12_2023/AS_P20/2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1.png",
              "2_12_2023/AS_P25/2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1_Drizzle30.png"],
             why="AutoStakkert at native scale (P20) and drizzled (P25)"),
     Capture("2026-01-30-jupiter", "planet", f"{VIDEOS}/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F.avi",
             (480, 360), 4088, True, "RGGB",
-            "Scott's choice (SERViewer Save pattern: Bayer = RG); green phase measured (greens 0.1 % apart); "
-            "ASIStudio debayered the same (VSBAYER 0 = RG); the warm-target rule would say BGGR (17.9 %); " + LQEF,
+            CAMERA_RGGB + " (greens 0.1 % apart); = Scott's SERViewer Save pattern (Bayer = RG); ASIStudio debayered "
+            "the same (VSBAYER 0 = RG)",
             [f"{VIDEOS}/ASIVideoStack_Output/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F_Planet_40.fit",
              f"{VIDEOS}/ASIVideoStack_Output/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F_Planet_50.fit"],
             why="the larger Jupiter (eroded disc >= 20 px: interior judged); current camera"),
     Capture("2023-09-29-saturn", "planet", "9_30_2023/2023-09-29-204604-Saturn-Bin1 LPro 14.9F.avi",
-            (1280, 960), 3973, False, "BGGR",
-            "measured, warm-target rule (greens 1.2 % apart, red/blue 4.5 % -- the weakest split in the set); "
-            "ASIStudio debayered RGGB (VSBAYER 0 = RG)",
+            (1280, 960), 3973, False, "RGGB",
+            CAMERA_RGGB + " (greens 1.2 % apart); ASIStudio debayered the same (VSBAYER 0 = RG)",
             ["9_30_2023/ASIVideoStack_Output/2023-09-29-204604-Saturn-Bin1 LPro 14.9F_Planet_74.fit"],
             why="rings; small target in a large frame"),
     Capture("2023-02-11-mars", "planet", "2_12_2023/2023-02-11-192403-Mars-Bin1 16.5F.avi",
             (320, 240), 13251, False, "RGGB",
-            "measured, warm-target rule (greens 1.7 % apart, red/blue 12.7 %); AutoStakkert debayered BGGR "
-            "(its R/B 0.93: a blue-shifted Mars)",
+            CAMERA_RGGB + " (greens 1.7 % apart); AutoStakkert debayered BGGR (its R/B 0.93: a blue-shifted Mars)",
             ["2_12_2023/AS_P25/2023-02-11-192403-Mars-Bin1 16.5F_lapl5_ap1_Drizzle30.png"],
             why="smallest disc (limb-only); longest capture"),
     # --- lunar -----------------------------------------------------------------------------
     Capture("2023-02-12-moon", "lunar", "2_12_2023/2023-02-12-024708-Moon-Bin1 14.9F.avi",
-            (1920, 1080), 2354, False, "BGGR",
-            "measured, warm-target rule (greens 0.1 % apart, red/blue 30.0 %); AutoStakkert debayered the same",
+            (1920, 1080), 2354, False, "RGGB",
+            CAMERA_RGGB + " (greens 0.1 % apart); AutoStakkert debayered BGGR (red and blue swapped against ours)",
             ["2_12_2023/AS_P20/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap1.png",
              "2_12_2023/AS_P50/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap2.png",
              "2_12_2023/AS_P25/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap2_Drizzle30.png"],
             why="metric validation: AS P20 and P50 both native"),
     Capture("2024-02-01-moon", "lunar", "2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef 14.9F.avi",
-            (1920, 1080), 1310, False, "RGGB",
-            "green phase measured (greens 0.1 % apart); red/blue as AutoStakkert and ASIStudio both debayered "
-            "it (R/B 0.80 = raw site ratio); the warm-target rule would say BGGR (21.4 %); " + LQEF,
+            (1920, 1080), 1310, True, "RGGB",
+            CAMERA_RGGB + " (greens 0.1 % apart); = its SERViewer sidecar (Save pattern, Bayer = RG, written "
+            "2026-10-22 23:11); AutoStakkert and ASIStudio debayered the same (R/B 0.80 = raw site ratio)",
             ["2_1_2024/ASIVideoStack_Output/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit",
              "2_1_2024/AS_P60/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_lapl5_ap16_Drizzle15.fit"],
             why="both tools on one capture"),
     Capture("2023-08-22-moon", "lunar", "8_23_2023/2023-08-22-213239-FOV-Bin1 LPro 15.8F.avi",
             (1920, 1080), 1352, False, "RGGB",
-            "measured, warm-target rule (greens 0.1 % apart, red/blue 20.5 %); AutoStakkert and ASIStudio "
-            "debayered the same",
+            CAMERA_RGGB + " (greens 0.1 % apart); AutoStakkert and ASIStudio debayered the same",
             ["8_23_2023/ASIVideoStack_Output/2023-08-22-213239-FOV-Bin1 LPro 15.8F_Surface_35.fit",
              "8_23_2023/AS_P20/2023-08-22-213239-FOV-Bin1 LPro 15.8F_lapl5_ap4_Drizzle30.fit"],
             why="both tools; named FOV but a lunar limb (checked visually)"),
     Capture("2023-03-05-moon", "lunar", "3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi",
-            (1920, 1080), 1705, True, "BGGR",
-            "measured, warm-target rule (greens 0.0 % apart, red/blue 46.2 %), = the reader's sidecar "
-            "resolution (Bayer RG, Flip=Vert -> BGGR, Ruling 10); AutoStakkert debayered RGGB (its R/B 0.62: "
-            "a blue Moon)",
+            (1920, 1080), 1705, True, "RGGB",
+            CAMERA_RGGB + " (greens 0.0 % apart); the explicit pattern wins over the ASIAIR sidecar, whose Bayer = RG with "
+            "Flip=Vert the reader resolves to BGGR (Ruling 10); AutoStakkert debayered RGGB",
             ["3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit",
              "3_6_2023/moon/AS_P50/2023-03-05-224808-Moon-Bin1 18.3F_jupiter_lapl5_ap4_Drizzle15.png"],
             why="a second AS P20/P50 pair; sidecar"),
@@ -148,14 +143,72 @@ def reference_paths(c: Capture) -> List[str]:
     return [nas(p) for p in c.references]
 
 
-def compare_capture(cid: str, ours) -> List["refs.Row"]:
+def ours_frames_box(probe: dict, keff: Optional[dict]) -> Tuple[Optional[float], str]:
+    """Our stack's effective frame count for END's noise budget (Ruling P28 fix round 1, ruling 2): the
+    NOISE-POWER k_eff over the compare box -- 1 / (the box's Hann^2-weighted mean of sum_f alpha_f(p)^2
+    / (sum_f alpha_f(p))^2), alpha the accumulator's per-frame blend weight -- which
+    stack-region-probe --keff-box computes from the engine's own plan (its per-frame kept flags and
+    AxisWeightAt). That probe repeats RunStack's selection steps rather than being RunStack, so its
+    plan is accepted only when its stacked count and every region's kept count equal stack-probe's
+    (RunStack's own run). (k, why): k None with the reason when it cannot be had."""
+    if keff is None:
+        return None, "our noise-power k_eff over the box was not computed (stack-region-probe --keff-box)"
+    used, detail = probe.get("used"), probe.get("regionDetail")
+    if detail is None:
+        return None, "stack-probe gave no regionDetail to check the region probe's plan against"
+    mine = [int(d["kept"]) for d in detail]
+    if keff.get("stacked") != used or list(keff.get("regionKept", [])) != mine:
+        return None, (f"the region probe's plan differs from RunStack's (stacked {keff.get('stacked')} vs {used}; "
+                      f"kept {keff.get('regionKept')} vs {mine})")
+    return float(keff["keffBox"]), ""
+
+
+def ours_frames_mean(probe: dict) -> Optional[float]:
+    """The flip check's reading of our count (bench.status_of): the frames used x the UNWEIGHTED mean
+    kept fraction over every placed region (regions that keep no frame -- noiseOnly, Ruling P27 --
+    take the fallback stack, so they count 1), from stack-probe's JSON. It ignores where the regions
+    lie against the box and how noise power averages (as 1 / k); ours_frames_box does both. None
+    when the probe has no regionDetail."""
+    used = probe.get("used")
+    detail = probe.get("regionDetail")
+    if not used or detail is None:
+        return None
+    if not detail:
+        return float(used)
+    fr = [1.0 if (d.get("noiseOnly") or not d["kept"]) else d["kept"] / used for d in detail]
+    return float(used) * float(np.mean(fr))
+
+
+def compare_capture(cid: str, ours, probe: Optional[dict] = None, frame_noise=None,
+                    keff: Optional[dict] = None) -> List["refs.Row"]:
     """THE call for run-stack-bench.sh: our debayered stack (FITS/TIFF path or array) against
     this capture's references on one box, reference factors from their size. Row 0 is ours.
-    A diagnosis capture has no stack to compare and is refused."""
+    With stack-probe's JSON for ours (`probe`), END is measured too: the capture's per-frame noise
+    from its first frames (noise.measure_video, unless `frame_noise` is given), our frame count
+    from stack-region-probe's `keff` JSON checked against `probe` (ours_frames_box; the flip check:
+    ours_frames_mean), each reference's from its percentage. A diagnosis capture has no stack to
+    compare and is refused."""
     c = by_id(cid)
     if c.expect != "stack":
         raise ValueError(f"{cid} is a diagnosis case (expect {c.expect}); there is no stack to compare")
-    return refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size)
+    k = k_alt = None
+    why = "our stack's effective frame count is unknown (no stack-probe JSON)"
+    if probe is not None:
+        import noise
+        k, why = ours_frames_box(probe, keff)
+        k_alt = ours_frames_mean(probe)
+        if frame_noise is None:
+            frame_noise = noise.measure_video(nas(c.video), c.size)
+    rows = refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
+                        frame_noise=frame_noise, anchor_frames=k, capture_frames=c.frames,
+                        anchor_frames_alt=k_alt, anchor_frames_why=why)
+    if k is not None and list(keff.get("box", [])) != list(rows[0].result.box):
+        # the region probe averaged over another box: our k does not apply, loudly
+        why = f"the region probe's box {keff.get('box')} is not the compare box {list(rows[0].result.box)}"
+        rows = refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
+                            frame_noise=frame_noise, anchor_frames=None, capture_frames=c.frames,
+                            anchor_frames_alt=k_alt, anchor_frames_why=why)
+    return rows
 
 
 def video_mean(c: Capture, n: int = SURVEY_FRAMES) -> np.ndarray:
@@ -226,6 +279,8 @@ def _main(argv=None):
     cp = sub.add_parser("compare", help="our stack against the capture's references")
     cp.add_argument("id")
     cp.add_argument("ours", help="our debayered stack, FITS or TIFF")
+    cp.add_argument("--probe", help="stack-probe's JSON for ours: END is measured too (reads the video's first frames)")
+    cp.add_argument("--keff", help="stack-region-probe --json-out for ours (our noise-power k over the box)")
     cp.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "list":
@@ -240,7 +295,14 @@ def _main(argv=None):
                           "references": reference_paths(c)}, indent=2))
         return 0
     if args.cmd == "compare":
-        d = refs.rows_to_dicts(compare_capture(args.id, args.ours))
+        probe = keff = None
+        if args.probe:
+            with open(args.probe) as fh:
+                probe = json.load(fh)
+        if args.keff:
+            with open(args.keff) as fh:
+                keff = json.load(fh)
+        d = refs.rows_to_dicts(compare_capture(args.id, args.ours, probe=probe, keff=keff))
         if args.json:
             print(json.dumps(d, indent=2, default=float))
         else:

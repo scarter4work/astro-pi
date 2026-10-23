@@ -2,7 +2,7 @@
 // Never shipped, not a ctest case. Reads the video only; writes only --out.
 //
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
-//               [--bits 16|32] [--json] [--frames N] [--blur S] [--sample X,Y]...
+//               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -13,7 +13,11 @@
 // first N frames; --blur S blurs every frame by a Gaussian of sigma S sensor px before the engine sees it
 // (each colour site plane on its own for a mosaic, each channel for RGB), the capture's own noise put back
 // by level (its noise model, Noise.h): a synthetic defocus of a real capture, for calibrating the focus
-// floor. --sample X,Y (repeatable) adds the stack's value at pixel (X, Y)
+// floor. --keep-best F (investigation only: the benchmark's Ruling 2 round asks whether a gap to
+// AutoStakkert's P20 is the selection's breadth) measures every frame with the engine's own MeasureAll and
+// hands RunStack only the ceil(F N) frames of highest whole-frame quality, which RunStack then selects among
+// as usual -- never a product knob (the spec's anti-goals forbid a percentage). --sample X,Y (repeatable)
+// adds the stack's value at pixel (X, Y)
 // in every channel to the JSON ("samples"; the headless PixInsight probe compares PlanetaryStack's window
 // with them, test/run-probe-stack.sh), next to the image's size ("image") and the first and last frame
 // stacked ("stackedFirst", "stackedLast"). Exit 0 with an image, 2 when diagnosed, 1 on error.
@@ -191,12 +195,33 @@ void WriteTiff(const std::string& path, const ser::FloatImage& im, int bits) {
 
 bool EndsWith(const std::string& s, const std::string& t) { return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0; }
 
+// --keep-best F: the engine sees only these frames of the source (ascending), as frames 0..n-1.
+class SubsetSource : public ser::FrameSource {
+public:
+    SubsetSource(std::unique_ptr<ser::FrameSource> s, std::shared_ptr<const std::vector<int64_t>> keep)
+        : s_(std::move(s)), keep_(std::move(keep)), info_(s_->Info()) {
+        info_.frameCount = static_cast<int64_t>(keep_->size());
+    }
+    const ser::FileInfo& Info() const override { return info_; }
+    ser::Frame ReadFrame(int64_t i) const override { return s_->ReadFrame(At(i)); }
+    std::optional<int64_t> FrameTimestamp(int64_t i) const override { return s_->FrameTimestamp(At(i)); }
+
+private:
+    int64_t At(int64_t i) const {
+        if (i < 0 || i >= static_cast<int64_t>(keep_->size())) throw ser::SerError("stack-probe: frame past --keep-best");
+        return (*keep_)[static_cast<size_t>(i)];
+    }
+    std::unique_ptr<ser::FrameSource> s_;
+    std::shared_ptr<const std::vector<int64_t>> keep_;
+    ser::FileInfo info_;
+};
+
 }  // namespace
 
 int main(int argc, char** argv) try {
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
-                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--sample X,Y]...\n");
+                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -207,6 +232,7 @@ int main(int argc, char** argv) try {
     bool json = false;
     int64_t limit = INT64_MAX;
     double blur = 0;
+    double keepBest = 0;
     std::vector<std::pair<int, int>> samples;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -221,6 +247,10 @@ int main(int argc, char** argv) try {
         else if (a == "--json") json = true;
         else if (a == "--frames") limit = std::stoll(next());
         else if (a == "--blur") blur = std::stod(next());
+        else if (a == "--keep-best") {
+            keepBest = std::stod(next());
+            if (!(keepBest > 0 && keepBest <= 1)) throw std::invalid_argument("--keep-best: a fraction in (0, 1]");
+        }
         else if (a == "--sample") {
             const std::string v = next();
             const size_t comma = v.find(',');
@@ -244,9 +274,31 @@ int main(int argc, char** argv) try {
     };
     // --blur puts back the noise the capture itself shows, by level: its model from the unblurred frames.
     const std::shared_ptr<const stack::NoiseModel> noise = blur > 0 ? probe::UnblurredNoise(path, bayer, limit, threads) : nullptr;
-    const stack::SourceFactory factory = [&]() -> std::unique_ptr<ser::FrameSource> {
+    const stack::SourceFactory probeFactory = [&]() -> std::unique_ptr<ser::FrameSource> {
         return std::make_unique<ProbeSource>(ser::OpenVideo(path, bayer), limit, blur, noise);
     };
+    stack::SourceFactory factory = probeFactory;
+    std::shared_ptr<std::vector<int64_t>> keep;
+    if (keepBest > 0) {
+        // Investigation only (Task 9, Ruling 2's round): the engine's own whole-frame quality
+        // (MeasureAll, the measure SelectFrames ranks on) picks the sharpest ceil(F N) frames with a
+        // target; RunStack then runs on those alone, selection and regions included.
+        const ser::FileInfo info = probeFactory()->Info();
+        const std::vector<stack::FrameStats> st = stack::MeasureAll(probeFactory, info, threads, {});
+        std::vector<int64_t> order;
+        for (const auto& s : st)
+            if (s.targetFound) order.push_back(s.index);
+        std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) {
+            return st[static_cast<size_t>(a)].quality > st[static_cast<size_t>(b)].quality;
+        });
+        const size_t n = std::min(order.size(), static_cast<size_t>(std::ceil(keepBest * static_cast<double>(info.frameCount))));
+        keep = std::make_shared<std::vector<int64_t>>(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(n));
+        std::sort(keep->begin(), keep->end());
+        std::fprintf(stderr, "  --keep-best %.3f: %zu of %lld frames handed to the engine\n", keepBest, keep->size(),
+                     static_cast<long long>(info.frameCount));
+        std::shared_ptr<const std::vector<int64_t>> k = keep;
+        factory = [probeFactory, k]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<SubsetSource>(probeFactory(), k); };
+    }
     const stack::StackOutcome o = stack::RunStack(factory, threads, progress);
     rusage ru{};
     getrusage(RUSAGE_SELF, &ru);
@@ -288,6 +340,15 @@ int main(int argc, char** argv) try {
              std::to_string(o.frames.admittedSuspects.size()) + ",\"rejectedSuspects\":" +
              std::to_string(o.frames.rejectedSuspects.size()) + ",\"alignmentExcluded\":" +
              std::to_string(o.frames.alignmentExcluded.size());
+        // Per region (RegionPlan::detail): the bench's END models our stack's noise with these counts
+        // (test/bench/metric.py, Ruling P28).
+        j += ",\"regionDetail\":[";
+        for (size_t r = 0; r < o.frames.regionDetail.size(); ++r) {
+            const stack::RegionDetail& d = o.frames.regionDetail[r];
+            j += std::string(r ? "," : "") + "{\"kept\":" + std::to_string(d.kept) + ",\"candidates\":" +
+                 std::to_string(d.candidates) + ",\"noiseOnly\":" + (d.noiseOnly ? "true" : "false") + "}";
+        }
+        j += "]";
         j += ",\"memory\":{\"measureWorkers\":" + std::to_string(s.memory.measureWorkers) + ",\"alignWorkers\":" +
              std::to_string(s.memory.alignWorkers) + ",\"stackWorkers\":" + std::to_string(s.memory.stackWorkers) +
              ",\"observers\":" + std::to_string(s.memory.observers) + ",\"plannedPeakMB\":" + Fmt(s.memory.peakBytes / 1e6, 1) + "}";

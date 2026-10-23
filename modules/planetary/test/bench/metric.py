@@ -1,4 +1,60 @@
-"""metric.py -- the PlanetaryStack benchmark's one sharpness-at-equal-noise measure.
+"""metric.py -- the PlanetaryStack benchmark's sharpness-at-equal-noise measure, END (judged), and
+DAN (secondary).
+
+END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equal-noise metric")
+    The question: sharpened until its noise is the same, how much of the target's detail does an
+    image give back? A linear filter scales signal and noise alike at every frequency, so what
+    any sharpening can recover is set by the per-frequency SNR -- and the best it can do is a
+    matched (Wiener) restoration. END is that restoration's quality on the box:
+    1-4. Luminance, the target box, the normalisation x = (crop - b) / s, and the Hann-windowed
+       periodogram P, exactly as DAN (below).
+    5. Noise: ONE model for every image -- ours and every reference -- white noise of power
+       N = sigma_frame^2 / k: sigma_frame^2 the capture's per-frame noise on the box (noise.py: photon
+       transfer on the raw frames, independent of any stacker), k the image's effective frame count
+       (ours: the noise-power k_eff over the box, from the engine's own plan -- stack-region-probe
+       --keff-box; a reference: its stacking percentage x the capture's frames). Any smoothing, on
+       either side, then counts as blur, as in DAN and Ruling 1. Not read from the image itself: the
+       half-stack ground truth on our own stack showed the box's 0.40-0.50 power is 2.7-55 x its random
+       noise (on the 2026-01-30 Jupiter: real horizontal structure plus a sensor-fixed pattern the
+       3 px drift cannot average out), and the sky's noise is 600-54 000 x below the target's
+       (README).
+    6. Per END_EDGES bin (0.06-0.30 in steps of 0.03 cycles/px): SNR = max(mean P - N, 0) / N.
+    7. END = sqrt( sum_f O(f) / sum_f O(f) / (1 + SNR(f)) ) over the band's frequency samples,
+       O(f) = f^-3 (END_PRIOR): the band's object power over the error power of the matched Wiener
+       restoration, as an amplitude ratio. With known blur and object, a Wiener restoration loses
+       O / (1 + SNR) at each frequency; the object's spectrum is unknown but common to every image of
+       a capture, and one fixed prior stands in for it. Higher is better; ratios between images are
+       what Ruling 2's 0.97 bar judges.
+    Validation (test_end.py; numbers in README.md): blur at equal noise ranks strictly lower; more
+    frames at the same blur rank higher (x1.19 for 2x, x1.48 for 4x; DAN moves 0.3 %); sharper-but-
+    noisier pairs and a capture's 20 % / 50 % stacks rank as the exact oracle Wiener restoration does
+    (both outcomes occur in each set); a random scan of 157 clear pairs over object spectra
+    f^-1.4..f^-4.4 agreed 157/157 (log-capacity: 96 %, so the restoration form was chosen); a tool's
+    smoothing never raises it (drizzle x3 + area resample x0.81, Gaussian 0.7 x0.75, B-spline
+    half-pixel shift x0.98, where reading the box's own white floor as its noise RAISES it -- the bias
+    the photon budget removes).
+    KNOWN LIMIT -- NOISE AND SHARPENING THE BUDGET DOES NOT HOLD (Ruling P28 fix round 1, C1; pinned in
+    test_end.py): END counts any power the photon budget does not explain as detail. Noise beyond the
+    budget (uniform, shot-like, target-only) and an unsharp mask RAISE it (measured x1.18-1.88 on
+    synthetic stacks, x1.02-1.94 on real AutoStakkert P20 stacks; README has the table). No
+    single-image estimator can charge it without also charging genuine sharpness: a linear sharpening
+    G of a stack whose own kernel is K is the same image, spectrum for spectrum, as an honest stack with
+    kernel G K, which END must rank higher whenever G K <= 1; and noise added to a smoothed stack
+    cannot be told from the stack's own (unknown) noise kernel. Measured headroom (the box's fitted
+    white level over the budget): a B-spline-interpolated synthetic 0.67, a drizzled one 0.10; the
+    real stacks 0.00-0.29 for ASIStudio and 0.03-0.29 for ours. A sky-based guard (the first P28 design)
+    read 0 on all 22 real images. The bench therefore sends every capture to review with this note.
+    END_INTERIOR: the same on the interior window's high-passed periodogram (DAN_INTERIOR below),
+    the noise model times the high-pass's power gain, with sigma_frame^2 over the interior window.
+    LIMITS: our k_eff comes from stack-region-probe's plan, which repeats RunStack's selection steps;
+    the bench checks its per-region kept counts against stack-probe's (RunStack's own) and reports END
+    unmeasured when they differ. The flip check is our k as the frames used x the unweighted mean kept
+    fraction over regions (benchset.ours_frames_mean). AutoStakkert's percentage is global,
+    approximate per alignment point. sigma_frame reads 4-11 % high on a textured target drifting
+    0.5 px per frame (noise.py), a factor common to every image.
+
+DAN -- SECONDARY SINCE RULING P28: it removes each image's own noise, so it gives no credit for SNR
+(a stack of 4x the frames at the same blur scores the same).
 
 DEFINITION ("detail above noise", DAN)
     For an image (ours, AutoStakkert's, ASIStudio's), all registered to the same grid:
@@ -7,7 +63,8 @@ DEFINITION ("detail above noise", DAN)
        image compared -- the planet's disc (largest component above 15 % of the low-passed
        maximum, so moons are left out; thin components on the frame edge are stacking
        artefacts and are skipped) plus a 15 % margin of sky, or for a frame-filling Moon the
-       frame minus a 2 % inset.
+       frame minus a 2 % inset. A box under MIN_BOX_SIDE (48 px; a tiny disc such as Mars) is
+       grown about the target to that side with sky.
     3. Normalisation: x = (crop - b) / s, with b = the 1st percentile of the crop low-passed
        at sigma 4 px (the sky, or the darkest large-scale area of a lunar crop) and
        s = mean(crop) - b, the mean target signal above it. Gain and offset drop out exactly;
@@ -89,6 +146,8 @@ LOWPASS_SIGMA = 4.0          # px, for the background level b
 BG_PERCENTILE = 1.0
 BOX_THRESHOLD = 0.15         # target = low-passed luminance above b + 15 % of the range
 BOX_MARGIN = 0.15            # of the target's larger side, at least 8 px
+MIN_BOX_SIDE = 48            # px: a tiny disc's box grows (sky only) to this, so the reference overlap
+                             # inset (refs.OVERLAP_INSET) still leaves refs.compare's 32 px floor
 BOX_INSET = 0.02             # of each frame side, at least 4 px
 EDGE_ARTEFACT_SHARE = 0.10   # an edge-touching component thinner than this share is no target
 EDGE_NEAR = 0.03             # "touching" = within 3 % of the side (at least 4 px) of the edge
@@ -96,6 +155,8 @@ INTERIOR_HP_SIGMA = 3.0      # px, the interior high-pass
 INTERIOR_MIN_EROSION = 3.0   # px
 INTERIOR_TAPER = 2.0         # px, cosine edge of the interior window
 INTERIOR_MIN_DIAMETER = 20.0 # px, equivalent diameter of the eroded disc for the interior to be judged
+END_EDGES = (0.06, 0.09, 0.12, 0.15, 0.18, 0.21, 0.24, 0.27, 0.30)   # cycles/px: END's bins over BAND
+END_PRIOR = 3.0              # END's object power spectrum ~ f^-3 (one prior for every image)
 
 
 class Box(NamedTuple):
@@ -118,6 +179,14 @@ class Result:
     interior: Optional[float] = None         # DAN_interior (None when not judged)
     interior_judged: bool = False
     interior_diameter: Optional[float] = None
+    # END (Ruling P28; see END in the module doc). None when no noise budget was given or in mosaic
+    # mode -- end_note says why, loudly; never a fallback to the image's own noise alone.
+    end: Optional[float] = None               # END on the box, noise = the photon budget
+    end_interior: Optional[float] = None      # END of the interior (None when not judged)
+    end_snr: Optional[tuple] = None           # per-bin SNR over END_EDGES
+    end_noise_budget: Optional[float] = None  # the photon budget given (sigma_frame^2 / k_eff)
+    end_frames: Optional[float] = None        # the k the budget used (refs.compare)
+    end_note: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +269,19 @@ def _target_component(img):
     return best[1], labels == best[0] + 1
 
 
+def _min_side(a, b, lo, hi):
+    """[a, b) grown about its centre to at least MIN_BOX_SIDE (when the frame allows), then
+    clipped to [lo, hi) and shifted back inside rather than shrunk."""
+    if b - a < MIN_BOX_SIDE:
+        c = (a + b) / 2
+        a, b = int(math.floor(c - MIN_BOX_SIDE / 2)), int(math.floor(c - MIN_BOX_SIDE / 2)) + MIN_BOX_SIDE
+        if a < lo:
+            a, b = lo, lo + MIN_BOX_SIDE
+        if b > hi:
+            a, b = hi - MIN_BOX_SIDE, hi
+    return max(lo, a), min(hi, b)
+
+
 def target_box(img):
     """The target crop on this image's grid (see DEFINITION step 2)."""
     lum = luminance(img)
@@ -207,8 +289,8 @@ def target_box(img):
     ty0, ty1, tx0, tx1 = target_extent(lum)
     margin = max(8, int(round(BOX_MARGIN * max(ty1 - ty0, tx1 - tx0))))
     iy, ix = max(4, int(round(BOX_INSET * h))), max(4, int(round(BOX_INSET * w)))
-    y0, y1 = max(iy, ty0 - margin), min(h - iy, ty1 + margin)
-    x0, x1 = max(ix, tx0 - margin), min(w - ix, tx1 + margin)
+    y0, y1 = _min_side(ty0 - margin, ty1 + margin, iy, h - iy)
+    x0, x1 = _min_side(tx0 - margin, tx1 + margin, ix, w - ix)
     if y1 - y0 < 16 or x1 - x0 < 16:
         raise ValueError(f"target box too small: {(y0, y1, x0, x1)}")
     return Box(int(y0), int(y1), int(x0), int(x1))
@@ -270,7 +352,9 @@ def interior_window(img, box: Box, limb: Optional[float] = None) -> InteriorWind
     return InteriorWindow(w, mask, diameter, erosion, sig)
 
 
-def _interior_score(x, iw: InteriorWindow) -> float:
+def _interior_scores(x, iw: InteriorWindow, budget: Optional[float]):
+    """(DAN_interior, END_interior) of normalised crop x on the interior window; END_interior is
+    None without a noise budget."""
     m = iw.mask.astype(np.float64)
     num = ndimage.gaussian_filter(x * m, INTERIOR_HP_SIGMA)
     den = ndimage.gaussian_filter(m, INTERIOR_HP_SIGMA)
@@ -283,10 +367,57 @@ def _interior_score(x, iw: InteriorWindow) -> float:
     xw = (xx - (w * xx).sum() / w.sum()) * w
     p = np.abs(np.fft.fft2(xw)) ** 2 / (w ** 2).sum()
     f = _radial_frequency(xw.shape)
-    n_int = float(np.median(p[(f >= NOISE_BAND[0]) & (f <= NOISE_BAND[1])]) / math.log(2))
+    nb = (f >= NOISE_BAND[0]) & (f <= NOISE_BAND[1])
+    n_int = float(np.median(p[nb]) / math.log(2))
     fc = _radial_frequency(x.shape)
     gain = float(np.mean((1.0 - np.exp(-2.0 * (math.pi * INTERIOR_HP_SIGMA * fc) ** 2)) ** 2))
-    return math.sqrt(max(ms - n_int * gain, 0.0))
+    dan = math.sqrt(max(ms - n_int * gain, 0.0))
+    if budget is None:
+        return dan, None
+    # END of the interior: the periodogram of the windowed high-pass (without it the limb-darkening
+    # slope times the window would leak into the low bins). The high-pass is linear, so it scales
+    # signal and noise alike at every frequency: the noise model is multiplied by its power gain g.
+    hw = hp[sl] * w
+    ph = np.abs(np.fft.fft2(hw - hw.mean())) ** 2 / (w ** 2).sum()
+    g = (1.0 - np.exp(-2.0 * (math.pi * INTERIOR_HP_SIGMA * f) ** 2)) ** 2
+    return dan, _end_from_periodogram(ph, budget, g)[0]
+
+
+def _end_from_periodogram(p, noise_power, gain=None):
+    """(END, per-bin SNR) of periodogram `p` (variance-per-pixel units, on its own fftfreq grid)
+    against white noise of power `noise_power` (times the per-frequency power gain `gain` of a
+    linear pre-filter, when given): per END_EDGES bin, SNR = max(mean P - N, 0) / N, and
+    END = sqrt( sum_f O(f) / sum_f O(f) / (1 + SNR(f)) ) over the band's frequency samples, with
+    the object prior O(f) = f^-END_PRIOR (see END in the module doc)."""
+    f = _radial_frequency(p.shape)
+    num = den = 0.0
+    snrs = []
+    for a, b in zip(END_EDGES[:-1], END_EDGES[1:]):
+        m = (f >= a) & (f < b)
+        if not m.any():
+            continue
+        noise = noise_power * (float(gain[m].mean()) if gain is not None else 1.0)
+        snr = max(float(p[m].mean()) - noise, 0.0) / noise
+        snrs.append(snr)
+        o = float((f[m] ** -END_PRIOR).sum())       # the bin's object power under the prior
+        num += o
+        den += o / (1.0 + snr)
+    return math.sqrt(num / den), tuple(snrs)
+
+
+def periodogram(x) -> np.ndarray:
+    """The metric's periodogram of a crop: the 2-D Hann window, the window-weighted mean removed,
+    |FFT|^2 / sum(w^2) -- variance-per-pixel units (white noise of variance v gives v everywhere)."""
+    x = np.asarray(x, dtype=np.float64)
+    w = np.outer(np.hanning(x.shape[0]), np.hanning(x.shape[1]))
+    x = x - (w * x).sum() / w.sum()
+    return np.abs(np.fft.fft2(x * w)) ** 2 / (w ** 2).sum()
+
+
+def band_means(p, edges) -> list:
+    """Mean of periodogram `p` over each annulus [edges[i], edges[i + 1]) of radial frequency."""
+    f = _radial_frequency(p.shape)
+    return [float(p[(f >= a) & (f < b)].mean()) for a, b in zip(edges[:-1], edges[1:])]
 
 
 def _radial_frequency(shape):
@@ -296,11 +427,15 @@ def _radial_frequency(shape):
 
 
 def measure(img, box: Optional[Box] = None, *, mosaic=False,
-            interior: Optional[InteriorWindow] = None) -> Result:
-    """DAN of `img` (HxW or HxWxC array, any linear units) on `box` (default: its own
-    target_box), and DAN_interior when an anchor's interior window is given (judged only when
-    the window is >= INTERIOR_MIN_DIAMETER across). Raises ValueError when there is no target
-    signal to measure."""
+            interior: Optional[InteriorWindow] = None, noise_power: Optional[float] = None,
+            noise_power_interior: Optional[float] = None) -> Result:
+    """DAN and END of `img` (HxW or HxWxC array, any linear units) on `box` (default: its own
+    target_box), and DAN_interior / END_interior when an anchor's interior window is given (judged
+    only when the window is >= INTERIOR_MIN_DIAMETER across). `noise_power` is the image's photon
+    budget on the box, sigma_frame^2 / k_eff in the metric's units (a fraction of the box's mean
+    target signal squared; noise.box_noise / k), and `noise_power_interior` the same over the
+    interior window (default: noise_power). Without it END is None and end_note says so. Raises
+    ValueError when there is no target signal to measure."""
     lum = luminance(img)
     if box is None:
         box = target_box(lum)
@@ -314,27 +449,37 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False,
     signal = float(crop.mean()) - bg
     if not signal > 0 or not np.ptp(crop) > 0:
         raise ValueError("no target signal above the background in the crop")
-    x = (crop - bg) / signal
-    win = np.outer(np.hanning(crop.shape[0]), np.hanning(crop.shape[1]))
-    x = x - (win * x).sum() / win.sum()
-    power = np.abs(np.fft.fft2(x * win)) ** 2 / (win ** 2).sum()
+    power = periodogram((crop - bg) / signal)
     f = _radial_frequency(crop.shape)
     band = (f >= BAND[0]) & (f < BAND[1])
     noise = (f >= NOISE_BAND[0]) & (f <= NOISE_BAND[1])
     floor = float(np.median(power[noise]) / math.log(2))
     band_power = float(power[band].mean())
     excess = (float(power[band].sum()) - floor * int(band.sum())) / power.size
-    interior_value, judged, diameter = None, False, None
+    end = end_snr = end_note = None
+    budget = noise_power
+    if mosaic:
+        end_note, budget = "END not computed in mosaic mode (a fallback, never a pass/fail)", None
+    elif budget is None:
+        end_note = "END not computed: no noise budget (per-frame noise and frame count) for this image"
+    elif not budget > 0:
+        raise ValueError(f"noise budget must be positive, got {budget}")
+    if budget is not None:
+        end, end_snr = _end_from_periodogram(power, budget)
+    interior_value = end_int = None
+    judged, diameter = False, None
     if interior is not None:
         if interior.window.shape != crop.shape:
             raise ValueError(f"interior window {interior.window.shape} does not match the crop {crop.shape}")
         diameter, judged = interior.diameter, interior.judged
         if judged:
-            interior_value = _interior_score((crop - bg) / signal, interior)
+            b_int = None if budget is None else (noise_power_interior if noise_power_interior is not None else budget)
+            interior_value, end_int = _interior_scores((crop - bg) / signal, interior, b_int)
     return Result(value=math.sqrt(max(excess, 0.0)), band_power=band_power, noise_floor=floor,
                   band_snr=(band_power - floor) / floor if floor > 0 else math.inf,
                   background=bg, signal=signal, box=box, mosaic=mosaic,
-                  interior=interior_value, interior_judged=judged, interior_diameter=diameter)
+                  interior=interior_value, interior_judged=judged, interior_diameter=diameter,
+                  end=end, end_interior=end_int, end_snr=end_snr, end_noise_budget=budget, end_note=end_note)
 
 
 def measure_path(path, box: Optional[Box] = None, *, mosaic=False) -> Result:

@@ -5,6 +5,9 @@ What the spec asks the metric to prove before it judges anything (Task 9):
   * added noise does not raise it;
   * on the 2_12_2023 capture, AS_P20 against AutoStakkert's results from a larger share of the
     frames ranks the way AutoStakkert's own selection implies (fewer, sharper frames -> more detail).
+DAN is now the bench's SECONDARY figure (Ruling P28); these tests keep pinning its behaviour. The
+judged metric, END, is validated in test_end.py; the 2_12_2023 P20/P50 ordering became a reported
+figure there and here (the pair is confounded: ap1 against ap2).
 Run with -s to see the measured numbers (they are recorded in README.md).
 """
 import numpy as np
@@ -241,17 +244,40 @@ def test_real_added_noise_does_not_raise_it(parts, sigma):
 
 
 @pytest.mark.nas
-def test_real_2_12_2023_moon_ranks_as_autostakkert_selection_implies():
-    """The clean validation: AS_P20 and AS_P50 of the 2_12_2023 Moon are both native (no drizzle,
-    no resample), so the only difference is the share of frames. Measured exactly as the bench
-    path measures this capture (benchset.compare_capture, AS_P20 standing in for our stack):
-    fewer, sharper frames must give more detail although P50 has half P20's noise floor."""
+@pytest.mark.ffmpeg
+def test_real_2_12_2023_moon_p20_p50_pair_is_a_reported_figure():
+    """REPORTED, NOT ASSERTED (Ruling P28, rule 4). The plan asked that AS_P20 rank above AS_P50 on
+    the 2_12_2023 Moon "as AutoStakkert's selection implies". The pair is confounded: P20 is
+    lapl5_ap1, P50 lapl5_ap2 (different alignment-point settings), so it does not isolate the share
+    of frames. The ordering check moved to an unconfounded synthetic (test_end.py, a 20 % and a 50 %
+    stack of one capture). This test records both metrics on the real pair -- measured exactly as the
+    bench measures the capture, AS_P20 standing in for our stack with its own frame count -- and
+    asserts only that both are measurable. Numbers in README.md."""
     import benchset
-    rows = benchset.compare_capture("2023-02-12-moon", nas_path(*AS_P20_MOON))
+    c = benchset.by_id("2023-02-12-moon")
+    probe = {"used": 0.20 * c.frames, "regionDetail": []}           # AS_P20's k: 20 % of the frames
+    rows = benchset.compare_capture("2023-02-12-moon", nas_path(*AS_P20_MOON), probe=probe)
     by = {r.label: r.result for r in rows}
     for r in rows:
-        print(f"\n{r.label}: DAN {r.result.value:.5f}, interior {r.result.interior}, "
-              f"floor {r.result.noise_floor:.3g}")
-    p20, p50 = by["AS_P20"], by["AS_P50"]
-    assert p20.value > p50.value
-    assert p50.noise_floor < p20.noise_floor
+        print(f"\n{r.label}: END {r.result.end} (k {r.result.end_frames}), DAN {r.result.value:.5f}, "
+              f"floor {r.result.noise_floor:.3g}, note {r.result.end_note}")
+    for label in ("AS_P20", "AS_P50"):
+        assert by[label].end is not None and by[label].value > 0
+
+
+def test_target_box_of_a_tiny_disc_is_at_least_the_minimum_side():
+    """The 2_12_2023 Mars case (Task 9's run): a sharp 13 px disc plus the 8 px margin gives a
+    29 px box, under refs.compare's 32 px floor, so the comparison could not run at all. The box
+    grows about the disc to MIN_BOX_SIDE (sky only: the same for every image compared)."""
+    img = planet_scene(size=(240, 320), radius=6)
+    y0, y1, x0, x1 = metric.target_box(img)
+    assert y1 - y0 >= metric.MIN_BOX_SIDE and x1 - x0 >= metric.MIN_BOX_SIDE
+    cy, cx = 120 + 3.3, 160 - 7.6
+    assert abs((y0 + y1) / 2 - cy) <= 1.5 and abs((x0 + x1) / 2 - cx) <= 1.5
+
+
+def test_a_tiny_disc_near_the_frame_edge_keeps_a_minimum_box_inside_the_frame():
+    img = np.roll(planet_scene(size=(240, 320), radius=6), (-100, 140), axis=(0, 1))
+    y0, y1, x0, x1 = metric.target_box(img)
+    assert y1 - y0 >= metric.MIN_BOX_SIDE and x1 - x0 >= metric.MIN_BOX_SIDE
+    assert y0 >= 4 and x1 <= 320 - 4
