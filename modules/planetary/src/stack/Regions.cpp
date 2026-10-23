@@ -1,8 +1,10 @@
 #include "Regions.h"
 
 #include "Parallel.h"
+#include "StackTypes.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -831,7 +833,8 @@ int64_t RegionPlan::Find(int64_t frameIndex) const {
     return it != frames.end() && *it == frameIndex ? static_cast<int64_t>(it - frames.begin()) : -1;
 }
 
-RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads) {
+RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads,
+                       const Progress& progress) {
     const size_t nr = layout.regions.size();
     std::vector<size_t> order(measured.size());
     std::iota(order.begin(), order.end(), size_t{0});
@@ -872,70 +875,93 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
                 for (int x = g.x0; x < g.x1 && top == 0; ++x) top = std::max(top, layout.mask.At(x, y));
             plan.detail[r].skyOnly = top == 0;
         }
-    // Regions are independent: each band of regions writes only its own detail and flag entries.
-    ParallelBands(static_cast<int>(nr), threads, [&](int r0, int r1) {
-        for (size_t r = static_cast<size_t>(r0); r < static_cast<size_t>(r1); ++r) {
-            RegionDetail& d = plan.detail[r];
-            std::vector<double> conf;
-            for (size_t f = 0; f < nf; ++f) {
-                const RegionMeasure& q = measured[order[f]].regions[r];
-                if (q.aligned && std::isfinite(q.confidence)) conf.push_back(q.confidence);
-            }
-            if (conf.empty()) continue;
-            std::sort(conf.begin(), conf.end());
-            d.confidenceCut = kAlignRelative * conf[(conf.size() - 1) / 2];
-            std::vector<double> q, sg, sg2;
-            std::vector<size_t> pos;
-            for (size_t f = 0; f < nf; ++f) {
-                const RegionMeasure& m = measured[order[f]].regions[r];
-                if (!(m.aligned && std::isfinite(m.confidence) && m.confidence >= d.confidenceCut)) continue;
-                plan.flags[f * nr + r] |= RegionPlan::kShiftUsable;
-                if (!(std::isfinite(m.quality) && m.quality > 0)) continue;
-                q.push_back(m.quality);
-                sg.push_back(m.qualitySigma);
-                sg2.push_back(m.quality2Sigma);
-                pos.push_back(f);
-            }
-            const auto n = static_cast<int64_t>(q.size());
-            d.candidates = n;
-            if (n == 0) continue;
-            // Ruling P27: no detail to rank above the measurement noise -> no kept frame, so the region
-            // takes the fallback, the plain mean (Regions.h): fewer than kMinStackFrames candidates (a
-            // subset of those is no stack worth the name, and one or two candidates out of many aligned
-            // frames are the noise's tail -- or alignment collapsed there), or the median candidate's
-            // quality under kRegionDetailSigmas of its own qualitySigma.
-            std::vector<double> ratio;
-            for (size_t i = 0; i < q.size(); ++i)
-                ratio.push_back(sg[i] > 0 && std::isfinite(sg[i]) ? q[i] / sg[i] : std::numeric_limits<double>::infinity());
-            std::nth_element(ratio.begin(), ratio.begin() + static_cast<std::ptrdiff_t>(ratio.size() / 2), ratio.end());
-            if (n < kMinStackFrames || ratio[ratio.size() / 2] < kRegionDetailSigmas) {
-                d.noiseOnly = true;
-                continue;
-            }
-            const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (n + 1) / 2));
-            const int64_t floorCount =
-                std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));
-            // No upper fence (Ruling P8): every candidate passed this region's alignment cut (and the
-            // frame the global one, Select's suspects included once admitted); a trail or a hot pixel that
-            // raises one frame's quality here is removed sample by sample in the Accumulator, not by
-            // dropping the frame, and a garbage frame does not align.
-            const DetailRanking rank = RankByDetail(q, sg, sg2, need, floorCount, false);
-            std::vector<double> keptSigma;
-            for (size_t k = 0; k < rank.keep; ++k) {
-                const size_t i = rank.ranked[k];
-                plan.flags[pos[i] * nr + r] |= RegionPlan::kKept;
-                keptSigma.push_back(std::isfinite(sg[i]) ? sg[i] : 0.0);
-            }
-            d.kept = static_cast<int64_t>(rank.keep);
-            d.bestQuality = rank.qRef;
-            d.detailScale = rank.qRef > 0 ? 1 / rank.qRef : 0;
-            if (!keptSigma.empty()) {
-                std::nth_element(keptSigma.begin(), keptSigma.begin() + static_cast<std::ptrdiff_t>(keptSigma.size() / 2),
-                                 keptSigma.end());
-                d.keptQualitySigma = keptSigma[keptSigma.size() / 2];
-            }
+    // One region's ranking (Ruling P27's gate, then RankByDetail): writes only its own detail and flags.
+    auto rankRegion = [&](size_t r) {
+        RegionDetail& d = plan.detail[r];
+        std::vector<double> conf;
+        for (size_t f = 0; f < nf; ++f) {
+            const RegionMeasure& q = measured[order[f]].regions[r];
+            if (q.aligned && std::isfinite(q.confidence)) conf.push_back(q.confidence);
         }
+        if (conf.empty()) return;
+        std::sort(conf.begin(), conf.end());
+        d.confidenceCut = kAlignRelative * conf[(conf.size() - 1) / 2];
+        std::vector<double> q, sg, sg2;
+        std::vector<size_t> pos;
+        for (size_t f = 0; f < nf; ++f) {
+            const RegionMeasure& m = measured[order[f]].regions[r];
+            if (!(m.aligned && std::isfinite(m.confidence) && m.confidence >= d.confidenceCut)) continue;
+            plan.flags[f * nr + r] |= RegionPlan::kShiftUsable;
+            if (!(std::isfinite(m.quality) && m.quality > 0)) continue;
+            q.push_back(m.quality);
+            sg.push_back(m.qualitySigma);
+            sg2.push_back(m.quality2Sigma);
+            pos.push_back(f);
+        }
+        const auto n = static_cast<int64_t>(q.size());
+        d.candidates = n;
+        if (n == 0) return;
+        // Ruling P27: no detail to rank above the measurement noise -> no kept frame, so the region
+        // takes the fallback, the plain mean (Regions.h): fewer than kMinStackFrames candidates (a
+        // subset of those is no stack worth the name, and one or two candidates out of many aligned
+        // frames are the noise's tail -- or alignment collapsed there), or the median candidate's
+        // quality under kRegionDetailSigmas of its own qualitySigma.
+        std::vector<double> ratio;
+        for (size_t i = 0; i < q.size(); ++i)
+            ratio.push_back(sg[i] > 0 && std::isfinite(sg[i]) ? q[i] / sg[i] : std::numeric_limits<double>::infinity());
+        std::nth_element(ratio.begin(), ratio.begin() + static_cast<std::ptrdiff_t>(ratio.size() / 2), ratio.end());
+        if (n < kMinStackFrames || ratio[ratio.size() / 2] < kRegionDetailSigmas) {
+            d.noiseOnly = true;
+            return;
+        }
+        const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (n + 1) / 2));
+        const int64_t floorCount =
+            std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));
+        // No upper fence (Ruling P8): every candidate passed this region's alignment cut (and the
+        // frame the global one, Select's suspects included once admitted); a trail or a hot pixel that
+        // raises one frame's quality here is removed sample by sample in the Accumulator, not by
+        // dropping the frame, and a garbage frame does not align.
+        const DetailRanking rank = RankByDetail(q, sg, sg2, need, floorCount, false);
+        std::vector<double> keptSigma;
+        for (size_t k = 0; k < rank.keep; ++k) {
+            const size_t i = rank.ranked[k];
+            plan.flags[pos[i] * nr + r] |= RegionPlan::kKept;
+            keptSigma.push_back(std::isfinite(sg[i]) ? sg[i] : 0.0);
+        }
+        d.kept = static_cast<int64_t>(rank.keep);
+        d.bestQuality = rank.qRef;
+        d.detailScale = rank.qRef > 0 ? 1 / rank.qRef : 0;
+        if (!keptSigma.empty()) {
+            std::nth_element(keptSigma.begin(), keptSigma.begin() + static_cast<std::ptrdiff_t>(keptSigma.size() / 2),
+                             keptSigma.end());
+            d.keptQualitySigma = keptSigma[keptSigma.size() / 2];
+        }
+    };
+    // Regions are independent: each writes only its own detail and flag entries, so they are ranked on
+    // `threads` workers claiming one region at a time (the result is the same for any count), while the
+    // calling thread reports the regions done and polls cancel (RunPool: at least every 10 ms).
+    std::atomic<int64_t> nextRegion{0}, regionsDone{0};
+    std::atomic<bool> stop{false};
+    const int workers = static_cast<int>(std::min<size_t>(static_cast<size_t>(std::max(1, threads)), nr));
+    const std::string phase = "Planning regions";
+    if (progress.report) progress.report(phase, 0, static_cast<int64_t>(nr));
+    if (progress.cancelled && progress.cancelled()) throw StackCancelled("cancelled while planning regions");
+    const PoolOutcome pool = RunPool(workers, stop, [&](int) {
+        while (!stop.load(std::memory_order_relaxed)) {
+            const int64_t claimed = nextRegion.fetch_add(1);
+            if (claimed >= static_cast<int64_t>(nr)) break;
+            const size_t r = static_cast<size_t>(claimed);
+            rankRegion(r);
+            regionsDone.fetch_add(1);
+        }
+    }, [&] {
+        if (progress.report) progress.report(phase, regionsDone.load(), static_cast<int64_t>(nr));
+        return progress.cancelled && progress.cancelled();
     });
+    if (pool.cancelled) throw StackCancelled("cancelled while planning regions");
+    if (pool.error) std::rethrow_exception(pool.error);
+    if (progress.report) progress.report(phase, static_cast<int64_t>(nr), static_cast<int64_t>(nr));
+    if (progress.cancelled && progress.cancelled()) throw StackCancelled("cancelled while planning regions");
     for (RegionDetail& d : plan.detail) d.tooFewFrames = d.kept == 0 && d.candidates < kMinStackFrames;
     for (size_t r = 0; r < nr; ++r)
         if (plan.detail[r].kept > 0 &&

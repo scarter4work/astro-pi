@@ -293,16 +293,28 @@ TEST_CASE("RunStack: cancel in each phase throws StackCancelled, joins every thr
     // kReferenceFrames frames on the calling thread, then the alignment pass reads on the workers, then
     // the focus measure reads its kFocusFrames on the calling thread again. That needs >= kFocusFrames
     // kept frames (so kReferenceFrames selected), checked on a dry run.
+    // The dry run also counts the alignment pass's reads (the worker reads of the aligning phase): PlanRegions
+    // runs after them and before the focus measure's reads, reporting past refUnits + those frames.
+    int64_t alignReads = 0;
     {
-        const StackOutcome dry = stack::RunStack(cap.Factory(), 6, {});
+        ReaderLedger ledger;
+        int64_t workerAtAligning = -1;
+        stack::Progress p;
+        p.report = [&](const std::string& phase, int64_t, int64_t) {
+            if (phase == stack::kPhaseAligning && workerAtAligning < 0) workerAtAligning = ledger.workerReads.load();
+            if (phase == stack::kPhaseStacking && alignReads == 0) alignReads = ledger.workerReads.load() - workerAtAligning;
+        };
+        const StackOutcome dry = stack::RunStack(Counted(cap.Factory(), ledger), 6, p);
         REQUIRE(dry.frames.stacked.size() >= static_cast<size_t>(stack::kFocusFrames));
+        REQUIRE(alignReads >= static_cast<int64_t>(dry.frames.stacked.size()));
     }
     struct Case {
         const char* where;
         std::string phase;
     };
     for (const Case& c : {Case{"measuring", stack::kPhaseMeasuring}, Case{"building the reference", stack::kPhaseAligning},
-                          Case{"the alignment pass", stack::kPhaseAligning}, Case{"the focus measure's reads", stack::kPhaseAligning},
+                          Case{"the alignment pass", stack::kPhaseAligning}, Case{"planning regions", stack::kPhaseAligning},
+                          Case{"the focus measure's reads", stack::kPhaseAligning},
                           Case{"judging focus", stack::kPhaseAligning}, Case{"stacking", stack::kPhaseStacking}}) {
         const std::string where = c.where;
         INFO("cancel in " << where);
@@ -330,6 +342,10 @@ TEST_CASE("RunStack: cancel in each phase throws StackCancelled, joins every thr
             const int64_t caller = ledger.callerReads.load() - callerAtAligning, worker = ledger.workerReads.load() - workerAtAligning;
             if (where == "building the reference") fired = caller >= 2;
             else if (where == "the alignment pass") fired = worker >= 3;
+            // Final review, engine M4: PlanRegions polls -- its progress has moved past the alignment pass's units
+            // (3 per reference frame, 1 per aligned frame) and no focus frame has been read.
+            else if (where == "planning regions")
+                fired = worker >= alignReads && caller == stack::kReferenceFrames && done > 3 * stack::kReferenceFrames + alignReads;
             else if (where == "the focus measure's reads") fired = caller >= stack::kReferenceFrames + 2;
             // Every focus frame read: without polls inside the focus measure there are only two more (the read
             // loop's after the last read, and the phase's end), so a 4th proves MeasureFocus / the inversion poll.
@@ -341,8 +357,18 @@ TEST_CASE("RunStack: cancel in each phase throws StackCancelled, joins every thr
             }
             return fired;
         };
-        CHECK_THROWS_AS(stack::RunStack(factory, 6, progress), stack::StackCancelled);
+        std::string message;
+        try {
+            stack::RunStack(factory, 6, progress);
+        } catch (const stack::StackCancelled& e) {
+            message = e.what();
+        }
+        CHECK_FALSE(message.empty());  // StackCancelled was thrown
         CHECK(fired);
+        if (where == "planning regions") {
+            CHECK(message == "cancelled while planning regions");  // PlanRegions' own poll, not the phase's next check
+            CHECK(callerAtFire == stack::kReferenceFrames);       // no focus read yet
+        }
         REQUIRE_FALSE(seen.empty());
         CHECK(seen.back() == c.phase);  // nothing after the cancelled phase was started
         if (where == "building the reference") CHECK(workerAtFire == 0);
@@ -355,6 +381,69 @@ TEST_CASE("RunStack: cancel in each phase throws StackCancelled, joins every thr
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
         CHECK(ledger.reads.load() == reads);  // no worker is still reading
     }
+}
+
+TEST_CASE("PlanRegions reports its progress and honours cancel from the calling thread (final review, engine M4)", "[engine]") {
+    // 64 regions on an 8 x 8 grid, 400 frames whose quality varies (each region ranks its own frames).
+    stack::RegionLayout lay;
+    lay.width = lay.height = 288;
+    lay.size = 64;
+    lay.step = 32;
+    lay.nx = lay.ny = 8;
+    for (int j = 0; j < 8; ++j)
+        for (int i = 0; i < 8; ++i) {
+            lay.regions.push_back({i * 32, j * 32, i * 32 + 64, j * 32 + 64, 0.01, i, j});
+            lay.node.push_back(j * 8 + i);
+        }
+    std::mt19937 rng(17);
+    std::normal_distribution<double> n(0, 1);
+    std::vector<stack::FrameRegions> measured(400);
+    for (int k = 0; k < 400; ++k) {
+        measured[static_cast<size_t>(k)].frameIndex = k;
+        for (int r = 0; r < 64; ++r) {
+            stack::RegionMeasure q;
+            q.aligned = true;
+            q.confidence = 0.95f;
+            q.quality = static_cast<float>(0.3 * std::exp(0.3 * n(rng)));
+            q.qualitySigma = 0.01f;
+            q.quality2Sigma = 2 * q.quality * q.qualitySigma;
+            measured[static_cast<size_t>(k)].regions.push_back(q);
+        }
+    }
+    const auto caller = std::this_thread::get_id();
+    std::vector<int64_t> done;
+    bool offThread = false, badTotal = false;
+    stack::Progress progress;
+    progress.report = [&](const std::string&, int64_t d, int64_t t) {
+        offThread |= std::this_thread::get_id() != caller;
+        badTotal |= t != 64;
+        done.push_back(d);
+    };
+    progress.cancelled = [&] {
+        offThread |= std::this_thread::get_id() != caller;
+        return false;
+    };
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured, 4, progress);
+    CHECK_FALSE(offThread);
+    CHECK_FALSE(badTotal);
+    INFO("reports " << done.size());
+    REQUIRE(done.size() >= 3);  // the start, at least one poll while ranking, the end
+    CHECK(done.front() == 0);
+    CHECK(done.back() == 64);
+    CHECK(std::is_sorted(done.begin(), done.end()));
+    const stack::RegionPlan one = stack::PlanRegions(lay, measured, 1);  // the same for any count, with or without hooks
+    CHECK(plan.flags == one.flags);
+    CHECK(plan.stackedCount == one.stackedCount);
+
+    // A cancel at the first poll while the workers rank: StackCancelled, every worker joined.
+    const int threadsBefore = SettledThreadCount();
+    int reports = 0;
+    stack::Progress cancel;
+    cancel.report = [&](const std::string&, int64_t, int64_t) { ++reports; };
+    cancel.cancelled = [&] { return reports >= 2; };  // the first report is (0, 64), before the workers start
+    CHECK_THROWS_AS(stack::PlanRegions(lay, measured, 4, cancel), stack::StackCancelled);
+    CHECK(reports >= 2);
+    CHECK(SettledThreadCount() == threadsBefore);
 }
 
 TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic as mono, with a warning", "[engine]") {

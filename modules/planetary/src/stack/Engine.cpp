@@ -855,7 +855,10 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     const int64_t refUnits = 3 * std::min<int64_t>(kReferenceFrames, static_cast<int64_t>(sel.frames.size()));
     const int64_t nAlign = static_cast<int64_t>(alignList.size());
     const int64_t focusUnits = std::min<int64_t>(kFocusFrames, nAlign);
-    Phase aligning(progress, kPhaseAligning, refUnits + nAlign + focusUnits);
+    // PlanRegions' share: as many units as the alignment pass (its work is per frame and region too; the
+    // regions it ranks are mapped onto them -- their count is not known before the layout is placed).
+    const int64_t planUnits = nAlign;
+    Phase aligning(progress, kPhaseAligning, refUnits + nAlign + planUnits + focusUnits);
     aligning.Report(0);
     t0 = Clock::now();
     const ser::FloatImage reference =
@@ -949,7 +952,9 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     }
 
     t0 = Clock::now();
-    RegionPlan plan = PlanRegions(layout, kept, mem.alignWorkers);
+    RegionPlan plan = PlanRegions(layout, kept, mem.alignWorkers, aligning.Mapped(refUnits + nAlign, planUnits));
+    aligning.Report(refUnits + nAlign + planUnits);
+    aligning.ThrowIfCancelled();
     const int64_t nKept = static_cast<int64_t>(kept.size());
     kept = {};
     step("Planning regions", t0);
@@ -983,7 +988,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
         {
             const std::unique_ptr<ser::FrameSource> src = factory();
             CheckReader(src.get(), info);
-            int64_t done = refUnits + nAlign;
+            int64_t done = refUnits + nAlign + planUnits;
             for (size_t i : byIndex) {  // read forward
                 lumas[i] = MeasurementLuma(src->ReadFrame(alignList[ranked[i]]), info);
                 focusShifts[i] = shifts[ranked[i]];

@@ -61,12 +61,14 @@ namespace planetary::stack {
 // Progress (StackTypes.h): three phases, in this order, each reported from the calling thread with a
 // fixed total and a done count that only grows and ends at the total:
 //   kPhaseMeasuring  done / (hot-pixel frames + kNoisePasses x the noise model's runs + every frame)
-//   kPhaseAligning   done / (3 x the reference's frames + the frames of the alignment pass + up to
-//                    kFocusFrames read for the focus measure); a turned-down reference anchor
-//                    (Align.h) is folded into the first part
+//   kPhaseAligning   done / (3 x the reference's frames + the frames of the alignment pass + as many
+//                    again for PlanRegions, its regions ranked mapped onto them + up to kFocusFrames
+//                    read for the focus measure); a turned-down reference anchor (Align.h) is folded
+//                    into the first part
 //   kPhaseStacking   done / (frames the plan uses)
 // cancelled() is polled between frames in every phase (by the calling thread; workers check a flag),
-// and once more after each phase and before returning. Cancel: workers stop, every thread is joined,
+// at least every 10 ms while PlanRegions ranks the regions, and once more after each phase and before
+// returning. Cancel: workers stop, every thread is joined,
 // every reader closed, StackCancelled is thrown -- nothing partial is returned.
 //
 // Errors: a reader or factory error, a frame that cannot be read, an exception from report() or

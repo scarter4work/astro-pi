@@ -460,7 +460,12 @@ struct RegionPlan {
 // everything there (Neptune 204515: 92-93 of 93 per region). An override that kept every aligned frame
 // when the spread was within qualitySigma discarded real lucky frames at low SNR, where qualitySigma
 // then overstated q's scatter at low SNR (before Ruling P26; Measure.h "qualitySigma").
-// threads: regions are ranked on that many threads (< 1 counts as 1); the result is the same for any count.
-RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1);
+// threads: regions are ranked on that many worker threads (< 1 counts as 1), one region at a time; the
+// result is the same for any count. progress: report("Planning regions", regions done, regions) and
+// cancelled() from the calling thread, at least every 10 ms while the workers rank (final review, engine
+// M4: the cost grows with frames x regions, so on a long 4K capture it is a step of its own); a cancel
+// stops the workers, joins them and throws StackCancelled.
+RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1,
+                       const Progress& progress = {});
 
 }  // namespace planetary::stack
