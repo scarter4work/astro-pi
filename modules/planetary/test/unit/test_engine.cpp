@@ -1095,3 +1095,49 @@ TEST_CASE("No region-stage disc verdict refuses: faint blobs and a clamped inver
     CHECK(clamped.outcome == stack::FocusOutcome::NotJudged);
     CHECK_FALSE(clamped.note.empty());
 }
+
+TEST_CASE("The region phrase does not count sky-only regions as placed on the target's detail (E1 fix round 2)", "[engine]") {
+    // Review N4: a region whose whole window lies where the blend mask is 0 still ranks and keeps frames (they
+    // join the fallback's), but its stack never reaches the image. Three regions in a row; the mask is 0 over
+    // the first one's window and 1 elsewhere.
+    stack::RegionLayout lay;
+    lay.width = 64;
+    lay.height = 32;
+    lay.size = 32;
+    lay.step = 16;
+    lay.nx = 3;
+    lay.ny = 1;
+    lay.flatEdges = true;
+    for (int i = 0; i < 3; ++i) {
+        lay.regions.push_back({i * 16, 0, i * 16 + 32, 32, 0.01, i, 0});
+        lay.node.push_back(i);
+    }
+    auto m = std::make_shared<std::vector<float>>(64 * 32, 1.f);
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 32; ++x) (*m)[static_cast<size_t>(y) * 64 + x] = 0.f;
+    lay.mask.width = 64;
+    lay.mask.height = 32;
+    lay.mask.m = m;
+    std::mt19937 rng(9);
+    std::normal_distribution<double> n(0, 1);
+    std::vector<stack::FrameRegions> measured;
+    for (int k = 0; k < 40; ++k) {
+        stack::FrameRegions f;
+        f.frameIndex = k;
+        for (int r = 0; r < 3; ++r) {
+            stack::RegionMeasure q;
+            q.aligned = true;
+            q.confidence = 0.95f;
+            q.quality = static_cast<float>(0.3 * std::exp(0.4 * n(rng)));
+            q.qualitySigma = 0.001f;
+            f.regions.push_back(q);
+        }
+        measured.push_back(f);
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
+    for (const auto& d : plan.detail) REQUIRE(d.kept > 0);  // all three rank and keep frames
+    const std::string phrase = stack::RegionPhrase(plan.detail, 40, plan.stackedCount);
+    INFO(phrase);
+    CHECK(phrase.rfind("2 regions placed on the target's detail", 0) == 0);
+    CHECK(phrase.find("1 over the sky only") != std::string::npos);
+}
