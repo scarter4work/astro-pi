@@ -8,6 +8,7 @@
 #include <pcl/ErrorHandler.h>
 #include <pcl/File.h>
 #include <pcl/Image.h>
+#include <pcl/MetaModule.h>
 #include <pcl/StandardStatus.h>
 #include <pcl/StatusMonitor.h>
 #include <pcl/Thread.h>
@@ -271,6 +272,21 @@ bool PlanetaryStackInstance::ExecuteGlobal()
    {
       throw Error( "PlanetaryStack: " + fileName + ": " +
                    String::UTF8ToUTF16( preview::DescribeException( std::current_exception() ).c_str() ) );
+   }
+
+   // An Abort pressed after the engine's last cancelled() poll -- during its
+   // final blend, when no progress report runs to deliver it -- leaves RunStack
+   // to return normally. Deliver the pending events and honour it here, before
+   // anything is written or opened (final review, module m3).
+   if ( !aborted )
+   {
+      Module->ProcessEvents();
+      aborted = console.AbortRequested();
+   }
+   if ( aborted )
+   {
+      console.WriteLn( "<end><cbr>PlanetaryStack: cancelled; no image was made" );
+      throw ProcessAborted();
    }
 
    WriteStackResult( path, outcome );
