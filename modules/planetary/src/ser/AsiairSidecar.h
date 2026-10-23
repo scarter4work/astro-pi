@@ -28,7 +28,8 @@ inline constexpr char kRawCfaAsMonoTail[] =
 // measured: neither changes the frame (ASIAIR records the Vert setting but does not apply it;
 // spec amendment 2026-10-23, superseding Ruling 10). Any other non-empty Flip is unmeasured: the
 // sidecar's pattern is used, with a warning saying so (Ruling 15). An odd StartX/StartY (never
-// seen; ZWO documents no rule for it) likewise keeps the pattern with a warning. An explicit
+// seen; ZWO documents no rule for it), or one that is present but not a sensor coordinate,
+// likewise keeps the pattern with a warning. An explicit
 // choice wins and warns of neither; None is Mono; Auto with nothing known
 // is Mono with a warning naming why (`sidecarName` is the sidecar's file name, for warnings).
 // `status` says why `sidecar` is empty -- none there, unreadable, or over the size cap -- so the

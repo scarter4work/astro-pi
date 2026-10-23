@@ -147,20 +147,33 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
     // sidecar seen has an even StartX/StartY, where the frame is exactly the sensor from that
     // origin, phase unchanged. An odd origin would start one site into the CFA if the camera honours
     // it as given; no capture shows whether it does, so the sidecar's pattern stands with a warning.
-    auto odd = [](const std::string& v) {
-        if (v.empty() || v.size() > 9) return false;
+    // A value that is there but is not a sensor coordinate (not 1-9 digits) leaves the parity
+    // unknown, which is said too; an absent one says nothing.
+    enum class Origin { Even, Odd, Bad };
+    auto classify = [](const std::string& v) {
+        if (v.size() > 9) return Origin::Bad;
         for (char c : v)
-            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-        return (v.back() - '0') % 2 == 1;
+            if (!std::isdigit(static_cast<unsigned char>(c))) return Origin::Bad;
+        return (v.back() - '0') % 2 == 1 ? Origin::Odd : Origin::Even;
     };
-    std::string oddAxes;
-    if (odd(sidecar->startX)) oddAxes = "StartX=" + sidecar->startX;
-    if (odd(sidecar->startY)) oddAxes += (oddAxes.empty() ? "" : ", ") + std::string("StartY=") + sidecar->startY;
+    std::string oddAxes, badAxes;
+    for (const auto& [axis, value] : {std::pair<const char*, const std::string&>{"StartX", sidecar->startX},
+                                      std::pair<const char*, const std::string&>{"StartY", sidecar->startY}}) {
+        if (value.empty()) continue;
+        const Origin o = classify(value);
+        if (o == Origin::Even) continue;
+        std::string& list = o == Origin::Odd ? oddAxes : badAxes;
+        list +=(list.empty() ? "" : ", ") + std::string(axis) + "=" + value;
+    }
+    const std::string asSaid = " as the sidecar says; if colours look wrong, choose the pattern under Bayer pattern";
     if (!oddAxes.empty())
         warnings.push_back("sidecar ROI origin " + oddAxes +
                            " is odd; how an odd origin shifts the Bayer pattern is unmeasured -- using " +
-                           patterns[found] +
-                           " as the sidecar says; if colours look wrong, choose the pattern under Bayer pattern");
+                           patterns[found] + asSaid);
+    if (!badAxes.empty())
+        warnings.push_back("sidecar ROI origin " + badAxes +
+                           " is not a sensor coordinate; the Bayer phase of the ROI is unknown -- using " +
+                           patterns[found] + asSaid);
     source = sidecar->writtenBySERViewer ? "sidecar (SERViewer)" : "sidecar";
     return ids[found];
 }
