@@ -462,8 +462,17 @@ published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "${PLANETARY_
 SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
 [[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
 EZ_ZIPS=(); for name in "${EZ_NAMES[@]}"; do EZ_ZIPS+=("${name}_v${EZVER[$name]}.zip"); done
-DESC_LIST="$(desc_args "$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "gaia-depth-grade_v${GAIA_VER}.zip" \
-  "$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz")" || die "a package has no description source"
+GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
+# The sidecar package of SIDECAR_VER: its published (committed) tarball whatever date it was cut on,
+# else a new dated name (step 3d builds it).
+SIDECAR_TGZ="$(git -C "$ROOT" ls-files "repository/*-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz" | sed 's#^repository/##')"
+[ "$(printf '%s\n' "$SIDECAR_TGZ" | grep -c .)" -le 1 ] || die "several published sidecar packages for $SIDECAR_VER: $SIDECAR_TGZ"
+SIDECAR_PUBLISHED=0; [ -n "$SIDECAR_TGZ" ] && SIDECAR_PUBLISHED=1
+[ -n "$SIDECAR_TGZ" ] || SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
+# This release's packages, ONE list: step 0b's description check, 3f's description write and the
+# manifest name-set checks (after 3f and after step 4) all take their names from it.
+RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions check "$REPO/updates.xri" "${DESC_ARGS[@]}" \
   || die "a package description names a version other than its package's -- bring it up to date for this release"
@@ -626,8 +635,7 @@ echo "== 3c/6 package gaia-depth-grade script zip =="
 # the user documentation in doc/scripts/GaiaDepthGrade/ (Repository Reference 4.2:
 # doc/scripts is for script documentation; the folder and page carry the
 # #feature-id "GaiaDepthGrade"). Modes are normalised world-readable: the updater
-# installs as root while PixInsight runs as the user.
-GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
+# installs as root while PixInsight runs as the user. GAIA_ZIP: named in step 0b.
 GAIA_STAGE="$(mktemp -d)"
 mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade"
 cp "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.js"        "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.xsgn" \
@@ -650,16 +658,13 @@ echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-gr
 # exactly like the module tarballs: bump gaia_depth_grade.__version__ to ship
 # new bytes. Building one takes the portable Rocky 9 image and network access
 # (pinned, hash-checked inputs); see gaia-depth-grade/tools/build-sidecar.sh.
-# SIDECAR_VER: read in step 0b.
+# SIDECAR_VER and SIDECAR_TGZ (the published name, or a new dated one): set in step 0b.
 grep -qE "^#define SIDECAR_VERSION +\"$SIDECAR_VER\"" "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh" \
   || die "gaia_depth_grade_lib.jsh SIDECAR_VERSION is not $SIDECAR_VER: the scripts would refuse the sidecar this release ships"
-SIDECAR_TGZ="$(git -C "$ROOT" ls-files "repository/*-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz" | sed 's#^repository/##')"
-[ "$(printf '%s\n' "$SIDECAR_TGZ" | grep -c .)" -le 1 ] || die "several published sidecar packages for $SIDECAR_VER: $SIDECAR_TGZ"
-if [ -n "$SIDECAR_TGZ" ]; then
+if [ "$SIDECAR_PUBLISHED" = 1 ]; then
   git -C "$ROOT" checkout -- "repository/$SIDECAR_TGZ"
   echo "   $SIDECAR_TGZ already published -- reusing the committed bytes"
 else
-  SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
   "$ROOT/gaia-depth-grade/tools/build-sidecar.sh" "$REPO/$SIDECAR_TGZ" || die "sidecar build/smoke test failed"
 fi
 [ "$(stat -c%s "$REPO/$SIDECAR_TGZ")" -lt 95000000 ] || die "$SIDECAR_TGZ is too close to GitHub's 100 MB per-file limit"
@@ -679,8 +684,7 @@ qe_check "$REPO" || die "published QE set in repository/ does not verify"
 echo "== 3f/6 write every package description from its source (and the repository's) =="
 # Every fileName is final by now; each entry gets its product's text, so none
 # outlives the release it was written for. The same explicit list as step 0b
-# (with the sidecar's real name), so 0b, 3f and 6a check identical names.
-RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+# (RELEASE_PKGS), so 0b, 3f and 6a check identical names.
 manifest_names_check "$REPO/updates.xri" "${RELEASE_PKGS[@]}"
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"

@@ -10,7 +10,8 @@
 #  - write_pkg writes the sha1 and releaseDate of both new names;
 #  - write_pkg of a fileName the manifest does not hold fails (it used to change nothing and succeed);
 #  - manifest_rename fails when no entry matches;
-#  - manifest_names_check passes for exactly the manifest's names and fails for a missing or extra one.
+#  - manifest_names_check passes for exactly the manifest's names and fails for a missing or extra one;
+#  - steps 0b and 3f and the name-set checks take the package names from one list, RELEASE_PKGS.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${1:-$ROOT/release.sh}"
@@ -81,6 +82,33 @@ else bad "manifest_names_check accepted a manifest package it was not given"; fi
 if have manifest_names_check && ! ( manifest_names_check "$MF" "${NAMES[@]}" "Extra_v1.0.0.zip" ) >/dev/null 2>&1; then
   ok "manifest_names_check fails when an expected package is missing (Extra_v1.0.0.zip)"
 else bad "manifest_names_check accepted a missing package"; fi
+
+# 7. Steps 0b (description check), 3f (description write) and the name-set checks take the release's
+#    package names from ONE list: RELEASE_PKGS, set once, before 0b's check (review round 2). A second
+#    source of names lets 0b pass on names 3f never writes.
+names_report="$(python3 - "$SCRIPT" <<'PY'
+import re,sys
+lines=open(sys.argv[1]).read().split("\n")
+pt=[i for i,l in enumerate(lines) if l.startswith('if [ "${1:-}" = "--package-test" ]')]
+end=next((j for j in range(pt[0],len(lines)) if lines[j]=="fi"),None) if pt else None
+body=[(i,l) for i,l in enumerate(lines) if not l.lstrip().startswith("#") and not (pt and pt[0]<=i<=end)]
+errs=[]
+sets=[i for i,l in body if re.match(r'\s*RELEASE_PKGS=\(',l)]
+if len(sets)!=1: errs.append("RELEASE_PKGS is set %d times, expected once"%len(sets))
+calls=[(i,l) for i,l in body if re.search(r'desc_args ',l) and not re.match(r'\s*desc_args\(\)',l)]
+for i,l in calls:
+    if 'desc_args "${RELEASE_PKGS[@]}"' not in l: errs.append("line %d builds descriptions from other names: %s"%(i+1,l.strip()))
+if not calls: errs.append("no desc_args call outside --package-test")
+checks=[i for i,l in body if re.search(r'^\s*descriptions check ',l)]
+if sets and checks and checks[0]<sets[0]: errs.append("step 0b's description check (line %d) runs before RELEASE_PKGS is set (line %d)"%(checks[0]+1,sets[0]+1))
+for i,l in body:
+    if re.search(r'manifest_names_check "\$REPO/updates.xri"',l) and '"${RELEASE_PKGS[@]}"' not in l:
+        errs.append("line %d checks the manifest against other names: %s"%(i+1,l.strip()))
+print("\n".join(errs) if errs else "OK %d desc_args call(s), one RELEASE_PKGS"%len(calls))
+PY
+)"
+if [[ "$names_report" == OK* ]]; then ok "0b, 3f and the set checks share one name list ($names_report)"
+else while IFS= read -r l; do bad "$l"; done <<< "$names_report"; fi
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1
