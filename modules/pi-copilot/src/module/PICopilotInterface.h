@@ -79,8 +79,10 @@ public:
    // Use it at EVERY site that inserts non-literal text into the chat log.
    static String PlainText( const String& text );
 
-   // GUI tests only (test/quit-in-turn.sh, through the gui.* self-test phases, which exist only under
-   // PICOPILOT_SELFTEST_OUT): no keyring read, no request to Anthropic.
+#ifdef PICOPILOT_SELFTEST_BUILD
+   // GUI tests only (test/quit-in-turn.sh, through the gui.* self-test phases): compiled only into a
+   // self-test build (PICOPILOT_SELFTEST_BUILD), never into a release. No keyring read, no request to
+   // Anthropic.
    // Starts a chat turn as Send would, in Copilot mode, against payload.url (a loopback stub) with
    // payload.key, after granting the data consent in the test slot.
    nlohmann::json StartTurnForSelfTest( const nlohmann::json& payload );
@@ -88,9 +90,11 @@ public:
    // payload.standIn is false: the real modal box), and the write-up key is empty; returns the ★ button's
    // centre in screen coordinates for the driver.
    nlohmann::json ArmKeepForSelfTest( const nlohmann::json& payload );
+#endif
 
 private:
 
+#ifdef PICOPILOT_SELFTEST_BUILD
    friend bool RunAgentSelfTest( nlohmann::json& out );
    friend bool RunJourneySelfTest( nlohmann::json& out );
 
@@ -98,6 +102,7 @@ private:
    // yet, then measures whether the panel resizes both ways and the chat log
    // follows; restores the original size. Root thread only.
    nlohmann::json ProbeResizeForSelfTest();
+#endif
 
    // Starts a user message's target: records the FullId of the active
    // window's current view (the view whose context/preview this message
@@ -213,6 +218,7 @@ private:
    // outcome, failures included, is one line in the chat log, also returned.
    String KeepJourneyOfView( const IsoString& mainViewId );
    static bool ConfirmKeeper( const String& summaryHtml );
+#ifdef PICOPILOT_SELFTEST_BUILD
    // Self-test: replaces the ★ confirm box (a modal cannot run headlessly).
    static std::function<bool( const String& )> s_confirmKeeperForSelfTest;
    // Self-test: replaces the write-up key (no keyring read, no request).
@@ -220,6 +226,7 @@ private:
    // GUI tests (StartTurnForSelfTest): the Messages endpoint and the chat key; empty = production.
    static String s_messagesUrlForSelfTest;
    static String s_chatKeyForSelfTest;
+#endif
 
    // UI thread only: captures the turn view's (m_turnViewId) context +
    // preview (when "Include view" is checked) and returns the composed user

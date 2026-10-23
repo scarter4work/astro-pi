@@ -100,7 +100,9 @@ bool ReadFileNoFollow( const String& path, ByteArray& out, String& why, size_t m
 
 // Self-test only: make the next SafeWriteFile fail after its temp is fully
 // written, before the rename (proves the temp is cleaned up). One-shot.
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetSafeFileWriteFailBeforeRenameForSelfTest( bool on );
+#endif
 
 } // namespace pcl
 

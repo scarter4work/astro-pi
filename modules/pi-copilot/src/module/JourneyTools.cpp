@@ -558,10 +558,12 @@ String ModelTextWithoutDirectories( const String& text, const StringList& knownD
    return out + WithoutDirectories( text.Substring( plain, n - plain ) );
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetReplayNameClockForSelfTest( std::function<double()> clock )
 {
    ReplayClock() = std::move( clock );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 String CheckReplayStep( JourneyToolHost& host, const IsoString& viewFullId, int64 keeperId, int64 n )
 {

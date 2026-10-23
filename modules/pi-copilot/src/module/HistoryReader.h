@@ -117,8 +117,10 @@ bool ParseXpsmStep( const std::string& xpsm, HistoryStep& step, String& error );
 // step index, a script error).
 HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from );
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 // Self-test: the script ReadViewHistory evaluates (ASCII).
 std::string HistoryReadScriptForSelfTest( const IsoString& viewFullId, int from );
+#endif
 
 // max( 0, highest non-superseded seq - 1 ): re-read the last known step.
 int HistoryReadFrom( const std::vector<KnownStep>& known );

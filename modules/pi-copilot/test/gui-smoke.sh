@@ -25,6 +25,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 PI="$PICOPILOT_PI"
 KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 SO="$(realpath -e "$ROOT/build/src/module/PICopilot-pxm.so")"
+picopilot_require_selftest_build "$SO" || exit 1
 OUT="${1:?usage: gui-smoke.sh <out-dir>}"
 mkdir -p "$OUT"
 OUT="$(realpath -e "$OUT")"

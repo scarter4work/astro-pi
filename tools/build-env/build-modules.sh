@@ -35,6 +35,14 @@ podman run --rm --security-opt label=disable --userns=keep-id \
    cmake -S /src/modules/pi-copilot -B /src/modules/pi-copilot/build-portable "${COMMON[@]}" \
          -DPICOPILOT_BUILD_MODULE=ON >/dev/null
    cmake --build /src/modules/pi-copilot/build-portable -j"$(nproc)" >/dev/null
+   if [ "$RUN_TESTS" = 1 ]; then
+      # The PI Copilot SELF-TEST build (test hooks compiled in): what test/run-selftest.sh and the GUI
+      # tests run against (PICOPILOT_SO=.../build-portable-selftest/...). Never shipped: build-portable/
+      # above has no self-test code, and release.sh checks that (test/check-no-selftest-hooks.sh).
+      cmake -S /src/modules/pi-copilot -B /src/modules/pi-copilot/build-portable-selftest "${COMMON[@]}" \
+            -DPICOPILOT_BUILD_MODULE=ON -DPICOPILOT_SELFTEST_BUILD=ON >/dev/null
+      cmake --build /src/modules/pi-copilot/build-portable-selftest -j"$(nproc)" >/dev/null
+   fi
    cmake -S /src/modules/planetary -B /src/modules/planetary/build-portable "${COMMON[@]}" \
          -DPLANETARY_BUILD_MODULE=ON >/dev/null
    cmake --build /src/modules/planetary/build-portable -j"$(nproc)" >/dev/null

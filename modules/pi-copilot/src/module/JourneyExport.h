@@ -63,9 +63,11 @@ bool IsFileParameter( const std::string& processId, const std::string& parameter
 // "Process/table.column" (verified against PI's own scripts; see the .cpp).
 const std::vector<std::string>& KnownFileParameterIds();
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 // Self-test only: while on, resolving a table's column ids fails as if the
 // process catalog had thrown.
 void SetJourneyExportCatalogFailForSelfTest( bool on );
+#endif
 // "" when Copilot can replay the step. Otherwise why not, naming files by
 // their FILE NAME only: a Script step, a Ruling 16 process, a parameter value
 // with a directory component (see PrivacyStripStepParameters: the recipe keeps

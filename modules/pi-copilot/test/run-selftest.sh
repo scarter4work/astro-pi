@@ -179,6 +179,7 @@ PY
 # compares like for like instead of maybe comparing two spellings of the same
 # file, or missing a real substitution.
 SO="$(realpath -e "$SO")"
+picopilot_require_selftest_build "$SO" || exit 1
 picopilot_require_isolation || exit 1
 pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "${SO%.so}.xsgn" ] || { echo "FAIL: signing produced no .xsgn"; exit 1; }

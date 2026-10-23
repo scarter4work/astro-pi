@@ -35,8 +35,10 @@ ToolOutcome ExecuteWorkspaceIconTool( const ToolCall& call, const ToolContext& c
 // Icons of deny/confirmAlways processes are never opened. Root thread. Never throws.
 void AddWorkspaceIconFileCandidates( std::vector<FileCandidate>& to );
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 // Self-test only: how many times the icon-reading script has run (review M3).
 int WorkspaceIconScriptRunsForSelfTest();
+#endif
 
 } // namespace pcl
 

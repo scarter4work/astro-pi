@@ -64,8 +64,10 @@ bool LooksLikeAbsolutePath( const std::string& s )
    return s.size() > 2 && std::isalpha( static_cast<unsigned char>( s[0] ) ) && s[1] == ':' && (s[2] == '\\' || s[2] == '/');
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 // Self-test switch (SetJourneyExportCatalogFailForSelfTest).
 std::atomic<bool> s_catalogFailForSelfTest( false );
+#endif
 
 // Where the first location was found ("outputDirectory", "images[0].path") and
 // its file name; catalogError = a table whose column ids could not be read.
@@ -133,8 +135,10 @@ bool ProcessInstalled( const std::string& processId )
 std::vector<std::string> TableColumnIds( const std::string& processId, const std::string& tableId )
 {
    RequireRootThread( "reading a table's column ids" );
+#ifdef PICOPILOT_SELFTEST_BUILD
    if ( s_catalogFailForSelfTest )
       throw Error( "injected catalog failure (self-test)" );
+#endif
    std::vector<std::string> ids;
    if ( !ProcessInstalled( processId ) )
       return ids;
@@ -642,10 +646,12 @@ const std::vector<std::string>& KnownFileParameterIds()
    return ids;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetJourneyExportCatalogFailForSelfTest( bool on )
 {
    s_catalogFailForSelfTest = on;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 bool IsFileParameter( const std::string& processId, const std::string& id )
 {

@@ -167,10 +167,12 @@ bool ReadGlobalSetting( const IsoString& key, String& value );
 // Self-test only: read "globalSetting" pinned values through `reader`
 // (an empty function restores Settings::ReadGlobal).
 using GlobalSettingReader = std::function<bool( const IsoString& key, String& value )>;
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetGlobalSettingReaderForSelfTest( GlobalSettingReader reader );
 
 // Self-test only: evaluate against `policy` instead (nullptr restores).
 void SetProcessSafetyPolicyForSelfTest( const nlohmann::json* policy );
+#endif
 
 // File-path rules for global runs: the policy's "fileTables" section applied
 // by ValidateGlobalRunFilePaths() (GlobalRunFiles.h documents the rules).

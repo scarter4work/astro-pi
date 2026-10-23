@@ -1039,6 +1039,7 @@ bool JourneyStore::TransactionAborted() const
    return m_inTransaction && m_db != nullptr && sqlite3_get_autocommit( m_db ) != 0;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 int JourneyStore::AutocommitForSelfTest() const
 {
    RequireRootThread( "AutocommitForSelfTest" );
@@ -1058,6 +1059,7 @@ void JourneyStore::ArmInterruptForSelfTest()
       return 1;   // SQLITE_INTERRUPT for the running statement
    }, this );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 void JourneyStore::MarkKeptDurably( int64 id, int64 endImageId, const std::string& nowIso )
 {

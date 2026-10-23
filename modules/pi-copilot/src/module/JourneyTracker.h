@@ -172,16 +172,19 @@ public:
    // after a Tick, which dropped closed windows). Retention never prunes them.
    std::vector<int64> OpenJourneyIds() const;
 
+#ifdef PICOPILOT_SELFTEST_BUILD
    // Test hooks.
    void SetHistoryReaderForSelfTest( HistoryReadFn fn );      // empty fn -> ReadViewHistory
    void SetScanUsesModifyCountForSelfTest( bool on ) { m_useModifyCount = on; }
    // Called inside every join's transaction at its midpoint ("master" after
    // CreateJourney, "linked" after AddImage); a throw there must leave no rows.
    void SetJoinFaultForSelfTest( std::function<void( const char* where )> fn ) { m_joinFault = std::move( fn ); }
+#endif
    size_type PendingCount() const;
    double LastStepMs() const { return m_lastStepMs; }
    int Deferrals() const { return m_deferrals; }
    StringList TakeJoinNotes();
+#ifdef PICOPILOT_SELFTEST_BUILD
    // The last 100 candidate evaluations and scan anomalies
    // ("<t> r=<result> ticks=<n> <view> <evidence summary>"), for self-test diagnostics.
    std::vector<std::string> RecentDecisionsForSelfTest() const { return { m_decisions.begin(), m_decisions.end() }; }
@@ -199,6 +202,7 @@ public:
    // per-item boundary could contain sets it (fix round 3).
    String TickFailureForSelfTest() const { return m_pausedReason; }
    size_type PendingGapsForSelfTest() const { return m_pendingGaps.size(); }
+#endif
 
 private:
 
@@ -446,6 +450,7 @@ public:
    void AddNote( const String& note );
    StringList TakeNotes();
 
+#ifdef PICOPILOT_SELFTEST_BUILD
    // Self-test: one last forced tick (so the pre-phase is fully recorded), then
    // no more ticks until re-enabled. Never used outside the harness.
    void FlushAndPauseForSelfTest();
@@ -456,6 +461,7 @@ public:
    // delivered by PixInsight through the interface's handlers (index: 0 created, 1 updated, 2 renamed,
    // 3 deleted, 4 saved, 5 focused).
    int ForwardedForSelfTest( int kind ) const { return (kind >= 0 && kind < 6) ? m_forwarded[kind] : -1; }
+#endif
 
 private:
 

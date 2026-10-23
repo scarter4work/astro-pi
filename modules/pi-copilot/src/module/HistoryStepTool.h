@@ -66,8 +66,10 @@ String HistoryStepDialogHtml( bool undo, int count, const String& viewId, const 
 // position the tool writes (proves the loud "did not move" branch); the hook
 // edits the snapshot re-read after the Guided dialog (proves the identity
 // re-check). Root thread only.
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetHistoryStepIndexOffsetForSelfTest( int offset );
 void SetHistoryStepRereadHookForSelfTest( std::function<void( HistorySnapshot& )> hook );
+#endif
 
 } // namespace pcl
 

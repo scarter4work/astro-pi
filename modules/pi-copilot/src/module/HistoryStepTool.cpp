@@ -101,9 +101,11 @@ String ParseCount( const nlohmann::json& in, int64& count )
    return String();
 }
 
-// Self-test seams (HistoryStepTool.h): 0 / empty in production.
+#ifdef PICOPILOT_SELFTEST_BUILD
+// Self-test seams (HistoryStepTool.h); a release build has none.
 int g_indexOffsetForSelfTest = 0;
 std::function<void( HistorySnapshot& )> g_rereadHookForSelfTest;
+#endif
 
 // A short, path-free hint that tells same-process steps apart: PixelMath's expression, else the first
 // two scalar parameters ("k=v"), cut to 60 characters. Paths are reduced to file names (GC privacy).
@@ -335,8 +337,10 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
       // Same position AND the same entries (review minor 2): an undo + a different new step while the
       // dialog was up keeps the shape but changes the identity (process, start time, parameters digest).
       HistorySnapshot now = ReadViewHistory( targetId, readFrom );
+#ifdef PICOPILOT_SELFTEST_BUILD
       if ( g_rereadHookForSelfTest )
          g_rereadHookForSelfTest( now );
+#endif
       bool same = now.ok && now.historyIndex == counts.historyIndex && now.length == counts.length
                && int( now.steps.size() ) >= n;
       for ( int i = 0; same && i < n; ++i )
@@ -349,7 +353,11 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
    nlohmann::json set;
    try
    {
+#ifdef PICOPILOT_SELFTEST_BUILD
       set = SetHistoryIndex( targetId, newIndex + g_indexOffsetForSelfTest );
+#else
+      set = SetHistoryIndex( targetId, newIndex );
+#endif
    }
    catch ( const pcl::Exception& x )
    {
@@ -430,14 +438,18 @@ ToolOutcome ExecuteHistoryStepTool( const nlohmann::json& in, const ToolContext&
 namespace pcl
 {
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetHistoryStepIndexOffsetForSelfTest( int offset )
 {
    g_indexOffsetForSelfTest = offset;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetHistoryStepRereadHookForSelfTest( std::function<void( HistorySnapshot& )> hook )
 {
    g_rereadHookForSelfTest = std::move( hook );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 } // namespace pcl

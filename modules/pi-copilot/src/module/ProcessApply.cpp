@@ -41,15 +41,23 @@ namespace
 // (Task 1). Scalars are row 0.
 constexpr size_type kScalarRow = 0;
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 InstanceBuildObserver g_instanceObserver;   // self-test only
-bool g_inProcessAppliesExpected = false;     // self-test only (SetInProcessAppliesExpectedForSelfTest)
-int  g_inProcessUnrecorded = 0;              // self-test only
 std::function<void()> g_beforeExecuteHook;  // self-test only (SetBeforeExecuteHookForSelfTest)
+#endif
+// Self-test only (SetInProcessAppliesExpectedForSelfTest, self-test build); always false in a release.
+bool g_inProcessAppliesExpected = false;
+int  g_inProcessUnrecorded = 0;
 
 void NoteInstanceBuild( const IsoString& processId, const char* stage )
 {
+#ifdef PICOPILOT_SELFTEST_BUILD
    if ( g_instanceObserver )
       g_instanceObserver( processId, stage );
+#else
+   (void)processId;
+   (void)stage;
+#endif
 }
 
 // A model-correctable failure. Thrown only inside ApplyProcess() / RunGlobalProcess()
@@ -813,8 +821,10 @@ ApplyProcessResult ApplyProcess( const IsoString& processId, const nlohmann::jso
          }
       }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
       if ( g_beforeExecuteHook )
          g_beforeExecuteHook();   // self-test only (SetBeforeExecuteHookForSelfTest)
+#endif
 
       const auto t0 = std::chrono::steady_clock::now();
       bool ran = false;
@@ -1289,30 +1299,40 @@ void NoteProcessInstanceBuild( const IsoString& processId, const char* stage )
    NoteInstanceBuild( processId, stage );
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer )
 {
    g_instanceObserver = std::move( observer );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetBeforeExecuteHookForSelfTest( std::function<void()> hook )
 {
    g_beforeExecuteHook = std::move( hook );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetInProcessAppliesExpectedForSelfTest( bool on )
 {
    g_inProcessAppliesExpected = on;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 bool InProcessAppliesExpectedForSelfTest()
 {
    return g_inProcessAppliesExpected;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 int InProcessUnrecordedAppliesForSelfTest()
 {
    return g_inProcessUnrecorded;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 String DescribeParameterChanges( const nlohmann::json& parameters, const nlohmann::json& tableParameters,
                                  size_type maxChars )

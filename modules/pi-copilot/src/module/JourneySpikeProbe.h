@@ -11,9 +11,16 @@
 namespace pcl
 {
 
+#ifndef PICOPILOT_SELFTEST_BUILD
+// A release build compiles no probe (JourneySpikeProbe.cpp is in the self-test build only): the calls the
+// module makes are empty.
+inline void ArmJourneySpikeProbeIfSelfTest() {}
+inline void DisarmJourneySpikeProbe() {}
+inline void JourneySpikeNote( const char*, const View& ) {}
+#else
 // Test-only recorder for plan Task 1 (and kept as evidence for later runs).
-// Armed ONLY when PICOPILOT_SELFTEST_OUT is set, i.e. under test/run-selftest.sh;
-// in a shipped install every function below is a no-op. Root thread only.
+// Compiled only into a self-test build, and armed there only when PICOPILOT_SELFTEST_OUT is set
+// (test/run-selftest.sh). Root thread only.
 void ArmJourneySpikeProbeIfSelfTest();                    // PICopilotModule::OnLoad()
 void DisarmJourneySpikeProbe();                           // PICopilotModule::OnUnload()
 bool JourneySpikeProbeArmed();
@@ -45,6 +52,7 @@ void JourneySpikeProbeSetTickInterval( double seconds );
 void JourneySpikeProbeRequestHazardApply( const std::string& viewId, double delayS, bool gated,
                                           const nlohmann::json& spec = nlohmann::json::object() );
 nlohmann::json JourneySpikeProbeHazardApplyResult();      // null until applied
+#endif // PICOPILOT_SELFTEST_BUILD
 
 } // namespace pcl
 

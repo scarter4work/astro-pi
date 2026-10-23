@@ -385,10 +385,12 @@ std::string HistoryReadScript( const IsoString& viewFullId, int from )
 }
 } // namespace
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 std::string HistoryReadScriptForSelfTest( const IsoString& viewFullId, int from )
 {
    return HistoryReadScript( viewFullId, std::max( 0, from ) );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 HistorySnapshot ReadViewHistory( const IsoString& viewFullId, int from )
 {

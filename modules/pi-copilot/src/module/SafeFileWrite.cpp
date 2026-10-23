@@ -25,7 +25,9 @@ namespace pcl
 namespace
 {
 
-bool s_failBeforeRename = false;
+#ifdef PICOPILOT_SELFTEST_BUILD
+bool s_failBeforeRename = false;   // SetSafeFileWriteFailBeforeRenameForSelfTest
+#endif
 
 String Errno( int e )
 {
@@ -148,10 +150,12 @@ void RemovePrivateDir( const std::string& dir )
 
 } // namespace
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetSafeFileWriteFailBeforeRenameForSelfTest( bool on )
 {
    s_failBeforeRename = on;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 // Residual risk, accepted (review M1): this is check-then-use, not fd-pinned.
 // The directory is validated once here, and callers then reopen paths under it
@@ -319,11 +323,13 @@ String SafeWriteFile( const String& path, const ByteArray& data, SafeFileMode mo
          why = "fsync failed: " + Errno( errno );
       if ( ::close( fd ) != 0 && why.IsEmpty() )
          why = "close failed: " + Errno( errno );
+#ifdef PICOPILOT_SELFTEST_BUILD
       if ( why.IsEmpty() && s_failBeforeRename )
       {
          s_failBeforeRename = false;
          why = "injected failure before rename (self-test)";
       }
+#endif
       if ( why.IsEmpty() )
       {
          // Re-check right before the swap: rename() would replace a link that

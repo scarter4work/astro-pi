@@ -2,18 +2,21 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "PICopilotInstance.h"
+#include "ProcessActivity.h"
+
+#include <pcl/Console.h>
+
+#ifdef PICOPILOT_SELFTEST_BUILD
 #include "DataConsent.h"
 #include "PICopilotJourneySelfTest.h"
 #include "PICopilotSelfTest.h"
-#include "ProcessActivity.h"
 #include "ProcessApply.h"
 #include "Utf8.h"
-
-#include <pcl/Console.h>
 
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace pcl
 {
@@ -66,8 +69,16 @@ bool PICopilotInstance::ExecuteGlobal()
       ~ActivityOnReturn() { NoteProcessActivity(); }
    } activityOnReturn;
 
-   // The self-test is test-only. In a shipped install there is no
-   // PICOPILOT_SELFTEST_OUT in the environment, so executing the process
+#ifndef PICOPILOT_SELFTEST_BUILD
+   // A release build (no PICOPILOT_SELFTEST_BUILD): executing the process only points the user at the
+   // panel. No self-test code is compiled in, so no environment variable can reach any (re-review 1: the
+   // self-test phases could redirect the model endpoint, send the user's key there, force tool calls and
+   // auto-approve keeps; CPD N6: the consent grant below).
+   Console().WriteLn( "PI Copilot: open the chat panel via Process > &lt;Etc&gt; > PICopilot" );
+   return true;
+#else
+   // A self-test build (test/run-selftest.sh and the GUI tests). Without
+   // PICOPILOT_SELFTEST_OUT in the environment, executing the process
    // does nothing but point the user at the panel: no Settings writes, no
    // network request, no file written -- and so no predictable /tmp path for
    // a symlink attack to target (CWE-59). test/run-selftest.sh sets it.
@@ -119,6 +130,7 @@ bool PICopilotInstance::ExecuteGlobal()
    }
 
    return ok;
+#endif // PICOPILOT_SELFTEST_BUILD
 }
 
 } // namespace pcl

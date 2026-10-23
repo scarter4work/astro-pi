@@ -175,6 +175,7 @@ String DescribeWhere( const State& s )
    }
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetKeyringForSelfTest( const KeyringId& id, const IsoString& settingsKey )
 {
    g_id = id;
@@ -182,5 +183,6 @@ void SetKeyringForSelfTest( const KeyringId& id, const IsoString& settingsKey )
    g_cache = State();
    g_cached = false;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 } } // namespace pcl::KeyStore

@@ -173,9 +173,11 @@ public:
    // excludeJourneyIds (the journeys this instance has open) are never pruned.
    int   PruneUnkept( const std::string& cutoffIso, StringList* removedDirs,
                       const std::vector<int64>& excludeJourneyIds = std::vector<int64>() );
+#ifdef PICOPILOT_SELFTEST_BUILD
    // Test hook: called with each selected id before its transaction (a second
    // connection can keep / touch the journey there, like another instance).
    void  SetPruneHookForSelfTest( std::function<void( int64 )> fn ) { m_pruneHook = std::move( fn ); }
+#endif
 
    void  Checkpoint();   // PRAGMA wal_checkpoint(TRUNCATE)
 
@@ -185,6 +187,7 @@ public:
    // NORMAL afterwards on every path. Refused loudly inside an open
    // Transaction (it could not make the outer commit durable). Root thread.
    void  MarkKeptDurably( int64 journeyId, int64 endImageId, const std::string& nowIso );
+#ifdef PICOPILOT_SELFTEST_BUILD
    // Test hooks: the synchronous level in force just before the keep's COMMIT,
    // and the connection's current level (1 = NORMAL, 2 = FULL).
    void  SetKeepCommitHookForSelfTest( std::function<void( int )> fn ) { m_keepCommitHook = std::move( fn ); }
@@ -200,6 +203,7 @@ public:
    void  ExecForSelfTest( const char* sql ) { Exec( sql ); }
    // - sqlite3_get_autocommit() (1 = no transaction open on the connection).
    int   AutocommitForSelfTest() const;
+#endif
 
    /*
     * One atomic group of writes (Task 7 review I5; Tasks 9-10 use it for

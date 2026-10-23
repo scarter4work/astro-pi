@@ -11,8 +11,11 @@ This product is based on software from the PixInsight project, developed by Plei
 From `modules/pi-copilot/`:
 
 ```bash
-cmake -B build -DPCLDIR=$HOME/PCL -DPICOPILOT_BUILD_MODULE=ON && cmake --build build -j$(nproc)
+# Development / test build (what test/*.sh run by default): the in-module self-test and its hooks compiled in
+cmake -B build -DPCLDIR=$HOME/PCL -DPICOPILOT_BUILD_MODULE=ON -DPICOPILOT_SELFTEST_BUILD=ON && cmake --build build -j$(nproc)
 ```
+
+`PICOPILOT_SELFTEST_BUILD` (default OFF) compiles the self-test, its `PICOPILOT_SELFTEST_*` environment variables, the GUI-test phases and every test override. A release module never has it: `tools/build-env/build-modules.sh` builds the shipped module in `build-portable/` without it (and a self-test build in `build-portable-selftest/` for the tests), and `release.sh` refuses a `PICopilot-pxm.so` carrying any self-test marker (`test/check-no-selftest-hooks.sh`). The test harnesses refuse a module that is not a self-test build. `test/check-release-inert.sh release <so>` proves a release module ignores every `PICOPILOT_SELFTEST_*` variable under `executeGlobal()`.
 
 ## Test
 

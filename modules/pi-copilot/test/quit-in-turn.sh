@@ -36,6 +36,7 @@ KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
 MODE="${1:?usage: quit-in-turn.sh tool|keep|keepmodal <out-dir>}"
 case "$MODE" in tool|keep|keepmodal) ;; *) echo "FAIL: mode must be tool, keep or keepmodal"; exit 1 ;; esac
 SO="$(realpath -e "${PICOPILOT_SO:-$ROOT/build/src/module/PICopilot-pxm.so}")"
+picopilot_require_selftest_build "$SO" || exit 1
 OUT="${2:?usage: quit-in-turn.sh tool|keep|keepmodal <out-dir>}"
 mkdir -p "$OUT"
 OUT="$(realpath -e "$OUT")"

@@ -15,12 +15,10 @@ set(MODULE_SOURCES
     PICopilotProcess.cpp
     PICopilotInstance.cpp
     PICopilotInterface.cpp
-    PICopilotSelfTest.cpp
     KeyStore.cpp
     AnthropicClient.cpp
     ConfigDialog.cpp
     ChatThread.cpp
-    PICopilotVisionSelfTest.cpp
     ViewContext.cpp
     ViewPreview.cpp
     StepStats.cpp
@@ -35,7 +33,6 @@ set(MODULE_SOURCES
     ProcessCatalog.cpp
     VisionTurn.cpp
     ViewCapture.cpp
-    PICopilotAgentSelfTest.cpp
     ProcessApply.cpp
     AgentTools.cpp
     HistoryStepTool.cpp
@@ -43,7 +40,6 @@ set(MODULE_SOURCES
     GlobalRunFiles.cpp
     AgentSession.cpp
     TurnEndNotes.cpp
-    PICopilotInc5SelfTest.cpp
     SseStream.cpp
     ModelCatalog.cpp
     HistoryBudget.cpp
@@ -55,10 +51,6 @@ set(MODULE_SOURCES
     ScriptCatalog.cpp
     ScriptTools.cpp
     DataConsent.cpp
-    PICopilotScriptSelfTest.cpp
-    JourneySpikeProbe.cpp
-    PICopilotJourneySelfTest.cpp
-    PICopilotUndoSelfTest.cpp
     HistoryReader.cpp
     ProcessActivity.cpp
     StringParameterRules.cpp
@@ -67,7 +59,32 @@ set(MODULE_SOURCES
     WorkspaceIcons.cpp
 )
 
+# Self-test build (re-review 1 of fix/picopilot-quit-crash): every self-test entry point and override --
+# the in-module self-test, its PICOPILOT_SELFTEST_* environment variables, the gui.* phases, the URL / key /
+# confirm overrides, the journey spike probe -- is compiled ONLY with PICOPILOT_SELFTEST_BUILD=ON. The
+# release build (tools/build-env/build-modules.sh, build-portable/) leaves it OFF, and release.sh refuses a
+# PICopilot-pxm.so with any self-test marker (test/check-no-selftest-hooks.sh). The test harnesses refuse a
+# module without the test-build sentinel (PICopilotSelfTestBuild.cpp).
+option(PICOPILOT_SELFTEST_BUILD "Compile the PI Copilot self-test and its test hooks (never for release)" OFF)
+if(PICOPILOT_SELFTEST_BUILD)
+    list(APPEND MODULE_SOURCES
+        PICopilotSelfTestBuild.cpp
+        PICopilotSelfTest.cpp
+        PICopilotVisionSelfTest.cpp
+        PICopilotAgentSelfTest.cpp
+        PICopilotInc5SelfTest.cpp
+        PICopilotScriptSelfTest.cpp
+        JourneySpikeProbe.cpp
+        PICopilotJourneySelfTest.cpp
+        PICopilotUndoSelfTest.cpp
+    )
+    message(STATUS "PICopilot: SELF-TEST build (PICOPILOT_SELFTEST_BUILD=ON) -- never ship this module")
+endif()
+
 add_library(PICopilot SHARED ${MODULE_SOURCES})
+if(PICOPILOT_SELFTEST_BUILD)
+    target_compile_definitions(PICopilot PRIVATE PICOPILOT_SELFTEST_BUILD=1)
+endif()
 
 # Process summaries are COMPILED IN (no runtime file dependency). configure_file
 # re-runs whenever the JSON changes because CMake tracks file(READ) inputs via

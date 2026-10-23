@@ -56,8 +56,10 @@ String NoKeyNote();
 // text)" / "not set".
 String DescribeWhere( const State& state );
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 // Self-test only: another keyring item and Settings key, and a dropped cache.
 void SetKeyringForSelfTest( const KeyringId& id, const IsoString& settingsKey );
+#endif
 
 } } // namespace pcl::KeyStore
 

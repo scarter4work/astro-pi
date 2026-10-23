@@ -279,10 +279,12 @@ HistorySnapshot JourneyTracker::ReadHistory( const IsoString& viewFullId, int fr
    return none;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void JourneyTracker::SetHistoryReaderForSelfTest( HistoryReadFn fn )
 {
    m_read = fn ? fn : HistoryReadFn( ReadViewHistory );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 JourneyTracker::Tracked* JourneyTracker::FindTracked( const void* handle )
 {
@@ -429,6 +431,7 @@ void JourneyTracker::OnImageDeleted( const View& view, double /*now*/ )
    }
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 double JourneyTracker::FirstSeenForSelfTest( const IsoString& viewId ) const
 {
    const std::string id( viewId.c_str() );
@@ -440,6 +443,7 @@ double JourneyTracker::FirstSeenForSelfTest( const IsoString& viewId ) const
          return i->firstSeen;
    return -1;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 void JourneyTracker::OnImageSaved( const View& view, double now )   { QueueEvent( EventKind::Saved, view, now ); }
 void JourneyTracker::OnImageFocused( const View& view, double now ) { QueueEvent( EventKind::Focused, view, now ); }
 
@@ -2323,6 +2327,7 @@ StringList JourneyService::TakeNotes()
    return n;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void JourneyService::FlushAndPauseForSelfTest()
 {
    if ( m_selfTestPaused )
@@ -2343,5 +2348,6 @@ void JourneyService::FlushAndPauseForSelfTest()
       }
    m_selfTestPaused = true;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 } // namespace pcl

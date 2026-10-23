@@ -253,7 +253,9 @@ String DescribeParameterChanges( const nlohmann::json& parameters, const nlohman
 // confirmAlways/denied process is built before the user approved. An empty
 // function removes the observer. Root thread.
 using InstanceBuildObserver = std::function<void( const IsoString& processId, const char* stage )>;
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetInstanceBuildObserverForSelfTest( InstanceBuildObserver observer );
+#endif
 // Reports a ProcessInstance build made outside ProcessApply (file-reference
 // defaults, workspace-icon defaults: stages "fileDefaults", "iconDefaults") to
 // that observer, so the same instrumentation sees every build. Root thread.
@@ -263,17 +265,21 @@ void NoteProcessInstanceBuild( const IsoString& processId, const char* stage );
 // (History, content digest, open windows) and right before ExecuteOn() -- so a
 // test can open an unrelated window exactly where a user or a script could.
 // An empty function removes it. Root thread.
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetBeforeExecuteHookForSelfTest( std::function<void()> hook );
+#endif
 
 // Self-test only. Inside the self-test's own PICopilot.executeGlobal() NO
 // process is ever recorded in History (harness fact, plan Task 1), so every
 // in-process ApplyProcess would trip step 7. While `on`, step 7 counts such
 // an apply instead of failing it (InProcessUnrecordedAppliesForSelfTest).
-// Set ONLY by the self-test runner (PICOPILOT_SELFTEST_OUT), never in a
-// shipped install; the DETECT tests switch it off. Root thread.
+// Set ONLY by the self-test runner, which only a self-test build has; the
+// DETECT tests switch it off. Root thread.
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetInProcessAppliesExpectedForSelfTest( bool on );
 bool InProcessAppliesExpectedForSelfTest();
 int  InProcessUnrecordedAppliesForSelfTest();
+#endif
 
 // Ids of every open image window's main view (created-window diffs). Root thread.
 std::set<std::string> OpenMainViewIds();

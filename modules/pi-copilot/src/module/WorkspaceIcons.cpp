@@ -323,10 +323,12 @@ nlohmann::json WorkspaceIconToolDefinitions()
    return t;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 int WorkspaceIconScriptRunsForSelfTest()
 {
    return IconScriptRuns();
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 bool IsWorkspaceIconTool( const std::string& name )
 {

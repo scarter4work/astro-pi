@@ -115,8 +115,10 @@ String ModelTextWithoutDirectories( const String& text, const StringList& knownD
 // The directories model text is scrubbed against: the export folder, the
 // library, $HOME, the temp directory, and every open image's folder. Root thread.
 StringList JourneyKnownDirs( const JourneyToolHost& host );
+#ifdef PICOPILOT_SELFTEST_BUILD
 // Self-test only: the clock the pending replay names expire by (empty = JourneyWallNow).
 void SetReplayNameClockForSelfTest( std::function<double()> clock );
+#endif
 
 } // namespace pcl
 

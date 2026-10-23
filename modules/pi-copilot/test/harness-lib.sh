@@ -80,6 +80,19 @@ picopilot_isolate_display()
    pi_headless_env   # tools/pi-headless.sh, shared by every PixInsight launch in astro-pi
 }
 
+# The module under test must be a SELF-TEST build (CMake -DPICOPILOT_SELFTEST_BUILD=ON: the dev build in
+# build/, or the container's build-portable-selftest/). A release build compiles no self-test, phase or
+# test hook, so a harness run against one would test nothing; refuse it loudly.
+picopilot_require_selftest_build()
+{
+   local so="$1"
+   if ! LC_ALL=C grep -a -q -F "PICOPILOT-SELFTEST-BUILD-SENTINEL" "$so"; then
+      echo "FAIL: $so is not a PI Copilot self-test build (configure with -DPICOPILOT_SELFTEST_BUILD=ON;" \
+           "the container one is modules/pi-copilot/build-portable-selftest/)"
+      return 1
+   fi
+}
+
 # Refuse to launch PixInsight unless data isolation is really in effect.
 # Call it immediately before EVERY PixInsight launch.
 picopilot_require_isolation()

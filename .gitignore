@@ -1,6 +1,8 @@
 # Build outputs
 build/
 build-portable/
+build-portable-selftest/
+build-release/
 *.o
 *.so
 *.dylib

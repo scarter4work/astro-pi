@@ -271,10 +271,12 @@ const nlohmann::json& CompiledProcessSafety()
    return g_override != nullptr ? *g_override : policy;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetProcessSafetyPolicyForSelfTest( const nlohmann::json* policy )
 {
    g_override = policy;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 SafetyVerdict CheckProcessSafety( const IsoString& processId, const nlohmann::json& parameters,
                                   const nlohmann::json& /*tableParameters*/, SafetyRunKind run )
@@ -661,10 +663,12 @@ nlohmann::json UnknownPolicyProcessIds()
    return out;
 }
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 void SetGlobalSettingReaderForSelfTest( GlobalSettingReader reader )
 {
    g_settingReader = std::move( reader );
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 bool ReadGlobalSetting( const IsoString& key, String& value )
 {

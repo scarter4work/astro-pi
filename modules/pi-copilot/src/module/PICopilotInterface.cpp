@@ -38,10 +38,12 @@ namespace pcl
 
 PICopilotInterface* ThePICopilotInterface = nullptr;
 
+#ifdef PICOPILOT_SELFTEST_BUILD
 std::function<bool( const String& )> PICopilotInterface::s_confirmKeeperForSelfTest;
 std::function<String()> PICopilotInterface::s_apiKeyForSelfTest;
 String PICopilotInterface::s_messagesUrlForSelfTest;
 String PICopilotInterface::s_chatKeyForSelfTest;
+#endif
 
 namespace
 {
@@ -356,9 +358,11 @@ void PICopilotInterface::SendCurrentInput()
    }
 
    KeyStore::State ks;
+#ifdef PICOPILOT_SELFTEST_BUILD
    if ( !s_chatKeyForSelfTest.IsEmpty() )
       ks.key = s_chatKeyForSelfTest;   // GUI test: never the keyring (no real key reaches the loopback stub)
    else
+#endif
    {
       // A keyring read can block on the desktop's unlock prompt: say so on
       // the Send button (painted by the call's event pump), then restore it.
@@ -451,7 +455,11 @@ void PICopilotInterface::StartRequest()
       // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
       m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
                                  m_turnModel,
+#ifdef PICOPILOT_SELFTEST_BUILD
                                  s_messagesUrlForSelfTest.IsEmpty() ? String( PICOPILOT_MESSAGES_URL ) : s_messagesUrlForSelfTest,
+#else
+                                 PICOPILOT_MESSAGES_URL,
+#endif
                                  PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ),
                                  ProductionRequestShape( m_turnModel ) );
       m_thread->Start();
@@ -859,8 +867,10 @@ IsoString PICopilotInterface::ActiveMainViewId() const
 
 bool PICopilotInterface::ConfirmKeeper( const String& summaryHtml )
 {
+#ifdef PICOPILOT_SELFTEST_BUILD
    if ( s_confirmKeeperForSelfTest )
       return s_confirmKeeperForSelfTest( summaryHtml );
+#endif
    // Ruling 17: default No; Esc = No.
    return MessageBox( summaryHtml, String::UTF8ToUTF16( "PI Copilot \xE2\x80\x94 keep journey" ), StdIcon::Question,
                       StdButton::Yes, StdButton::No, StdButton::NoButton, 1/*default: No*/, 1/*Esc: No*/ ).Execute()
@@ -892,8 +902,10 @@ JourneyToolHost PICopilotInterface::MakeJourneyHost()
    // the stored one (read on the root thread when a keep asks for it).
    h.apiKey = [this]()
    {
+#ifdef PICOPILOT_SELFTEST_BUILD
       if ( s_apiKeyForSelfTest )
          return s_apiKeyForSelfTest();
+#endif
       return m_apiKey.IsEmpty() ? KeyStore::Load().key : m_apiKey;
    };
    h.confirmKeeper = &PICopilotInterface::ConfirmKeeper;
@@ -1029,7 +1041,8 @@ void PICopilotInterface::e_Strip_MousePress( Control&, const pcl::Point&, int bu
    }
 }
 
-// ── Self-test probe ──────────────────────────────────────────────
+// ── Self-test probe (self-test build only) ───────────────────────
+#ifdef PICOPILOT_SELFTEST_BUILD
 
 nlohmann::json PICopilotInterface::StartTurnForSelfTest( const nlohmann::json& payload )
 {
@@ -1135,6 +1148,7 @@ nlohmann::json PICopilotInterface::ProbeResizeForSelfTest()
                    && unsigned( Features() ) != unsigned( InterfaceFeature::None );
    return j;
 }
+#endif // PICOPILOT_SELFTEST_BUILD
 
 // ── GUI Construction ─────────────────────────────────────────────
 
