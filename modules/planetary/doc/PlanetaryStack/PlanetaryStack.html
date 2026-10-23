@@ -97,7 +97,7 @@ stack, but is a little less sharp than the ones before it. PlanetaryStack keeps 
 expected detail of the stack is greatest. A steady night keeps many frames, a poor night few. The <b>Frames:</b> line
 says how many were used, the quality bound they meet (&ldquo;quality &ge; <i>x</i> of the best&rdquo;) and how many were
 left out for each reason above.</li>
-<li><b>Focus and seeing</b> (planets only). The sharpest frames' limb is measured against the size of the disc. A
+<li><b>Focus and seeing</b> (a disc, not a frame-filling surface). The sharpest frames' limb is measured against the size of the disc. A
 disc blurred far beyond what in-focus captures show is refused (Out of focus, or Seeing too poor when the blur changes
 from frame to frame); a disc blurred less, but more than in-focus captures show, is stacked with a focus warning.</li>
 <li><b>Aligning.</b> The 16 sharpest kept frames are averaged into a reference. Every frame is aligned to it with
@@ -203,7 +203,9 @@ to it (if present).</li>
 <li><b>Files written:</b> stacking writes no file. The only file PlanetaryStack writes is the sidecar
 <code>&lt;name&gt;.avi.txt</code> next to an AVI, and only when you click Save pattern... and answer Yes. It is written to
 a temporary <code>&lt;name&gt;.avi.txt.partial</code> file beside it first and then moved into place; the partial file is
-removed if the write fails. The stack opens as a new, unsaved image window; saving it is up to you.</li>
+removed if the write fails, and a regular <code>.partial</code> file left there by an interrupted earlier write is deleted
+before writing (a symbolic link or anything else that is not a regular file at that path is left alone, and the write is
+refused). The stack opens as a new, unsaved image window; saving it is up to you.</li>
 <li><b>Network:</b> PlanetaryStack makes no network connection.</li>
 <li><b>External programs:</b> PlanetaryStack launches no external program.</li>
 <li>It stores no settings or other files of its own, inside or outside the PixInsight installation.</li>
