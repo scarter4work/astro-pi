@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -826,4 +827,63 @@ TEST_CASE("The blend mask is 1 over the target and its limb and 0 over the sky; 
     const RegionLayout surface = stack::PlaceRegions(sref, sst, true, testing::WhiteNoise(0.01));
     REQUIRE_FALSE(surface.regions.empty());
     CHECK(surface.mask.Empty());
+}
+
+TEST_CASE("A frame-filling surface's dark mare keeps its regions; a sliver of sky is masked (E1 fix round 2)", "[regions]") {
+    // Review N1: on a frame-filling target the sky level is the reference's darkest end, so on a surface
+    // without sky that end is surface. A dark, low-SNR mare (0.3 of the surface, frame noise 0.02, 20% of the
+    // frame) must keep every region weight; a corner of sky taking ~2% of the frame must still be masked.
+    const int w = 320, h = 240;
+    const Scene surf = testing::MakeSurface(31, w, h);
+    std::mt19937 rng(17);
+    std::normal_distribution<double> n(0, 1);
+    auto reference = [&](const std::function<double(int, int, double)>& paint) {
+        FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(paint(x, y, surf.Eval(x, y, 1.0)) + 0.0025 * n(rng));
+        return ref;
+    };
+    {
+        auto inMare = [&](int x, int y) { return std::pow((x - 180) / 80.0, 2) + std::pow((y - 130) / 61.0, 2) < 1; };
+        const FloatImage ref = reference([&](int x, int y, double v) { return inMare(x, y) ? 0.3 * v : v; });
+        const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
+        REQUIRE(st.targetFound);
+        const RegionLayout lay = stack::PlaceRegions(ref, st, true, testing::WhiteNoise(0.02));
+        REQUIRE(lay.flatEdges);
+        int64_t mare = 0, lost = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                if (inMare(x, y)) {
+                    ++mare;
+                    lost += lay.mask.At(x, y) < 1;
+                }
+        INFO("mare " << mare << " px (" << 100.0 * mare / (w * h) << "% of the frame), " << lost << " of them at m < 1; mask "
+                     << (lay.mask.Empty() ? "none" : "set"));
+        CHECK(lost == 0);
+    }
+    {
+        auto inSky = [&](int x, int y) { return (w - 1 - x) + y < 59; };  // the top right corner: ~2.3% of the frame
+        const FloatImage ref = reference([&](int x, int y, double v) { return inSky(x, y) ? 0.005 : v; });
+        const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
+        REQUIRE(st.targetFound);
+        const RegionLayout lay = stack::PlaceRegions(ref, st, true, testing::WhiteNoise(0.01));
+        REQUIRE(lay.flatEdges);
+        int64_t sky = 0, deep = 0, open = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                sky += inSky(x, y);
+                // Past the limb by more than the mask's grow and taper (and the 3 x 3 mean): the fallback's.
+                if ((w - 1 - x) + y < 59 - (stack::kMaskGrow + stack::kMaskTaper + 2) * std::sqrt(2.0)) {
+                    ++deep;
+                    open += lay.mask.At(x, y) > 0;
+                }
+            }
+        INFO("sky " << sky << " px (" << 100.0 * sky / (w * h) << "% of the frame), " << deep << " past the taper, " << open
+                    << " of those at m > 0; mask " << (lay.mask.Empty() ? "none" : "set"));
+        REQUIRE(deep > 300);
+        CHECK_FALSE(lay.mask.Empty());
+        CHECK(open == 0);
+        CHECK(lay.mask.At(100, 150) == 1.0);  // the surface keeps its regions
+    }
 }
