@@ -328,6 +328,8 @@ private:
    void           DropClosed( std::vector<OpenWindow>& open );
    void           Scan( double now, const std::vector<OpenWindow>& open );
    void           BatchCounts();
+   // m_read, except that a read during which Stop() ran (Shutdown()) comes back busy: nothing read then is written.
+   HistorySnapshot ReadHistory( const IsoString& viewFullId, int from );
    void           ProcessDirty( double now );
    void           ProcessOne( Tracked& t, double now );   // one dirty image; throws its DB failures
    void           ProcessCandidates( double now );

@@ -266,6 +266,19 @@ void JourneyTracker::SetEnabled( bool on )
    m_enabled = on;
 }
 
+HistorySnapshot JourneyTracker::ReadHistory( const IsoString& viewFullId, int from )
+{
+   HistorySnapshot s = m_read( viewFullId, from );
+   if ( !m_shutdown )
+      return s;
+   // Stop() ran during the read (an event pump inside it): treated as busy, so no caller writes what it read.
+   // (Measured 2026-10-23: 63 production history reads, no event-loop iteration inside any of them.)
+   HistorySnapshot none;
+   none.from = s.from;
+   none.busy = true;
+   return none;
+}
+
 void JourneyTracker::SetHistoryReaderForSelfTest( HistoryReadFn fn )
 {
    m_read = fn ? fn : HistoryReadFn( ReadViewHistory );
@@ -596,6 +609,8 @@ void JourneyTracker::Tick( double now, bool forceScan )
       std::vector<OpenWindow> open;
       DropClosed( open );           // first
       DrainEvents();                // reads nothing; its focus changes are older than the sample below
+      if ( m_shutdown )
+         return;   // checked before the busy gate and after it: no journey write follows a Stop()
       // The busy gate (spec §4/§9, review I4, re-review R4): no history read,
       // lock or DB write while a process or script runs (console abort) or
       // right after one (the quiet period). Deferred, never waited on; a long
@@ -638,6 +653,10 @@ void JourneyTracker::Tick( double now, bool forceScan )
          m_forceScan = false;
          Scan( now, open );
       }
+      // The phases below write to the library. Every history read and script call in them returns "busy"
+      // once Stop() has run (ReadHistory, BatchCounts), and each phase starts only while recording lives.
+      if ( m_shutdown )
+         return;
       if ( !m_freezeRequests.empty() )
       {
          std::vector<int64> requests;
@@ -650,11 +669,23 @@ void JourneyTracker::Tick( double now, bool forceScan )
                m_joinNotes << "PI Copilot: " + e;
          }
       }
+      if ( m_shutdown )
+         return;
       ProcessPendingFreezes();
+      if ( m_shutdown )
+         return;
       FlushPendingGaps();
+      if ( m_shutdown )
+         return;
       ProcessDirty( now );
+      if ( m_shutdown )
+         return;
       ProcessCandidates( now );
+      if ( m_shutdown )
+         return;
       EndClosedJourneys();
+      if ( m_shutdown )
+         return;
       if ( m_reconcile )
          Reconcile();
       m_copilot.erase( std::remove_if( m_copilot.begin(), m_copilot.end(),
@@ -878,6 +909,8 @@ void JourneyTracker::BatchCounts()
       EvalDepthGuard guard;   // a timer-driven reader defers instead of nesting inside this call
       r = nlohmann::json::parse( U8( ThePICopilotModule->EvaluateScript( js, "JavaScript" ).ToString() ) );
    }
+   if ( m_shutdown )
+      return;   // Stop() ran during the script (see ReadHistory)
    for ( size_t k = 0; k < probed.size() && k < r.size(); ++k )
    {
       const std::vector<int> c = r.at( k ).get<std::vector<int>>();
@@ -900,6 +933,8 @@ void JourneyTracker::ProcessDirty( double now )
    std::vector<std::pair<size_t, String>> gone;   // R2: images whose journey rows vanished -- pcl-move-ok: push_back + read only
    for ( size_t k = 0; k < m_tracked.size(); ++k )
    {
+      if ( m_shutdown )
+         return;   // nothing more is written after Stop(); `gone` is left for no one (the tracker is going)
       Tracked& t = *m_tracked[k];
       if ( !t.dirty )
          continue;
@@ -956,14 +991,14 @@ void JourneyTracker::ProcessOne( Tracked& t, double now )
       if ( r.state != "superseded" )
          lastSeq = std::max( lastSeq, r.seq );
    }
-   HistorySnapshot snap = m_read( IsoString( t.id.c_str() ), HistoryReadFrom( known ) );
+   HistorySnapshot snap = ReadHistory( IsoString( t.id.c_str() ), HistoryReadFrom( known ) );
    HistoryDiff d;
    if ( snap.ok )
    {
       d = DiffHistory( known, snap );
       if ( d.needFullRead )
       {
-         snap = m_read( IsoString( t.id.c_str() ), 0 );
+         snap = ReadHistory( IsoString( t.id.c_str() ), 0 );
          if ( snap.ok )
             d = DiffHistory( known, snap );
       }
@@ -1095,6 +1130,8 @@ void JourneyTracker::ProcessCandidates( double now )
    bool evaluated = false;
    for ( size_t i = 0; i < m_candidates.size(); )
    {
+      if ( m_shutdown )
+         return;   // nothing more is joined after Stop()
       Candidate& c = *m_candidates[i];
       if ( evaluated && OverTickBudget() )
          break;   // review M8: the rest waits for the next tick (not counted as a look)
@@ -1190,7 +1227,7 @@ int JourneyTracker::EvaluateCandidate( Candidate& c, double now )
    const size_type mc = ModifyCountOf( id );
    if ( !c.hasSnap || c.ticks < 2 || mc != c.modifyCount )
    {
-      HistorySnapshot s = m_read( IsoString( id.c_str() ), 0 );
+      HistorySnapshot s = ReadHistory( IsoString( id.c_str() ), 0 );
       if ( s.busy )
          return kCandidateDeferred;
       if ( !s.ok )
@@ -1527,7 +1564,7 @@ int64 JourneyTracker::StartJourneyFor( const View& view, String& error, double /
          error = "view " + String( id.c_str() ) + " is busy (locked by a running process); try again when it finishes";
          return 0;
       }
-      const HistorySnapshot snap = m_read( IsoString( id.c_str() ), 0 );
+      const HistorySnapshot snap = ReadHistory( IsoString( id.c_str() ), 0 );
       if ( snap.busy )
       {
          error = "another script is running in PixInsight right now; try start_journey again when it finishes";
@@ -1727,7 +1764,7 @@ void JourneyTracker::ProcessPendingFreezes()
 bool JourneyTracker::JoinContinued( PendingFreeze& p )
 {
    const std::string id = p.id;
-   const HistorySnapshot snap = m_read( IsoString( id.c_str() ), 0 );
+   const HistorySnapshot snap = ReadHistory( IsoString( id.c_str() ), 0 );
    if ( snap.busy )
    {
       ++m_deferrals;
