@@ -642,6 +642,82 @@ def test_charging_ours_its_measured_noise_stops_added_noise_raising_end(truth, b
     assert bare > base and charged <= base * 1.005
 
 
+# --- Ruling P28d: local registration is not charged as noise -----------------------------------
+
+def _node_field(shape, step, sd, rng, up):
+    """An engine-like shift field (luma px) on a grid `up` x finer: per-node shifts N(0, sd) on nodes
+    `step` px apart, blended with sin^2 weights between neighbours (Regions.h: half-overlapping
+    windows of side 2 step, sin^2 blend weights summing to 1)."""
+    H, W = shape
+    v = rng.normal(0, sd, (H // (step * up) + 3, W // (step * up) + 3))
+
+    def axis(n):
+        u = np.arange(n) / up / step + 1
+        i = np.floor(u).astype(int)
+        return i, np.cos(np.pi * (u - i) / 2) ** 2, np.sin(np.pi * (u - i) / 2) ** 2
+    (iy, y0, y1), (ix, x0, x1) = axis(H), axis(W)
+    return (y0[:, None] * (x0 * v[iy][:, ix] + x1 * v[iy][:, ix + 1])
+            + y1[:, None] * (x0 * v[iy + 1][:, ix] + x1 * v[iy + 1][:, ix + 1]))
+
+
+def _halves_pair(sd, sigma_a, sigma_b, step=64, size=(256, 320), up=4, seed=4):
+    """Two 'half stacks' of one textured surface: B's scene moved by an engine-like local shift field
+    of `sd` px per node (0: the same scene), each with its own white noise. The scene is drawn `up` x
+    finer, warped there (cubic), and both are area-binned back, so the shift is a real one, not its
+    first-order expansion. Returns (A, B)."""
+    from conftest import fractal_field
+    h, w = size
+    H, W = h * up, w * up
+    base = 0.45 + 0.96 * ndimage.gaussian_filter(fractal_field((H, W), seed + 100, 1.2), 20 * up)
+    hi = ndimage.gaussian_filter(np.clip(base + 0.10 * fractal_field((H, W), seed, 1.5), 0.02, None), 1.2 * up)
+    rng = np.random.default_rng(seed + 7)
+    dy, dx = (_node_field((H, W), step, sd, rng, up) * up for _ in range(2))
+    yy, xx = np.mgrid[0:H, 0:W].astype(float)
+    warped = ndimage.map_coordinates(hi, [yy - dy, xx - dx], order=3, mode="reflect") if sd else hi
+    down = lambda z: z.reshape(h, up, w, up).mean(axis=(1, 3))      # noqa: E731
+    noise_rng = np.random.default_rng(1)
+    return (down(hi) + noise_rng.normal(0, sigma_a, (h, w)), down(warped) + noise_rng.normal(0, sigma_b, (h, w)))
+
+
+def _halves_ratio(A, B, sigma, **kw):
+    """D's power per END bin (halves.refined_difference) over the model of two halves of noise sigma."""
+    import halves
+    D, box = halves.refined_difference(A, B, **kw)[:2]
+    s = metric.measure(A, box).signal
+    p = metric.periodogram(D[box.y0:box.y1, box.x0:box.x1] / s)
+    return np.array(metric.band_means(p, metric.END_EDGES)) / (2 * sigma ** 2 / 4 / s ** 2)
+
+
+P28D_SIGMA = 0.001     # stack noise against a surface of mean ~0.5: the leak dominates the low bins
+
+
+def test_a_local_shift_between_the_halves_is_not_charged_as_noise():
+    """Ruling P28d: halves differing only by an engine-like local shift (nodes 64 px apart, 0.1 px sd)
+    charge about nothing. The charge is taken as the bench takes it, max(1, R / R_cal), with R_cal the
+    same scene's noise-only pair."""
+    import halves
+    honest = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA)
+    shifted = _halves_ratio(*_halves_pair(0.1, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA)
+    charge = halves.charge(list(shifted) + [1.0], list(honest) + [1.0])
+    print("\nlocal shift: per END bin " + " ".join(f"{v:.2f}" for v in shifted) + "; charge " + " ".join(f"{v:.2f}" for v in charge))
+    assert max(charge) < 1.25
+
+
+def test_noise_between_the_halves_is_still_charged():
+    """Ruling P28d: removing the local shift must not remove noise. Noise-only halves read the true
+    model per END bin (within -15 / +10 %: the fit's degrees of freedom cost a little in the lowest
+    bins, which the calibration measures alike), and halves where B carries twice the noise charge it:
+    (1 + 4) / 2 = 2.5 x the noise-only pair, per bin."""
+    import halves
+    honest = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA)
+    noisy = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, 2 * P28D_SIGMA), P28D_SIGMA)
+    charge = halves.charge(list(noisy) + [1.0], list(honest) + [1.0])
+    print("\nnoise only: per END bin " + " ".join(f"{v:.2f}" for v in honest) + "; B at 2 x the noise: charge "
+          + " ".join(f"{v:.2f}" for v in charge))
+    assert all(0.85 <= v <= 1.10 for v in honest)
+    assert all(v == pytest.approx(2.5, rel=0.08) for v in charge)
+
+
 def test_noise_factor_must_be_one_per_bin_and_at_least_one(truth, box):
     img = _stack(truth, 1.2, SIGMA ** 2, 3)
     with pytest.raises(ValueError):
