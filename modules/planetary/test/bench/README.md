@@ -24,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 192 tests + 32 strict xfails (C1), ~2.5 min with the NAS; the engine tests need the built probes
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 139 tests + 26 strict xfails without the NAS, ~1 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 201 tests + 32 strict xfails (C1), ~3.5 min with the NAS; the engine tests need the built probes
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 148 tests + 26 strict xfails without the NAS, ~1.5 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -226,9 +226,11 @@ stand in for it.
 | Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact | 19.99 / 15.13 / 5.49 / 3.11 and 13.28 / 10.14 / 4.37 / 2.39 |
 | Interior: an interior blur of sigma 1 behind a crisp limb | 19.75 -> 15.62 (2 x noise raises it to 21.34: C1) |
 | `noise.photon_transfer` (fix round 3: free intercept, Theil-Sen start): textured disc drifting 0.5 px per frame / a 3 px disc in 640x480 / lunar texture under 0-1.5 px jitter / a sky on a 3 DN black pedestal | a +7 % / +60 % / within 0.5 % / a +4 %, zero at 3.00 DN (with c clamped to 0, a reads x0.26) |
+| The calibration's pedestal synthetics (3 DN, c 0.05; fix round 4) | disc 0.1469 m - 0.317, lunar 0.1489 m - 0.320 (true 0.15 m - 0.317) |
+| P28d tile shifts: an engine-like local shift between the halves / noise only / B at twice the noise / a 2 % gain bump at a limb | charge at most 1.21 (4.91 without them) / 0.89-1.03 of the true model / charge 2.47-2.64 (2.5) / never less than without them (more: 5.05 against 2.79 in the lowest bin) |
 | `noise.photon_transfer` refuses: fewer than half the bins on the line; a collapsed slope; `box_noise` past 1.5 x the fitted levels | NoiseUnmeasurable (tests) |
 | `stack-region-probe --keff-selftest`: one region keeping 37 of 100 / the fallback / two blended nested regions (weights written from the layout geometry, not AxisWeightAt) | 37 / 100 / 62.83, all exact |
-| End to end through the engine: synthetic RGGB, known noise, the measured photon-transfer line, the region probe's k; both cases held out of the calibration | disc x0.964 (calibrated 0.866); lunar, k 18 and 16, x0.776 (0.866). With the half's 300 frames as k it would read x13.8. |
+| End to end through the engine: synthetic RGGB, known noise, the measured photon-transfer line, the region probe's k; both cases held out of the calibration | disc x0.960 (calibrated 0.862); lunar with per-frame seeing (30 % steady frames, the rest a further sigma 1.5 px; ruling E3), k 83 and 78 = its steady frames per half, x0.785 (0.861). With the half's 300 frames as k it would read x2.93. (Fix round 3 read k 18 and 16 on a static scene, an artefact of the generator's wrapped edge.) |
 | Ours charged its true added noise (the Ruling P28b mechanism) | uniform x1 / x2, target-only x2: END no longer rises |
 
 ### Split-half check and our measured noise (Ruling P28 rule 3, Ruling P28b)
@@ -241,33 +243,66 @@ box, and its power per END bin is compared with the model, sigma_frame^2 (1/k_A 
 the refinement, a residual misregistration of hundredths of a pixel leaks signal into D: on the 13 px
 Mars disc, 0.017 px of it read as x10 the model.
 
-**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`, fix round 3):
-* 24 synthetic RGGB captures, 12 per target kind (a banded disc; a lunar field with a limb);
-* 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter;
-* 8-bit, noise a m + c, 600 frames;
+**Local registration is not charged (Ruling P28d, fix round 4).** After the global refinement, each
+32 px tile of the box has its own shift field removed: D ~ c + dy(u, v) dA/dy + dx(u, v) dA/dx, with dy
+and dx first order in the tile's coordinates. Only the shift terms are removed; the intercept is
+fitted so a level offset is not read as a shift, and stays in D. The engine's region stacks register
+region by region and blend with sin^2 weights between half-overlapping windows, so the halves' shift
+difference varies smoothly node to node; a first-order field per tile follows it, one constant shift
+per tile does not. Measured (`test_end.py`, a synthetic pair with that field: nodes 64 px apart,
+0.1 px sd per node, drawn 4 x finer and area-binned):
+
+| D per END bin over the noise model | 0.06-0.09 | 0.09-0.12 | 0.12-0.15 | 0.15-0.30 |
+|---|---|---|---|---|
+| Noise only, no tile shifts | 0.97 | 0.91 | 0.93 | 0.93-1.03 |
+| Noise only, tile shifts removed | 0.90 | 0.89 | 0.93 | 0.91-1.03 |
+| Local shift, no tile shifts | 4.75 | 2.70 | 1.75 | 1.03-1.43 |
+| Local shift, one constant shift per tile | 2.77 | 1.69 | 1.31 | 1.04-1.15 |
+| Local shift, first-order field per tile (the bench) | 1.09 | 0.94 | 0.96 | 0.93-1.04 |
+
+So the local-shift pair charges at most 1.21 against the noise-only pair, and B at twice the noise
+still charges 2.47-2.64 (2.5 expected). The fit costs 6 of each tile's 1024 noise degrees of freedom,
+mostly in the lowest bins; the calibration measures with it, so that cost sits in R_cal as in R.
+
+**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`, fix round 4):
+* 48 synthetic RGGB captures, 24 per target kind (a banded disc; a lunar field with a limb);
+* 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter, each without and with a 3 DN
+  black pedestal (review N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative
+  intercept; with the pedestal the synthetic sky rounds to one 8-bit value and the fitted line is
+  0.147-0.149 m - 0.32, true 0.15 m - 0.317);
+* 8-bit, noise a s + c, 600 frames; shifted as a mirror extension, so no edge wraps (ruling E3);
 * split, stacked by stack-probe, k from the region probe over A's box (B's in its own grid);
+* D with the tile shifts removed (P28d, above);
 * the ratio taken with the MEASURED photon-transfer line (`noise.photon_transfer` on the first 128
   frames, as a real capture is measured; review I-F), so the estimator's read-high sits in R_cal as
   it sits in R.
 
 There D holds only the engine's own noise. The synthetics are static, so the halves never choose
-different frames: unshared signal is absent by construction. On real data it can only raise R.
+different frames: unshared signal is absent by construction. On real data it can only raise R. With
+the E3 fix every half keeps 294-300 of its 300 frames over the box (fix round 3: 5-32 on 6 of the 12
+lunar runs, an artefact of the generator's wrapped edge, `e3-report.md`).
 
-| Kind | 0.21-0.30: mean / sd (ddof 1, 12 runs) | Tolerance (mean ± 5.81 sd) | R_cal per END bin (0.06 ... 0.30) |
-|---|---|---|---|
-| disc | 0.866 / 0.077 | 0.42-1.31 | 0.90 0.84 0.92 0.86 0.96 0.94 0.86 0.80 |
-| lunar | 0.866 / 0.152 | 0.00-1.75 | 1.01 0.96 0.93 0.91 0.89 0.89 0.88 0.84 |
+| Kind | 0.21-0.30: mean / sd (ddof 1, 24 runs); range | log R: mean / sd | Tolerance exp(mean ± 5.81 sd) | R_cal per END bin (0.06 ... 0.30) |
+|---|---|---|---|---|
+| disc | 0.862 / 0.078; 0.719-1.026 | -0.152 / 0.091 | 0.507-1.456 | 0.82 0.80 0.89 0.84 0.96 0.93 0.86 0.80 |
+| lunar | 0.861 / 0.133; 0.582-1.003 | -0.163 / 0.176 | 0.305-2.366 | 0.94 0.85 0.86 0.90 0.88 0.90 0.85 0.84 |
 
-5.81 is the two-sided normal tolerance factor (Howe) at 99 % coverage and 95 % confidence for n = 6,
-the number of scenes: the scene, not the jitter, dominates the spread (review N2-m2), so the 12 runs
-are not 12 independent draws. The lunar band's lower end is 0, so it cannot fail a capture from
-below. The lunar runs span 0.575-1.056: that spread is the residual leak of the charge below (up to
-x1.5 noise uncharged, on the scene at 0.575).
+* 5.81 is the two-sided normal tolerance factor (Howe) at 99 % coverage and 95 % confidence for n = 6,
+  the number of scenes: the scene dominates the spread (review N2-m2), so the 24 runs are not 24
+  independent draws. The lunar scene 2 reads 0.582-0.590 at both jitters and both pedestals.
+* The pedestal does not move the ratio: disc 0.863 without, 0.861 with; lunar 0.861 and 0.861.
+* Jitter moves the disc: 0.905 at 0.3 px, 0.819 at 0.7 px, where the photon-transfer line reads
+  +4 to +17 % high (a moving textured disc). It barely moves the lunar runs: 0.865 and 0.858.
+* **The interval is taken on log R** (review N3-m1). R is a ratio of powers, positive, and a leak
+  scales it, so its spread is multiplicative. Fix round 3 took mean ± k sd on R, and the lunar lower
+  end came out below 0 (clamped to 0), so below-band review could never fire on lunar. On log R both
+  ends are real: the lunar band's lower end is 0.305, about half the lowest calibration run (0.582).
 
 **What "before any real data is read" guarantees, and what it does not:**
 * `calibrate` opens no capture (`synthetic_frames` only).
 * `calibration.json` is committed on its own, before the real-data run that uses it, which git
-  history shows (fix round 3: 3ff1167f, re-frozen in ee79ddfd after the photon-transfer fit changed).
+  history shows (fix round 3: 3ff1167f, re-frozen in ee79ddfd after the photon-transfer fit changed;
+  fix round 4: 862a0cd9, before the round-4 real run).
 * Not claimed: that the procedure predates real data. Earlier rounds read real split-half ratios, and
   several procedure changes were made after reading real results:
   * the global refinement above, after Mars's real x10.3 (review N2-m7);
@@ -276,7 +311,11 @@ x1.5 noise uncharged, on the scene at 0.575).
     Re-review 3 judged the free intercept physically correct and found no verdict hinging on it, but
     it was adopted after that real result was read;
   * fix round 4's tile shifts (Ruling P28d), log-scale tolerance (N3-m1) and pedestal runs (N3-m6)
-    were each decided after fix round 3's real split-half ratios had been read.
+    were each decided after fix round 3's real split-half ratios had been read;
+  * after the round-4 real run (2026-10-23 14:42-14:56; frozen 14:41), the 2023-02-12 Moon's clipped
+    south limb showed the tile fit can raise D. Two alternatives were measured then and not adopted
+    (a smoothly interpolated shift field under-charges a level offset; keeping each tile's mean leaves
+    more of a local shift), and the procedure is unchanged: the run stands on the frozen calibration.
 
 **Use:**
 * **The charge (Ruling P28b).** Ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin,
@@ -289,18 +328,30 @@ x1.5 noise uncharged, on the scene at 0.575).
 * **P28c.** A numeric fail under the charge is sound only if it also holds with ours on the bare
   budget, on both readings of our k (review N2-m1); otherwise it is review.
 
-**The fix-round-3 run** (2026-10-23, post-P26 engine, the final photon-transfer fit):
+**The fix-round-4 run** (2026-10-23, the E1/E2 engine at b0f3bb43, calibration 862a0cd9, P28d tile
+shifts). The 0.21-0.30 ratio of fix round 3 is beside it; what moved it is in the last column.
 
-| Capture | Kind | 0.21-0.30 measured / model | Tolerance | Ours' charge, 0.06-0.09 ... 0.27-0.30 |
-|---|---|---|---|---|
-| 2023-02-11 Jupiter | disc | x1.12 | agrees (0.42-1.31) | 9.04 3.37 1.17 2.68 1.50 1.07 1.26 1.59 |
-| 2026-01-30 Jupiter | disc | x3.95 | outside | 35.3 15.5 12.1 14.9 1.83 5.89 4.91 2.61 |
-| Saturn | disc | x0.72 | agrees | 2.30 1.00 1.25 1.89 1.53 1.00 1.00 1.00 |
-| Mars | disc | x2.18 | outside | 6.83 10.9 13.0 9.25 3.21 2.11 2.94 2.54 |
-| 2023-02-12 Moon | lunar | x1.22 | agrees (0.00-1.75) | 30.6 15.9 8.91 4.83 2.87 1.82 1.31 1.09 |
-| 2024-02-01 Moon | lunar | x2.17 | outside | 14.9 11.4 8.71 6.39 4.64 3.22 2.41 1.85 |
-| 2023-08-22 Moon | lunar | x0.82 | agrees | 2.41 1.48 1.43 1.29 1.13 1.00 1.00 1.00 |
-| 2023-03-05 Moon | lunar | x0.56 | agrees | 18.2 7.47 2.28 1.03 1.00 1.00 1.00 1.00 |
+| Capture | Kind | 0.21-0.30 measured / model (round 3) | Tolerance | Ours' charge, 0.06-0.09 ... 0.27-0.30 | Without the tile shifts: 0.21-0.30 / 0.06-0.09 |
+|---|---|---|---|---|---|
+| 2023-02-11 Jupiter | disc | x1.14 (x1.12) | agrees (0.51-1.46) | 6.30 2.48 1.06 2.77 1.59 1.12 1.28 1.58 | x1.12 / x8.19 |
+| 2026-01-30 Jupiter | disc | x3.72 (x3.95) | outside | 11.7 11.9 10.7 13.4 2.13 5.58 4.58 2.56 | x3.95 / x31.9 |
+| Saturn | disc | x0.73 (x0.72) | agrees | 1.88 1.00 1.21 1.92 1.59 1.02 1.00 1.00 | x0.72 / x2.08 |
+| Mars | disc | x1.74 (x2.18) | outside | 6.42 5.00 4.51 3.64 1.45 1.53 2.39 2.19 | x2.18 / x6.18 |
+| 2023-02-12 Moon | lunar | x1.27 (x1.22) | agrees (0.31-2.37) | 15.8 8.94 5.76 3.44 2.49 1.78 1.43 1.18 | x1.23 / x30.9 |
+| 2024-02-01 Moon | lunar | x0.95 (x2.17) | agrees | 1.24 1.27 1.20 1.15 1.15 1.09 1.14 1.07 | x2.20 / x15.1 |
+| 2023-08-22 Moon | lunar | x0.82 (x0.82) | agrees | 1.66 1.39 1.20 1.06 1.04 1.00 1.00 1.00 | x0.83 / x2.47 |
+| 2023-03-05 Moon | lunar | x0.48 (x0.56) | agrees | 1.12 1.18 1.00 1.00 1.00 1.00 1.00 1.00 | x0.56 / x18.3 |
+
+* Without the tile shifts the ratios are fix round 3's to within 0.03: the E1/E2 engine changes
+  moved the halves little. The movement is the tile shifts'.
+* On the disc boxes (48-56 px) the box is a single tile, so the first-order field is one global
+  affine (scale, rotation, shear) difference between the halves; it takes Mars from x2.18 to x1.74 and
+  the 2026-01-30 Jupiter's lowest bin from x31.9 to x9.56. Both stay outside.
+* The 2023-03-05 Moon (x0.48) is below every lunar calibration run (0.582) and inside the band.
+* The 2023-02-12 Moon's south limb is clipped in the raw frames (54 % of the samples at 255 in a
+  window over it). There the halves differ by about 10 % in level (A 0.92 against B 0.81 at x 1235),
+  and on 25 of its 1632 tiles the shift fit returns more than 1 px, which is not a shift; with them
+  the fit raises D's total power by 0.7 %. That difference stays charged (15.8 in the lowest bin).
 
 ### What the excess is (fix round 3, review I-E; `triage.py`)
 
@@ -330,9 +381,10 @@ multiplies the texture), a local shift (the halves' regions registered different
 * **Mars** has no regions, and no term explains more than 12 %. Not established.
 
 A local shift between the two half-stacks is registration, not noise. In the full stack it is a
-geometric offset, which END does not see, so charging it as noise over-charges ours; that is what
-P28c guards against. Removing it tile by tile, as the global refinement already removes the global
-shift, would make the charge hold noise only. It is not applied, because it changes the ruled charge.
+geometric offset, which END does not see, so charging it as noise over-charges ours. Fix round 4
+removes it (Ruling P28d; "Local registration is not charged", above); this table is fix round 3's,
+taken before that, and `triage.py` still decomposes D without the tile shifts so it shows what they
+explain.
 
 ### What the interleaved halves share (fix round 2, review I-D)
 
