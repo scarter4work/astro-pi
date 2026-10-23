@@ -15,9 +15,10 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
        --keff-box; a reference: its stacking percentage x the capture's frames). Any smoothing, on
        either side, then counts as blur, as in DAN and Ruling 1. Not read from the image itself: the
        half-stack ground truth on our own stack showed the box's 0.40-0.50 power is 2.7-55 x its random
-       noise (on the 2026-01-30 Jupiter: real horizontal structure plus a sensor-fixed pattern the
-       3 px drift cannot average out), and the sky's noise is 600-54 000 x below the target's
-       (README).
+       noise -- structure the interleaved halves share (on the 2026-01-30 Jupiter: real horizontal
+       structure, which ASIStudio shows too, and an isotropic part that is neither target-locked nor
+       sensor-fixed; README, "What the interleaved halves share") -- and the sky's noise is
+       600-54 000 x below the target's (README).
     6. Per END_EDGES bin (0.06-0.30 in steps of 0.03 cycles/px): SNR = max(mean P - N, 0) / N.
     7. END = sqrt( sum_f O(f) / sum_f O(f) / (1 + SNR(f)) ) over the band's frequency samples,
        O(f) = f^-3 (END_PRIOR): the band's object power over the error power of the matched Wiener
@@ -33,8 +34,8 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     smoothing never raises it (drizzle x3 + area resample x0.81, Gaussian 0.7 x0.75, B-spline
     half-pixel shift x0.98, where reading the box's own white floor as its noise RAISES it -- the bias
     the photon budget removes).
-    KNOWN LIMIT -- NOISE AND SHARPENING THE BUDGET DOES NOT HOLD (Ruling P28 fix round 1, C1; pinned in
-    test_end.py): END counts any power the photon budget does not explain as detail. Noise beyond the
+    KNOWN LIMIT -- NOISE AND SHARPENING THE BUDGET DOES NOT HOLD (C1; pinned in test_end.py as strict
+    xfails): END counts any power the photon budget does not explain as detail. Noise beyond the
     budget (uniform, shot-like, target-only) and an unsharp mask RAISE it (measured x1.18-1.88 on
     synthetic stacks, x1.02-1.94 on real AutoStakkert P20 stacks; README has the table). No
     single-image estimator can charge it without also charging genuine sharpness: a linear sharpening
@@ -42,16 +43,21 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     kernel G K, which END must rank higher whenever G K <= 1; and noise added to a smoothed stack
     cannot be told from the stack's own (unknown) noise kernel. Measured headroom (the box's fitted
     white level over the budget): a B-spline-interpolated synthetic 0.67, a drizzled one 0.10; the
-    real stacks 0.00-0.29 for ASIStudio and 0.03-0.29 for ours. A sky-based guard (the first P28 design)
-    read 0 on all 22 real images. The bench therefore sends every capture to review with this note.
+    real stacks 0.00-0.29 for ASIStudio and 0.03-0.29 for ours.
+    HOW THE BENCH JUDGES DESPITE IT (Ruling P28b): ours is not a single image -- the split halves
+    measure its noise -- so ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin
+    (noise_factor; halves.charge), the references stay on the budget. C1 then only inflates a
+    reference's END, which only lowers ours' ratio: a numeric pass is sound, a numeric fail is sound
+    only against a reference whose files record no processing (refs.provenance).
     END_INTERIOR: the same on the interior window's high-passed periodogram (DAN_INTERIOR below),
     the noise model times the high-pass's power gain, with sigma_frame^2 over the interior window.
     LIMITS: our k_eff comes from stack-region-probe's plan, which repeats RunStack's selection steps;
     the bench checks its per-region kept counts against stack-probe's (RunStack's own) and reports END
     unmeasured when they differ. The flip check is our k as the frames used x the unweighted mean kept
     fraction over regions (benchset.ours_frames_mean). AutoStakkert's percentage is global,
-    approximate per alignment point. sigma_frame reads 4-11 % high on a textured target drifting
-    0.5 px per frame (noise.py), a factor common to every image.
+    approximate per alignment point. sigma_frame reads up to +7 % (+16 % on a 6 px disc) on a
+    textured target moving between frames (noise.py), a factor common to every image's budget; row or
+    column banding is invisible to it, and only ours is charged that (through the split halves).
 
 DAN -- SECONDARY SINCE RULING P28: it removes each image's own noise, so it gives no credit for SNR
 (a stack of 4x the frames at the same blur scores the same).
@@ -185,6 +191,7 @@ class Result:
     end_interior: Optional[float] = None      # END of the interior (None when not judged)
     end_snr: Optional[tuple] = None           # per-bin SNR over END_EDGES
     end_noise_budget: Optional[float] = None  # the photon budget given (sigma_frame^2 / k_eff)
+    end_noise_factor: Optional[tuple] = None  # our measured-noise charge per bin (Ruling P28b), when given
     end_frames: Optional[float] = None        # the k the budget used (refs.compare)
     end_note: Optional[str] = None
 
@@ -352,7 +359,7 @@ def interior_window(img, box: Box, limb: Optional[float] = None) -> InteriorWind
     return InteriorWindow(w, mask, diameter, erosion, sig)
 
 
-def _interior_scores(x, iw: InteriorWindow, budget: Optional[float]):
+def _interior_scores(x, iw: InteriorWindow, budget: Optional[float], factor=None):
     """(DAN_interior, END_interior) of normalised crop x on the interior window; END_interior is
     None without a noise budget."""
     m = iw.mask.astype(np.float64)
@@ -380,23 +387,24 @@ def _interior_scores(x, iw: InteriorWindow, budget: Optional[float]):
     hw = hp[sl] * w
     ph = np.abs(np.fft.fft2(hw - hw.mean())) ** 2 / (w ** 2).sum()
     g = (1.0 - np.exp(-2.0 * (math.pi * INTERIOR_HP_SIGMA * f) ** 2)) ** 2
-    return dan, _end_from_periodogram(ph, budget, g)[0]
+    return dan, _end_from_periodogram(ph, budget, g, factor)[0]
 
 
-def _end_from_periodogram(p, noise_power, gain=None):
+def _end_from_periodogram(p, noise_power, gain=None, factor=None):
     """(END, per-bin SNR) of periodogram `p` (variance-per-pixel units, on its own fftfreq grid)
     against white noise of power `noise_power` (times the per-frequency power gain `gain` of a
-    linear pre-filter, when given): per END_EDGES bin, SNR = max(mean P - N, 0) / N, and
+    linear pre-filter, when given; times the per-bin `factor`, our measured-noise charge, when given):
+    per END_EDGES bin, SNR = max(mean P - N, 0) / N, and
     END = sqrt( sum_f O(f) / sum_f O(f) / (1 + SNR(f)) ) over the band's frequency samples, with
     the object prior O(f) = f^-END_PRIOR (see END in the module doc)."""
     f = _radial_frequency(p.shape)
     num = den = 0.0
     snrs = []
-    for a, b in zip(END_EDGES[:-1], END_EDGES[1:]):
+    for i, (a, b) in enumerate(zip(END_EDGES[:-1], END_EDGES[1:])):
         m = (f >= a) & (f < b)
         if not m.any():
             continue
-        noise = noise_power * (float(gain[m].mean()) if gain is not None else 1.0)
+        noise = noise_power * (float(gain[m].mean()) if gain is not None else 1.0) * (factor[i] if factor else 1.0)
         snr = max(float(p[m].mean()) - noise, 0.0) / noise
         snrs.append(snr)
         o = float((f[m] ** -END_PRIOR).sum())       # the bin's object power under the prior
@@ -428,14 +436,17 @@ def _radial_frequency(shape):
 
 def measure(img, box: Optional[Box] = None, *, mosaic=False,
             interior: Optional[InteriorWindow] = None, noise_power: Optional[float] = None,
-            noise_power_interior: Optional[float] = None) -> Result:
+            noise_power_interior: Optional[float] = None, noise_factor=None) -> Result:
     """DAN and END of `img` (HxW or HxWxC array, any linear units) on `box` (default: its own
     target_box), and DAN_interior / END_interior when an anchor's interior window is given (judged
     only when the window is >= INTERIOR_MIN_DIAMETER across). `noise_power` is the image's photon
     budget on the box, sigma_frame^2 / k_eff in the metric's units (a fraction of the box's mean
     target signal squared; noise.box_noise / k), and `noise_power_interior` the same over the
-    interior window (default: noise_power). Without it END is None and end_note says so. Raises
-    ValueError when there is no target signal to measure."""
+    interior window (default: noise_power). `noise_factor` (one per END_EDGES bin, >= 1) multiplies
+    the noise bin by bin: our stack's measured-noise charge (Ruling P28b, halves.charge). Without a
+    budget END is None and end_note says so. Raises ValueError when there is no target signal."""
+    if noise_factor is not None and (len(noise_factor) != len(END_EDGES) - 1 or min(noise_factor) < 1.0):
+        raise ValueError(f"noise_factor needs {len(END_EDGES) - 1} values >= 1, got {noise_factor}")
     lum = luminance(img)
     if box is None:
         box = target_box(lum)
@@ -465,7 +476,7 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False,
     elif not budget > 0:
         raise ValueError(f"noise budget must be positive, got {budget}")
     if budget is not None:
-        end, end_snr = _end_from_periodogram(power, budget)
+        end, end_snr = _end_from_periodogram(power, budget, factor=noise_factor)
     interior_value = end_int = None
     judged, diameter = False, None
     if interior is not None:
@@ -474,12 +485,13 @@ def measure(img, box: Optional[Box] = None, *, mosaic=False,
         diameter, judged = interior.diameter, interior.judged
         if judged:
             b_int = None if budget is None else (noise_power_interior if noise_power_interior is not None else budget)
-            interior_value, end_int = _interior_scores((crop - bg) / signal, interior, b_int)
+            interior_value, end_int = _interior_scores((crop - bg) / signal, interior, b_int, noise_factor)
     return Result(value=math.sqrt(max(excess, 0.0)), band_power=band_power, noise_floor=floor,
                   band_snr=(band_power - floor) / floor if floor > 0 else math.inf,
                   background=bg, signal=signal, box=box, mosaic=mosaic,
                   interior=interior_value, interior_judged=judged, interior_diameter=diameter,
-                  end=end, end_interior=end_int, end_snr=end_snr, end_noise_budget=budget, end_note=end_note)
+                  end=end, end_interior=end_int, end_snr=end_snr, end_noise_budget=budget,
+                  end_noise_factor=tuple(noise_factor) if noise_factor else None, end_note=end_note)
 
 
 def measure_path(path, box: Optional[Box] = None, *, mosaic=False) -> Result:

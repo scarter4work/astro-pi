@@ -534,7 +534,8 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
             anchor_label: Optional[str] = None, frame_size=None, frame_noise=None,
             anchor_frames: Optional[float] = None, capture_frames: Optional[int] = None,
             anchor_frames_alt: Optional[float] = None,
-            anchor_frames_why: str = "our stack's effective frame count is unknown") -> List[Row]:
+            anchor_frames_why: str = "our stack's effective frame count is unknown",
+            anchor_noise_factor=None, anchor_noise_factor_alt=None) -> List[Row]:
     """Measure the anchor (normally OUR stack: a path, (path, factor) or an array) and each
     reference (path, or (path, measured_factor)) with metric.measure on one common box, with
     DAN_interior on the anchor's interior window. Row 0 is the anchor. `frame_size` (w, h) of
@@ -586,11 +587,17 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
 
     budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior) or a reason
     a_kw = _end_kwargs(budget, anchor_frames, anchor_frames_why, note_is_reason=True)
-    a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_kw.pop("measure"))
+    a_m = a_kw.pop("measure")
+    if anchor_noise_factor is not None and "noise_power" in a_m:
+        a_m["noise_factor"] = anchor_noise_factor
+    a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m)
     alt = None
     if anchor_frames_alt is not None:
         alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's mean-kept-fraction frame count")
-        alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_kw.pop("measure")), alt_kw)
+        alt_m = alt_kw.pop("measure")
+        if anchor_noise_factor_alt is not None and "noise_power" in alt_m:
+            alt_m["noise_factor"] = anchor_noise_factor_alt
+        alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_m), alt_kw)
     rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt)]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
@@ -669,6 +676,46 @@ def _ratios(rows: Sequence[Row], key: str):
     return out, (len(known) == len(vals))
 
 
+def provenance(path: str) -> dict:
+    """What the reference's own files record of processing beyond stacking (Ruling P28b). state:
+    "none" -- AutoStakkert's raw stack (no _conv suffix) whose .as3 session file records no
+    row/column calibration, no pre-processing blur and no sharpening of this file (_stack_sharpened
+    writes the separate _conv copy); "processed" -- a _conv / sharpened file or such a setting on;
+    "unknown" -- no session file, or ASIStudio, whose .fit header records its noise reduction (PN) and
+    sharpening (SHARPEN) export settings without saying whether they reached the .fit."""
+    base = os.path.basename(path)
+    stem = os.path.splitext(base)[0]
+    info = parse_reference_name(path)
+    if info.processed or stem.endswith("_conv"):
+        return {"state": "processed", "text": "sharpened or stretched output (_conv / .jpg)"}
+    if info.tool == "ASI":
+        keys = {}
+        if path.lower().endswith((".fit", ".fits")):
+            from astropy.io import fits
+            h = fits.getheader(path)
+            keys = {k: h.get(k) for k in ("PN", "SHARPEN", "PB", "PC", "PS") if k in h}
+        return {"state": "unknown", "text": "ASIStudio .fit; header records " + (", ".join(f"{k} {v}" for k, v in keys.items()) or "nothing")
+                + " (export settings: whether the noise reduction reached the .fit is not established)"}
+    if info.tool == "AS":
+        as3 = os.path.join(os.path.dirname(path), stem + ".as3")
+        if not os.path.exists(as3):
+            return {"state": "unknown", "text": f"no AutoStakkert session file {os.path.basename(as3)}"}
+        settings = {}
+        with open(as3, errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) == 2 and parts[0].startswith("_"):
+                    settings[parts[0]] = parts[1]
+        on = [k for k in ("_menu_image_calibration_row_noise", "_menu_image_calibration_column_noise",
+                          "_experimental_pre_processing_vertical_blur_enabled",
+                          "_experimental_pre_processing_horizontal_blur_enabled") if settings.get(k) == "True"]
+        if on:
+            return {"state": "processed", "text": "AutoStakkert .as3: " + ", ".join(on)}
+        return {"state": "none", "text": "AutoStakkert raw stack (no _conv); .as3 records no calibration, pre-blur or "
+                "sharpening of this file"}
+    return {"state": "unknown", "text": "not a known tool's output"}
+
+
 def _over(value, rows: Sequence[Row], key: str):
     known = [getattr(r.result, key) for r in rows[1:] if getattr(r.result, key) is not None]
     return (value / max(known)) if (value is not None and known) else None
@@ -696,6 +743,8 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
             "end": res.end, "end_ratio": e_full[i],
             "end_interior": res.end_interior, "end_interior_ratio": e_int[i],
             "end_frames": res.end_frames, "end_noise_budget": res.end_noise_budget,
+            "end_noise_factor": list(res.end_noise_factor) if res.end_noise_factor else None,
+            "provenance": provenance(r.path) if (i > 0 and r.path) else None,
             "end_snr": list(res.end_snr) if res.end_snr else None, "end_note": res.end_note,
             "end_complete": ok_full and (ok_int or not res.interior_judged),
             "end_alt": r.alt.end if r.alt else None, "end_alt_frames": r.alt.end_frames if r.alt else None,

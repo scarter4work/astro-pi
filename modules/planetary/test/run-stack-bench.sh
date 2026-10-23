@@ -129,13 +129,15 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
             if "$PY" -I "$BENCH/halves.py" split "$src" "$size" "$even" "$odd" >"$dir/halves.log" 2>&1; then
                 for h in A B; do
                     f="$even"; [ "$h" = B ] && f="$odd"
-                    if "$PROBE" "$f" --bayer "$bayer" "${THREADS[@]}" --out "$dir/half$h.fits" --json \
-                        >"$dir/half$h.json" 2>"$dir/half$h.log"; then
-                        keff_for "$f" "$dir/half$h.fits" "$dir/half$h.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/half$h.fits"
-                    else
-                        echo "FAIL $run: half $h stack-probe: $(tail -2 "$dir/half$h.log")"; rm -f "$dir/half$h.json"; status=1
-                    fi
+                    "$PROBE" "$f" --bayer "$bayer" "${THREADS[@]}" --out "$dir/half$h.fits" --json \
+                        >"$dir/half$h.json" 2>"$dir/half$h.log" \
+                        || { echo "FAIL $run: half $h stack-probe: $(tail -2 "$dir/half$h.log")"; rm -f "$dir/half$h.json"; status=1; }
                 done
+                # both halves' k over A's target box, where halves.check measures D (review N-m3)
+                if [ -f "$dir/halfA.json" ] && [ -f "$dir/halfB.json" ]; then
+                    keff_for "$even" "$dir/halfA.fits" "$dir/halfA.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/halfA.fits"
+                    keff_for "$odd" "$dir/halfB.fits" "$dir/halfB.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/halfA.fits"
+                fi
             else
                 echo "FAIL $run: split: $(tail -2 "$dir/halves.log")"; status=1
             fi

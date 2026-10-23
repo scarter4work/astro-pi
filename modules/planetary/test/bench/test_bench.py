@@ -10,19 +10,20 @@ import benchset
 from metric import Box
 
 
-def _row(label, end=1.0, end_int=1.0, judged=True, note=None):
+def _row(label, end=1.0, end_int=1.0, judged=True, note=None, prov="none"):
     return {"label": label, "end": end, "end_interior": end_int if judged else None, "end_note": note,
-            "interior_judged": judged}
+            "interior_judged": judged, "provenance": {"state": prov, "text": f"{prov} (test)"}}
 
 
-def _rows(full, inner, judged=True, review=(), alt=None, ref_end=1.0, ref_note=None):
+def _rows(full, inner, judged=True, review=(), alt=None, ref_end=1.0, ref_note=None, charged=True, prov="none"):
     """ours (with END ratios full / inner, and alt ratios) and one reference."""
     alt_full, alt_inner = alt if alt is not None else (full, inner)
     ours = _row("ours", end=full, end_int=inner, judged=judged)
     ours.update({"end_ratio": full, "end_interior_ratio": inner if judged else None,
                  "end_alt_ratio": alt_full, "end_interior_alt_ratio": alt_inner if judged else None,
-                 "end_frames": 100.0, "end_alt_frames": 60.0, "review": list(review)})
-    return [ours, _row("AS_P20", end=ref_end, judged=judged, note=ref_note)]
+                 "end_frames": 100.0, "end_alt_frames": 60.0, "review": list(review),
+                 "end_noise_factor": [1.0] * 8 if charged else None, "provenance": None})
+    return [ours, _row("AS_P20", end=ref_end, judged=judged, note=ref_note, prov=prov)]
 
 
 def test_plan_covers_every_capture_once_all_rggb():
@@ -39,27 +40,30 @@ def test_plan_covers_every_capture_once_all_rggb():
 
 
 @pytest.mark.parametrize("full, inner, judged, want", [
-    (1.00, 1.00, True, "review"),       # passes the bar: review, never pass (C1)
-    (0.97, 0.97, True, "review"),       # the bar is inclusive
-    (0.969, 1.10, True, "fail"),
+    (1.00, 1.00, True, "pass"),         # sound under our measured-noise charge (Ruling P28b)
+    (0.97, 0.97, True, "pass"),         # the bar is inclusive
+    (0.969, 1.10, True, "fail"),        # against an unprocessed reference: a fail stands
     (1.10, 0.969, True, "fail"),
-    (1.10, 0.50, False, "review"),      # an interior not judged does not count
+    (1.10, 0.50, False, "pass"),        # an interior not judged does not count
 ])
 def test_status_applies_the_bar_to_both_end_scores(full, inner, judged, want):
-    st, why = bench.status_of(_rows(full, inner, judged))
-    assert st == want
-    if st == "review":
-        assert why[-1] == bench.C1_NOTE
+    assert bench.status_of(_rows(full, inner, judged))[0] == want
 
 
-def test_no_capture_passes_on_its_numbers_c1():
-    st, why = bench.status_of(_rows(2.0, 2.0))
-    assert st == "review" and why == [bench.C1_NOTE]
+def test_a_pass_needs_ours_charged_its_measured_noise():
+    st, why = bench.status_of(_rows(2.0, 2.0, charged=False))
+    assert st == "review" and why[0] == bench.UNCHARGED_NOTE
 
 
-def test_review_notes_are_kept_and_a_fail_stays_a_fail():
+@pytest.mark.parametrize("prov", ["unknown", "processed"])
+def test_a_fail_against_a_reference_of_unknown_or_processed_provenance_is_review(prov):
+    st, why = bench.status_of(_rows(0.9, 0.9, prov=prov))
+    assert st == "review" and any(w.startswith(bench.C1_NOTE) for w in why)
+
+
+def test_review_notes_turn_a_pass_into_review_never_a_fail_into_one():
     st, why = bench.status_of(_rows(1.2, None, False, ["limb-only: human review decides"]))
-    assert st == "review" and why == ["limb-only: human review decides", bench.C1_NOTE]
+    assert st == "review" and why == ["limb-only: human review decides"]
     assert bench.status_of(_rows(0.9, 0.9, True, ["limb-only"]))[0] == "fail"
 
 
@@ -70,13 +74,11 @@ def test_a_verdict_that_flips_with_our_frame_count_goes_to_review():
     assert bench.status_of(_rows(0.9, 0.9, True, alt=(0.8, 0.8)))[0] == "fail"     # fails both: fail
 
 
-def test_split_halves_outside_the_tolerance_go_to_review():
-    sh = {"status": "outside", "judged": {"high": 2.86, "k": [500, 505], "ratio": [20.4] + [1.0] * 8},
-          "mean_k": None}
+def test_split_halves_outside_the_tolerance_are_noted_not_blocking():
+    sh = {"status": "outside", "kind": "lunar", "tolerance": [0.0, 1.44], "factor": [3.0] * 8,
+          "judged": {"high": 3.18, "k": [500, 505], "ratio": [20.4] + [1.0] * 8}, "mean_k": None}
     st, why = bench.status_of(_rows(1.9, 1.7), split_half=sh)
-    assert st == "review" and why[0].startswith("split halves outside") and "x2.86" in why[0]
-    ok = dict(sh, status="agrees", judged=dict(sh["judged"], high=0.9))
-    assert bench.status_of(_rows(1.9, 1.7), split_half=ok)[1] == [bench.C1_NOTE]
+    assert st == "pass" and why[0].startswith("split halves outside") and "x3.18" in why[0]
 
 
 def test_a_missing_end_is_unmeasured_never_a_verdict():
@@ -154,7 +156,7 @@ def test_summary_counts_and_lists_diagnosis_rows():
     md = bench.summary_md([rec_stack, rec_diag])
     assert "0 pass, 0 review, 1 fail" in md and "RGGB" in md.split("\n")[2]
     assert "| r1 | RGGB | 9 / 10 | 9 (7) |" in md and "2.00 / 2.50 / -" in md and "0.800 / -" in md
-    assert "not stacked" in md and "Known limit (C1)" in md
+    assert "not stacked" in md and "Ruling P28b" in md
     assert "| d1 | NoTarget | NoTarget | no | **pass** |" in md
 
 

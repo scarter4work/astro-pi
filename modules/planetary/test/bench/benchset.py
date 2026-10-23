@@ -180,7 +180,7 @@ def ours_frames_mean(probe: dict) -> Optional[float]:
 
 
 def compare_capture(cid: str, ours, probe: Optional[dict] = None, frame_noise=None,
-                    keff: Optional[dict] = None) -> List["refs.Row"]:
+                    keff: Optional[dict] = None, noise_factor=None, noise_factor_alt=None) -> List["refs.Row"]:
     """THE call for run-stack-bench.sh: our debayered stack (FITS/TIFF path or array) against
     this capture's references on one box, reference factors from their size. Row 0 is ours.
     With stack-probe's JSON for ours (`probe`), END is measured too: the capture's per-frame noise
@@ -201,13 +201,15 @@ def compare_capture(cid: str, ours, probe: Optional[dict] = None, frame_noise=No
             frame_noise = noise.measure_video(nas(c.video), c.size)
     rows = refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
                         frame_noise=frame_noise, anchor_frames=k, capture_frames=c.frames,
-                        anchor_frames_alt=k_alt, anchor_frames_why=why)
+                        anchor_frames_alt=k_alt, anchor_frames_why=why,
+                        anchor_noise_factor=noise_factor, anchor_noise_factor_alt=noise_factor_alt)
     if k is not None and list(keff.get("box", [])) != list(rows[0].result.box):
         # the region probe averaged over another box: our k does not apply, loudly
         why = f"the region probe's box {keff.get('box')} is not the compare box {list(rows[0].result.box)}"
         rows = refs.compare(ours, reference_paths(c), anchor_label="ours", frame_size=c.size,
                             frame_noise=frame_noise, anchor_frames=None, capture_frames=c.frames,
-                            anchor_frames_alt=k_alt, anchor_frames_why=why)
+                            anchor_frames_alt=k_alt, anchor_frames_why=why,
+                            anchor_noise_factor=noise_factor, anchor_noise_factor_alt=noise_factor_alt)
     return rows
 
 
