@@ -249,12 +249,15 @@ int main(int argc, char** argv) try {
     std::atomic<bool> cancelNow{false};
     std::string cancelSeen;
     progress.report = [&](const std::string& phase, int64_t done, int64_t total) {
-        if (!cancelPhase.empty() && !cancelNow.load() &&
+        // One report turns the flag on (compare_exchange), and only that one writes cancelSeen, so a report
+        // from another thread can never write it at the same time; main reads it after RunStack has joined
+        // every thread.
+        bool expected = false;
+        if (!cancelPhase.empty() &&
             (phaseIndex(phase) > phaseIndex(cancelPhase) ||
-             (phase == cancelPhase && static_cast<double>(done) >= cancelFraction * static_cast<double>(total)))) {
+             (phase == cancelPhase && static_cast<double>(done) >= cancelFraction * static_cast<double>(total))) &&
+            cancelNow.compare_exchange_strong(expected, true))
             cancelSeen = phase + " " + std::to_string(done) + "/" + std::to_string(total);
-            cancelNow.store(true);
-        }
         const auto now = std::chrono::steady_clock::now();
         if (phase != lastPhase || done == total || now - lastPrint > std::chrono::seconds(2)) {
             std::fprintf(stderr, "  %s %lld/%lld\n", phase.c_str(), static_cast<long long>(done), static_cast<long long>(total));
