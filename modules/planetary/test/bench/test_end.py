@@ -361,21 +361,47 @@ def test_photon_transfer_recovers_a_known_line():
 
 
 def test_photon_transfer_fits_a_small_disc_on_its_own_levels():
-    """Review I-C / I-E (Mars, Saturn): a 6 px disc in a 320 x 240 frame is far under 0.1 % of the
-    samples. The fit must still reach the disc's levels (rounds 0-1 cut the binning at the 99.9th
-    percentile and fitted Mars on sky bins alone: a = 0). Measured: a +16 % (the disc is mostly limb,
-    whose samples move between frames), c 0.21."""
+    """Review I-C / I-E (Mars, Saturn): a 3 px disc in a 640 x 480 frame is under 0.05 % of the samples,
+    so a binning cut at the 99.9th percentile (rounds 0-1) leaves the disc out (asserted below on the
+    samples themselves) and fitted Mars on sky bins alone (a = 0). The fit must reach the disc's levels.
+    Measured: a +48 % here (a 3 px disc is all limb, whose samples move between frames; +16 % at 6 px):
+    an over-read, which raises every image's budget alike -- recorded as a limit for tiny discs."""
     rng = np.random.default_rng(3)
     a, c = 0.15, 0.4
-    base = 3 + 120 * planet_scene(size=(240, 320), radius=6, seed=4, seeing=1.0)
+    base = 3 + 150 * planet_scene(size=(480, 640), radius=3, seed=4, seeing=0.8)
     out = []
     for _ in range(128):
         m = ndimage.shift(base, rng.normal(0, 0.2, 2), order=1, mode="nearest")
         out.append(np.clip(np.round(m + rng.standard_normal(m.shape) * np.sqrt(a * m + c)), 0, 255))
-    ptc = noise.photon_transfer(np.array(out, dtype=np.uint8))
-    print(f"\nsmall disc: {ptc}, kept levels {ptc.kept_levels}")
+    frames = np.array(out, dtype=np.uint8)
+    disc = base > 40
+    assert disc.mean() < 0.0005                                   # under 0.05 % of the samples
+    assert np.percentile(frames, 99.9) < 0.5 * base.max()         # the old top would cut the disc away
+    ptc = noise.photon_transfer(frames)
+    print(f"\nsmall disc ({int(disc.sum())} px): {ptc}, kept levels {ptc.kept_levels}")
     assert ptc.kept_levels[1] > 60
-    assert ptc.a == pytest.approx(a, rel=0.20)      # measured +16 %: a 6 px disc is mostly limb
+    assert a <= ptc.a <= 1.6 * a
+
+
+@pytest.mark.parametrize("jitter", [0.0, 0.5, 1.0, 1.5])
+def test_photon_transfer_on_lunar_texture_under_seeing_jitter(jitter):
+    """Review M7 / I-H: unregistered consecutive frames of a frame-filling lunar texture jittered by up
+    to 1.5 px (sd) per frame -- both shipped passes are lunar. Measured (fix round 3): v(50), v(150)
+    within 0.4 %."""
+    from conftest import lunar_scene
+    rng = np.random.default_rng(5)
+    a, c = 0.15, 0.4
+    base = 10 + 200 * lunar_scene(size=(256, 384), seed=3, seeing=1.0)
+    gains = np.ones_like(base)
+    gains[0::2, 0::2], gains[1::2, 1::2] = 0.7, 0.5
+    out = []
+    for _ in range(24):
+        m = (ndimage.shift(base, rng.normal(0, jitter, 2), order=1, mode="nearest") if jitter else base) * gains
+        out.append(np.clip(np.round(m + rng.standard_normal(m.shape) * np.sqrt(a * m + c)), 0, 255))
+    ptc = noise.photon_transfer(np.array(out, dtype=np.uint8))
+    print(f"\njitter {jitter}: {ptc}")
+    for level in (50, 150):
+        assert ptc.variance(level) == pytest.approx(a * level + c + noise.QUANTISATION, rel=0.02)
 
 
 def test_photon_transfer_refuses_a_line_through_too_few_bins():
@@ -498,7 +524,8 @@ PROBES = (os.path.join(BUILD, "stack-probe"), os.path.join(BUILD, "stack-region-
 def test_region_probe_box_k_matches_analytic_layouts():
     """stack-region-probe --keff-selftest: BoxKeff on hand-built plans -- one region keeping 37 of 100
     (k 37), a region keeping none (the fallback, k 100), two blended nodes with nested kept sets
-    (against an independent per-pixel formula; review M2 / N-m6)."""
+    (against per-pixel weights written out from the layout's geometry, not the engine's AxisWeightAt;
+    it checks BoxKeff's sums over the engine's blend rule, not the rule; reviews M2 / N-m6 / N2-m8)."""
     import subprocess
     r = subprocess.run([PROBES[1], "--keff-selftest"], capture_output=True, text=True)
     print("\n" + r.stdout)
@@ -506,18 +533,22 @@ def test_region_probe_box_k_matches_analytic_layouts():
 
 
 @pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")
-@pytest.mark.parametrize("kind, jitter, seed, n", [("disc", 0.5, 7, 400), ("lunar", 0.6, 1, 600)])
+@pytest.mark.parametrize("kind, jitter, seed, n", [("disc", 0.5, 7, 400), ("lunar", 0.6, 10, 600)])
 def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed, n):
     """Synthetic RGGB frames of known noise (a m + c) -> noise.photon_transfer -> the engine stacks the
     even and odd halves -> stack-region-probe's noise-power k over A's box (checked against
     stack-probe's plan) -> noise.box_noise -> the halves' difference against sigma_frame^2 (1/k_A +
     1/k_B) / 4, with the MEASURED photon-transfer line. It must lie within the kind's frozen tolerance
-    and within 30 % of the kind's calibrated ratio. The lunar case is one where the engine's regions
-    keep few frames in one half (k 12 against 220): there the half's frame count as k misses the model
-    by about 6 x, so the test discriminates the k (review M2). (The box k and the mean-kept reading
-    agree on these synthetics, whose regions are alike, so they are not told apart here.)"""
+    and within 30 % of the kind's calibrated ratio. Both cases are held out of the calibration (scenes 7
+    and 10, outside halves.CAL_SEEDS, at jitters it does not use), so the 30 % check is not circular
+    (review N2-m4). The lunar case is one where the engine's regions keep few frames over the box (k 18
+    and 16 of 300): there the half's frame count as k misses the model by about 17 x, so the test
+    discriminates the k (review M2). (The box k and the mean-kept reading agree on these synthetics,
+    whose regions are alike, so they are not told apart here.)"""
     import halves
     import json as _json
+    assert seed not in halves.CAL_SEEDS
+    assert f"{kind}-j{jitter}-s{seed}" not in {r["condition"] for r in halves.load_calibration()["kinds"][kind]["runs"]}
     frames, mean, truth = halves.synthetic_frames(kind, n, jitter, 0.15, 0.6, seed)
     measured = noise.photon_transfer(frames[:64])
     print(f"\nphoton transfer {measured} (true a {truth.a}, c {truth.c:.3f})")
@@ -530,10 +561,13 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
         probe = _json.loads(halves._run([PROBES[0], ser, "--bayer", "RGGB", "--out", fits, "--json"]))
         used[half] = probe["used"]
         if box is None:
-            box = metric.target_box(metric.luminance(refs.load_image(fits)))
+            A_lum = metric.luminance(refs.load_image(fits))
+            box = hbox = metric.target_box(A_lum)
+        else:                                     # A's box in B's own grid (review N2-m5)
+            hbox = halves.box_in_b(A_lum, metric.luminance(refs.load_image(fits)), box)
         kj = str(tmp_path / f"h{half}.keff.json")
         halves._run([PROBES[1], ser, "--bayer", "RGGB", "--plan-only", "--keff-box",
-                     f"{box.y0},{box.y1},{box.x0},{box.x1}", "--json-out", kj])
+                     f"{hbox.y0},{hbox.y1},{hbox.x0},{hbox.x1}", "--json-out", kj])
         with open(kj) as fh:
             k[half], why = benchset.ours_frames_box(probe, _json.load(fh))
         assert k[half] is not None, why

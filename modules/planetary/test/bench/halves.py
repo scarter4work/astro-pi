@@ -19,24 +19,29 @@ noise-power k over the box (stack-region-probe --keff-box, the judged reading; t
 reading beside it). The measured / model ratio is taken per END bin and summarised over
 0.21-0.30 cycles/px, where END's restoration error is decided.
 
-THE CALIBRATION (calibrate; Ruling P28 fix rounds 1-2). The engine is run on synthetic RGGB captures
-whose truth is known -- a banded disc and a lunar field, static, each frame jittered (sigma 0.2-0.8 px),
-8-bit, noise of variance a m + c, 600 frames, 8 runs per kind -- split even/odd, stacked with
-stack-probe, both halves' k over A's target box from stack-region-probe, and the ratio taken with the
-TRUE photon-transfer line and the noise-free mean frame. There D holds the engine's own noise only (the
-synthetics are static: the halves never choose different frames, so the real-data term "unshared
-signal" is absent by construction -- on real data it can only raise R, which over-charges ours). Per
-kind it gives R_cal(f), the engine's honest ratio per END bin, and the tolerance over 0.21-0.30: mean
--+ k s (ddof 1), k the two-sided normal tolerance factor for n = 8 at 99 % coverage and 95 % confidence
-(4.91). `calibrate --write` freezes it in bench/calibration.json.
-How "before any real data is read" is guaranteed: calibrate reads no capture (synthetic_frames only;
-nothing here opens the NAS), and calibration.json is committed on its own, before the real-data run
-that uses it -- git history shows the order. (Earlier rounds did read real split-half ratios; the
-frozen procedure -- conditions, statistics, factor -- does not depend on them.)
+THE CALIBRATION (calibrate; Ruling P28 fix rounds 1-3). The engine is run on synthetic RGGB captures
+whose truth is known -- a banded disc and a lunar field, static, 6 scenes per kind (CAL_SEEDS) each at
+0.3 and 0.7 px of per-frame jitter, 8-bit, noise of variance a m + c, 600 frames -- split even/odd,
+stacked with stack-probe, both halves' k over A's target box from stack-region-probe, and the ratio
+taken with the MEASURED photon-transfer line (noise.photon_transfer on the first FRAMES frames, as a real
+capture is measured; review I-F), so the estimator's read-high (+7 % on a disc) sits in R_cal as it
+sits in R. D holds the engine's own noise only (the synthetics are static: the halves never choose
+different frames, so the real-data term "unshared signal" is absent by construction -- on real data it
+can only raise R). Per kind it gives R_cal(f), the engine's honest ratio per END bin, and the tolerance
+over 0.21-0.30: mean -+ k s (s over every run, ddof 1), k the two-sided normal tolerance factor at 99 %
+coverage and 95 % confidence for n_eff = the number of SCENES (the scene, not the jitter, dominates the
+spread: review N2-m2). `calibrate --write` freezes it in bench/calibration.json.
+What is guaranteed about real data: calibrate opens no capture (synthetic_frames only), and
+calibration.json is committed on its own, before the real-data run that uses it -- git history shows
+the order. What is NOT claimed: that the procedure predates real data. Earlier rounds read real
+split-half ratios, and the refinement in refined_difference was adopted after Mars's real x10.3
+(review N2-m7).
 
-USE. bench.status_of sends a capture whose 0.21-0.30 ratio lies outside its kind's tolerance to review
-(the noise model is not confirmed there), and ours is charged its measured noise (Ruling P28b):
-N_ours(f) = budget x max(1, R(f) / R_cal(f)) per END bin (charge). The references stay on the budget.
+USE. bench.status_of: a capture whose 0.21-0.30 ratio lies outside its kind's tolerance, in either
+direction, cannot pass (review I-G) -- above it the model does not hold what the halves measure, below
+it ours smooths more than the honest engine or sigma_frame is over-read, and either way the charge is
+not confirmed. Ours is charged its measured noise (Ruling P28b): N_ours(f) = budget x
+max(1, R(f) / R_cal(f)) per END bin (charge). The references stay on the budget.
 """
 import argparse
 import json
@@ -61,6 +66,7 @@ import refs      # noqa: E402
 BAYER_RGGB = 8
 HIGH_BINS = slice(5, 8)          # END_EDGES bins 0.21-0.24, 0.24-0.27, 0.27-0.30
 CALIBRATION_FILE = os.path.join(HERE, "calibration.json")
+CAL_SEEDS = (1, 2, 3, 4, 5, 6)        # scenes per kind (each at jitter 0.3 and 0.7 px)
 COVERAGE, CONFIDENCE = 0.99, 0.95     # the tolerance interval: 99 % of honest runs, at 95 % confidence
 
 
@@ -164,7 +170,8 @@ def ratio(path_a, path_b, k_a, k_b, ptc, raw_mean):
 
 def _k_of(run_dir, half, box):
     """(judged k, mean-kept k, why) for a half from its stack-probe and stack-region-probe JSON; the
-    region probe's box must be `box` (A's target box, where D is measured; review N-m3)."""
+    region probe's box must be `box` (A's target box, where D is measured, in that half's own grid:
+    for B, A's box moved by the registration's integer shift; reviews N-m3, N2-m5)."""
     with open(os.path.join(run_dir, f"half{half}.json")) as fh:
         probe = json.load(fh)
     keff_path = os.path.join(run_dir, f"half{half}.keff.json")
@@ -176,6 +183,13 @@ def _k_of(run_dir, half, box):
             return None, None, f"half {half}'s k was taken over {keff.get('box')}, not A's box {list(box)}"
     k, why = benchset.ours_frames_box(probe, keff)
     return k, benchset.ours_frames_mean(probe), why
+
+
+def box_in_b(A, B, box):
+    """A's box in B's grid: B registered to A (anchor[y, x] ~ B[y - dy, x - dx]), so A's pixel (y, x)
+    is B's (y - dy, x - dx), rounded to whole pixels (review N2-m5)."""
+    dy, dx = refs.register(B, A).int_shift
+    return metric.Box(box.y0 - dy, box.y1 - dy, box.x0 - dx, box.x1 - dx)
 
 
 def charge(ratio_per_bin, r_cal):
@@ -199,8 +213,10 @@ def check(run_dir, frame_noise, kind):
     if frame_noise is None or isinstance(frame_noise, str):
         return dict(out, status="unmeasured", reason=f"no per-frame noise: {frame_noise}")
     ptc, raw_mean = frame_noise
-    box = metric.target_box(metric.luminance(refs.load_image(pa)))
-    (ka, ka_m, why_a), (kb, kb_m, why_b) = _k_of(run_dir, "A", box), _k_of(run_dir, "B", box)
+    A = metric.luminance(refs.load_image(pa))
+    box = metric.target_box(A)
+    box_b = box_in_b(A, metric.luminance(refs.load_image(pb)), box)
+    (ka, ka_m, why_a), (kb, kb_m, why_b) = _k_of(run_dir, "A", box), _k_of(run_dir, "B", box_b)
     if ka is None or kb is None:
         return dict(out, status="unmeasured", reason=f"halves' k: {why_a or why_b}")
     r = ratio(pa, pb, ka, kb, ptc, raw_mean)
@@ -263,31 +279,37 @@ def _run(cmd):
 def calibrate(work, stack_probe, region_probe, conditions=None):
     """The engine's measured / model over 0.21-0.30 on synthetic captures (see THE TOLERANCE)."""
     os.makedirs(work, exist_ok=True)
-    conditions = conditions or [(k, j, s) for k in ("disc", "lunar") for j in (0.2, 0.4, 0.6, 0.8) for s in (1, 2)]
+    conditions = conditions or [(k, j, s) for k in ("disc", "lunar") for j in (0.3, 0.7) for s in CAL_SEEDS]
     out = []
     for kind, jitter, seed in conditions:
-        frames, mean, ptc = synthetic_frames(kind, 600, jitter, 0.15, 0.6, seed)
+        frames, mean, truth = synthetic_frames(kind, 600, jitter, 0.15, 0.6, seed)
+        # The MEASURED photon-transfer line, from the capture's first frames as noise.measure_video takes
+        # a real capture's (review I-F): the estimator's own bias then sits in R_cal as it does in R.
+        ptc = noise.photon_transfer(frames[:noise.FRAMES])
         tag = f"{kind}-j{jitter}-s{seed}"
-        k, probes, box = {}, [], None
+        k, probes, sers, fits = {}, [], {}, {}
         for half, sl in (("A", slice(0, None, 2)), ("B", slice(1, None, 2))):
-            ser = os.path.join(work, f"{tag}-{half}.ser")
-            write_ser(ser, frames[sl])
-            fits = os.path.join(work, f"{tag}-{half}.fits")
-            probe = json.loads(_run([stack_probe, ser, "--bayer", "RGGB", "--out", fits, "--json"]))
-            probes.append(probe)
-            if box is None:              # both halves' k over A's target box, where D is measured
-                box = metric.target_box(metric.luminance(refs.load_image(fits)))
+            sers[half] = os.path.join(work, f"{tag}-{half}.ser")
+            write_ser(sers[half], frames[sl])
+            fits[half] = os.path.join(work, f"{tag}-{half}.fits")
+            probes.append(json.loads(_run([stack_probe, sers[half], "--bayer", "RGGB", "--out", fits[half], "--json"])))
+        A_lum = metric.luminance(refs.load_image(fits["A"]))
+        box = metric.target_box(A_lum)          # both halves' k over A's box (in B's grid for B)
+        boxes = {"A": box, "B": box_in_b(A_lum, metric.luminance(refs.load_image(fits["B"])), box)}
+        for half, probe in zip("AB", probes):
+            b = boxes[half]
             kj = os.path.join(work, f"{tag}-{half}.keff.json")
-            _run([region_probe, ser, "--bayer", "RGGB", "--plan-only", "--keff-box",
-                  f"{box.y0},{box.y1},{box.x0},{box.x1}", "--json-out", kj])
+            _run([region_probe, sers[half], "--bayer", "RGGB", "--plan-only", "--keff-box",
+                  f"{b.y0},{b.y1},{b.x0},{b.x1}", "--json-out", kj])
             with open(kj) as fh:
                 kv, why = benchset.ours_frames_box(probe, json.load(fh))
             if kv is None:
                 raise RuntimeError(f"{tag} half {half}: {why}")
             k[half] = kv
-            os.remove(ser)
+            os.remove(sers[half])
         r = ratio(os.path.join(work, f"{tag}-A.fits"), os.path.join(work, f"{tag}-B.fits"), k["A"], k["B"], ptc, mean)
-        out.append({"condition": tag, "kind": kind, "k": [k["A"], k["B"]], "high": r["high"], "ratio": r["ratio"],
+        out.append({"condition": tag, "kind": kind, "scene": seed, "k": [k["A"], k["B"]], "high": r["high"],
+                    "ratio": r["ratio"], "ptc": [ptc.a, ptc.c], "ptc_true": [truth.a, truth.c],
                     "mean_kept_k": [benchset.ours_frames_mean(pr) for pr in probes]})
         print(f"{tag}: k {k['A']:.0f}/{k['B']:.0f}, 0.21-0.30 x{r['high']:.3f}, per bin "
               + " ".join(f"{v:.2f}" for v in r["ratio"]), flush=True)
@@ -320,12 +342,13 @@ def _main(argv=None):
         rs = [r for r in res if r["kind"] == kind]
         hs = np.array([r["high"] for r in rs])
         n, m, sd = len(hs), float(hs.mean()), float(hs.std(ddof=1))
-        kf = tolerance_factor(n)
-        kinds[kind] = {"n": n, "high_mean": m, "high_sd": sd, "tolerance_factor": kf,
+        n_eff = len({r["scene"] for r in rs})      # the scene dominates the spread (review N2-m2)
+        kf = tolerance_factor(n_eff)
+        kinds[kind] = {"n": n, "n_eff": n_eff, "high_mean": m, "high_sd": sd, "tolerance_factor": kf,
                        "tolerance": [max(m - kf * sd, 0.0), m + kf * sd],
                        "r_cal": [float(v) for v in np.mean([r["ratio"] for r in rs], axis=0)],
                        "runs": rs}
-        print(f"{kind}: n {n}, 0.21-0.30 mean {m:.3f} sd {sd:.3f} (ddof 1), k {kf:.2f}: tolerance "
+        print(f"{kind}: n {n} (scenes {n_eff}), 0.21-0.30 mean {m:.3f} sd {sd:.3f} (ddof 1), k {kf:.2f}: tolerance "
               f"{kinds[kind]['tolerance'][0]:.3f}-{kinds[kind]['tolerance'][1]:.3f}; r_cal per bin "
               + " ".join(f"{v:.2f}" for v in kinds[kind]["r_cal"]))
     if a.write:
@@ -333,7 +356,7 @@ def _main(argv=None):
         with open(a.write, "w") as fh:
             json.dump({"generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                        "by": "halves.py calibrate: synthetic captures only (synthetic_frames), the engine's stack-probe "
-                             "and stack-region-probe; no real capture is read",
+                             "and stack-region-probe, the MEASURED photon-transfer line; no real capture is read",
                        "coverage": COVERAGE, "confidence": CONFIDENCE, "bins": "END_EDGES bins, then 0.40-0.50",
                        "kinds": kinds}, fh, indent=1)
         print(f"wrote {a.write}")

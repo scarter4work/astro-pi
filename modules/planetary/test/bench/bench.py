@@ -22,15 +22,16 @@ numeric pass is sound and a numeric fail is not unless the reference is known to
   unmeasured: END is missing for ours or for some reference -- no verdict, loudly;
   review:     the verdict flips between our two frame counts (rule 5); or the numbers fail against a
               reference whose provenance (refs.provenance) is not "none" -- processed or unknown, so C1
-              may be what beat us (C1_NOTE); or the numbers pass but ours could not be charged (no
-              split halves: UNCHARGED_NOTE) or a review note applies (limb-only, noise regime, mosaic);
+              may be what beat us (C1_NOTE); or a fail that does not also hold with ours on the bare
+              budget, on both readings (CHARGE_NOTE); or the numbers pass but ours could not be charged
+              on both readings (UNCHARGED_NOTE), the split halves lie outside their kind's tolerance in
+              either direction (the charge is not confirmed), or a review note applies;
   fail:       END below the bar under both readings, against references whose files record no
               processing (AutoStakkert raw stacks with their .as3), AND below it with ours on the bare
               budget too -- the charge over-charges ours (the halves hold signal they do not share), so
               a fail only under the charge is review (CHARGE_NOTE);
-  pass:       END >= 0.97 under the charge on both readings, no review note. Scott's side-by-side is
-              still the spec's final word.
-Split halves outside their kind's tolerance are noted (the charge already holds what they measured).
+  pass:       END >= 0.97 under the charge on both readings, split halves within their kind's
+              tolerance, no review note. Scott's side-by-side is still the spec's final word.
 DAN_full / DAN_interior stay in every table as secondary figures; they decide nothing.
 
 SPLIT HALVES (Ruling P28 rule 3). When run-stack-bench.sh stacked the capture's even and odd frames
@@ -146,8 +147,8 @@ def status_of(rows: List[dict], run_id: str = "", split_half: Optional[dict] = N
     notes = []
     if split_half is not None and split_half.get("status") not in ("agrees", None):
         import halves
-        notes.append(f"split halves {split_half.get('status')}: {halves.summary_line(split_half)} -- the noise model is "
-                     f"not confirmed on this capture; ours is charged what the halves measured")
+        notes.append(f"split halves {split_half.get('status')}: {halves.summary_line(split_half)} -- the noise model and "
+                     f"ours' charge are not confirmed on this capture")
     if v != v_alt:
         alt = f"{ours['end_alt_ratio']:.3f}" + (f" / {ours['end_interior_alt_ratio']:.3f}" if judged else "")
         own = f"{ours['end_ratio']:.3f}" + (f" / {ours['end_interior_ratio']:.3f}" if judged else "")
@@ -155,18 +156,26 @@ def status_of(rows: List[dict], run_id: str = "", split_half: Optional[dict] = N
                           f"(END {own}), {v_alt} at the mean kept fraction's {ours['end_alt_frames']:.0f} (END {alt})"] \
             + notes + list(ours["review"])
     if v == "fail":
-        v_bare, _ = _verdict(ours.get("end_uncharged_ratio"), ours.get("end_interior_uncharged_ratio"), judged)
-        if ours.get("end_noise_factor") is not None and v_bare != "fail":
-            bare = f"{ours['end_uncharged_ratio']:.3f}" + (f" / {ours['end_interior_uncharged_ratio']:.3f}" if judged else "")
-            return "review", reasons + [f"{CHARGE_NOTE} (on the bare budget ours is {bare})"] + notes
+        if ours.get("end_noise_factor") is not None:
+            v_bare, _ = _verdict(ours.get("end_uncharged_ratio"), ours.get("end_interior_uncharged_ratio"), judged)
+            v_bare_alt, _ = _verdict(ours.get("end_uncharged_alt_ratio"), ours.get("end_interior_uncharged_alt_ratio"), judged)
+            if v_bare != "fail" or v_bare_alt != "fail":       # P28c, on both readings (review N2-m1)
+                bare = f"{_f(ours.get('end_uncharged_ratio'), '{:.3f}')}" + (
+                    f" / {_f(ours.get('end_interior_uncharged_ratio'), '{:.3f}')}" if judged else "")
+                bare_alt = f"{_f(ours.get('end_uncharged_alt_ratio'), '{:.3f}')}" + (
+                    f" / {_f(ours.get('end_interior_uncharged_alt_ratio'), '{:.3f}')}" if judged else "")
+                return "review", reasons + [f"{CHARGE_NOTE} (on the bare budget ours is {bare}; with the mean-kept "
+                                            f"k {bare_alt})"] + notes
         setters = _setters(rows, "end") + (_setters(rows, "end_interior") if judged else [])
         unsound = [r for r in setters if (r.get("provenance") or {}).get("state") != "none"]
         if unsound:
             return "review", reasons + [C1_NOTE + ": " + "; ".join(
                 f"{r['label']}: {(r.get('provenance') or {}).get('text', 'no provenance')}" for r in unsound)] + notes
         return "fail", reasons + [f"{r['label']}: {r['provenance']['text']}" for r in setters] + notes
-    if ours.get("end_noise_factor") is None:
+    if ours.get("end_noise_factor") is None or ours.get("end_alt_noise_factor") is None:
         return "review", [UNCHARGED_NOTE] + notes + list(ours["review"])
+    if split_half is not None and split_half.get("status") == "outside":   # either direction (review I-G)
+        return "review", notes + list(ours["review"])
     if ours["review"]:
         return "review", list(ours["review"]) + notes
     return "pass", notes
@@ -603,8 +612,10 @@ def _main(argv=None):
     bx = sub.add_parser("box", help="the compare box of a run's stack (y0,y1,x0,x1), for stack-region-probe --keff-box")
     bx.add_argument("run")
     bx.add_argument("ours")
-    tb = sub.add_parser("target-box", help="metric.target_box of a stack (y0,y1,x0,x1)")
+    tb = sub.add_parser("target-box", help="metric.target_box of a stack (y0,y1,x0,x1); with a second stack, "
+                        "that box moved into the second stack's grid (halves.box_in_b)")
     tb.add_argument("fits")
+    tb.add_argument("other", nargs="?")
     r = sub.add_parser("report")
     r.add_argument("out_dir")
     r.add_argument("runs", nargs="*")
@@ -614,7 +625,11 @@ def _main(argv=None):
         print(f"{b.y0},{b.y1},{b.x0},{b.x1}")
         return 0
     if a.cmd == "target-box":
-        b = metric.target_box(metric.luminance(refs.load_image(a.fits)))
+        A = metric.luminance(refs.load_image(a.fits))
+        b = metric.target_box(A)
+        if a.other:
+            import halves
+            b = halves.box_in_b(A, metric.luminance(refs.load_image(a.other)), b)
         print(f"{b.y0},{b.y1},{b.x0},{b.x1}")
         return 0
     if a.cmd == "plan":

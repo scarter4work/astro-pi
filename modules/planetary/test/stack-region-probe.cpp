@@ -235,20 +235,22 @@ int KeffSelfTest() {
     expect("one region keeping 37 of 100", BoxKeff(plan(1, 37, 0, 100), 0, 64, 0, 64, 1.0), 37.0);
     // 2. The region keeps no frame: the fallback (every stacked frame) everywhere -> 100.
     expect("a region keeping none (the fallback)", BoxKeff(plan(1, 0, 0, 100), 0, 64, 0, 64, 1.0), 100.0);
-    // 3. Two nodes blended (sin^2): left keeps frames 0..39, right all 100 (nested). Per pixel, with
-    //    weights w and 1 - w: frames 0..39 carry w / 40 + (1 - w) / 100, the other 60 (1 - w) / 100;
-    //    noise power 40 a^2 + 60 b^2 (the weights sum to 1). Averaged with Hann^2 over the box.
+    // 3. Two nodes blended (sin^2): left keeps frames 0..39, right all 100 (nested). The weights are
+    //    written out from the layout's geometry, not from AxisWeightAt (review N2-m8): step 16, window 32,
+    //    flat edges, so for pixel centre t = x + 0.5 the right node's weight is 0 below t = 16,
+    //    sin^2(pi (t - 16) / 32) over 16..32 and 1 above, the left's its complement. (This restates the
+    //    engine's documented blend rule; it checks BoxKeff's sums over that rule, not the rule itself.)
+    //    Per pixel frames 0..39 carry wl / 40 + wr / 100, the other 60 wr / 100; noise power
+    //    40 a^2 + 60 b^2 (the weights sum to 1). Averaged with Hann^2 over the box.
     {
         const stack::RegionPlan p3 = plan(2, 40, 100, 100);
         const int y0 = 0, y1 = 32, x0 = 0, x1 = 48;     // the left node, the blend, the start of the right
         double num = 0, den = 0;
         for (int y = y0; y < y1; ++y)
             for (int x = x0; x < x1; ++x) {
-                const stack::AxisWeight ax = stack::AxisWeightAt(p3.layout, false, x + 0.5 - 0.5);
-                double wl = 0, wr = 0;
-                if (ax.i0 == 0) { wl = ax.w0; wr = ax.w1; }
-                else if (ax.i0 == 1) { wr = ax.w0; }
-                else if (ax.i0 == -1) { wl = ax.w1; }
+                const double t = x + 0.5;
+                const double sr = std::sin(M_PI * (t - 16) / 32);
+                const double wr = t < 16 ? 0.0 : t < 32 ? sr * sr : 1.0, wl = 1 - wr;
                 const double a = wl / 40 + wr / 100, b = wr / 100;
                 const double hh = std::pow(Hann(y - y0, y1 - y0) * Hann(x - x0, x1 - x0), 2);
                 num += hh * (40 * a * a + 60 * b * b);

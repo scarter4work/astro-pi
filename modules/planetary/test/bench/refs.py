@@ -528,6 +528,7 @@ class Row:
     # The anchor on the bare budget (no measured-noise charge): a fail is sound only if it holds here
     # too, since the charge can over-charge ours (bench.status_of).
     uncharged: Optional[metric.Result] = None
+    uncharged_alt: Optional[metric.Result] = None    # the same with the alternative frame count
 
 
 RefSpec = Union[str, Tuple[str, Optional[float]]]
@@ -596,14 +597,16 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
         uncharged = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m), dict(a_kw))
         a_m["noise_factor"] = anchor_noise_factor
     a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_m)
-    alt = None
+    alt = uncharged_alt = None
     if anchor_frames_alt is not None:
         alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's mean-kept-fraction frame count")
         alt_m = alt_kw.pop("measure")
+        if "noise_power" in alt_m and (anchor_noise_factor is not None or anchor_noise_factor_alt is not None):
+            uncharged_alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_m), dict(alt_kw))
         if anchor_noise_factor_alt is not None and "noise_power" in alt_m:
             alt_m["noise_factor"] = anchor_noise_factor_alt
         alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_m), alt_kw)
-    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt, uncharged)]
+    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt, uncharged, uncharged_alt)]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
         k = (ref.info.percent / 100.0 * capture_frames) if (ref.info.percent and capture_frames) else None
@@ -756,6 +759,9 @@ def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
             "end_alt_ratio": _over(r.alt.end if r.alt else None, rows, "end"),
             "end_interior_alt": r.alt.end_interior if r.alt else None,
             "end_interior_alt_ratio": _over(r.alt.end_interior if r.alt else None, rows, "end_interior"),
+            "end_alt_noise_factor": list(r.alt.end_noise_factor) if (r.alt and r.alt.end_noise_factor) else None,
+            "end_uncharged_alt_ratio": _over(r.uncharged_alt.end if r.uncharged_alt else None, rows, "end"),
+            "end_interior_uncharged_alt_ratio": _over(r.uncharged_alt.end_interior if r.uncharged_alt else None, rows, "end_interior"),
             "end_uncharged_ratio": _over(r.uncharged.end if r.uncharged else None, rows, "end"),
             "end_interior_uncharged_ratio": _over(r.uncharged.end_interior if r.uncharged else None, rows, "end_interior"),
             "dan": res.value, "band_snr": res.band_snr,

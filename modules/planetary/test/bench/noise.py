@@ -131,7 +131,9 @@ def _fit(levels, var):
     for _ in range(PTC_ITERATIONS):
         sw = np.sqrt(w)
         (a, c), *_ = np.linalg.lstsq(A * sw[:, None], var * sw, rcond=None)
-        c = max(c, 0.0)
+        if c < 0:                 # c clamps to 0: a refitted through the origin (review N2-m6)
+            c = 0.0
+            a = float((w * levels * var).sum() / (w * levels * levels).sum())
         line = np.maximum(a * levels + c, 1e-12)
         rel = (var - line) / line
         scale = max(1.4826 * float(np.median(np.abs(rel))), 0.02)

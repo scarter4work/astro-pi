@@ -23,7 +23,9 @@ def _rows(full, inner, judged=True, review=(), alt=None, ref_end=1.0, ref_note=N
                  "end_alt_ratio": alt_full, "end_interior_alt_ratio": alt_inner if judged else None,
                  "end_frames": 100.0, "end_alt_frames": 60.0, "review": list(review),
                  "end_noise_factor": [1.0] * 8 if charged else None, "provenance": None,
-                 "end_uncharged_ratio": full, "end_interior_uncharged_ratio": inner if judged else None})
+                 "end_uncharged_ratio": full, "end_interior_uncharged_ratio": inner if judged else None,
+                 "end_uncharged_alt_ratio": alt_full, "end_interior_uncharged_alt_ratio": alt_inner if judged else None,
+                 "end_alt_noise_factor": [1.0] * 8 if charged else None})
     return [ours, _row("AS_P20", end=ref_end, judged=judged, note=ref_note, prov=prov)]
 
 
@@ -82,11 +84,31 @@ def test_a_verdict_that_flips_with_our_frame_count_goes_to_review():
     assert bench.status_of(_rows(0.9, 0.9, True, alt=(0.8, 0.8)))[0] == "fail"     # fails both: fail
 
 
-def test_split_halves_outside_the_tolerance_are_noted_not_blocking():
-    sh = {"status": "outside", "kind": "lunar", "tolerance": [0.0, 1.44], "factor": [3.0] * 8,
-          "judged": {"high": 3.18, "k": [500, 505], "ratio": [20.4] + [1.0] * 8}, "mean_k": None}
+@pytest.mark.parametrize("high", [3.18, 0.30])
+def test_split_halves_outside_the_tolerance_block_a_pass_in_either_direction(high):
+    """Review I-G: above the band the model does not hold what the halves measure; below it ours
+    smooths more than the honest engine, or sigma_frame is over-read and excess noise hides in the
+    headroom. Either way a pass is not confirmed."""
+    sh = {"status": "outside", "kind": "lunar", "tolerance": [0.5, 1.2], "factor": [1.0] * 8,
+          "judged": {"high": high, "k": [500, 505], "ratio": [1.0] * 9}, "mean_k": None}
     st, why = bench.status_of(_rows(1.9, 1.7), split_half=sh)
-    assert st == "pass" and why[0].startswith("split halves outside") and "x3.18" in why[0]
+    assert st == "review" and why[0].startswith("split halves outside") and f"x{high:.2f}" in why[0]
+    assert bench.status_of(_rows(1.9, 1.7), split_half=dict(sh, status="agrees"))[0] == "pass"
+
+
+def test_a_fail_whose_bare_budget_flips_between_readings_is_review():
+    """N2-m1: P28c's bare check on both readings of our k."""
+    rows = _rows(0.9, 0.9)
+    rows[0].update(end_uncharged_ratio=0.9, end_interior_uncharged_ratio=0.9,
+                   end_uncharged_alt_ratio=1.2, end_interior_uncharged_alt_ratio=1.1)
+    st, why = bench.status_of(rows)
+    assert st == "review" and any(bench.CHARGE_NOTE in w for w in why)
+
+
+def test_a_pass_with_the_alternative_reading_uncharged_is_review():
+    rows = _rows(1.5, 1.5)
+    rows[0]["end_alt_noise_factor"] = None
+    assert bench.status_of(rows) == ("review", [bench.UNCHARGED_NOTE])
 
 
 def test_a_missing_end_is_unmeasured_never_a_verdict():
