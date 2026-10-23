@@ -1270,7 +1270,7 @@ TEST_CASE("The sky beside a frame-filling target keeps the fallback's noise (E1 
     int64_t n = 0;
     for (int y = 2; y < h - 2; ++y)
         for (int x = 2; x < w - 2; ++x) {
-            if (std::hypot(x - cx, y - cy) <= R + 6) continue;
+            if (std::hypot(x - cx, y - cy) <= R + 6 + stack::kMaskGrow + stack::kMaskTaper) continue;
             bool lucky = false;
             for (size_t r = 0; r < lay.regions.size() && !lucky; ++r) {
                 const auto& g = lay.regions[r];
