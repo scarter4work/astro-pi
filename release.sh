@@ -330,6 +330,30 @@ open(mf,'w').write(s)
 PY
 }
 
+# install_manifest <signed work copy> <repository manifest> : the one write to repository/updates.xri.
+# Refuses a copy that is not signed or does not verify (every declared sha1 against the file beside the
+# destination); otherwise replaces the destination atomically (a temporary file in its directory, then
+# mv), so on any failure the destination is untouched.
+install_manifest(){
+  local work="$1" dest="$2" tmp
+  grep -q '<Signature developerId="scarter4work"' "$work" || die "install_manifest: $work is not signed"
+  python3 - "$work" "$(dirname "$dest")" <<'PY' || die "install_manifest: $work does not verify against $(dirname "$dest")"
+import re,sys,hashlib,os
+mf,repo=sys.argv[1:3]
+s=open(mf).read()
+pkgs=re.findall(r'fileName="([^"]+)"\s+sha1="([0-9a-fA-F]{40})"', s)
+if not pkgs: sys.exit("no package entries")
+for fn,h in pkgs:
+    p=os.path.join(repo,fn)
+    if not os.path.exists(p) or hashlib.sha1(open(p,'rb').read()).hexdigest()!=h.lower(): sys.exit("%s: missing or not its sha1"%fn)
+PY
+  tmp="$(mktemp "$(dirname "$dest")/.updates.xri.XXXXXX")" || die "install_manifest: no temporary file beside $dest"
+  # mktemp makes it 0600; the manifest keeps its own mode (0644 when it is new).
+  if ! cp "$work" "$tmp" || ! { if [ -e "$dest" ]; then chmod --reference="$dest" "$tmp"; else chmod 0644 "$tmp"; fi; } \
+     || ! mv -f "$tmp" "$dest"; then rm -f "$tmp"; die "install_manifest: could not replace $dest"; fi
+  cmp -s "$work" "$dest" || die "install_manifest: $dest is not the signed manifest"
+}
+
 # manifest_names_check <manifest> <fileName>... : the manifest's packages are exactly these, each once.
 manifest_names_check(){
   python3 - "$@" <<'PY' || die "updates.xri does not list exactly this release's packages"
@@ -529,9 +553,19 @@ assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
+# Every manifest edit from here on (steps 3-6) is made on a WORK COPY of repository/updates.xri: the
+# repository's manifest is replaced only by step 6c, once the copy is fully edited, hashed, signed and
+# verified. A failure anywhere before that (a build, the sidecar's network fetch, a check) leaves
+# repository/updates.xri exactly as it was -- never a renamed, re-described manifest under its old,
+# now invalid signature, which PixInsight would reject as a whole (final review, module m5).
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+WORK_MF="$WORK_DIR/updates.xri"
+cp "$REPO/updates.xri" "$WORK_MF"
+
 echo "== 3/6 package NukeX module tarball =="
 package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
-python3 - "$REPO/updates.xri" "$MOD_TGZ" <<'PY'
+python3 - "$WORK_MF" "$MOD_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
@@ -545,7 +579,7 @@ package_module "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$PI
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
 # git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
-python3 - "$REPO/updates.xri" "$PICOPILOT_TGZ" <<'PY'
+python3 - "$WORK_MF" "$PICOPILOT_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
@@ -579,7 +613,7 @@ PY
 
 echo "== 3a2/6 package Planetary module tarball (docs deploy as doc/tools/{${PLANETARY_DOC_IDS[*]}}/) =="
 package_module "$PLANETARY_TGZ" Planetary "$PLANETARY_SO" "$PLANETARY_XSGN" "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
-python3 - "$REPO/updates.xri" "$PLANETARY_TGZ" <<'PY'
+python3 - "$WORK_MF" "$PLANETARY_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
@@ -627,7 +661,7 @@ for name in "${EZ_NAMES[@]}"; do
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
   reuse_if_published "$zipname"
-  manifest_rename "$REPO/updates.xri" "${name}_v[0-9.]+\.zip" "$zipname"
+  manifest_rename "$WORK_MF" "${name}_v[0-9.]+\.zip" "$zipname"
 done
 
 echo "== 3c/6 package gaia-depth-grade script zip =="
@@ -649,7 +683,7 @@ rm -f "$REPO/$GAIA_ZIP"
 rm -rf "$GAIA_STAGE"
 [ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
 reuse_if_published "$GAIA_ZIP"
-manifest_rename "$REPO/updates.xri" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP"
+manifest_rename "$WORK_MF" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP"
 
 echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-grade-sidecar) =="
 # The scripts run the sidecar only from <PixInsight>/bin, where this package puts
@@ -668,7 +702,7 @@ else
   "$ROOT/gaia-depth-grade/tools/build-sidecar.sh" "$REPO/$SIDECAR_TGZ" || die "sidecar build/smoke test failed"
 fi
 [ "$(stat -c%s "$REPO/$SIDECAR_TGZ")" -lt 95000000 ] || die "$SIDECAR_TGZ is too close to GitHub's 100 MB per-file limit"
-python3 - "$REPO/updates.xri" "$SIDECAR_TGZ" <<'PY' || die "updates.xri has no GaiaDepthGradeSidecar package entry to point at $SIDECAR_TGZ"
+python3 - "$WORK_MF" "$SIDECAR_TGZ" <<'PY' || die "updates.xri has no GaiaDepthGradeSidecar package entry to point at $SIDECAR_TGZ"
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
@@ -685,30 +719,30 @@ echo "== 3f/6 write every package description from its source (and the repositor
 # Every fileName is final by now; each entry gets its product's text, so none
 # outlives the release it was written for. The same explicit list as step 0b
 # (RELEASE_PKGS), so 0b, 3f and 6a check identical names.
-manifest_names_check "$REPO/updates.xri" "${RELEASE_PKGS[@]}"
+manifest_names_check "$WORK_MF" "${RELEASE_PKGS[@]}"
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
-descriptions apply "$REPO/updates.xri" "${DESC_ARGS[@]}" || die "could not write the package descriptions"
+descriptions apply "$WORK_MF" "${DESC_ARGS[@]}" || die "could not write the package descriptions"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
-write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
-write_pkg "$REPO/updates.xri" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
-write_pkg "$REPO/updates.xri" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
+write_pkg "$WORK_MF" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
+write_pkg "$WORK_MF" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
+write_pkg "$WORK_MF" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
 for name in "${EZ_NAMES[@]}"; do
   zipname="${name}_v${EZVER[$name]}.zip"
-  write_pkg "$REPO/updates.xri" "$zipname" "$(sha1 "$REPO/$zipname")"
+  write_pkg "$WORK_MF" "$zipname" "$(sha1 "$REPO/$zipname")"
 done
-write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
-write_pkg "$REPO/updates.xri" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
-manifest_names_check "$REPO/updates.xri" "${RELEASE_PKGS[@]}"
+write_pkg "$WORK_MF" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
+write_pkg "$WORK_MF" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
+manifest_names_check "$WORK_MF" "${RELEASE_PKGS[@]}"
 
 echo "== 5/6 sign manifest LAST =="
-sed -i '/<Signature developerId=/d' "$REPO/updates.xri"
-pi_headless "$PI" --sign-xml-file="$REPO/updates.xri" --xssk-file="$KEYS" --xssk-password="$PASS"
-grep -q '<Signature developerId="scarter4work"' "$REPO/updates.xri" || die "manifest signature not appended"
+sed -i '/<Signature developerId=/d' "$WORK_MF"
+pi_headless "$PI" --sign-xml-file="$WORK_MF" --xssk-file="$KEYS" --xssk-password="$PASS"
+grep -q '<Signature developerId="scarter4work"' "$WORK_MF" || die "manifest signature not appended"
 
 echo "== 6/6 integrity check: declared sha1 == on-disk =="
-python3 - "$REPO/updates.xri" "$REPO" <<'PY'
+python3 - "$WORK_MF" "$REPO" <<'PY'
 import re,sys,hashlib,os
 mf,repo=sys.argv[1:3]
 s=open(mf).read()
@@ -723,7 +757,7 @@ sys.exit(1 if bad else 0)
 PY
 
 echo "== 6a/6 the signed manifest's descriptions are their sources and name only their own versions =="
-descriptions verify "$REPO/updates.xri" "${DESC_ARGS[@]}" || die "updates.xri carries a stale package description"
+descriptions verify "$WORK_MF" "${DESC_ARGS[@]}" || die "updates.xri carries a stale package description"
 
 echo "== 6b/6 integrity check: camera-database publication, with the module's own verifier =="
 qe_check "$REPO" || die "repository/ QE publication is stale, unsigned or does not match the embedded database"
@@ -732,5 +766,8 @@ qe_check "$REPO" || die "repository/ QE publication is stale, unsigned or does n
 # that a fresh install is not offered the database it already carries.
 NUKEX_QE_PUBLISHED_DIR="$REPO" "$ROOT/modules/nukex/build-portable/test/test_qe_update" "[published]" \
   || die "the module's updater rejects the published camera database in repository/"
+
+echo "== 6c/6 install the signed, verified manifest as repository/updates.xri =="
+install_manifest "$WORK_MF" "$REPO/updates.xri"
 
 echo "RELEASE OK — repository/ ready to commit & push"
