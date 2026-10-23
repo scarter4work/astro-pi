@@ -65,7 +65,7 @@ TEST_CASE("Region weights are a partition of unity, flat to the edges for a full
     const int w = 250, h = 190;
     const Scene s = testing::MakeSurface(3, w, h);
     const FloatImage ref = Truth(s, w, h, 0.5);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
     REQUIRE(lay.flatEdges);
     REQUIRE(lay.size % 8 == 0);
     REQUIRE(lay.step * 2 == lay.size);
@@ -104,7 +104,7 @@ TEST_CASE("Regions on a 40 px disc cover the disc fully and taper to 0 in the sk
     const FloatImage ref = Truth(s, w, h, 0.6);
     const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
     REQUIRE(st.targetFound);
-    const RegionLayout lay = stack::PlaceRegions(ref, st, false);
+    const RegionLayout lay = stack::PlaceRegions(ref, st, false, stack::NoiseModel{});
     CHECK_FALSE(lay.flatEdges);
     CHECK(lay.size == stack::kMinRegionSize);
     REQUIRE(!lay.regions.empty());
@@ -142,7 +142,7 @@ TEST_CASE("No region on a featureless frame; a sky-only node gets none", "[regio
     std::mt19937 rng(1);
     std::normal_distribution<double> n(0, 0.002);
     for (float& v : flat.data) v += static_cast<float>(n(rng));
-    const RegionLayout lay = stack::PlaceRegions(flat, stack::MeasureFrame(flat, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(flat, stack::MeasureFrame(flat, 0, 1), true, testing::WhiteNoise(0.008));
     CHECK(lay.regions.empty());
     CHECK(lay.nx * lay.ny == static_cast<int>(lay.node.size()));
     for (int v : lay.node) CHECK(v == -1);
@@ -153,7 +153,7 @@ TEST_CASE("Region sizes follow the target", "[regions]") {
     {
         const int w = 400, h = 300;
         const FloatImage ref = Truth(testing::MakeSurface(9, w, h), w, h, 0.5);
-        const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+        const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
         CHECK(lay.size == 40);  // 300 / 8 = 37.5 -> multiple of 8 -> 40
     }
     // A big disc: a quarter of its box.
@@ -162,7 +162,7 @@ TEST_CASE("Region sizes follow the target", "[regions]") {
         const Scene s = testing::MakeDisc(2, 200, 180, 120);
         const FloatImage ref = Truth(s, w, h, 0.6);
         const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
-        const RegionLayout lay = stack::PlaceRegions(ref, st, false);
+        const RegionLayout lay = stack::PlaceRegions(ref, st, false, stack::NoiseModel{});
         const int side = std::min(st.bx1 - st.bx0, st.by1 - st.by0);
         CHECK(lay.size == std::clamp(8 * static_cast<int>(std::lround(side / 4.0 / 8.0)), stack::kMinRegionSize,
                                      stack::kMaxRegionSize));
@@ -171,18 +171,18 @@ TEST_CASE("Region sizes follow the target", "[regions]") {
 
 TEST_CASE("PlaceRegions argument errors", "[regions]") {
     FloatImage bad{10, 10, 1, std::vector<float>(5)};
-    CHECK_THROWS_AS(stack::PlaceRegions(bad, stack::FrameStats{}, true), std::invalid_argument);
+    CHECK_THROWS_AS(stack::PlaceRegions(bad, stack::FrameStats{}, true, stack::NoiseModel{}), std::invalid_argument);
     FloatImage rgb{10, 10, 3, std::vector<float>(300)};
-    CHECK_THROWS_AS(stack::PlaceRegions(rgb, stack::FrameStats{}, true), std::invalid_argument);
+    CHECK_THROWS_AS(stack::PlaceRegions(rgb, stack::FrameStats{}, true, stack::NoiseModel{}), std::invalid_argument);
     FloatImage sky{64, 64, 1, std::vector<float>(64 * 64, 0.1f)};
-    CHECK_THROWS_AS(stack::PlaceRegions(sky, stack::FrameStats{}, false), std::invalid_argument);  // disc without target
+    CHECK_THROWS_AS(stack::PlaceRegions(sky, stack::FrameStats{}, false, stack::NoiseModel{}), std::invalid_argument);  // disc without target
 }
 
 TEST_CASE("Local shifts: sub-pixel, up to 8 px, and a torn frame's halves", "[regions]") {
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(11, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.01));
     const RegionMeasurer m(ref, lay);
     REQUIRE(lay.regions.size() > 20);
 
@@ -291,7 +291,7 @@ TEST_CASE("Region quality follows the local blur; gain follows the frame's brigh
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(12, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.005));
     const RegionMeasurer m(ref, lay);
     // Frame A: sharp (0.5 px) left of x ~ 128 and blurred (2.5 px) right of it (sin^2 transition over
     // one 64-px cell); frame B the other way round, dimmed to 0.8.
@@ -330,7 +330,7 @@ TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") 
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(21, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.01));
     const RegionMeasurer m(ref, lay);
     std::mt19937 rng(4);
     std::uniform_real_distribution<double> uni(0, 1);
@@ -406,7 +406,7 @@ TEST_CASE("A featureless region stacks every frame; textured ones keep their luc
     };
     FloatImage ref = Truth(s, w, h, 0.6);
     patch(ref, 0, 0);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.01));
     const RegionMeasurer m(ref, lay);
     std::mt19937 rng(4);
     std::uniform_real_distribution<double> uni(0, 1);
@@ -432,8 +432,13 @@ TEST_CASE("A featureless region stacks every frame; textured ones keep their luc
         const auto& d = plan.detail[r];
         const bool inside = reg.x0 >= px0 && reg.x1 <= px1 && reg.y0 >= py0 && reg.y1 <= py1;
         const bool clear = reg.x1 <= px0 || reg.x0 >= px1 || reg.y1 <= py0 || reg.y0 >= py1;
+        std::vector<double> ratio;
+        for (const FrameRegions& fr : measured)
+            if (fr.regions[r].aligned && fr.regions[r].quality > 0) ratio.push_back(fr.regions[r].quality / fr.regions[r].qualitySigma);
+        std::sort(ratio.begin(), ratio.end());
         INFO("region at " << reg.x0 << "," << reg.y0 << ": candidates " << d.candidates << ", kept " << d.kept
-                          << (d.noiseOnly ? ", noise only" : ""));
+                          << (d.noiseOnly ? ", noise only" : "") << ", median q / qualitySigma "
+                          << (ratio.empty() ? 0.0 : ratio[ratio.size() / 2]));
         if (inside) {
             ++flat;
             CHECK(d.candidates > 0);  // the case that matters: noise-floor "detail" in some frames
@@ -463,7 +468,7 @@ TEST_CASE("A low-SNR region with real seeing variation keeps a lucky subset (P27
     for (const float v : ref.data) level += v;
     level /= static_cast<double>(ref.data.size());
     for (float& v : ref.data) v = static_cast<float>(0.4 + 0.5 * (v - level));
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.01));
     const RegionMeasurer m(ref, lay);
     std::mt19937 rng(9);
     std::uniform_real_distribution<double> uni(0, 1);
@@ -519,7 +524,7 @@ TEST_CASE("A region with too few candidates takes the plain mean (P27 review rou
     const int w = 192, h = 160;
     const Scene s = testing::MakeSurface(23, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
     REQUIRE(lay.regions.size() >= 2);
     std::mt19937 rng(8);
     std::normal_distribution<double> n(0, 1);
@@ -560,7 +565,7 @@ TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (
     const int w = 192, h = 160;
     const Scene s = testing::MakeSurface(23, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);
-    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
     std::mt19937 rng(8);
     std::normal_distribution<double> n(0, 1);
     std::vector<FrameRegions> measured;
@@ -582,6 +587,68 @@ TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (
     REQUIRE(pos >= 0);
     for (size_t r = 0; r < plan.RegionCount(); ++r)
         CHECK((plan.flags[static_cast<size_t>(pos) * plan.RegionCount() + r] & stack::RegionPlan::kKept) != 0);
+}
+
+TEST_CASE("a region's qualitySigma tracks its quality's scatter from low to high SNR (Ruling P26)", "[regions][noise]") {
+    // A 64 x 64 window of texture (12 sinusoids, contrast A) at white noise 0.01 over 2000 frames, the
+    // capture's noise model the truth, the window mean as background (as RegionMeasurer has it). Median
+    // q / qualitySigma 3.4 to ~1700 from A 0.0012 to 0.05. Before Ruling P26 (measured with the true noise
+    // as the frame's level, 4000 frames): quality's scatter was 0.50 / 0.81 / 0.98 of qualitySigma's rms at
+    // a median ratio of 4.1 / 6.9 / 15 (qualitySigma taken at each frame's noisy quality, whose low draws
+    // it blew up) and 1.11 / 1.15 at 1861 / 8200 (the window's edge pixels missing from the noise's linear
+    // term); with each frame's own noise reading, as the engine had it, 0.32-0.67 throughout. Under a
+    // median ratio of ~3.1 a window is noise in both its gradient and its signal energy (pure noise reads
+    // 2.9), where Ruling P27's plain mean takes over.
+    const int n = 64, runs = 2000;
+    const stack::NoiseModel model = testing::WhiteNoise(0.01);
+    std::mt19937 tr(5);
+    std::uniform_real_distribution<double> u(0, 1);
+    struct Wave {
+        double fx, fy, ph, a;
+    };
+    std::vector<Wave> waves;
+    for (int k = 0; k < 12; ++k) waves.push_back({0.02 + 0.15 * u(tr), 0.02 + 0.15 * u(tr), 2 * M_PI * u(tr), 0.5 + u(tr)});
+    for (const double A : {0.0012, 0.0015, 0.002, 0.004, 0.01, 0.05}) {
+        std::vector<float> clean(static_cast<size_t>(n) * n);
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                double v = 0.3;
+                for (const Wave& wv : waves) v += A * wv.a * std::sin(2 * M_PI * (wv.fx * x + wv.fy * y) + wv.ph);
+                clean[static_cast<size_t>(y) * n + x] = static_cast<float>(v);
+            }
+        std::mt19937 rng(77);
+        std::normal_distribution<double> g(0, 0.01);
+        std::vector<double> q, sg, ratio;
+        for (int k = 0; k < runs; ++k) {
+            std::vector<float> im = clean;
+            double mean = 0;
+            for (float& v : im) {
+                v = static_cast<float>(v + g(rng));
+                mean += v;
+            }
+            const stack::QualityEstimate e = stack::RegionQuality(im.data(), n, 0, 0, n, n, mean / (n * n), model);
+            if (!(e.quality > 0)) continue;
+            q.push_back(e.quality);
+            sg.push_back(e.sigma);
+            ratio.push_back(e.quality / e.sigma);
+        }
+        double m = 0, m2 = 0, s2 = 0;
+        for (size_t i = 0; i < q.size(); ++i) {
+            m += q[i];
+            m2 += q[i] * q[i];
+            s2 += sg[i] * sg[i];
+        }
+        const double N = static_cast<double>(q.size());
+        m /= N;
+        const double empirical = std::sqrt((m2 - N * m * m) / (N - 1)), rms = std::sqrt(s2 / N);
+        std::sort(sg.begin(), sg.end());
+        std::sort(ratio.begin(), ratio.end());
+        INFO("contrast " << A << ": " << q.size() << " frames with detail, median q / qualitySigma " << ratio[ratio.size() / 2]
+                         << "; scatter " << empirical << " against qualitySigma rms " << rms << " / median " << sg[sg.size() / 2]);
+        REQUIRE(q.size() >= runs * 8 / 10);
+        CHECK(empirical / rms == Catch::Approx(1).margin(0.1));
+        CHECK(empirical / sg[sg.size() / 2] == Catch::Approx(1).margin(0.1));
+    }
 }
 
 TEST_CASE("RegionNoise is unbiased on pixels and on bins, chosen once per capture (Ruling P25)", "[regions][noise]") {

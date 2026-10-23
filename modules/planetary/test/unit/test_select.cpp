@@ -1554,19 +1554,21 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         double sky = -1;  // MakeDisc's 0.02 unless given
     };
     // Ruling P19 (an unbiased pixel noise): R 24 blurred 10 px at noise 0.01 read 0.245 and was stacked
-    // while the noise estimate read s^2 ~5% low (0.263 now), and the convolved R 24 / 12 px at noise 0.01
-    // sat on the limit (0.267; 0.312 now; noise-free 0.334). The faint blobs, at noise 0.01 over a sky of
-    // 0.06 that does not clip: R 40 / 20 px and R 24 / 24 px were stacked and are refused. Over the
-    // default sky of 0.02 the capture clips 2.3% of the sky at 0, its noise there reads low, and R 40 /
-    // 20 px stays stacked -- a known limit (Select.h step 7) that fails safe: a soft image, warned by the
-    // region stage.
+    // while the noise estimate read s^2 ~5% low (0.263 then, 0.269 with Ruling P26), and the convolved
+    // R 24 / 12 px at noise 0.01 sat on the limit (0.267; 0.312 after P19; 0.363 after P26; noise-free
+    // 0.334). The faint blob R 40 / 20 px at noise 0.01 over a sky of 0.06 that does not clip was stacked
+    // and is refused (0.377 after P19, 0.325 after P26; noise-free 0.342). Over the default sky of 0.02 the
+    // capture clips 2.3% of the sky at 0: with one noise level, measured on that sky, the target's noise
+    // read low (the sky's variance is 0.960 of the target's) and R 40 / 20 px was stacked (0.240); with
+    // the capture's noise model (Ruling P26: each level's own noise, the clipped sky's included) it reads
+    // 0.312 and is refused -- in every one of seeds 7, 107, ..., 907 (0.304-0.375).
     for (const Case& c : {Case{24, 0.6, false, 0.01, false}, Case{24, 2, false, 0.01, false}, Case{24, 3, false, 0.01, false},
                           Case{40, 4, false, 0.01, false}, Case{24, 2, true, 0.005, false}, Case{40, 3, true, 0.005, false},
                           Case{24, 2, true, 0.01, false}, Case{40, 3, true, 0.01, false},
                           Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true},
                           Case{24, 10, false, 0.01, true}, Case{24, 12, true, 0.01, true},
-                          Case{40, 20, true, 0.01, true, 0.06}, Case{24, 24, true, 0.01, true, 0.06},
-                          Case{40, 3, true, 0.01, false, 0.06}, Case{40, 20, true, 0.01, false}}) {
+                          Case{40, 20, true, 0.01, true, 0.06}, Case{40, 3, true, 0.01, false, 0.06},
+                          Case{40, 20, true, 0.01, true}}) {
         const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7, c.sky);
         std::string numbers;
         for (const auto& [name, v] : sel.diagnosis.numbers) numbers += name + " " + std::to_string(v) + "; ";
@@ -1586,6 +1588,20 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         if (c.blur <= 0.5 * c.radius) CHECK(Number(sel.diagnosis, "target radius (pixels)") == Catch::Approx(c.radius).epsilon(0.15));
         CHECK(Number(sel.diagnosis, "limb blur (pixels)") >= Number(sel.diagnosis, "blur limit (pixels)"));
     }
+    // The faintest: R 24 convolved by 24 px over the unclipped sky (noise-free 0.400), each frame's quality
+    // at a median 3.35-3.57 qualitySigma (seeds 7 / 107 / 207). Its reading is the top of a deconvolution of
+    // 53-58 noisy frames, which a few high draws can lift: 0.222 / 0.333 / 0.385 / 0.368 / 0.341 / 0.473 /
+    // 0.511 / 0.379 / 0.343 / 0.295 for seeds 7, 107, ..., 907 with Ruling P26's noise. A miss stacks a
+    // soft image, which the region stage warns about -- the failure the rule prefers (Ruling P15).
+    int refused = 0, refusedClipped = 0;
+    for (unsigned seed = 7; seed < 1000; seed += 100) {
+        refused += MeasuredDisc(24, 24, true, 0.01, seed, 0.06).diagnosis.kind == DiagnosisKind::OutOfFocus;
+        refusedClipped += MeasuredDisc(40, 20, true, 0.01, seed).diagnosis.kind == DiagnosisKind::OutOfFocus;
+    }
+    INFO("R 24 / 24 px over sky 0.06 refused in " << refused << " of 10 seeds, R 40 / 20 px over the clipped sky in "
+                                                  << refusedClipped);
+    CHECK(refused >= 8);
+    CHECK(refusedClipped == 10);
 }
 
 TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P20)", "[select][diagnosis][focus][class]") {

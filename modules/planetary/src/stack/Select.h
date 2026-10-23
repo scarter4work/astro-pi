@@ -212,7 +212,15 @@ constexpr int kMinJudgedFrames = 30;
 //    still apply. Suspects do not enter steps 6-8: q_ref and the kept count are the clean frames'.
 //    A glitch under the fence (within kFenceSigmas of the median) is not suspect by this rule and
 //    ranks with the rest.
-// 6. Deconvolution (Ruling P5). Each observed q_i = true quality + noise N(0, qualitySigma_i^2).
+// 6. Deconvolution (Ruling P5). Each observed q_i^2 = true quality^2 + noise N(0, quality2Sigma_i^2),
+//    seen only where it came out positive (a frame of quality 0 is not ranked): the likelihood at a true
+//    quality u is N(q_i^2; u^2, rho_i^2) / Phi(u^2 / rho_i) (Ruling P26). quality^2 is the measure's own
+//    ratio, linear in the noise, so its sd does not move with the frame's own noise draw; a Gaussian in q
+//    with sd qualitySigma_i (which is ~1 / q_i) trusted the frames that drew high noise most, and lifted
+//    the top of G: on a faint blob (R 24 convolved by 24 px over an unclipped sky, noise 0.01, ~3.5
+//    qualitySigma per frame) q_ref read 0.0484 / 0.0423 / 0.0447 for seeds 7 / 107 / 207 with the
+//    quality-domain likelihood against 0.0476 / 0.0388 / 0.0361 with this one (noise-free 0.0371).
+//    Samples without quality2Sigma (synthetic ones) keep the Gaussian in q with qualitySigma.
 //    The distribution G of the true quality is estimated by nonparametric maximum likelihood
 //    (Kiefer-Wolfowitz NPMLE, heteroscedastic; EM on kPriorGrid points over the observed range);
 //    each frame's posterior over G then gives its expected true quality
@@ -290,14 +298,17 @@ constexpr int kMinJudgedFrames = 30;
 //    faint blobs were stacked. Over a sky of 0.06 at noise 0.01 (seeds 7 / 107 / 207): R 40 / 20 px
 //    0.377 / 0.348 / 0.339 (0.225 / 0.212 / 0.188), R 24 / 24 px 0.327 / 0.313 / 0.321 (0.130 / 0.129 /
 //    0.124) -- now refused -- and R 24 / 12 px 0.332-0.362 (0.255-0.287), 1.33-1.45x the limit.
-//    Limit: s is measured on the sky and taken as the target's. Where they differ, the reading is low
-//    again: MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit capture
-//    clips 2.3% of it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a
-//    target's own shot noise above the sky's) -- there the convolved R 40 / 20 px at noise 0.01 reads
-//    0.240 (0.181) and is stacked, R 24 / 24 px 0.191 (0.103). A centre that dims (blur ~ R and over)
-//    also moves R_h out. Missed, such a capture stacks into a visibly soft image, and the region stage
-//    warns (RunStack on that R 40 / 20 px: limb blur 0.47 R against the warn level 0.40) -- the
-//    failure the rule prefers.
+//    With s measured on the sky and taken as the target's, the reading was low again where they differ:
+//    MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit capture clips 2.3% of
+//    it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a target's own shot
+//    noise above the sky's) -- there the convolved R 40 / 20 px read 0.240 and was stacked. The capture's
+//    noise model (Ruling P26, Noise.h) gives every pixel the noise of its level: that R 40 / 20 px reads
+//    0.304-0.375 over seeds 7, 107, ..., 907 and is refused in all 10; over the 0.06 sky, R 40 / 20 px
+//    0.325 (seed 7) and R 24 / 24 px 0.222-0.511, refused in 9 of 10 -- seed 7's 0.222 is the top of a
+//    deconvolution of 53 frames at a median 3.35 qualitySigma, which a few high draws lift. A centre that
+//    dims (blur ~ R and over) also moves R_h out. Missed, such a capture stacks into a visibly soft image,
+//    and the region stage warns (RunStack on the clipped-sky R 40 / 20 px at its old reading: limb blur
+//    0.47 R against the warn level 0.40) -- the failure the rule prefers.
 //    The blur spread is that of the true quality: tau^2 = max(0, var(q) - mean(qualitySigma^2)),
 //    spread = (sigma(mu - 1.2816 tau) - sigma(mu + 1.2816 tau)) / sigma(mu); its bounds use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(q).
 //    Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE) gives a spread under
@@ -407,5 +418,10 @@ struct DetailRanking {
 // glitch (Ruling P8, PlanRegions).
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
                            int64_t floorCount, bool applyFence = true);
+// The measured form (Ruling P26): sigma2[i] is the sd of quality[i]^2 (FrameStats::quality2Sigma,
+// RegionMeasure::quality2Sigma), and step 6's likelihood is that of quality^2 (Select.h, step 6); sigma
+// still sets the fence's noise floor (step 5). Empty sigma2: the form above.
+DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma,
+                           const std::vector<double>& sigma2, int64_t need, int64_t floorCount, bool applyFence = true);
 
 }  // namespace planetary::stack

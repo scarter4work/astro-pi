@@ -83,13 +83,14 @@ struct Prior {
     uint64_t work = 0;  // grid evaluations: the likelihood table plus two per sample and point per EM step
 };
 
-// NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM.
-Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
+// NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM. sigma2 (empty,
+// or per sample): the sd of quality^2 -- the likelihood is then that of q^2 (Select.h, step 6).
+Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma, const std::vector<double>& sigma2) {
     Prior p;
     bool noisy = false;
     double lo = q.front(), hi = lo;
     for (size_t i = 0; i < q.size(); ++i) {
-        noisy = noisy || sigma[i] > 0;
+        noisy = noisy || sigma[i] > 0 || (!sigma2.empty() && sigma2[i] > 0);
         lo = std::min(lo, q[i]);
         hi = std::max(hi, q[i]);
     }
@@ -102,10 +103,21 @@ Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
     for (size_t j = 0; j < k; ++j) p.u[j] = lo + h * static_cast<double>(j);
     p.lik.resize(n * k);
     for (size_t i = 0; i < n; ++i) {
-        const double sg = std::max(sigma[i], h / 2);
-        for (size_t j = 0; j < k; ++j) {
-            const double z = (q[i] - p.u[j]) / sg;
-            p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
+        const double rho = sigma2.empty() ? 0.0 : sigma2[i];
+        if (rho > 0) {
+            // q^2 ~ N(u^2, rho^2), observed only where it came out positive (a frame of quality 0 is not
+            // ranked): N(q^2; u^2, rho) / Phi(u^2 / rho), rho at least what keeps q's own sd at h / 2.
+            for (size_t j = 0; j < k; ++j) {
+                const double u = p.u[j], re = std::max(rho, h * std::max(u, h));
+                const double z = (q[i] * q[i] - u * u) / re;
+                p.lik[i * k + j] = std::exp(-0.5 * z * z) / re / std::max(1e-300, 0.5 * std::erfc(-u * u / re / std::sqrt(2.0)));
+            }
+        } else {
+            const double sg = std::max(sigma[i], h / 2);
+            for (size_t j = 0; j < k; ++j) {
+                const double z = (q[i] - p.u[j]) / sg;
+                p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
+            }
         }
         p.work += k;
     }
@@ -137,16 +149,25 @@ struct Ranked {
 
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
                            int64_t floorCount, bool applyFence) {
+    return RankByDetail(quality, sigma, {}, need, floorCount, applyFence);
+}
+
+DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma,
+                           const std::vector<double>& sigma2, int64_t need, int64_t floorCount, bool applyFence) {
     if (sigma.size() != quality.size())
         throw std::invalid_argument("RankByDetail: " + std::to_string(sigma.size()) + " sigmas for " +
+                                    std::to_string(quality.size()) + " qualities");
+    if (!sigma2.empty() && sigma2.size() != quality.size())
+        throw std::invalid_argument("RankByDetail: " + std::to_string(sigma2.size()) + " quality^2 sigmas for " +
                                     std::to_string(quality.size()) + " qualities");
     for (double q : quality)
         if (!(std::isfinite(q) && q > 0)) throw std::invalid_argument("RankByDetail: a quality is not finite and > 0");
     DetailRanking out;
     const size_t nd = quality.size();
     if (nd == 0) return out;
-    std::vector<double> sg(nd);
+    std::vector<double> sg(nd), sg2(sigma2.empty() ? 0 : nd);
     for (size_t i = 0; i < nd; ++i) sg[i] = std::isfinite(sigma[i]) && sigma[i] > 0 ? sigma[i] : 0.0;
+    for (size_t i = 0; i < sg2.size(); ++i) sg2[i] = std::isfinite(sigma2[i]) && sigma2[i] > 0 ? sigma2[i] : 0.0;
 
     // 5. Upper fence on log quality.
     std::vector<size_t> left;
@@ -207,12 +228,13 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
     const int64_t nLeft = static_cast<int64_t>(left.size());
 
     // 6. Deconvolution (Ruling P5): the distribution of the true quality, and each sample's posterior.
-    std::vector<double> qLeft, sLeft;
+    std::vector<double> qLeft, sLeft, s2Left;
     for (size_t i : left) {
         qLeft.push_back(quality[i]);
         sLeft.push_back(sg[i]);
+        if (!sg2.empty()) s2Left.push_back(sg2[i]);
     }
-    const Prior prior = FitPrior(qLeft, sLeft);
+    const Prior prior = FitPrior(qLeft, sLeft, s2Left);
     const int64_t refRank = std::max<int64_t>(std::min<int64_t>(3, nLeft), (nLeft + 99) / 100);
     double qRef = 0;
     if (prior.k > 0) {
@@ -423,12 +445,13 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
 
     // 5, 6 and 8's ranking (RankByDetail): the fence, the deconvolution and each frame's expected
     // contrast; `detailed` is in frame order, so its positions break ties as frame indices did.
-    std::vector<double> dq, ds;
+    std::vector<double> dq, ds, ds2;
     for (const FrameStats* s : detailed) {
         dq.push_back(s->quality);
         ds.push_back(Sigma(*s));
+        ds2.push_back(std::isfinite(s->quality2Sigma) && s->quality2Sigma > 0 ? s->quality2Sigma : 0.0);
     }
-    const DetailRanking rank = RankByDetail(dq, ds, need, floorCount);
+    const DetailRanking rank = RankByDetail(dq, ds, ds2, need, floorCount);
     std::vector<const FrameStats*> left;
     for (size_t i : rank.left) left.push_back(detailed[i]);
     // 5. The frames RankByDetail fenced off are suspects (Ruling P6): they cannot be told from

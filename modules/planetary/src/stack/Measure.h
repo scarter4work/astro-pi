@@ -6,6 +6,7 @@
 
 #include "Debayer.h"
 #include "FrameSource.h"
+#include "Noise.h"
 #include "StackTypes.h"
 
 namespace planetary::stack {
@@ -49,11 +50,16 @@ struct FrameStats {
     // "no target" and for a found target with no measurable detail (gradient energy at or below
     // the noise floor), so a consumer must test targetFound first.
     double quality = 0;
-    // 1-sigma uncertainty of `quality` from the pixel noise s, propagated per frame (derivation at
-    // MeasureFrame). 0 when s measures 0 -- e.g. a sky clipped to a constant black level in 8-bit
-    // data, where the target's own noise is real but not measurable this way -- and 0 whenever
+    // 1-sigma uncertainty of `quality` from the pixel noise -- the capture's noise model (Noise.h,
+    // Ruling P26) pixel by pixel, or one image's own sky level -- propagated per frame (derivation at
+    // MeasureFrame): the scatter of quality over the frames of a still scene, within 10% from a median
+    // quality / qualitySigma of ~2.9 up. 0 when the model is zero (no measurable noise) and whenever
     // quality is 0.
     double qualitySigma = 0;
+    // 1-sigma uncertainty of quality^2 (derivation at MeasureFrame): linear in the noise, so it does not
+    // depend on this frame's own noise draw the way qualitySigma's 1 / quality does. The deconvolution
+    // (Select.h, step 6) takes it. 0 when qualitySigma is.
+    double quality2Sigma = 0;
     // Mean luma of the target pixels (in the box, above 10% of the contrast), in [0, 1] units.
     double brightness = 0;
     // Fraction of the target pixels with luma >= kClippedLuma.
@@ -147,10 +153,11 @@ constexpr double kClippedLuma = 0.999;
 // in the band did, and the frames' ranking moved with it. Caveat there: s comes out too high and the
 // quality's noise term over-corrects (all frames of the capture alike, so their ranking holds, but the
 // absolute quality reads low and can reach 0 on a smooth, blurred frame).
-// Limit: s is measured on the sky and taken as the target's. Where the two differ the quality keeps
-// part of the noise, as before P19 everywhere: a sky clipped at black (2 noise sd above it, the 16-bit
-// capture clips 2.3% of it and its noise variance reads 0.960 of the target's), or a target whose own
-// shot noise exceeds the sky's.
+// This s is the detection floor's, and the quality's for one image measured alone (the three-argument
+// MeasureFrame; NoiseModel::FromSkyNoise). Taken as the target's it was wrong wherever the two differ --
+// a sky clipped at black (2 noise sd above it, the 16-bit capture clips 2.3% of it and its noise variance
+// reads 0.960 of the target's), a target whose own shot noise exceeds the sky's -- so a capture's frames
+// are measured with the capture's noise model instead (MeasureAll, Noise.h; Ruling P26).
 //
 // Target rule. Blocks brighter than b + 4 s_b form 8-connected components. A component is a
 // target candidate when its brightest block stands at least max(10 s_b, 0.01) above b and at
@@ -182,72 +189,104 @@ constexpr double kClippedLuma = 0.999;
 // keeps a faint halo or a nearby moon out of the box.
 //
 // Quality. Over the box plus a 10% margin, with forward differences:
-//     quality^2 = (mean(dx^2) + mean(dy^2) - 4 s^2) / (mean((luma - b)^2) - s^2)
-// i.e. the target's RMS spatial frequency: gradient energy over signal energy. Why this one:
+//     quality^2 = (mean(dx^2) + mean(dy^2) - N_g) / (mean((luma - b)^2) - N_s)
+// i.e. the target's RMS spatial frequency: gradient energy over signal energy. The noise terms are the
+// noise's expected share of each: N_s the mean pixel variance v_i, N_g the mean of v_i + v_j over the
+// differences (4 s^2 and s^2 for white noise s), v_i the capture's noise model at pixel i's level (the
+// mean of its 3 x 3 neighbourhood within the region; Noise.h, Ruling P26) -- or, for one image alone,
+// its sky's s^2 everywhere. Why this one:
 //  - brightness: numerator and denominator both scale with brightness^2, so a frame dimmed by
 //    haze measures the same detail (no brightness term survives);
 //  - blur: for any blur that multiplies the spectrum by exp(-sigma^2 w^2), this power-weighted mean
 //    of 4 sin^2(w/2) (increasing in |w|) strictly falls as sigma grows -- so sharper is always
 //    higher, with no tuning. No smoothing before the differences: a smoothing kernel would turn
 //    the frequency weight non-monotone near Nyquist;
-//  - noise: white noise adds 4 s^2 to the gradient term and s^2 to the signal term, removed with
-//    the measured s, so a noisy (dim) frame does not look "detailed". Photon noise on the target
-//    itself is not removed; it is near-equal across the frames of one capture. Where the sky is
-//    clipped to a constant black level (common in 8-bit captures), s measures 0 and nothing is
-//    removed: ranking within the capture still holds, but haze-dimmed frames read slightly sharp.
+//  - noise: the noise adds N_g to the gradient term and N_s to the signal term, removed so a noisy
+//    (dim) frame does not look "detailed" -- at each pixel's own level: a target's shot noise and a
+//    clipped sky's reduced noise included. With one level for all, a still textured disc (R 40) with
+//    read noise 0.005 plus shot noise at gains 300 / 1000 / 3000 measured 1.13-2.82x its noise-free
+//    quality; with the model 0.982-0.986 (test "quality and qualitySigma are unbiased with a target's
+//    own shot noise"). The sensor's fixed pattern is not removed (the model is read in time, and the
+//    pattern is in every frame): ranking within the capture holds.
 //  - box size: background pixels add ~0 to both sums after the noise terms, so how tight the box
 //    is does not matter.
 //
-// qualitySigma (noise propagation, first order). Over the n region pixels let SN = n * numerator
-// (gradient energy, sum |grad t|^2 of the noise-free t) and SD = n * denominator (signal energy,
-// sum (t - b)^2). With white noise e of variance s^2 added to t:
-//  - SN = sum |grad(t + e)|^2 - 4 n s^2 fluctuates by 2 sum grad t . grad e = -2 sum e lap(t)
-//    (summation by parts), variance 4 s^2 sum lap(t)^2; plus the quadratic sum |grad e|^2, variance
-//    40 n s^4 (8 s^4 per squared difference, 2 s^4 with each of the 2 same-direction neighbours,
-//    2 s^4 with each of the 4 crossing differences that share a pixel);
-//  - SD fluctuates by 2 sum (t - b) e, variance 4 s^2 SD; plus sum e^2, variance 2 n s^4;
-//  - their linear parts covary by -4 s^2 sum lap(t) (t - b) = +4 s^2 SN, the quadratic parts by
-//    8 n s^4 (4 s^4 per difference, both directions);
-//  - s^2 is itself estimated (from the 20th percentile of the tile estimates), variance V as
-//    "Background and noise" gives it (~6.7 s^4 / M over the M pixel pairs used, on 1080p sky); it enters
-//    SN as -4 n s^2 and SD as -n s^2, adding 16 n^2 V, n^2 V and covariance 4 n^2 V.
-// sum lap(t)^2 is the measured 5-point Laplacian energy minus its noise part (20 s^2 per pixel).
-// Then (dQ/Q)^2 = (Var SN / SN^2 + Var SD / SD^2 - 2 Cov / (SN SD)) / 4. The background level b
-// and the region are taken as fixed (their noise moves SD a little and SN not at all). Checked
-// against 200 noise realisations of a textured planet and a plain disc at two noise levels: the
-// empirical scatter is 0.86-1.05 times the reported sigma (0.88-1.07 before Ruling P19); on a
-// defocused blob at the noise floor (StackSynth R 40 convolved by 20 px, noise 0.005 / 0.01) 1.06 /
-// 0.95. There the quality is near the noise floor in another way: its gradient energy is ~4.5% of
-// the noise's 4 s^2, so an error of 1% in s^2 moves it ~10% -- the estimate's own scatter is in
-// qualitySigma, but what is left of its bias is not (+0.4-0.9% in s^2 on such frames, whose wing tiles
-// carry a little gradient: quality 3-9% low; float frames, no clipping).
+// qualitySigma (noise propagation). Let G = mean(dx^2) + mean(dy^2) - N_g and S = mean((luma - b)^2) -
+// N_s (quality^2 = G / S) over the n region pixels, t the noise-free luma, e the noise (variance v_i at
+// pixel i, independent):
+//  - G's part linear in e is 2 sum over the differences of dt de = -2 sum_i e_i lap_i, lap_i the
+//    region's own Laplacian (each in-region neighbour j adds (t_j - t_i) over its direction's count of
+//    differences: at the region's edge only the neighbours inside count -- with the 5-point interior
+//    Laplacian scaled up, a 64-px window of texture under-reported its scatter by 11-15% at high SNR);
+//    variance 4 sum v_i lap_i^2, lap measured less its noise part (v_i (sum of weights)^2 + the
+//    neighbours' v_j times their weights^2);
+//  - G's quadratic part, variance ~ sum v_i^2 (12 / n_x^2 + 12 / n_y^2 + 16 / (n_x n_y)) (8 v^2 per
+//    squared difference, 2 v^2 with each of the 2 same-direction neighbours, 2 v^2 with each of the 4
+//    crossing differences that share a pixel);
+//  - S fluctuates by 2 sum (t - b) e / n, variance 4 sum v_i (t_i - b)^2 / n^2, plus sum e^2 / n,
+//    variance 2 sum v_i^2 / n^2; their covariance -4 sum v_i lap_i (t_i - b) / n plus 4 sum v_i^2
+//    (1 / n_x + 1 / n_y) / n;
+//  - a model measured on this frame alone (FromSkyNoise) has its own error V (the order statistic's,
+//    "Background and noise"), entering G as 4 V and S as V; a capture's model is shared by every frame
+//    and left out (Noise.h: its error does not scatter the frames).
+// quality^2 = G / S is linear in G, so its first-order sd rho = sqrt(Var G - 2 q^2 Cov + q^4 Var S) / S
+// holds at any SNR: FrameStats::quality2Sigma, which the deconvolution takes (Select.h, step 6).
+// quality's own first-order sd, rho / (2 quality), is evaluated at quality^2's soft floor:
+//     qualitySigma = rho / (2 (q^8 + (kSigmaFloor rho)^4)^(1/8)).
+// Why: taken at each frame's own noisy quality, 1 / quality blew up on the low draws, so qualitySigma's
+// mean (and rms) overstated quality's real scatter at low SNR -- on a 64-px texture window with the true
+// noise, scatter / rms qualitySigma 0.50 / 0.81 at a median quality / qualitySigma of 4.1 / 6.9 (Ruling
+// P26's "~1.25x at 4-5": the engine's per-frame noise reading added its own error on top: 0.32-0.67
+// throughout). kSigmaFloor = 1.7: for q^2 ~ N(mu, rho^2) observed where positive, the soft floor that
+// keeps the mean, the rms and the median of qualitySigma within 8.6% of quality's real sd from a median
+// ratio of 2.2 up (scalar model, 400 000 draws per mu, floors 0.6-2.0 and exponents 2-6 scanned; the
+// plain first-order form missed by up to 216% in rms). Measured (tests "qualitySigma tracks quality's
+// scatter ..." and "a region's qualitySigma tracks ..."), scatter over qualitySigma's rms / median: a
+// smooth blob in sky, 600 frames, at median ratios 2.9 / 4.1 / 11.2 / 41: 1.04 / 1.07 / 0.99 / 0.99 and
+// 1.01 / 1.07 / 1.01 / 1.00; a 64-px texture window, 2000 frames, at 3.4 / 4.2 / 6.8 / 27 / 153 / 1660:
+// 0.95 / 1.01 / 0.99 / 0.95 / 0.95 / 0.98 and 0.97 / 1.03 / 1.06 / 0.96 / 0.95 / 0.98. Under a median
+// ratio of ~3.1 a region window is noise in both its gradient and its signal energy (pure noise reads
+// 2.9), and Regions.h's noise-only gate takes over.
+// One image alone: the quality's noise is its sky's (NoiseModel::FromSkyNoise of EstimatePixelNoise).
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
+// A frame of a capture: the quality's noise is the capture's model (Noise.h); MeasureAll's form.
+FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel& model);
 
 // The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
-// Pixel noise s of a luma image exactly as MeasureFrame's quality uses it ("Background and noise": the
-// target is detected, at lumaScale 1, and its box gates the correction; no target, the whole image is
-// sky), and the variance of the estimate s^2 itself. Throws
+// Pixel noise s of a luma image as the three-argument MeasureFrame's quality uses it ("Background and
+// noise": the target is detected, at lumaScale 1, and its box gates the correction; no target, the whole
+// image is sky), and the variance of the estimate s^2 itself. Throws
 // std::invalid_argument for an empty or non-1-channel image or a sample count that does not match.
 struct NoiseEstimate {
     double sigma = 0;      // s
     double varSigma2 = 0;  // variance of the estimate s^2
 };
 NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma);
-// MeasureFrame's quality and qualitySigma ("Quality", "qualitySigma") over the rectangle
+// MeasureFrame's quality, qualitySigma and quality2Sigma ("Quality", "qualitySigma") over the rectangle
 // [rx0, rx1) x [ry0, ry1) of a row-major 1-channel image of row length w (the rectangle must lie
-// inside it), with background level b and the image's pixel noise. Both 0 when the noise-corrected
-// gradient or signal energy is not positive (or the rectangle is empty).
+// inside it), with background level b and the noise model `noise`. All 0 when the noise-corrected
+// gradient or signal energy is not positive (or the rectangle is empty); the sigmas 0 for a zero model.
+// Thread-safe (thread_local scratch: 8 bytes per region pixel).
 struct QualityEstimate {
     double quality = 0, sigma = 0;
+    double sigma2 = 0;  // sd of quality^2 (FrameStats::quality2Sigma)
 };
+// `variance`: each pixel's noise variance on the image's grid (row length w; PixelVariance), when the
+// caller made it once for many rectangles; null: made here, over the rectangle.
 QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,
-                              const NoiseEstimate& noise);
+                              const NoiseModel& noise, const float* variance = nullptr);
+// Each pixel's noise variance for the quality: the model at the mean of its 3 x 3 neighbourhood within
+// [x0, x1) x [y0, y1) (NoiseModel::Lookup), written to out[(y - y0) * stride + (x - x0)].
+void PixelVariance(const float* p, int w, int x0, int y0, int x1, int y1, const NoiseModel& noise, float* out, int stride);
+// qualitySigma's soft floor on quality^2, in quality^2's own sd ("qualitySigma" above).
+constexpr double kSigmaFloor = 1.7;
 
 // Opens one reader. Called once per worker thread, from that thread -- so concurrently.
 using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 
-// Measures frames 0 .. info.frameCount - 1: each frame is read, turned into luma with
-// LumaForMeasure(frame, info.colorId, info.normDepth) and measured. `threads` workers (fewer when
+// Measures frames 0 .. info.frameCount - 1: the capture's noise model first (FitNoiseModel, its own
+// reads, cancellable, not reported), then each frame is read, turned into luma with
+// MeasurementLuma(frame, info) and measured with the model. `threads` workers (fewer when
 // there are fewer frames; < 1 counts as 1) each open their own reader through `factory` and take
 // runs of consecutive frames, so every reader reads forward. Result: one FrameStats per frame,
 // in frame order, identical for any thread count.
@@ -261,5 +300,8 @@ using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 // thread is joined; so is an exception from report() or cancelled(). No partial result is returned.
 std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::FileInfo& info, int threads,
                                    const Progress& progress);
+// The same with the capture's noise model already measured (RunStack fits it once, for the regions too).
+std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::FileInfo& info, int threads,
+                                   const Progress& progress, const NoiseModel& model);
 
 }  // namespace planetary::stack

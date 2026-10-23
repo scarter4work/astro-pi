@@ -23,7 +23,10 @@ namespace planetary::stack {
 // The passes (every one reads through the hot-pixel wrapper below, so no stage sees an unrepaired frame):
 //  0. Hot pixels: kHotPixelFrames frames spread evenly over the capture (frame i * N / n) are observed
 //     by HotPixelMap, one map per worker, merged; Finish decides the sensor's hot sites.
-//  1. Measuring: MeasureAll over every frame; SelectFrames (no image when it diagnoses).
+//  1. Measuring: the capture's noise model (FitNoiseModel over NoiseRuns: runs of consecutive frames,
+//     Noise.h, Ruling P26), then MeasureAll over every frame with it; SelectFrames (no image when it
+//     diagnoses). The model is every detail measure's noise: the frames', and the regions' (the layout
+//     carries it).
 //  2. Aligning: BuildReference from the clean selection (suspects never enter it, Ruling P6); the
 //     region layout is placed on it (PlaceRegions with the capture-level fullFrameTarget). Then one
 //     streaming pass (Ruling P1) over the selected frames AND the suspects, ascending: per frame its
@@ -35,9 +38,11 @@ namespace planetary::stack {
 //     reads the kFocusFrames sharpest kept frames once more and can only warn, never refuse.
 //  3. Stacking: Accumulator over every frame the plan uses (RegionPlan::Uses), each read once more,
 //     DemosaicHQ, Add; Finish is the image.
-// So the capture is read in full once (measuring), then the selected frames once (aligning) and the
-// stacked ones once more (stacking); BuildReference and the focus measure read up to kReferenceFrames
-// frames each.
+// So the noise model's runs are read first, once per pass (35 frames per run of 32 triples, up to
+// kNoiseResponses responses: 850 frames of the 240 x 180-luma Jupiter 195830, 68 of a 1080p Bayer
+// capture; both passes 1.38 s of Jupiter 195830's 4.55 s, 0.63 s of the 1080p Moon 193142's 28.8 s), then
+// the capture in full once (measuring), the selected frames once (aligning) and the stacked ones once
+// more (stacking); BuildReference and the focus measure read up to kReferenceFrames frames each.
 // ResidualScale observes every frame of the alignment pass over kMinAlignConfidence: a superset of
 // the frames stacked, since the cut and the plan come after the pass. The extra frames -- those between
 // the floor and the cut (torn or shaken: 6 of 1750 on the 2023-02-02 Moon, Align.h) and those no region
@@ -53,7 +58,7 @@ namespace planetary::stack {
 //
 // Progress (StackTypes.h): three phases, in this order, each reported from the calling thread with a
 // fixed total and a done count that only grows and ends at the total:
-//   kPhaseMeasuring  done / (hot-pixel frames + every frame)
+//   kPhaseMeasuring  done / (hot-pixel frames + kNoisePasses x the noise model's runs + every frame)
 //   kPhaseAligning   done / (3 x the reference's frames + the frames of the alignment pass + up to
 //                    kFocusFrames read for the focus measure); a turned-down reference anchor
 //                    (Align.h) is folded into the first part
@@ -352,7 +357,7 @@ struct StackSummary {
     //             image: Select's diagnoses and Unaligned.
     std::string selection, alignment;
     double seconds = 0;      // wall time of the whole call
-    // Wall time per step, in order: "Hot pixels", "Measuring frames", "Selecting", "Building
+    // Wall time per step, in order: "Hot pixels", "Measuring noise", "Measuring frames", "Selecting", "Building
     // reference", "Aligning frames", "Planning regions", "Judging focus", "Stacking" (steps not reached
     // are absent).
     std::vector<std::pair<std::string, double>> phaseSeconds;

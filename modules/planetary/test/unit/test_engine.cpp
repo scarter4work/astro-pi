@@ -196,7 +196,7 @@ TEST_CASE("RunStack: an end-to-end synthetic AVI stacks closer to the truth than
     CHECK(o.summary.readMBps > 0);
     std::vector<std::string> steps;
     for (const auto& p : o.summary.phaseSeconds) steps.push_back(p.first);
-    CHECK(steps == std::vector<std::string>{"Hot pixels", "Measuring frames", "Selecting", "Building reference",
+    CHECK(steps == std::vector<std::string>{"Hot pixels", "Measuring noise", "Measuring frames", "Selecting", "Building reference",
                                             "Aligning frames", "Planning regions", "Judging focus", "Stacking"});
     for (const auto& wtext : o.summary.warnings) CHECK(wtext != stack::kUndeclaredMosaicWarning);
 
@@ -606,10 +606,16 @@ TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- cle
         // its measure at 0.57-0.67 -- real Jupiter blurred by 16 px: 0.566; this synthetic: 0.61). Select does: the
         // blob's half-contrast radius (~15.6 luma px) puts it in the large-disc class, where sigma(q_ref) / R_h reads
         // 0.47 against kGrossBlurLimit 0.25 (Select.h step 7) -- the one refusal for a disc's gross defocus.
+        // Steady or not is left open in the message: with qualitySigma calibrated to the frames' real scatter
+        // (Ruling P26), the noise-corrected spread's upper bound is 8% here, over kSteadySpread (before, an
+        // overstated qualitySigma made it read 0 -- "the same in every frame" -- with false confidence).
         const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82).Factory(), 8, {});
         INFO(o.diagnosis.message << " | " << o.summary.selection);
         CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
-        CHECK(o.diagnosis.message.find("Out of focus") != std::string::npos);
+        double blurOverRadius = 0;
+        for (const auto& [name, v] : o.diagnosis.numbers)
+            if (name == "blur / radius") blurOverRadius = v;
+        CHECK(blurOverRadius >= stack::kGrossBlurLimit);
         CHECK_FALSE(o.image.has_value());
     }
 }

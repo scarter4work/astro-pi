@@ -795,7 +795,8 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     // ---- Measuring: hot pixels, then every frame -----------------------------------------------------
     const int64_t nHot = std::min<int64_t>(n, kHotPixelFrames);
-    Phase measuring(progress, kPhaseMeasuring, nHot + n);
+    const int64_t nNoise = kNoisePasses * static_cast<int64_t>(NoiseRuns(info).size());
+    Phase measuring(progress, kPhaseMeasuring, nHot + nNoise + n);
     measuring.Report(0);
     Clock::time_point t0 = Clock::now();
     auto hot = std::make_shared<HotPixelMap>(info);
@@ -814,8 +815,15 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     step("Hot pixels", t0);
     const SourceFactory factory = RepairingFactory(metered, hot);
 
+    // The capture's noise model (Noise.h, Ruling P26): every detail measure's noise, frames and regions.
     t0 = Clock::now();
-    const std::vector<FrameStats> stats = MeasureAll(factory, info, mem.measureWorkers, measuring.Mapped(nHot, n));
+    const NoiseModel noise = FitNoiseModel(factory, info, mem.measureWorkers, measuring.Mapped(nHot, nNoise));
+    measuring.ThrowIfCancelled();
+    step("Measuring noise", t0);
+
+    t0 = Clock::now();
+    const std::vector<FrameStats> stats =
+        MeasureAll(factory, info, mem.measureWorkers, measuring.Mapped(nHot + nNoise, n), noise);
     measuring.Finish();
     measuring.ThrowIfCancelled();
     step("Measuring frames", t0);
@@ -849,7 +857,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     t0 = Clock::now();
     const GlobalAligner aligner(reference, sel.fullFrameTarget, scale);
     const FrameStats refStats = MeasureFrame(reference, 0, scale);
-    const RegionLayout layout = PlaceRegions(reference, refStats, sel.fullFrameTarget);
+    const RegionLayout layout = PlaceRegions(reference, refStats, sel.fullFrameTarget, noise);
     const RegionMeasurer measurer(reference, layout);
     std::vector<Shift> shifts(static_cast<size_t>(nAlign));
     std::vector<FrameRegions> measured(static_cast<size_t>(nAlign));

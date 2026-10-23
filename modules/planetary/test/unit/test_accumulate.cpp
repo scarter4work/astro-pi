@@ -79,7 +79,8 @@ Pipeline Run(const Capture& cap, bool allFrames = false, bool keepTorn = false, 
     Pipeline p;
     p.info = cap.info;
     const auto factory = cap.Factory();
-    p.stats = stack::MeasureAll(factory, p.info, threads, {});
+    const stack::NoiseModel noise = stack::FitNoiseModel(factory, p.info, threads, {});
+    p.stats = stack::MeasureAll(factory, p.info, threads, {}, noise);
     p.sel = stack::SelectFrames(p.stats, p.info);
     REQUIRE(p.sel.diagnosis.kind == stack::DiagnosisKind::None);
     p.reference = stack::BuildReference(factory, p.info, p.sel, p.stats, threads, {});
@@ -99,7 +100,7 @@ Pipeline Run(const Capture& cap, bool allFrames = false, bool keepTorn = false, 
     }
     const double cut = keepTorn ? 0.0 : stack::AlignmentCut(all);
     const stack::RegionLayout layout =
-        stack::PlaceRegions(p.reference, stack::MeasureFrame(p.reference, 0, stack::LumaScale(p.info)), p.sel.fullFrameTarget);
+        stack::PlaceRegions(p.reference, stack::MeasureFrame(p.reference, 0, stack::LumaScale(p.info)), p.sel.fullFrameTarget, noise);
     const stack::RegionMeasurer measurer(p.reference, layout);
     stack::ResidualScale residual(layout, p.reference);
     std::vector<FrameRegions> measured;
@@ -271,7 +272,7 @@ TEST_CASE("A flat field stacks without seams, whatever frames each region keeps"
     FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0.6));
-    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
     REQUIRE(lay.regions.size() > 10);
     // The flat field the frames show; the reference for rejection is the same flat level.
     FloatImage flatRef{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.5f)};
@@ -425,12 +426,18 @@ TEST_CASE("A single-frame streak is rejected", "[accumulate]") {
             }
         INFO("trail leak " << leak << ", change away from it " << worstAway << ", rejected cells " << rejBright
                            << " bright / " << rejDark << " dark");
-        // Unrejected, the trail would add 0.5 / (frames kept) -- at least 0.5 / 40 = 0.0125 -- at its centre;
-        // rejection must remove at least 90% of that. What gets through is the trail's fringe under
-        // kGrowSigmas, spread over the frames the regions there keep, so it moves with their counts:
-        // measured mono 0.00099 with the region noise of Task 5, 0.00101 with Ruling P25's (whose
-        // unbiased reading changes which frames the regions keep); Bayer 0 with both.
-        CHECK(leak < 0.1 * 0.5 / 40);
+        // Unrejected, the trail would add 0.5 / (frames kept) -- at least 0.5 over the most any region
+        // keeps -- at its centre; rejection must remove at least 90% of that. What gets through is the
+        // trail's fringe under kGrowSigmas, spread over the frames the regions there keep, so it moves with
+        // their counts: measured mono 0.00099 with the region noise of Task 5, 0.00101 with Ruling P25's,
+        // 0.00131 with Ruling P26's noise model, where the mono regions keep at most 31 of the 40 frames
+        // (sharper subsets: 92% of the unrejected 0.5 / 31 removed; the bound moved with the counts, from
+        // 0.5 / 40 to 0.5 / the most kept); Bayer 0 with all three (at most 22 kept now).
+        int64_t keptMost = 0;
+        for (const stack::RegionDetail& d : q.plan.detail) keptMost = std::max(keptMost, d.kept);
+        INFO("most frames kept by a region " << keptMost);
+        REQUIRE(keptMost > 0);
+        CHECK(leak < 0.1 * 0.5 / static_cast<double>(keptMost));
         // Away from the trail nothing changes beyond the spline prefilter's exponentially decaying
         // reach (|z|^k, z = 2 - sqrt 3: 0.5 x 0.27^9 ~ 4e-6 at 9 px).
         CHECK(worstAway < 1e-4);
@@ -590,7 +597,7 @@ TEST_CASE("ResidualScale and Accumulator argument errors", "[accumulate]") {
     FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0.6));
-    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
     stack::ResidualScale rs(lay, ref);
     CHECK_THROWS_AS(rs.Sigma(16), std::logic_error);
     FrameRegions m;
@@ -752,7 +759,7 @@ TEST_CASE("Rejection never empties a pixel", "[accumulate]") {
     FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0.6));
-    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true);
+    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
     std::vector<FrameRegions> measured;
     std::mt19937 rng(3);
     std::normal_distribution<double> n(0, 1);
@@ -1134,7 +1141,8 @@ TEST_CASE("A raw colour mosaic read as mono is measured binned, stacked raw (Rul
                                     : stack::LumaForMeasure(src->ReadFrame(0), ser::ColorId::Mono, 16);
         const FloatImage b = binned ? stack::MeasurementLuma(src->ReadFrame(1), two.info)
                                     : stack::LumaForMeasure(src->ReadFrame(1), ser::ColorId::Mono, 16);
-        const stack::RegionLayout lay = stack::PlaceRegions(a, stack::MeasureFrame(a, 0, binned ? 2.0 : 1.0), true);
+        const stack::RegionLayout lay = stack::PlaceRegions(a, stack::MeasureFrame(a, 0, binned ? 2.0 : 1.0), true,
+                                                            testing::WhiteNoise(binned ? 0.0015 : 0.003));
         const stack::RegionMeasurer m(a, lay);
         const FrameRegions qa = m.Measure(a, 0, Shift{}), qb = m.Measure(b, 1, Shift{});
         std::vector<double> rs;

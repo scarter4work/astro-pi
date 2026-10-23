@@ -26,6 +26,7 @@ planetary_add_test(test_align unit/test_align.cpp planetary_stack)
 planetary_add_test(test_regions unit/test_regions.cpp planetary_stack)
 planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
 planetary_add_test(test_engine unit/test_engine.cpp planetary_stack)
+planetary_add_test(test_noise unit/test_noise.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")

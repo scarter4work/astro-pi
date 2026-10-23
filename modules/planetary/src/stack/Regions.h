@@ -5,6 +5,7 @@
 #include "Align.h"
 #include "FrameSource.h"
 #include "Measure.h"
+#include "Noise.h"
 #include "Select.h"
 
 namespace planetary::stack {
@@ -21,7 +22,8 @@ namespace planetary::stack {
 // frame(x + dx, y + dy) ~ reference(x, y).
 //
 // The pipeline (Task 6 drives it; every piece here is I/O-free, Ruling P1):
-//  1. layout = PlaceRegions(reference, MeasureFrame(reference, 0, LumaScale(info)), selection.fullFrameTarget);
+//  1. layout = PlaceRegions(reference, MeasureFrame(reference, 0, LumaScale(info)), selection.fullFrameTarget,
+//                             noise);   // noise: FitNoiseModel of the capture
 //  2. for each selected, globally aligned frame (its luma and GlobalAligner shift):
 //         FrameRegions m = measurer.Measure(luma, index, shift);   // RegionMeasurer(reference, layout)
 //         residual.Observe(luma, m);                               // ResidualScale, Accumulate.h
@@ -50,15 +52,20 @@ constexpr int kMaxRegionSize = 128;
 // "fallback"). The criterion is on the window's total gradient energy, not its per-pixel density, so a
 // low-contrast belt over a 32-px window still qualifies (planet interiors carry the lucky detail).
 //
-// Texture-blind noise (placement here, and each frame's noise for the region quality): the responses
-// of the separable second difference [1 -2 1] x [1 -2 1] -- 0 on any linear-or-quadratic surface and
-// on anything varying along one axis only -- over the regions' extent, as a trimmed second moment
-// (responses up to their 80th percentile; a median reads 0 on quantised 8-bit discs, where most
-// responses are exactly 0), the smaller of that on the pixels and on their 2 x 2 bins: a raw Bayer
-// mosaic read as mono carries its colour pattern at Nyquist in every frame (the bins cancel it), while
-// 4-8 px texture is coarse for the pixels. MeasureFrame's smoothest-tile estimate cannot serve here:
-// it reads a lunar surface's texture as noise and zeroed the quality of most lunar regions (measured).
-// The extent, not the frame: an 8-bit sky clipped to black would read 0.
+// The reference's noise for placement is its own, read texture-blind (RegionNoise below, over the
+// target's box) -- the reading kMaxShiftNoise was set with. The capture's noise model (Noise.h) is not
+// used here: a reference is an average of interpolated frames, whose noise the model does not describe,
+// and with the model's frame noise in its place the synthetic Moon of test "a dark lunar limb ..." placed
+// 16 regions where this reading places 109 (the reference's texture-blind reading, times
+// sqrt(kReferenceFrames), sits well under a frame's true noise: interpolation smooths the reference's
+// pixel-scale noise). Placing by level would move every layout; the dark-limb windows of the 2026-01-30
+// Moon 193142 are placed either way (Ruling P26 concerns their quality, below).
+//
+// The regions' quality (RegionMeasurer) takes the capture's noise model at each pixel's level
+// (RegionLayout::noise, Ruling P26). Before, it took one level per frame, read texture-blind over all the
+// regions' windows (Ruling P25): on the 2026-01-30 Moon 193142 that level was the bright surface's, and
+// its dark limb regions, whose own noise is a fraction of it, measured quality 0 in nearly every frame and
+// kept none.
 constexpr double kMaxShiftNoise = 0.1;
 constexpr double kMinFrameNoise = 1e-3;
 
@@ -89,21 +96,19 @@ struct RegionLayout {
     bool flatEdges = false;
     std::vector<Region> regions;  // the nodes that hold structure, in row-major node order
     std::vector<int> node;        // nx * ny: index into regions, -1 where no region was placed
-    // The region stage's noise is read on 2 x 2 bins instead of the pixels (RegionNoiseOnBins on the
-    // reference over the target's box, decided once by PlaceRegions; Ruling P25).
-    bool noiseOnBins = false;
+    // The capture's noise model (Noise.h), as PlaceRegions was given it: every region quality's noise.
+    NoiseModel noise;
 };
 
-// Region-stage pixel noise (Ruling P25), blind to texture: MaskNoise -- the trimmed second moment of
-// the [1 -2 1] x [1 -2 1] responses, Regions.cpp -- on the pixels of [x0, x1) x [y0, y1) (clipped to
-// the image), or with onBins twice that on their 2 x 2 bins (white noise s gives s / 2 in a bin).
-// Each reading misreads one texture as noise: a raw colour mosaic read as mono carries its pattern at
-// Nyquist in every frame, which the pixels see and a bin (one cell of the pattern) cancels; texture at
-// 4-8 px, coarse for the pixels, is fine for the bins. The capture's own data says which applies, so
-// the choice is made once, on the reference, and every frame is read the same way -- not per frame by
-// the smaller of the two, which read s^2 0.923 / 0.961 / 0.981 / 0.989 / 0.995 of the truth on white
-// noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured 2026-10-22), each frame taking whichever
-// fluctuated low. Each reading alone (test "RegionNoise is unbiased ...", white noise, 32^2-512^2):
+// The reference's pixel noise for placement (Ruling P25; until Ruling P26 also each frame's for the
+// region quality), blind to texture: MaskNoise -- the trimmed second moment of the [1 -2 1] x [1 -2 1]
+// responses, Regions.cpp -- on the pixels of [x0, x1) x [y0, y1) (clipped to the image), or with onBins
+// twice that on their 2 x 2 bins (white noise s gives s / 2 in a bin). Each reading misreads one texture
+// as noise: a raw colour mosaic read as mono carries its pattern at Nyquist in every frame, which the
+// pixels see and a bin (one cell of the pattern) cancels; texture at 4-8 px, coarse for the pixels, is
+// fine for the bins. The capture's own data says which applies (RegionNoiseOnBins, on the reference) --
+// not the smaller of the two, which read s^2 0.923 / 0.961 / 0.981 / 0.989 / 0.995 of the truth on white
+// noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured 2026-10-22), taking whichever fluctuated low. Each reading alone (test "RegionNoise is unbiased ...", white noise, 32^2-512^2):
 // pixels 1.000-1.006 of the truth (1.010 at 32^2 before the trimmed moment's constant was taken at the
 // share actually kept), bins 0.999-1.009 from 48^2 and 1.022 at 32^2 (16 x 16 bins, 196 responses: the
 // trimmed moment's small-sample excess).
@@ -132,7 +137,8 @@ struct AxisWeight {
 };
 AxisWeight AxisWeightAt(const RegionLayout& layout, bool vertical, double u);
 
-// Places the regions on the reference (BuildReference's luma image; refStats = MeasureFrame of it).
+// Places the regions on the reference (BuildReference's luma image; refStats = MeasureFrame of it);
+// noise: the capture's model (FitNoiseModel), kept in the layout for the regions' quality.
 // fullFrame (Selection::fullFrameTarget): the grid covers the whole frame with flat edges; else it
 // covers the target's box grown by a margin of step / 2 (seeing moves the limb; the box is already
 // grown by a detection block), so the whole disc lies where the weights sum to 1. A node gets a
@@ -141,11 +147,12 @@ AxisWeight AxisWeightAt(const RegionLayout& layout, bool vertical, double u);
 // (a featureless target): everything is then stacked by the fallback.
 // Deterministic. Throws std::invalid_argument for an empty or non-1-channel image or a sample count
 // that does not match; for a disc, also when refStats has no target.
-RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, bool fullFrame);
+RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, bool fullFrame,
+                          const NoiseModel& noise);
 // The plan's two-argument form: fullFrame decided from the reference itself (FillsFrame, or true
 // when it has no target), as GlobalShift does. Prefer the three-argument form with the selection's
 // capture-level verdict.
-RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats);
+RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, const NoiseModel& noise);
 
 // ---- Per-frame measurement (Ruling P1) ------------------------------------------------------------
 
@@ -166,9 +173,10 @@ struct RegionMeasure {
     float confidence = 0;
     // RegionQuality over the frame's pixels at the window's position rounded to the found shift
     // (unresampled: interpolation would blur by an amount that depends on the fractional shift), with
-    // the window mean as background and the frame's texture-blind pixel noise. 0 = no measurable
+    // the window mean as background and the capture's noise model (RegionLayout::noise). 0 = no measurable
     // detail. Over a window partly outside the frame, the part inside.
     float quality = 0, qualitySigma = 0;
+    float quality2Sigma = 0;  // sd of quality^2 (FrameStats::quality2Sigma)
     // The search and refinement succeeded (see Method) with the window at least half inside the frame.
     bool aligned = false;
 };
@@ -234,7 +242,6 @@ private:
     };
     RegionLayout layout_;
     std::vector<std::vector<Window>> windows_;  // [region][level]
-    int ex0_ = 0, ey0_ = 0, ex1_ = 0, ey1_ = 0;  // extent of all windows (where the frame noise is measured)
 };
 
 // The plan's one-call form (Ruling P1): RegionMeasurer(reference, layout).Measure(frameLuma, 0, global).
@@ -267,14 +274,24 @@ struct RegionDetail {
 };
 
 // A region's detail is real when its median candidate's quality is at least this many of its own
-// qualitySigma (Ruling P27). Measured 2026-10-22 (median q / qualitySigma over a region's candidates):
-// pure noise reads 2 Z on the frames whose noise-corrected gradient energy happens to be positive (derived:
-// q / qualitySigma ~ 2 SN / sd(SN)), a median of ~1.35; the Moon 193142's dark limb regions 0.02 / 1.72
-// / 1.79 (1, 203 and 24 candidates of 2102 frames) and the 2023-02-02 Moon's 1.71 (347 of 1482), while
-// the least detailed regions that keep a lucky subset read 7.44 / 12.8 (2023-02-02 Moon: 826 and 1072
-// candidates, keeping 88 and 131) and everything else 20 and up (Jupiter 195830 over 4000, Neptune
-// 204515 10.7-11.8).
-constexpr double kRegionDetailSigmas = 3;
+// qualitySigma (Ruling P27; 3 until Ruling P26). Measured 2026-10-22, median q / qualitySigma over a
+// region's candidates (q > 0):
+//  - pure noise (white 0.01 on a flat level, 32 / 128 px windows, 200 repeats; sim, the true noise as
+//    the model): a median of 2.9 whatever the count, p99 8.6 / 5.1-5.5 / 4.2-4.3 / 3.7-3.8 / 3.3 at
+//    10 / 30 / 64 / 150 / 400 candidates. P26's qualitySigma is the scatter's own (Measure.h); the one
+//    before overstated it at low SNR, and pure noise read a median of ~1.35 against it, so 3 sat well
+//    above noise then and at its median now;
+//  - real regions (Ruling P26's model): the least detailed of the five test captures with regions reads
+//    10.25 (the 2026-01-30 Moon 193142's region at 160, 288: saturated, luma 0.945, its alignment match a
+//    low 0.85, the model 1.30x its own noise; it keeps all 2044 frames), then 17.7 (Neptune 204515, 93
+//    frames) and 66.8 (the 2023-02-02 Moon); the Moon 193142's dark limb, which the one sky level put at
+//    0.02-1.8, reads 23-33;
+//  - synthetic textured regions under seeing that changes from frame to frame (test "A low-SNR region
+//    with real seeing variation ...": half contrast, noise 0.01, 150 frames): 3.71-11.97, 4 of 165
+//    under 4 (they take the plain mean).
+// 4 is over pure noise's p99 from ~150 candidates and its 400-candidate maximum, and under every real
+// region by 2.5x.
+constexpr double kRegionDetailSigmas = 4;
 
 struct RegionPlan {
     RegionLayout layout;
@@ -309,8 +326,8 @@ struct RegionPlan {
 // an error -> std::invalid_argument, as are measurements whose region count differs from the layout).
 // Per region: frames aligned there with confidence >= kAlignRelative x the region's median confidence
 // (relative, like AlignmentCut: a tear or a foreign object costs a frame its match locally) and
-// quality > 0 are the candidates; RankByDetail(quality, qualitySigma, need, floor) over them, in frame
-// order, with SelectFrames' need = max(1, min(kMinStackFrames, ceil(n / 2))) and floor =
+// quality > 0 are the candidates; RankByDetail(quality, qualitySigma, quality2Sigma, need, floor) over
+// them, in frame order, with SelectFrames' need = max(1, min(kMinStackFrames, ceil(n / 2))) and floor =
 // max(need, ceil(sqrt(n))), keeps the region's own sharpest frames: the count follows the region's
 // quality distribution -- few where the region's sharpness comes and goes with the seeing, most where
 // it is steady (measured 2026-10-21: the steady 2026-01-30 Jupiter keeps 260-300 of 300 per region,
@@ -321,10 +338,11 @@ struct RegionPlan {
 // a single frame of 2102 on the Moon 193142, sqrt(2102) times the noise; and one or two candidates out
 // of many aligned frames, or after alignment collapsed there, are the noise's tail, whatever their
 // ratio). That includes every region of a whole capture of 1-4 frames, which SelectFrames accepts:
-// ranking 2-4 frames per region gains nothing, so such a capture is the plain mean. A region whose detail is real but whose spread is noise is left to the ranking: step 6's
-// deconvolution keeps everything there (Neptune 204515: 93 of 93 per region). An override that kept
-// every aligned frame when the spread was within qualitySigma discarded real lucky frames at low SNR,
-// where qualitySigma overstates q's scatter (~1.25x at a median q / qualitySigma of 4-5; Ruling P26).
+// ranking 2-4 frames per region gains nothing, so such a capture is the plain mean. A region whose
+// detail is real but whose spread is noise is left to the ranking: step 6's deconvolution keeps nearly
+// everything there (Neptune 204515: 92-93 of 93 per region). An override that kept every aligned frame
+// when the spread was within qualitySigma discarded real lucky frames at low SNR, where qualitySigma
+// then overstated q's scatter (~1.25x at a median q / qualitySigma of 4-5, before Ruling P26).
 // threads: regions are ranked on that many threads (< 1 counts as 1); the result is the same for any count.
 RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1);
 

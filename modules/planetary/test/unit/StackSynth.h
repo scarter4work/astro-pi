@@ -295,6 +295,15 @@ inline double RmsToTruth(const ser::FloatImage& im, const Scene& s, const std::f
     return std::sqrt(sum / static_cast<double>(n));
 }
 
+// The noise model of frames with white noise of sd s and no clipping (Noise.h): the truth a capture's
+// fit should find, for tests that measure frames without fitting one.
+inline stack::NoiseModel WhiteNoise(double s) {
+    stack::NoiseModel m;
+    m.a = s * s;
+    m.Tabulate();
+    return m;
+}
+
 inline Capture NewCapture(int w, int h, ser::ColorId color = ser::ColorId::Mono) {
     Capture c;
     c.info.header.width = w;

@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "Demosaic.h"
+#include "Noise.h"
 #include "SerFile.h"
 
 namespace planetary::stack {
@@ -321,7 +322,8 @@ int DetectionBlock(int width, int height) {
 }
 
 // MeasureFrame, also handing out the noise its quality used (EstimatePixelNoise).
-static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, double lumaScale, NoiseEstimate* qualityNoise) {
+static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel* model,
+                                   NoiseEstimate* qualityNoise) {
     if (luma.width <= 0 || luma.height <= 0)
         throw std::invalid_argument("MeasureFrame: empty image");
     if (luma.channels != 1)
@@ -466,16 +468,24 @@ static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, d
     // The quality's noise: corrected only when the sky outside the target's box holds more than k noise
     // tiles ("Background and noise"; a frame-filling target leaves none, and its reading stays as it was).
     const TargetBox box{s.bx0, s.by0, s.bx1, s.by1};
-    const NoiseEstimate noise = PixelNoise(tiles, &box);
+    NoiseEstimate noise;
+    if (!model || qualityNoise) noise = PixelNoise(tiles, &box);
     if (qualityNoise) *qualityNoise = noise;
-    const QualityEstimate q = RegionQuality(p, w, rx0, ry0, rx1, ry1, b, noise);
+    // The capture's model when given (Noise.h); one image alone, its sky's level (NoiseModel::FromSkyNoise).
+    const QualityEstimate q =
+        RegionQuality(p, w, rx0, ry0, rx1, ry1, b, model ? *model : NoiseModel::FromSkyNoise(noise));
     s.quality = q.quality;
     s.qualitySigma = q.sigma;
+    s.quality2Sigma = q.sigma2;
     return s;
 }
 
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale) {
-    return MeasureWithNoise(luma, index, lumaScale, nullptr);
+    return MeasureWithNoise(luma, index, lumaScale, nullptr, nullptr);
+}
+
+FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel& model) {
+    return MeasureWithNoise(luma, index, lumaScale, &model, nullptr);
 }
 
 NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma) {
@@ -483,69 +493,190 @@ NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma) {
         luma.data.size() != static_cast<size_t>(luma.width) * luma.height)
         throw std::invalid_argument("EstimatePixelNoise: expected a non-empty 1-channel image");
     NoiseEstimate n;
-    MeasureWithNoise(luma, 0, 1, &n);  // the target's box gates the correction, as for the quality
+    MeasureWithNoise(luma, 0, 1, nullptr, &n);  // the target's box gates the correction
     return n;
 }
 
-QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,
-                              const NoiseEstimate& noise) {
-    QualityEstimate out;
-    if (rx1 <= rx0 || ry1 <= ry0) return out;
-    const double sigma = noise.sigma;
-    double gh = 0, gv = 0, e = 0, lap2 = 0;
-    int64_t nLap = 0;
-    for (int y = ry0; y < ry1; ++y) {
-        const float* row = p + static_cast<size_t>(y) * w;
-        const float* below = y + 1 < ry1 ? row + w : nullptr;
-        const float* above = y > ry0 ? row - w : nullptr;
-        for (int x = rx0; x < rx1; ++x) {
-            const double v = row[x];
-            e += (v - b) * (v - b);
-            if (x + 1 < rx1) {
-                const double d = static_cast<double>(row[x + 1]) - v;
-                gh += d * d;
-            }
-            if (below) {
-                const double d = static_cast<double>(below[x]) - v;
-                gv += d * d;
-            }
-            if (above && below && x > rx0 && x + 1 < rx1) {  // 5-point Laplacian, for qualitySigma
-                const double l = static_cast<double>(row[x - 1]) + row[x + 1] + above[x] + below[x] - 4 * v;
-                lap2 += l * l;
-                ++nLap;
-            }
+void PixelVariance(const float* p, int w, int x0, int y0, int x1, int y1, const NoiseModel& noise, float* out, int stride) {
+    if (x1 <= x0 || y1 <= y0) return;
+    const int rw = x1 - x0;
+    // 3 x 3 sums within the rectangle, separably: along each row (with the count of pixels in it), then
+    // down the columns.
+    thread_local std::vector<double> rows;
+    thread_local std::vector<int> counts;
+    rows.assign(static_cast<size_t>(rw) * (y1 - y0), 0.0);
+    counts.assign(static_cast<size_t>(rw), 0);
+    for (int x = x0; x < x1; ++x) counts[static_cast<size_t>(x - x0)] = 1 + (x > x0) + (x + 1 < x1);
+    for (int y = y0; y < y1; ++y) {
+        const float* r = p + static_cast<size_t>(y) * w;
+        double* o = rows.data() + static_cast<size_t>(y - y0) * rw;
+        for (int x = x0; x < x1; ++x) {
+            double s = r[x];
+            if (x > x0) s += r[x - 1];
+            if (x + 1 < x1) s += r[x + 1];
+            o[x - x0] = s;
         }
     }
-    const double nReg = static_cast<double>(rx1 - rx0) * (ry1 - ry0);
-    const double nh = static_cast<double>(rx1 - rx0 - 1) * (ry1 - ry0);
-    const double nv = static_cast<double>(rx1 - rx0) * (ry1 - ry0 - 1);
-    const double var = sigma * sigma;
+    for (int y = y0; y < y1; ++y) {
+        const double* c = rows.data() + static_cast<size_t>(y - y0) * rw;
+        const double* a = y > y0 ? c - rw : nullptr;
+        const double* d = y + 1 < y1 ? c + rw : nullptr;
+        const int ny = 1 + (a != nullptr) + (d != nullptr);
+        float* o = out + static_cast<size_t>(y - y0) * stride;
+        for (int i = 0; i < rw; ++i) {
+            const double s = c[i] + (a ? a[i] : 0.0) + (d ? d[i] : 0.0);
+            o[i] = static_cast<float>(noise.Lookup(s / (ny * counts[static_cast<size_t>(i)])));
+        }
+    }
+}
+
+QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,
+                              const NoiseModel& noise, const float* variance) {
+    QualityEstimate out;
+    if (rx1 <= rx0 || ry1 <= ry0) return out;
+    const int rw = rx1 - rx0, rh = ry1 - ry0;
+    const double nReg = static_cast<double>(rw) * rh;
+    const double nh = static_cast<double>(rw - 1) * rh, nv = static_cast<double>(rw) * (rh - 1);
+    const double ih = nh > 0 ? 1 / nh : 0, iv = nv > 0 ? 1 / nv : 0;
+    auto at = [&](int x, int y) { return static_cast<double>(p[static_cast<size_t>(y) * w + x]); };
+
+    // Each pixel's noise variance (Noise.h): given (a plane the caller made once for many regions), or the
+    // model at the mean of its 3 x 3 neighbourhood within the region.
+    const bool noisy = !noise.Zero();
+    thread_local std::vector<float> vb;
+    const float* vplane = variance;
+    size_t vstride = static_cast<size_t>(w);
+    int vx0 = 0, vy0 = 0;
+    if (noisy && !vplane) {
+        vb.resize(static_cast<size_t>(rw) * rh);
+        PixelVariance(p, w, rx0, ry0, rx1, ry1, noise, vb.data(), rw);
+        vplane = vb.data();
+        vstride = static_cast<size_t>(rw);
+        vx0 = rx0;
+        vy0 = ry0;
+    }
+    auto vat = [&](int x, int y) {
+        return noisy ? static_cast<double>(vplane[static_cast<size_t>(y - vy0) * vstride + static_cast<size_t>(x - vx0)]) : 0.0;
+    };
+
+    // Sums: gradient and signal energy, their noise expectations, and qualitySigma's terms (Measure.h).
+    double gh = 0, gv = 0, e = 0, noiseH = 0, noiseV = 0, noiseE = 0;
+    double lapEnergy = 0, sigEnergy = 0, cross = 0, v2 = 0;
+    // Any pixel, its neighbours checked against the region (the border; and everything without noise).
+    auto general = [&](int x, int y) {
+            const double L = at(x, y), v = vat(x, y), dl = L - b;
+            e += dl * dl;
+            noiseE += v;
+            // The Laplacian over the region's own neighbours (each direction weighted as its mean is),
+            // and its noise part: v (own) and the neighbours' v.
+            double lap = 0, ownW = 0, nbrNoise = 0;
+            if (x + 1 < rx1) {
+                const double r = at(x + 1, y), vr = vat(x + 1, y), d = r - L;
+                gh += d * d;
+                noiseH += v + vr;
+                lap += ih * d;
+                ownW += ih;
+                nbrNoise += ih * ih * vr;
+            }
+            if (x > rx0) {
+                lap += ih * (at(x - 1, y) - L);
+                ownW += ih;
+                nbrNoise += ih * ih * vat(x - 1, y);
+            }
+            if (y + 1 < ry1) {
+                const double d = at(x, y + 1) - L, vd = vat(x, y + 1);
+                gv += d * d;
+                noiseV += v + vd;
+                lap += iv * d;
+                ownW += iv;
+                nbrNoise += iv * iv * vd;
+            }
+            if (y > ry0) {
+                lap += iv * (at(x, y - 1) - L);
+                ownW += iv;
+                nbrNoise += iv * iv * vat(x, y - 1);
+            }
+            lapEnergy += v * (lap * lap - (ownW * ownW * v + nbrNoise));
+            sigEnergy += v * (dl * dl - v);
+            cross += v * (lap * dl + ownW * v);
+            v2 += v * v;
+    };
+    for (int y = ry0; y < ry1; ++y) {
+        if (!(noisy && rw > 2 && y > ry0 && y + 1 < ry1)) {
+            for (int x = rx0; x < rx1; ++x) general(x, y);
+            continue;
+        }
+        // Interior pixels of an inner row: all four neighbours in the region (the same sums, unbranched).
+        general(rx0, y);
+        const float* r = p + static_cast<size_t>(y) * w;
+        const float* up = r - w;
+        const float* dn = r + w;
+        const float* vr = vplane + static_cast<size_t>(y - vy0) * vstride - vx0;
+        const float* vu = vr - vstride;
+        const float* vd = vr + vstride;
+        const double ownW = 2 * ih + 2 * iv, ow2 = ownW * ownW, ih2 = ih * ih, iv2 = iv * iv;
+        for (int x = rx0 + 1; x + 1 < rx1; ++x) {
+            const double L = r[x], v = vr[x], dl = L - b;
+            const double dR = r[x + 1] - L, dL = r[x - 1] - L, dD = dn[x] - L, dU = up[x] - L;
+            e += dl * dl;
+            noiseE += v;
+            gh += dR * dR;
+            noiseH += v + vr[x + 1];
+            gv += dD * dD;
+            noiseV += v + vd[x];
+            const double lap = ih * (dR + dL) + iv * (dD + dU);
+            const double nbr = ih2 * (static_cast<double>(vr[x + 1]) + vr[x - 1]) + iv2 * (static_cast<double>(vd[x]) + vu[x]);
+            lapEnergy += v * (lap * lap - (ow2 * v + nbr));
+            sigEnergy += v * (dl * dl - v);
+            cross += v * (lap * dl + ownW * v);
+            v2 += v * v;
+        }
+        general(rx1 - 1, y);
+    }
     double num = 0;
-    if (nh > 0) num += gh / nh - 2 * var;
-    if (nv > 0) num += gv / nv - 2 * var;
-    const double den = e / nReg - var;
+    if (nh > 0) num += (gh - noiseH) * ih;
+    if (nv > 0) num += (gv - noiseV) * iv;
+    const double den = (e - noiseE) / nReg;
     if (!(num > 0 && den > 0)) return out;
     out.quality = std::sqrt(num / den);
+    if (!noisy) return out;
 
-    // qualitySigma: first-order propagation of the pixel noise (derivation in Measure.h), on the
-    // region sums SN = nReg * num (gradient energy) and SD = nReg * den (signal energy).
-    if (var > 0) {
-        const double sn = nReg * num, sd = nReg * den;
-        const double var2 = var * var;
-        const double lapTrue = std::max(0.0, lap2 - 20.0 * var * static_cast<double>(nLap)) * nReg /
-                               std::max<double>(1.0, static_cast<double>(nLap));
-        const double vs = noise.varSigma2;
-        const double varSN = 4 * var * lapTrue + 40 * nReg * var2 + 16 * nReg * nReg * vs;
-        const double varSD = 4 * var * sd + 2 * nReg * var2 + nReg * nReg * vs;
-        const double cov = 4 * var * sn + 8 * nReg * var2 + 4 * nReg * nReg * vs;
-        const double rel2 = 0.25 * (varSN / (sn * sn) + varSD / (sd * sd) - 2 * cov / (sn * sd));
-        out.sigma = out.quality * std::sqrt(std::max(0.0, rel2));
+    // qualitySigma (Measure.h): variance of num and den and their covariance -- linear in the noise
+    // (Laplacian, signal and cross terms) plus quadratic -- and, for a model measured on this frame, its
+    // own error V (the subtracted noise moves num by 2 per direction and den by 1 per unit of mean v).
+    double varNum = 4 * std::max(0.0, lapEnergy) + v2 * (12 * ih * ih + 12 * iv * iv + 16 * ih * iv);
+    double varDen = (4 * std::max(0.0, sigEnergy) + 2 * v2) / (nReg * nReg);
+    double cov = -4 * cross / nReg + v2 * 4 * (ih + iv) / nReg;
+    if (noise.ownFrame) {
+        double mean = 0;
+        for (int y = ry0; y < ry1; ++y)
+            for (int x = rx0; x < rx1; ++x) mean += at(x, y);
+        const double V = noise.LineVariance(mean / nReg), k = (nh > 0 ? 2.0 : 0.0) + (nv > 0 ? 2.0 : 0.0);
+        varNum += k * k * V;
+        varDen += V;
+        cov += k * V;
     }
+    // quality^2 = num / den is linear in num, so its first-order sd holds at any SNR (Measure.h); quality's
+    // own sd, rho / (2 quality) at first order, is taken at quality^2's soft floor (kSigmaFloor rho): where
+    // the gradient energy is near the noise the observed quality is as likely low as high, and 1 / quality
+    // would blow up on the low draws.
+    const double q2 = num / den;
+    const double rho = std::sqrt(std::max(0.0, varNum - 2 * q2 * cov + q2 * q2 * varDen)) / den, f = kSigmaFloor * rho;
+    out.sigma2 = rho;
+    out.sigma = rho / (2 * std::pow(q2 * q2 * q2 * q2 + f * f * f * f, 0.125));
     return out;
 }
 
 std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::FileInfo& info, int threads,
                                    const Progress& progress) {
+    // The capture's noise model first (its own reads; cancellable, reported only by RunStack's phases).
+    Progress fit;
+    fit.cancelled = progress.cancelled;
+    return MeasureAll(factory, info, threads, progress, FitNoiseModel(factory, info, threads, fit));
+}
+
+std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::FileInfo& info, int threads,
+                                   const Progress& progress, const NoiseModel& model) {
     const int64_t total = std::max<int64_t>(0, info.frameCount);
     if (total == 0) return {};
     if (!factory) throw std::invalid_argument("MeasureAll: no reader factory");
@@ -582,7 +713,7 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
                 const int64_t last = std::min(total, first + kRun);
                 for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
                     out[static_cast<size_t>(i)] =
-                        MeasureFrame(MeasurementLuma(src->ReadFrame(i), info), i, scale);
+                        MeasureFrame(MeasurementLuma(src->ReadFrame(i), info), i, scale, model);
                     done.fetch_add(1);
                 }
             }

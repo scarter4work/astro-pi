@@ -4,7 +4,7 @@
 //   stack-region-probe <video> [--frames N] [--threads T] [--out DIR]
 //
 // Runs the engine's flow on the first N frames (default: all) on T threads (default: hardware):
-// MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
+// FitNoiseModel -> MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
 // RegionMeasurer, ResidualScale) -> PlanRegions -> pass B (every planned frame: DemosaicHQ,
 // Accumulator::Add) -> Finish, plus the same frames stacked with the global shift only (a layout
 // without regions: the fallback stack alone) as the baseline. Prints the selection, the layout, the
@@ -123,7 +123,12 @@ int main(int argc, char** argv) try {
                 info.header.width, info.header.height, ser::IsBayer(info.colorId) ? "Bayer" : "mono/RGB", scale, threads);
 
     auto t0 = std::chrono::steady_clock::now();
-    const std::vector<stack::FrameStats> stats = stack::MeasureAll(factory, info, threads, {});
+    const stack::NoiseModel noise = stack::FitNoiseModel(factory, info, threads, {});
+    int clippedKnots = 0;
+    for (const auto& k : noise.knots) clippedKnots += k.clipped;
+    std::printf("noise    var = %.4g + %.4g t (luma units^2), %zu bins (%d clipped), %d frame triples\n", noise.a, noise.b,
+                noise.knots.size(), clippedKnots, noise.frames);
+    const std::vector<stack::FrameStats> stats = stack::MeasureAll(factory, info, threads, {}, noise);
     const double tMeasure = Seconds(t0);
     t0 = std::chrono::steady_clock::now();
     const stack::Selection sel = stack::SelectFrames(stats, info);
@@ -142,7 +147,7 @@ int main(int argc, char** argv) try {
 
     t0 = std::chrono::steady_clock::now();
     const stack::GlobalAligner aligner(ref, sel.fullFrameTarget, stack::LumaScale(info));
-    const stack::RegionLayout layout = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, stack::LumaScale(info)), sel.fullFrameTarget);
+    const stack::RegionLayout layout = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, stack::LumaScale(info)), sel.fullFrameTarget, noise);
     const stack::RegionMeasurer measurer(ref, layout);
     const int64_t n = static_cast<int64_t>(sel.frames.size());
     std::vector<stack::Shift> shifts(static_cast<size_t>(n));
@@ -216,6 +221,11 @@ int main(int argc, char** argv) try {
         std::printf("align    %3zu: aligned %d, confidence median %.3f, cut %.3f, candidates %lld, with detail %zu\n", r, al,
                     cf.empty() ? 0.0 : cf[cf.size() / 2], plan.detail[r].confidenceCut, static_cast<long long>(plan.detail[r].candidates), q.size());
         if (q.empty()) continue;
+        std::vector<double> ratio;
+        for (size_t i = 0; i < q.size(); ++i) ratio.push_back(s[i] > 0 ? q[i] / s[i] : 1e9);
+        std::sort(ratio.begin(), ratio.end());
+        std::printf("detail   %3zu: median q / qualitySigma %.2f%s\n", r, ratio[ratio.size() / 2],
+                    plan.detail[r].noiseOnly ? " (noise only: plain mean)" : "");
         std::sort(q.begin(), q.end());
         std::sort(s.begin(), s.end());
         const auto& d = plan.detail[r];
