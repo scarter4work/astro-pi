@@ -104,7 +104,7 @@ constexpr int kHotPixelFrames = 64;
 //    Workers per pass are capped so fixed + observers + workers stay within kMemoryBudget (a 4K RGB
 //    16-bit capture: ~315 MB per stacking worker, so 11 of them; 1080p never hits the cap).
 //  - Fixed: the Accumulator's sums (8 bytes per output sample plus 8 per pixel, its kept and
-//    rejected halves), the reference and residual scale at luma size.
+//    rejected halves), the reference and residual scale at luma size, the regions' blend mask.
 //  - The focus measure: its kFocusFrames luma frames (focusBytes; 4K mono 531 MB), held after the
 //    residual scale is computed and its observers released, so never beside them.
 // Not in the plan (they grow with the frame count, not the frame size, and are small): the frame

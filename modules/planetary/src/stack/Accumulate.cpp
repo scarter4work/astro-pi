@@ -271,7 +271,7 @@ struct FrameNodes {
 
 }  // namespace
 
-void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWeight& ay, const float* dx,
+void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWeight& ay, double mask, const float* dx,
                  const float* dy, const uint8_t* usable, double& outDx, double& outDy) {
     double nx = 0, ny = 0, den = 0;
     for (int b = 0; b < 2; ++b) {
@@ -284,7 +284,7 @@ void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWei
             if (i < 0 || i >= layout.nx || wx == 0) continue;
             const int r = layout.node[static_cast<size_t>(j) * layout.nx + i];
             if (r < 0 || !usable[r]) continue;
-            const double w = wx * wy;
+            const double w = wx * wy * mask;
             nx += w * dx[r];
             ny += w * dy[r];
             den += w;
@@ -335,7 +335,8 @@ void ResidualScale::Observe(const ser::FloatImage& frameLuma, const FrameRegions
             const AxisWeight ay = AxisWeightAt(layout_, true, static_cast<double>(j) * G);
             for (int i = 0; i < gw; ++i) {
                 double ldx, ldy;
-                LocalWarpAt(layout_, AxisWeightAt(layout_, false, static_cast<double>(i) * G), ay, nodes.dx.data(),
+                LocalWarpAt(layout_, AxisWeightAt(layout_, false, static_cast<double>(i) * G), ay,
+                            layout_.mask.At(static_cast<double>(i) * G, static_cast<double>(j) * G), nodes.dx.data(),
                             nodes.dy.data(), nodes.usable.data(), ldx, ldy);
                 gX[static_cast<size_t>(j) * gw + i] = static_cast<float>(ldx);
                 gY[static_cast<size_t>(j) * gw + i] = static_cast<float>(ldy);
@@ -616,6 +617,16 @@ Accumulator::Accumulator(const RegionPlan& plan, const ser::FloatImage& referenc
     weightRej_.assign(weight_.size(), 0.f);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
+    const BlendMask& mask = plan_.layout.mask;
+    if (!mask.Empty()) {
+        const int G = kWarpGrid, gw = (width_ + G - 1) / G + 1, gh = (height_ + G - 1) / G + 1;
+        const double s = scale_;
+        gridMask_.resize(static_cast<size_t>(gw) * gh);
+        for (int j = 0; j < gh; ++j)
+            for (int i = 0; i < gw; ++i)
+                gridMask_[static_cast<size_t>(j) * gw + i] = static_cast<float>(
+                    mask.At((static_cast<double>(i) * G + 0.5) / s - 0.5, (static_cast<double>(j) * G + 0.5) / s - 0.5));
+    }
     const int locks = (lumaH_ + kLockRows - 1) / kLockRows;
     for (int b = 0; b < locks; ++b) bandLocks_.push_back(std::make_unique<std::mutex>());
     addedFlags_.assign(plan_.frames.size(), 0);
@@ -662,7 +673,8 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     const int C = channels_, W = width_, H = height_;
 
     // alpha (this frame's blend weight) and the warp offset at full-resolution point (x, y), exact.
-    auto weightAndWarp = [&](const AxisWeight& ax, const AxisWeight& ay, double& alpha, double& ox, double& oy) {
+    // mask: the regions' blend mask there (RegionLayout::mask); it scales every region's weight, in the blend and the warp.
+    auto weightAndWarp = [&](const AxisWeight& ax, const AxisWeight& ay, double mask, double& alpha, double& ox, double& oy) {
         double cover = 0, a = 0;
         for (int b = 0; b < 2; ++b) {
             const int j = ay.i0 + b;
@@ -674,14 +686,14 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                 if (i < 0 || i >= lay.nx || wx == 0) continue;
                 const int r = lay.node[static_cast<size_t>(j) * lay.nx + i];
                 if (r < 0 || !blendRegion_[static_cast<size_t>(r)]) continue;
-                const double w = wx * wy;
+                const double w = wx * wy * mask;
                 cover += w;
                 a += w * mine[static_cast<size_t>(r)];
             }
         }
         alpha = a + std::max(0.0, 1 - cover) * fallback;
         double ldxp = 0, ldyp = 0;
-        if (nr > 0) LocalWarpAt(lay, ax, ay, ldx.data(), ldy.data(), usable.data(), ldxp, ldyp);
+        if (nr > 0) LocalWarpAt(lay, ax, ay, mask, ldx.data(), ldy.data(), usable.data(), ldxp, ldyp);
         ox = gx + s * ldxp;
         oy = gy + s * ldyp;
     };
@@ -697,8 +709,8 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     for (int j = 0; j < gh; ++j)
         for (int i = 0; i < gw; ++i) {
             double a, ox, oy;
-            weightAndWarp(colW[static_cast<size_t>(i)], rowW[static_cast<size_t>(j)], a, ox, oy);
             const size_t k = static_cast<size_t>(j) * gw + i;
+            weightAndWarp(colW[static_cast<size_t>(i)], rowW[static_cast<size_t>(j)], gridMask_.empty() ? 1.0 : gridMask_[k], a, ox, oy);
             gA[k] = static_cast<float>(a);
             gX[k] = static_cast<float>(ox);
             gY[k] = static_cast<float>(oy);
@@ -917,6 +929,7 @@ size_t Accumulator::BytesHeld() const {
     b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float);
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();
+    b += gridMask_.capacity() * sizeof(float);  // the layout's mask is shared (RegionLayout::mask), not held here
     b += bandLocks_.capacity() * (sizeof(std::unique_ptr<std::mutex>) + sizeof(std::mutex));
     b += plan_.frames.capacity() * sizeof(int64_t) + plan_.global.capacity() * sizeof(Shift) +
          plan_.gain.capacity() * sizeof(float);

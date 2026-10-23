@@ -772,3 +772,40 @@ TEST_CASE("RegionNoise is unbiased on pixels and on bins, chosen once per captur
     INFO("mosaic frame: bins " << onBins << ", pixels " << onPixels);
     CHECK(onPixels > 1.3 * onBins);
 }
+
+TEST_CASE("A disc's blend mask is 1 over the disc and its limb and 0 over the sky; a frame-filling layout has none (E1)", "[regions]") {
+    const int w = 160, h = 128;
+    const double cx = 62.4, cy = 70.3, R = 16;
+    const Scene s = testing::MakeDisc(11, cx, cy, R);
+    std::mt19937 rng(3);
+    std::normal_distribution<double> n(0, 1);
+    FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)  // a reference: the disc blurred 1.5 px, a 16-frame mean's noise
+            ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(0.02 + s.Eval(x, y, 1.5) + 0.0025 * n(rng));
+    const stack::FrameStats st = stack::MeasureFrame(ref, 0, 1);
+    REQUIRE(st.targetFound);
+    const RegionLayout lay = stack::PlaceRegions(ref, st, false, testing::WhiteNoise(0.01));
+    REQUIRE_FALSE(lay.regions.empty());
+    REQUIRE_FALSE(lay.mask.Empty());
+    // Over the disc and out past its limb (the blur's halo above 2 frame sd, then kMaskGrow): 1.
+    for (double a = 0; a < 2 * M_PI; a += 0.1)
+        for (double r : {0.0, 0.5 * R, R, R + 2}) CHECK(lay.mask.At(cx + r * std::cos(a), cy + r * std::sin(a)) == 1.0);
+    // Sky beyond the taper: 0; in between, within [0, 1].
+    int sky = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const double m = lay.mask.At(x, y), r = std::hypot(x - cx, y - cy);
+            CHECK((m >= 0 && m <= 1));
+            if (r > R + 3 + stack::kMaskGrow + stack::kMaskTaper + 2) {
+                CHECK(m == 0.0);
+                ++sky;
+            }
+        }
+    CHECK(sky > 1000);
+    // The mask is the layout's: copies share it.
+    const RegionLayout copy = lay;
+    CHECK(copy.mask.m == lay.mask.m);
+    // A frame-filling layout keeps every region weight: no mask.
+    CHECK(stack::PlaceRegions(ref, st, true, testing::WhiteNoise(0.01)).mask.Empty());
+}

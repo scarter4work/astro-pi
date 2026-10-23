@@ -689,7 +689,9 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
     // correlation.
     p.alignWorkerBytes = 2 * samples + 12 * lumaPx + varianceRows + kWorkerScratchBytes;
     p.stackWorkerBytes = 2 * samples + 8 * px + 8 * outSamples;           // raw, demosaic planes, frame + prefilter
-    const size_t lumaImages = 24 * lumaPx;  // reference, residual scale, the Accumulator's copies of both
+    // Reference, residual scale, the Accumulator's copies of both; the layout's blend mask (4 per luma px at most,
+    // shared by the layout's copies) and the Accumulator's samples of it (4 per kWarpGrid^2 px: at most 1 per luma px).
+    const size_t lumaImages = 29 * lumaPx;
     p.fixedBytes = 8 * (outSamples + px) + lumaImages;
 
     auto fit = [&](size_t avail, size_t each) {

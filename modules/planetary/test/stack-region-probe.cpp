@@ -2,7 +2,7 @@
 // case. Reads the video only.
 //
 //   stack-region-probe <video> [--frames N] [--threads T] [--out DIR] [--bayer auto|none|RGGB|GRBG|GBRG|BGGR]
-//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only] [--fits-out DIR]
+//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only] [--fits-out DIR] [--mask-out FILE]
 //
 // Runs the engine's flow on the first N frames (default: all) on T threads (default: hardware):
 // FitNoiseModel -> MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
@@ -16,7 +16,8 @@
 //
 // --keff-box (Ruling P28, the bench's END noise model): our stack's effective frame count over a box
 // of the output (full-resolution) grid, from the plan's own per-frame kept flags and the blend
-// weights the Accumulator uses (AxisWeightAt; alpha_f(p) = sum over the regions keeping f of
+// weights the Accumulator uses (AxisWeightAt times the layout's blend mask m, RegionLayout::mask; w_r(p) below
+// includes m; alpha_f(p) = sum over the regions keeping f of
 // w_r(p) / K_r + (1 - cover(p)) / K_fallback). Per pixel the stack's noise power is
 // sigma^2 sum_f alpha_f^2 / (sum_f alpha_f)^2; over the box it is averaged with the metric's Hann
 // window squared, and k_eff = 1 / that average (in units of sigma^2). Frame gains, rejected samples
@@ -26,7 +27,9 @@
 // The JSON also carries keffBoxGlobal, the same over the global-only plan (every planned frame, equal
 // weight). --fits-out DIR writes DIR/ours.fits (the region stack) and DIR/global.fits (the global-only
 // stack of the same frames), 32-bit float as stack-probe's --out: for the bench's split-half triage
-// (P28 fix round 3, review I-E: is a half-to-half excess the region stage's or the frames'?).
+// (P28 fix round 3, review I-E: is a half-to-half excess the region stage's or the frames'?). --mask-out FILE
+// writes the blend mask on the luma grid (1 everywhere for a frame-filling layout) to FILE and the reference
+// to FILE.ref.fits (E1: where the regions blend). The "mask" line prints its extent and how much of it is 1.
 #include <algorithm>
 #include <array>
 #include <map>
@@ -125,8 +128,10 @@ ser::BayerChoice ParseBayer(const std::string& s) {
 
 double Hann(int i, int n) { return n > 1 ? 0.5 - 0.5 * std::cos(2 * M_PI * i / (n - 1)) : 1.0; }
 
-// See --keff-box in the header.
+// See --keff-box in the header. The layout's blend mask (RegionLayout::mask; empty for a frame-filling layout)
+// scales every region weight, as in the Accumulator -- the fallback takes 1 - cover where it is under 1.
 double BoxKeff(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, double s) {
+    const stack::BlendMask& mask = plan.layout.mask;
     const stack::RegionLayout& lay = plan.layout;
     const size_t nr = plan.RegionCount();
     std::vector<size_t> stacked;
@@ -142,6 +147,7 @@ double BoxKeff(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, do
         const double hy = Hann(y - y0, h);
         for (int x = x0; x < x1; ++x) {
             const stack::AxisWeight ax = stack::AxisWeightAt(lay, false, (x + 0.5) / s - 0.5);
+            const double mk = mask.At((x + 0.5) / s - 0.5, (y + 0.5) / s - 0.5);
             std::array<int, 4> ids{-1, -1, -1, -1};
             std::array<double, 4> wts{0, 0, 0, 0};
             int m = 0;
@@ -157,8 +163,8 @@ double BoxKeff(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, do
                     const int r = lay.node[static_cast<size_t>(j) * lay.nx + i];
                     if (r < 0 || plan.detail[static_cast<size_t>(r)].kept <= 0) continue;
                     ids[static_cast<size_t>(m)] = r;
-                    wts[static_cast<size_t>(m)] = wx * wy;
-                    cover += wx * wy;
+                    wts[static_cast<size_t>(m)] = wx * wy * mk;
+                    cover += wx * wy * mk;
                     ++m;
                 }
             }
@@ -277,7 +283,7 @@ int main(int argc, char** argv) try {
     const std::string path = argv[1];
     int64_t limit = INT64_MAX;
     int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    std::string out, jsonOut, fitsOut;
+    std::string out, jsonOut, fitsOut, maskOut;
     ser::BayerChoice bayer = ser::BayerChoice::Auto;
     bool planOnly = false;
     std::optional<std::array<int, 4>> keffBox;
@@ -295,6 +301,7 @@ int main(int argc, char** argv) try {
         else if (a == "--threads" && i + 1 < argc) threads = std::max(1, std::atoi(argv[++i]));
         else if (a == "--out" && i + 1 < argc) out = argv[++i];
         else if (a == "--fits-out" && i + 1 < argc) fitsOut = argv[++i];
+        else if (a == "--mask-out" && i + 1 < argc) maskOut = argv[++i];
         else throw std::invalid_argument("unknown argument " + a);
     }
     const stack::SourceFactory factory = [&] {
@@ -439,6 +446,29 @@ int main(int argc, char** argv) try {
         std::printf("region   %3zu at %4d,%4d: q p10 %.3f p50 %.3f p90 %.3f max %.3f, sigma %.5f; best %.3f, kept %lld of %lld\n", r, reg.x0,
                     reg.y0, q[q.size() / 10], q[q.size() / 2], q[q.size() * 9 / 10], q.back(), s[s.size() / 2], d.bestQuality,
                     static_cast<long long>(d.kept), static_cast<long long>(d.candidates));
+    }
+    // The layout's blend mask (Regions.h, RegionBlendMask): the stack, and BoxKeff, weigh the regions by it.
+    const stack::BlendMask& mask = layout.mask;
+    if (mask.Empty()) {
+        std::printf("mask     none (every region weight as laid out)\n");
+    } else {
+        double full = 0, part = 0;
+        for (float v : *mask.m) {
+            full += v >= 1;
+            part += v > 0 && v < 1;
+        }
+        const double n = static_cast<double>(mask.m->size());
+        std::printf("mask     over luma x %d-%d, y %d-%d: %.1f%% of it 1, %.1f%% tapering, the rest 0 (the fallback alone)\n", mask.x0,
+                    mask.x0 + mask.width, mask.y0, mask.y0 + mask.height, 100 * full / n, 100 * part / n);
+    }
+    if (!maskOut.empty()) {
+        ser::FloatImage mi{ref.width, ref.height, 1, std::vector<float>(ref.data.size(), mask.Empty() ? 1.f : 0.f)};
+        for (int y = 0; y < mask.height; ++y)
+            for (int x = 0; x < mask.width; ++x)
+                mi.data[static_cast<size_t>(y + mask.y0) * ref.width + (x + mask.x0)] = (*mask.m)[static_cast<size_t>(y) * mask.width + x];
+        probe::WriteFits(maskOut, mi);
+        probe::WriteFits(maskOut + ".ref.fits", ref);
+        std::printf("wrote    %s (the mask, luma grid) and %s.ref.fits (the reference)\n", maskOut.c_str(), maskOut.c_str());
     }
     if (keffBox) {
         const auto& b = *keffBox;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -263,6 +264,48 @@ double MaskNoiseOn(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bo
     return 2 * MaskNoise(b.data(), static_cast<size_t>(bw), bw, bh);
 }
 
+
+// Squared Euclidean distance transform along one line (Felzenszwalb and Huttenlocher, "Distance transforms
+// of sampled functions", 2012): d[q] = min_p ((q - p)^2 + f[p]), f 0 at seeds and kFar elsewhere.
+// Scratch v (n ints) and z (n + 1 doubles).
+constexpr double kFar = 1e30;
+void DistanceLine(const double* f, int n, double* d, int* v, double* z) {
+    // The lower envelope of the parabolas rooted at the finite samples only (a "far" one never wins).
+    int k = -1;
+    for (int q = 0; q < n; ++q) {
+        if (f[q] >= kFar) continue;
+        if (k < 0) {
+            k = 0;
+            v[0] = q;
+            z[0] = -kFar;
+            z[1] = kFar;
+            continue;
+        }
+        for (;;) {
+            const int p = v[k];
+            const double s = ((f[q] + double(q) * q) - (f[p] + double(p) * p)) / (2.0 * (q - p));
+            if (s <= z[k]) {  // never for k = 0 (z[0] is -far)
+                --k;
+                continue;
+            }
+            ++k;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = kFar;
+            break;
+        }
+    }
+    if (k < 0) {
+        std::fill(d, d + n, kFar);
+        return;
+    }
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[k + 1] < q) ++k;
+        const int p = v[k];
+        d[q] = (q - p) * double(q - p) + f[p];
+    }
+}
 }  // namespace
 
 bool RegionNoiseOnBins(const ser::FloatImage& reference, int x0, int y0, int x1, int y1) {
@@ -307,6 +350,96 @@ AxisWeight AxisWeightAt(const RegionLayout& layout, bool vertical, double u) {
     a.w0 = k - 1 >= 0 ? 1 - rise : 0;
     a.w1 = k <= n - 1 ? rise : 0;
     return a;
+}
+
+double BlendMask::At(double u, double v) const {
+    if (!m) return 1;
+    const double x = u - x0, y = v - y0;
+    if (!(x > -1 && y > -1 && x < width && y < height)) return 0;
+    const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
+    const double fx = x - ix, fy = y - iy;
+    const std::vector<float>& a = *m;
+    auto at = [&](int i, int j) {
+        return i < 0 || j < 0 || i >= width || j >= height ? 0.0 : static_cast<double>(a[static_cast<size_t>(j) * width + i]);
+    };
+    return (1 - fy) * ((1 - fx) * at(ix, iy) + fx * at(ix + 1, iy)) + fy * ((1 - fx) * at(ix, iy + 1) + fx * at(ix + 1, iy + 1));
+}
+
+BlendMask RegionBlendMask(const ser::FloatImage& reference, const FrameStats& refStats, const RegionLayout& lay) {
+    CheckLuma(reference, "RegionBlendMask");
+    if (reference.width != lay.width || reference.height != lay.height)
+        throw std::invalid_argument("RegionBlendMask: the reference is not the layout's size");
+    BlendMask out;
+    if (lay.flatEdges || lay.regions.empty() || lay.step <= 0 || !refStats.targetFound) return out;
+    const int W = reference.width, H = reference.height;
+    const float* r = reference.data.data();
+    // The sky: the reference outside the target's box.
+    std::vector<float> sky;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (x < refStats.bx0 || x >= refStats.bx1 || y < refStats.by0 || y >= refStats.by1)
+                sky.push_back(r[static_cast<size_t>(y) * W + x]);
+    if (sky.size() < 64) return out;
+    std::nth_element(sky.begin(), sky.begin() + static_cast<std::ptrdiff_t>(sky.size() / 2), sky.end());
+    const double level = sky[sky.size() / 2];
+    const NoiseModel& model = lay.noise;
+    const double own = EstimatePixelNoise(reference).sigma;
+    const double sigma = std::max(model.Measured() ? std::sqrt(std::max(0.0, model.VarianceAtMean(level))) : own, own);
+    // Above the sky by kMaskSigmas of a frame's noise there and by kMaskContrast of the target's mean level over it.
+    const double thr = level + std::max(kMaskSigmas * sigma, kMaskContrast * (refStats.brightness - level));
+    const double grow = kMaskGrow, taper = kMaskTaper;
+    // The grid's extent (every node window), clipped; seeds are looked for out to grow + taper beyond it.
+    const int gx0 = std::max(0, lay.originX), gy0 = std::max(0, lay.originY);
+    const int gx1 = std::min(W, lay.originX + (lay.nx - 1) * lay.step + lay.size);
+    const int gy1 = std::min(H, lay.originY + (lay.ny - 1) * lay.step + lay.size);
+    if (gx1 <= gx0 || gy1 <= gy0) return out;
+    const int reach = static_cast<int>(std::ceil(grow + taper)) + 1;
+    const int ex0 = std::max(0, gx0 - reach), ey0 = std::max(0, gy0 - reach);
+    const int ex1 = std::min(W, gx1 + reach), ey1 = std::min(H, gy1 + reach);
+    const int ew = ex1 - ex0, eh = ey1 - ey0;
+    // Seeds: the reference's 3 x 3 mean (within the image) above the threshold.
+    std::vector<double> f(static_cast<size_t>(ew) * eh);
+    for (int y = ey0; y < ey1; ++y)
+        for (int x = ex0; x < ex1; ++x) {
+            double s = 0;
+            int n = 0;
+            for (int j = std::max(0, y - 1); j <= std::min(H - 1, y + 1); ++j)
+                for (int i = std::max(0, x - 1); i <= std::min(W - 1, x + 1); ++i) {
+                    s += r[static_cast<size_t>(j) * W + i];
+                    ++n;
+                }
+            f[static_cast<size_t>(y - ey0) * ew + (x - ex0)] = s / n > thr ? 0.0 : kFar;
+        }
+    // Squared distance to the nearest seed: columns, then rows.
+    const int longest = std::max(ew, eh);
+    std::vector<double> line(static_cast<size_t>(longest)), d(static_cast<size_t>(longest)), z(static_cast<size_t>(longest) + 1);
+    std::vector<int> v(static_cast<size_t>(longest));
+    for (int x = 0; x < ew; ++x) {
+        for (int y = 0; y < eh; ++y) line[static_cast<size_t>(y)] = f[static_cast<size_t>(y) * ew + x];
+        DistanceLine(line.data(), eh, d.data(), v.data(), z.data());
+        for (int y = 0; y < eh; ++y) f[static_cast<size_t>(y) * ew + x] = d[static_cast<size_t>(y)];
+    }
+    for (int y = 0; y < eh; ++y) {
+        double* row = f.data() + static_cast<size_t>(y) * ew;
+        std::copy(row, row + ew, line.begin());
+        DistanceLine(line.data(), ew, row, v.data(), z.data());
+    }
+    out.x0 = gx0;
+    out.y0 = gy0;
+    out.width = gx1 - gx0;
+    out.height = gy1 - gy0;
+    auto m = std::make_shared<std::vector<float>>(static_cast<size_t>(out.width) * out.height);
+    for (int y = gy0; y < gy1; ++y)
+        for (int x = gx0; x < gx1; ++x) {
+            const double dist2 = f[static_cast<size_t>(y - ey0) * ew + (x - ex0)];
+            const double dist = dist2 >= kFar ? kFar : std::sqrt(dist2);
+            double mv = 0;
+            if (dist <= grow) mv = 1;
+            else if (dist < grow + taper) mv = 0.5 * (1 + std::cos(M_PI * (dist - grow) / taper));
+            (*m)[static_cast<size_t>(y - gy0) * out.width + (x - gx0)] = static_cast<float>(mv);
+        }
+    out.m = std::move(m);
+    return out;
 }
 
 RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, bool fullFrame,
@@ -387,6 +520,7 @@ RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& re
             lay.node[static_cast<size_t>(j) * lay.nx + i] = static_cast<int>(lay.regions.size());
             lay.regions.push_back({x0, y0, x1, y1, shiftNoise, i, j});
         }
+    if (!fullFrame) lay.mask = RegionBlendMask(reference, refStats, lay);
     return lay;
 }
 

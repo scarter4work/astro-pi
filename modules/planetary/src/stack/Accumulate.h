@@ -16,17 +16,23 @@ namespace planetary::stack {
 // that moves with the drift) are rejected sample by sample against the reference.
 //
 // The blend. Region r keeps K_r frames; its stack is their mean S_r; the image is sum_r w_r S_r where
-// w_r are the layout's sin^2 weights (a partition of unity), plus the fallback stack -- every planned
-// frame, equally -- with weight 1 - sum_r w_r where regions do not cover (the sky around a disc, a
-// region with no kept frame). That sum is linear in the frames, so it is accumulated directly: frame f
-// adds alpha_f(p) x its sample at p, alpha_f(p) = sum_{r keeps f} w_r(p) / K_r + (1 - sum_r w_r(p)) /
-// K_fallback, and the result is the weighted sum over the weight sum. One sample per pixel per frame,
-// one output-sized buffer -- no per-region stacks are held.
+// w_r = m(p) x the layout's sin^2 weights (those a partition of unity; m the layout's blend mask,
+// RegionLayout::mask: 1 over a disc and its limb, 0 over the sky, Regions.h), plus the fallback stack --
+// every planned frame, equally -- with weight 1 - sum_r w_r where regions do not cover (the sky around a
+// disc, a region with no kept frame). That sum is linear in the frames, so it is accumulated directly:
+// frame f adds alpha_f(p) x its sample at p, alpha_f(p) = sum_{r keeps f} w_r(p) / K_r + (1 - sum_r
+// w_r(p)) / K_fallback, and the result is the weighted sum over the weight sum; the frames' alphas still
+// sum to 1 everywhere. One sample per pixel per frame, one output-sized buffer -- no per-region stacks
+// are held.
 //
 // The warp. A frame is sampled at p + s (global + local(p)), s = LumaScale: the local shift is the
-// regions' shifts blended with the same weights over the regions where this frame's shift is usable,
-// local(p) = sum w_r c_r d_r / max(sum w_r c_r, kWarpFade) (c_r = 1 when usable) -- smooth, so
-// neighbouring regions never tear the image apart, and fading to the global shift toward the sky.
+// regions' shifts blended with the same weights (mask included) over the regions where this frame's shift
+// is usable, local(p) = sum w_r c_r d_r / max(sum w_r c_r, kWarpFade) (c_r = 1 when usable) -- smooth, so
+// neighbouring regions never tear the image apart, and the global shift over the sky. Over the sky a
+// region's local shift is noise (nothing to align on): with the mask on the blend but not the warp, the
+// 2023-09-29 Saturn kept faint arc-like streaks in the sky of its ring-tip region, which the global-only
+// stack has not; with it on both, none (E1, stack-region-probe, by eye at a +-30% sky stretch). What the
+// noisy shifts smear there (the sensor's fixed pattern, an untested guess) was not established.
 // alpha and the warp are evaluated exactly every kWarpGrid full-resolution px and bilinearly in
 // between (alpha stays a partition of unity over the frames -- interpolation is linear; the warp's
 // error is under 0.02 px, its curvature being that of sin^2 blends over >= 32 luma px).
@@ -104,8 +110,9 @@ constexpr double kWarpFade = 0.25;
 constexpr int kWarpGrid = 4;
 
 // Blended warp of one frame at luma coordinate (u, v): global + local (see "The warp").
-// dx, dy, usable: per region of the layout, this frame's local shift and whether it is usable.
-void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWeight& ay, const float* dx,
+// mask: RegionLayout::mask there (1 without one); dx, dy, usable: per region of the layout, this frame's local
+// shift and whether it is usable.
+void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWeight& ay, double mask, const float* dx,
                  const float* dy, const uint8_t* usable, double& outDx, double& outDy);
 
 // The per-pixel residual scale for rejection: frames are warped onto the reference (luma, Catmull-Rom,
@@ -274,6 +281,7 @@ private:
     std::vector<float> sum_, weight_;         // full size (sum_: channels per pixel)
     std::vector<float> sumRej_, weightRej_;   // full size: the rejected samples (Finish's stand-in)
     std::vector<int> blendRegion_;  // per region: 1 when it keeps frames
+    std::vector<float> gridMask_;   // the layout's blend mask at the kWarpGrid points (empty: 1 everywhere)
     std::vector<int> cellOfX_;      // per full-resolution column: its luma cell column
     std::vector<std::unique_ptr<std::mutex>> bandLocks_;
     std::vector<uint8_t> addedFlags_;

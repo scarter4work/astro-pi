@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "Align.h"
@@ -79,6 +80,52 @@ struct Region {
     int gx = 0, gy = 0;  // node on the layout grid
 };
 
+// The regions' blend mask (E1, Task 9 Investigations 1-2). A region's own frame choice buys detail only
+// where there is detail; over sky it buys only noise -- sqrt(fallback frames / region frames) of it -- and,
+// where the sky's glow changes from frame to frame, a level of its own. On the 2023-09-29 Saturn the region
+// over the ring tip kept 160 of 3670 frames and put a square of speckle in the sky of its window (high-pass
+// RMS 1.445x the global-only stack's on that 32 px tile, 51abe702); on the 2023-02-12 Moon sky regions that
+// kept few frames left dark patches in the glow around the limb. So for a disc every region weight is
+// multiplied by a mask m from the reference -- in the stack's blend and in its warp (Accumulate.h) -- and
+// the fallback takes 1 - sum of the masked weights: the frames' weights still sum to 1.
+//  - Seeds: pixels whose 3 x 3 reference mean stands above the sky (the median of the reference outside
+//    the target's box) by max(kMaskSigmas x a frame's noise at the sky's level -- the capture's model
+//    (Noise.h); the reference's own reading, EstimatePixelNoise, when unmeasured, and never below it -- ,
+//    kMaskContrast x the target's mean level over the sky (FrameStats::brightness)).
+//  - m = 1 within kMaskGrow luma px of a seed, a cosine taper to 0 over the next kMaskTaper px.
+// Measured (stack-region-probe on local copies, BGGR; per 32 px sky tile against the global-only stack of
+// the same frames; E1 report): the Saturn's worst sky tile 1.020 (all 1199 sky tiles: median 1.008), its
+// faint arcs gone with the warp masked too; the Moon's darkest sky tile against its 5 x 5 neighbours 0.958,
+// the global-only stack's own darkest (0.937 with the sigma term alone: the glow there stands above 2 frame
+// sd, so kMaskContrast is what keeps it out), 11 tiles under 0.97 (global 15). Where m is 1 the stack is
+// unchanged (|difference| <= 2.1e-6, float rounding, on both). The choices:
+//  - kMaskSigmas 2: k 1 and 2 gave the same Saturn sky (worst tile 1.020) and one connected mask (no seed
+//    in the sky's noise: the reference averages up to kReferenceFrames frames and is smoothed 3 x 3 here,
+//    so 2 frame sd is many of its own); 2 is kept for references of few frames;
+//  - kMaskContrast 0.02: 0.02, 0.05 and 0.1 gave the Moon the same darkest tile (0.958) and left the
+//    Saturn's mask as the sigma term makes it (8.6% / 8.4% of the grid's extent at 0.02 / 0.05);
+//  - kMaskGrow 4 and kMaskTaper 6 (luma px): grow 2 / 4 / 8 with taper 4 / 6 / 8 gave the same Saturn sky
+//    (1.020) and the same dip just outside the Moon's mask (5.7-6.4e-4 below the sky 40 px out, 3% of the
+//    sky: the region stacks' darker glow, which the unmasked blend had over the whole window); the red
+//    test's synthetic disc reads 1.057 (bar 1.25), and 0.98-1.17 over k 1-3, grow 2-8, taper 4-8 with the
+//    mask on the blend alone. On the 2024-02-01 Moon (also a disc) the sky tiles the mask leaves at 0 read
+//    at most 1.002 (1.897 and 15 tiles over 1.15 before).
+//    Not tied to a measured limb blur: over that range nothing measured moved.
+// Not for a frame-filling target (flatEdges): there is no sky outside its box to define the level by, and
+// dark surface (maria, shadow) must keep its regions.
+constexpr double kMaskSigmas = 2.0;
+constexpr double kMaskContrast = 0.02;
+constexpr double kMaskGrow = 4.0;
+constexpr double kMaskTaper = 6.0;
+struct BlendMask {
+    int x0 = 0, y0 = 0, width = 0, height = 0;  // the luma rectangle it covers
+    // width x height, row-major; null: 1 everywhere. Shared, so the copies of a layout share one mask.
+    std::shared_ptr<const std::vector<float>> m;
+    bool Empty() const { return !m; }
+    // The mask at luma coordinate (u, v) (pixel centres at integers): bilinear; 1 when empty; 0 outside.
+    double At(double u, double v) const;
+};
+
 // Regions sit on a regular grid of square windows of side `size` with half overlap: node (i, j)'s
 // window starts at (originX + i * step, originY + j * step), step = size / 2. Blending weight of node i
 // along x at luma coordinate u (pixel centres at integers): w_i(u) = sin^2(pi (u + 0.5 - o_i) / size)
@@ -103,7 +150,13 @@ struct RegionLayout {
     // the target's box, decided once by PlaceRegions; Ruling P25): placement's, and a frame's own reading
     // when `noise` is unmeasured (RegionMeasurer).
     bool noiseOnBins = false;
+    // Every region weight is multiplied by it, in the stack's blend and its warp (Accumulate.h); PlaceRegions
+    // sets it for a disc (RegionBlendMask), empty for a frame-filling target.
+    BlendMask mask;
 };
+// The mask PlaceRegions gives a disc layout (lay: its geometry and noise model). Empty for a frame-filling
+// layout, one without regions, or a reference without sky outside refStats' box.
+BlendMask RegionBlendMask(const ser::FloatImage& reference, const FrameStats& refStats, const RegionLayout& lay);
 
 // The reference's pixel noise for placement, and a frame's own for its region quality when the capture's
 // model is unmeasured (Ruling P25; every frame's until Ruling P26), blind to texture: MaskNoise -- the
