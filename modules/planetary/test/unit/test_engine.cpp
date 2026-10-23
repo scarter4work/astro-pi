@@ -654,6 +654,46 @@ TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, 
     CHECK_FALSE(o.diagnosis.numbers.empty());
 }
 
+TEST_CASE("RunStack: a small selection whose intact frames align is stacked, not refused as Unaligned (final review I1)",
+          "[engine]") {
+    // A poor night in miniature: 10 frames of one lunar field, 5 sharp and 5 blurred, so Select keeps as few as
+    // need (5). Two of the sharp frames are torn through the middle by 8 px: they fall under AlignmentCut. The 3
+    // intact frames align at ~1.00 -- the frames show one scene, so the 3 that align are stacked (Ruling P15: a
+    // false refusal leaves the user nothing). 3 < need = 5 refused it as "Unaligned".
+    const int w = 160, h = 128;
+    const Scene s = testing::MakeSurface(4242, w, h);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(4243);
+    std::normal_distribution<double> n(0, 1);
+    const std::set<int64_t> torn{1, 3};
+    testing::RenderCapture(cap, s, 10, [&](int k) {
+        FrameSpec f;
+        f.gx = 1.0 * n(rng);
+        f.gy = 1.0 * n(rng);
+        f.hasLocal = true;
+        f.dx = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
+        f.dy = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
+        const double blur = k < 5 ? 0.7 : 4.0;
+        f.sigma = testing::RandomField(rng, w, h, 40, [blur] { return blur; });
+        if (torn.count(k)) {
+            f.tearRow = h / 2;
+            f.tearDx = k == 1 ? 8 : -8;
+        }
+        return f;
+    });
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    INFO(o.diagnosis.message << " | " << o.summary.selection << " | " << o.summary.alignment);
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    CHECK(o.frames.alignmentExcluded == std::vector<int64_t>{1, 3});
+    for (int64_t f : o.frames.stacked) {
+        CHECK(torn.count(f) == 0);
+        CHECK(f < 5);  // only the sharp selection
+    }
+    CHECK(o.summary.used == 3);
+    CheckFinalLines(o);
+}
+
 TEST_CASE("PlanMemory caps ResidualScale observers and workers so the engine stays within its budget", "[engine]") {
     auto info = [](int w, int h, ser::ColorId c, int depth) {
         ser::FileInfo i;
