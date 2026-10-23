@@ -545,6 +545,16 @@ BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abs
 PROBES = (os.path.join(BUILD, "stack-probe"), os.path.join(BUILD, "stack-region-probe"))
 
 
+def _fresh_probes():
+    """The engine tests run only on probes built from the tree: not built is a skip (the decorators);
+    built but older than a source they are built from FAILS (final review, bench M2) -- a stale probe
+    tests an engine that is no longer the one in the tree."""
+    import identity
+    stale = [s for p in PROBES for s in identity.stale(p)]
+    if stale:
+        pytest.fail("stale probes, rebuild them (cmake --build modules/planetary/build): " + "; ".join(stale))
+
+
 @pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")
 def test_region_probe_box_k_matches_analytic_layouts():
     """stack-region-probe --keff-selftest: BoxKeff on hand-built plans -- one region keeping 37 of 100
@@ -552,6 +562,7 @@ def test_region_probe_box_k_matches_analytic_layouts():
     (against per-pixel weights written out from the layout's geometry, not the engine's AxisWeightAt;
     it checks BoxKeff's sums over the engine's blend rule, not the rule; reviews M2 / N-m6 / N2-m8)."""
     import subprocess
+    _fresh_probes()
     r = subprocess.run([PROBES[1], "--keff-selftest"], capture_output=True, text=True)
     print("\n" + r.stdout)
     assert r.returncode == 0 and r.stdout.count(": ok") == 3
@@ -576,6 +587,7 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
     (e3-report.md), which made the engine keep 18 and 16 of 300 for a reason the scene did not have.
     (The box k and the mean-kept reading agree on these synthetics, whose regions are alike, so they
     are not told apart here.)"""
+    _fresh_probes()
     import halves
     import json as _json
     assert seed not in halves.CAL_SEEDS
@@ -657,6 +669,26 @@ def test_the_frozen_calibration_holds_every_condition_of_the_procedure():
         assert cal[kind]["tolerance"] == pytest.approx([lo, hi])
         assert cal[kind]["r_cal"] == pytest.approx(list(np.mean([r["ratio"] for r in runs], axis=0)))
         assert all("tiles" in r and r["tiles"]["n"] > 0 for r in runs)        # measured with the P28d tile shifts
+
+
+@pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")
+def test_the_frozen_calibration_describes_the_probes_in_use_and_reproduces(tmp_path):
+    """Ruling F2 as a test: calibration.json was frozen with the identity in use (engine, probe sources and
+    binaries, procedure) -- else every verdict is NO VERDICT and this fails, naming the part to re-freeze --
+    and one of its conditions, re-run now, reproduces its frozen ratio. The final review measured that
+    condition reproducing within 1e-5 relative at 1, 7 and 32 threads, so 1e-4 is the bound."""
+    import halves
+    import identity
+    _fresh_probes()
+    cal = halves.load_calibration()
+    used = identity.current(*PROBES)
+    assert identity.mismatches(cal.get("identity"), used) == [], "re-freeze calibration.json (halves.py calibrate --write)"
+    tag = "lunar-j0.7-s2-p3"
+    frozen = next(r for r in cal["kinds"]["lunar"]["runs"] if r["condition"] == tag)
+    (now,) = halves.calibrate(str(tmp_path), *PROBES, conditions=[("lunar", 0.7, 2, 3.0)])
+    print(f"\n{tag}: frozen x{frozen['high']:.6f} k {frozen['k']}; now x{now['high']:.6f} k {now['k']}")
+    assert now["high"] == pytest.approx(frozen["high"], rel=1e-4)
+    assert now["k"] == pytest.approx(frozen["k"], rel=1e-9)
 
 
 def test_a_pedestal_synthetic_fits_the_negative_intercept_real_captures_fit():

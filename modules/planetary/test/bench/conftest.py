@@ -30,10 +30,14 @@ def pytest_runtest_setup(item):
 
 
 def nas_path(*parts):
-    """Absolute path under the NAS root; the test is skipped if the file is not there."""
+    """Absolute path under the NAS root. Skipped only when the NAS root itself is not mounted; with the
+    NAS mounted, a missing file FAILS the test (final review, bench M2): a renamed or removed capture or
+    reference is a broken record, not a reason to stay green."""
     p = os.path.join(NAS, *parts)
+    if not os.path.isdir(NAS):
+        pytest.skip(f"NAS not mounted at {NAS}")
     if not os.path.exists(p):
-        pytest.skip(f"NAS file not available: {p}")
+        pytest.fail(f"the NAS is mounted but this file is missing: {p}")
     return p
 
 

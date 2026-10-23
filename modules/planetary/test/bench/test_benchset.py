@@ -29,10 +29,11 @@ def test_every_stacked_capture_is_debayered_with_a_sourced_pattern(c):
 @pytest.mark.ffmpeg
 @pytest.mark.parametrize("c", benchset.BENCHMARK, ids=lambda c: c.id)
 def test_recorded_facts_match_the_nas(c):
+    # Every recorded file must exist (the module's pytestmark skips only an unmounted NAS).
+    for p in [c.video, *c.references]:
+        assert os.path.isfile(os.path.join(NAS, p)), f"recorded but not on the NAS: {p}"
     video = nas_path(c.video)
     assert os.path.exists(video + ".txt") == c.sidecar, "Bayer sidecar presence"
-    for p in c.references:
-        assert os.path.isfile(nas_path(p)), p
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                           "stream=width,height,nb_frames", "-of", "csv=p=0", video],
                          check=True, capture_output=True, text=True).stdout.strip()
