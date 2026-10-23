@@ -156,7 +156,7 @@ void AddTriple(const NoisePlane& p0, const NoisePlane& p1, const NoisePlane& p2,
     // the first pass's variance summed at their levels: where the truth is c times the first pass's curve
     // over the tile's levels, c whatever their spread. (A mean of per-response ratios is not: where the
     // first pass's curve bends inside a sky's noise-spread levels, the mean of 1 / m(level) exceeds
-    // 1 / m(mean level), and the synthetic shot-noise disc's sky read 1.08 of its variance.)
+    // 1 / m(mean level) -- Jensen -- and the ratio reads high.)
     const int tx = (nx + kNoiseTile - 1) / kNoiseTile, ty = (ny + kNoiseTile - 1) / kNoiseTile;
     const size_t nt = static_cast<size_t>(tx) * ty;
     std::vector<double> sq(nt, 0.0), sm(nt, 0.0), smm(nt, 0.0), sz(nt, 0.0), szz(nt, 0.0), sl(nt, 0.0), sll(nt, 0.0), sn(nt, 0.0);
@@ -234,12 +234,11 @@ std::vector<Point> FineBinPoints(const NoiseSamples& s) {
 // tau = sqrt((kappa - 1) overlap / n) (kappa their kurtosis, the bin's median: 3 for Gaussian noise), near
 // chi^2 with 2 / tau^2 degrees of freedom, whose quantile at the Blom position sits at
 // (1 - c + z sqrt(c))^3 of the mean, c = 2 / (9 dof) (Wilson-Hilferty), by which the reading is divided.
-// (The 25% quantile was tried: its correction leans on kappa 7x harder, and a tile's sample kurtosis
-// reads low -- 2.88 for Gaussian noise -- which put white noise at 0.984 and the shot-noise discs'
-// quality at 0.96.) Where the median kurtosis reaches kMaxKurtosis the tiles' ratios are no chi^2 -- a sky
-// clipped to one value whose rare flips are spikes (the 2026-01-30 Jupiter 195830 AVI's 8-bit sky: median
-// kurtosis at the cap, its tiles' median ratio to pass 1's mean square 0.24) -- and the bin's plain mean
-// ratio is taken.
+// (A lower quantile leans harder on kappa -- the z sqrt(c) term grows with |z| -- and a tile's sample
+// kurtosis reads low, so it was not taken.) Where the median kurtosis reaches kMaxKurtosis the tiles'
+// ratios are no chi^2 -- a sky clipped to one value whose rare flips are spikes (the 2026-01-30 Jupiter
+// 195830 AVI's 8-bit sky, its first 200 triples: median kurtosis 11.9, its tiles' median ratio to pass 1's
+// mean square 0.25; test/calibration/passes.cpp) -- and the bin's plain mean ratio is taken.
 struct TileRatios {
     std::vector<Point> bins;
     std::vector<double> binLo, binHi;  // per bin, its lowest and highest tile level
@@ -364,8 +363,8 @@ NoiseModel CurveFromPoints(const std::vector<Point>& pts, int sites, int frames)
     // A slope only where the bins' levels spread wider than kSlopeSpread level-noise sd (a level is one
     // frame's weighted 3 x 3 mean: sd 0.5 of the pixel noise, sqrt(sum w^4) / 36): within a narrow range --
     // a sky alone -- the observed level is mostly its noise, and a slope there is the noise's, not the
-    // signal's (the 2026-01-30 Saturn AVI's sky-only bins read a slope of 9.2e-4 over 0.006 of level, and
-    // the line it gave sat 30% under the sky's own variance).
+    // signal's (the 2026-01-30 Saturn AVI 203627's 4 sky bins clear of black, over 0.003 of level: a = 0,
+    // b 6.6e-4 with a slope, all of the sky's noise called shot noise; test/calibration/skynoise.cpp).
     bool slope = false;
     {
         double m1 = 0, m2 = 0, mv = 0;
@@ -420,9 +419,8 @@ NoiseModel CurveFromPoints(const std::vector<Point>& pts, int sites, int frames)
         if (nb < 0 || !slope) {  // shot noise cannot lower the variance; no slope to be had: the level alone
             nb = 0;
             na = sy / sw;
-        } else if (na < 0 && sxx > 0) {  // nor is a read noise negative: the line through 0
-            // (the 2026-01-30 Moon 193142 read a = -2.8e-6, its dark levels' curve concave under the line)
-            na = 0;
+        } else if (na < 0 && sxx > 0) {  // nor is a read noise negative: the line through 0 (a curve
+            na = 0;                         // concave under the line at its dark levels pulls a under 0)
             nb = sxy / sxx;
         }
         const bool done = std::fabs(na - a) <= 1e-9 * std::fabs(a) && std::fabs(nb - b) <= 1e-9 * std::fabs(b) + 1e-15;
@@ -470,7 +468,7 @@ NoiseModel CurveFromPoints(const std::vector<Point>& pts, int sites, int frames)
 // Subtracted, not scaled: texture does not grow with the noise, so the model rises by exactly the noise
 // added to a capture wherever T was read or interpolated (test "the capture's noise model rises by exactly
 // an added noise ..."; 941ab4e7 scaled pass 1 by a ratio interpolated from a bin straddling the 2023-02-02
-// Moon's gap between its sky tiles and its surface's, and rose there by 1.28-1.84 v0). A point keeps at
+// Moon's gap between its sky tiles and its surface's, and rose there by more than the noise added). A point keeps at
 // least the smaller ratio of its two bins times its own reading, so an interpolated T cannot take a dim
 // level's whole variance.
 std::vector<Point> Corrected(std::vector<Point> pts, const TileRatios& tiles, const NoiseModel& first) {

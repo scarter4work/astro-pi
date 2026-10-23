@@ -1,5 +1,9 @@
-// Test-only (test/calibration/): Select's step-7 readings for a disc capture, replicating SelectFrames' steps
-// 1-4 filters and step 6's ranking, with the intermediate values Selection does not expose (G's mean and sd, tauLo).
+// Test-only (test/calibration/): step-7 readings for a disc capture, replicating SelectFrames' steps 1-4 filters
+// and step 6's ranking, with intermediate values Selection does not expose (G's mean and sd, tauLo). Not the
+// shipped reading, which is Selection::focusReading (seedsel and mdq print it): X is sigma(q_ref) / R_h with no
+// narrowing; Xg is Ruling P26 fix round 1's gross reading -- tauLo in quality, no SNR gate -- where Select.cpp
+// now takes tauLo in quality^2 when every frame carries quality2Sigma and gates the narrowing by the frames'
+// SNR (fix round 2). Kept for the figures measured with it at round 1.
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -66,7 +70,7 @@ inline Reading ReadingOf(const std::vector<planetary::stack::FrameStats>& stats,
     r.rh = std::max(1.0, Med(half));
     const double sp = std::sqrt(M_PI);
     r.X = 1 / (sp * r.qRef * r.qRef * r.rh) / r.rh;
-    {  // Ruling P26 fix round 1: the gross reading at tauLo (Select.cpp step 7)
+    {  // Ruling P26 fix round 1's gross reading at tauLo (Select.cpp step 7 then; not the shipped one, above)
         std::vector<const FrameStats*> left;
         for (size_t i : rank.left) left.push_back(det[i]);
         double mu = 0, n2 = 0, var = 0;

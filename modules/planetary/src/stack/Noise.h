@@ -34,16 +34,16 @@ struct NoiseEstimate;  // Measure.h
 // units^2), bent where the data clip: a sky at or near black, a colour site that saturates first (the
 // 2026-01-30 Moon 193142 turns down from luma 0.85 and reads 4.5e-5 at 0.94, where the line gives 2.9e-4),
 // the dim sites of a dark level clipping before the luma does (the same Moon's curve is concave under
-// luma ~0.1: 2.2e-6 at 0.02, where the line gives 6.1e-6). So the model is the measured curve itself,
-// smoothed (NoiseModel::Knot); the line marks where the curve clips below it.
+// luma ~0.1: 2.2e-6 at 0.02, where the line gives 6.1e-6; test/calibration/nreal.cpp). So the model is
+// the measured curve itself, smoothed (NoiseModel::Knot); the line marks where the curve clips below it.
 //
 // Its level is the one the measures look it up by: a pixel's 3 x 3 mean in the frame (PixelVariance,
 // Measure.h), noise and all. Measured against the same observed level, the curve is the mean noise of the
 // capture's pixels at each observed level, so summed over a population of pixels like the capture's it is
 // unbiased whatever the level's own noise: a sky's levels spread with its noise and the curve stays flat
-// across them. (A [1 4 1] x [1 4 1] / 36 level, the response's own weights, has 1.5x the 3 x 3 mean's noise:
-// on a synthetic blurred disc the curve under the dense disc level read 3.5% over the truth, which the
-// lookups at the 3 x 3 mean did not share, and the frames' quality read 0.96 of the noise-free.)
+// across them. (A [1 4 1] x [1 4 1] / 36 level, the response's own weights, has 1.5x the 3 x 3 mean's noise
+// (sd: sqrt(sum w^2) = 18 / 36 against 1 / 3), so a curve read against it is not the one the lookups at the
+// 3 x 3 mean need.)
 //
 // Measurement (a noise curve per intensity bin, as Colom and Buades, JOSA A 31(4) 863, 2014, from one
 // image; here from frames in time), in two passes over the same runs of frames:
@@ -51,24 +51,25 @@ struct NoiseEstimate;  // Measure.h
 //    pixel: noise of variance v gives responses of variance 216 v, whatever its distribution; anything
 //    static (texture, a colour mosaic's pattern, fixed-pattern noise) cancels in time, anything smooth
 //    cancels in space, and texture the seeing moves leaks in only through its curvature times the jitter's
-//    second difference. Measured 2026-10-22 per level (32 triples, plain mean squares): a spatial-only
-//    response reads 1.1-1.7x this on the 2026-01-30 Moon 193142 and 1.6-3.1x on the 2023-02-02 Moon
-//    (texture), a temporal-only one 1.2-2.4x / 1.7-6.6x (the seeing moves the texture); on sky (Saturn
+//    second difference. Measured 2026-10-22 per level (32 triples, plain mean squares;
+//    test/calibration/temporal.cpp): a spatial-only response reads 1.1-1.7x this on the 2026-01-30 Moon
+//    193142 and 1.6-3.1x on the 2023-02-02 Moon (texture), a temporal-only one 1.2-2.4x / 1.7-6.6x (the seeing moves the texture); on sky (Saturn
 //    203627, Neptune 204515) the three agree within 0.2% (temporal) and 2-3.5% (spatial: the sensor's fixed
 //    pattern, which every frame shares, so it neither scatters the quality nor is a frame's noise).
 //    Triples slide by one frame within runs of consecutive frames (NoiseRuns), up to kNoiseResponses
 //    responses in all: the error of a capture's model is shared by all its frames, and on a faint blob,
-//    whose gradient energy is a few percent of the noise's, +0.5% in v lowered the frames' mean quality by
-//    15% (R 24 / 24 px: 0.0296 -> 0.0252, every third pixel of every third frame) -- every pixel of every
-//    triple took the error to 0.1%. A response's level is taken on the frame after the triple, whose noise
-//    is independent of the response's;
+//    whose gradient energy is a few percent of the noise's, +0.5% in v lowers the frames' mean quality by
+//    17% (R 24 convolved by 24 px over a sky of 0.06, seed 7: 0.0278 -> 0.0229), and every pixel of every
+//    triple puts the line's own sd at 0.20% (test/calibration/modelerror.cpp). A response's level is taken
+//    on the frame after the triple, whose noise is independent of the response's;
 //  - pass 1: kFineBins bins of equal width over [0, 1], merged from the dark end until each holds
 //    kMinBinResponses; per bin the plain mean square over 216 and its sampling variance from the bin's
 //    own fourth moment, times the overlapping responses' correlation (1.944 per axis and in time for
 //    [1 -2 1] at a step of 1) -- no trimming: a trimmed moment is biased by the noise's own tails (the real
-//    Saturn sky, response kurtosis 3.6, read 0.946 of its variance at an 80% trim). Its mean holds the
-//    texture the seeing moved across a limb or a crater rim (the Moon 193142's curve read 1.43x the dark
-//    limb's own noise at luma 0.13, from the limb's edges at that level);
+//    sky of the 2026-01-30 Saturn AVI 203627, all 18 triples: response kurtosis 3.32, its Gaussian-corrected
+//    trimmed moment 0.966 of its variance at an 80% trim, 0.960 at 50%; test/calibration/skynoise.cpp). Its
+//    mean holds the texture the seeing moved across a limb or a crater rim (the Moon 193142's curve read
+//    1.43x the dark limb's own noise at luma 0.13, from the limb's edges at that level);
 //  - pass 2, that texture out: kNoiseTile x kNoiseTile tiles of one level (NoiseSamples::Tile, AddTriple),
 //    each its responses' summed square over pass 1's variance summed at their levels; per kBinTiles tiles
 //    by level (never across a gap in level: a bin straddling levels no tile takes reads a mix as one
@@ -78,12 +79,12 @@ struct NoiseEstimate;  // Measure.h
 //    held to the outermost bins' own tile levels, none beyond (Corrected). Subtracted, not scaled:
 //    texture does not grow with the noise, so the model rises by exactly the noise added to a capture
 //    (fix round 1: a ratio interpolated across the 2023-02-02 Moon's gap between its sky tiles and its
-//    surface's, from a bin straddling it, rose by 1.28-1.84 v0 there). A small disc has no tile of one
-//    level: the 2026-01-30 Jupiter 195830 disc, ~20 luma px across, keeps pass 1's 0.88-0.97 of its own
-//    noise, where the sky's ratio carried over read 1.22-1.34. Measured against each window's own
-//    spatio-temporal noise, 300 triples: the Moon 193142's dark limb at 0.13 / 0.047 / 0.019, 1.05 / 1.02
-//    / 1.01 (pass 1 alone: 1.43 / 1.46 / 1.01), its bright surface at 0.91 / 0.94, 1.01 / 1.04; Neptune
-//    204515's disc 1.01; the 2023-02-11 / 2026-01-30 Jupiters' skies 0.99 / 1.16. With Gaussian noise
+//    surface's, from a bin straddling it, rose by more than the noise added there). A small disc has no
+//    tile of one level: the 2026-01-30 Jupiter 195830 disc, ~20 luma px across, keeps pass 1's 0.88-0.97 of
+//    its own noise. Measured against each window's own spatio-temporal noise, 300 triples
+//    (test/calibration/winnoise.cpp; the added noise below, inject.cpp): the Moon 193142's dark limb at
+//    0.13 / 0.047 / 0.019, 1.05 / 1.02 / 1.01 (pass 1 alone: 1.43 / 1.46 / 1.01), its bright surface at
+//    0.91 / 0.94, 1.01 / 1.04; Neptune 204515's disc 1.01; the 2023-02-11 / 2026-01-30 Jupiters' skies 0.99 / 1.16. With Gaussian noise
 //    of 1.5 / 3 DN added to every raw sample of the 2023-02-02 Moon (8-bit, a raw mosaic: v0 = (DN^2 +
 //    1/12) / 255^2 / 4), the model rises by 1.01-1.15 / 0.98-1.09 v0 over luma 0.03-0.6 (pass 1 alone:
 //    0.95-1.15 / 0.98-1.02) and less where the data clip: 0.71-0.77 / 0.80-0.92 from 0.7 (saturation),
@@ -94,8 +95,9 @@ struct NoiseEstimate;  // Measure.h
 //    K times its variance: K = LumaSites) are left out (a sky 2 noise sd above black reads 0.960 of the
 //    line, inside the fit's slack); and a slope only where the bins' levels spread over more than
 //    kSlopeSpread level-noise sd -- within a narrow range, a sky alone, the observed level is mostly noise
-//    (the 2026-01-30 Saturn AVI's sky-only bins read a slope of 9.2e-4 over 0.006 of level, and that line
-//    sat 30% under the sky's own variance).
+//    (the 2026-01-30 Saturn AVI 203627: its 4 sky bins clear of black span 0.003 of level; fitted with a
+//    slope they give a = 0, b 6.6e-4 -- all of the sky's noise called shot noise, half of it at half the
+//    level -- and without one a = 1.64e-5, 1.04 of their own variance; test/calibration/skynoise.cpp).
 // Measured on synthetic still frames (test "the capture's noise model ..."): white noise 0.01 over a
 // textured disc, a 0.994e-4; read 0.005 plus shot noise at gains 500 / 3000, within 5% of the truth at
 // levels 0.05-0.55; a sky 2 noise sd above black, its own 0.966e-4 against the true 0.960e-4; a static

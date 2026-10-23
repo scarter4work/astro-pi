@@ -4,7 +4,8 @@
 //   calib-mdq <R> <blur> <convolve 0/1> <noise> <sky> [seed (7)]; env MDQ_DUMP: each frame's q, qualitySigma, quality2Sigma to stderr
 //
 // A MeasuredDisc capture: its noise model, per-frame quality (mean, frames with q 0), Select's verdict and
-// its large-disc reading X = sigma(q_ref) / R_h, against the same capture noise-free.
+// its step-7 reading (Selection::focusReading), with X = sigma(q_ref) / R_h and round 1's Xg
+// (StepSevenReading.h), against the same capture noise-free.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -66,9 +67,11 @@ int main(int argc, char** argv) {
         }
         int clipped = 0;
         for (const auto& k : m.knots) clipped += k.clipped;
-        std::printf("%s: model a %.4g b %.3g knots %zu clipped %d | mean q %.4f, q=0 in %d | q_ref %.4f X %.3f Xg %.3f (muG %.4f sdG %.4f tauLo %.4f) | %s\n",
-                    clean ? "noise-free" : "noisy     ", m.a, m.b, m.knots.size(), clipped, mq / stats.size(), zero, r.qRef, r.X,
-                    r.Xg, r.muG, r.sdG, r.tauLo,
+        // reading: Select's own (Selection::focusReading, the shipped step 7); X at q_ref; Xg round 1's (StepSevenReading.h).
+        std::printf("%s: model a %.4g b %.3g knots %zu clipped %d | mean q %.4f, q=0 in %d | q_ref %.4f reading %.3f X %.3f "
+                    "Xg (round 1) %.3f (muG %.4f sdG %.4f tauLo %.4f) | %s\n",
+                    clean ? "noise-free" : "noisy     ", m.a, m.b, m.knots.size(), clipped, mq / stats.size(), zero, r.qRef,
+                    sel.focusReading, r.X, r.Xg, r.muG, r.sdG, r.tauLo,
                     sel.diagnosis.kind == stack::DiagnosisKind::None ? "stacked" : "DIAGNOSED");
     }
 }

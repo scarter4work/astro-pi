@@ -89,7 +89,7 @@ target_link_libraries(limb-probe PRIVATE planetary_stack)
 # classifier and reading, the region gate), one calib-<name> each; usage at the top of each source. Not ctest
 # cases: some read NAS captures, the rest render synthetic frames for minutes.
 foreach(probe classrate gapinj inject injtiles lowsnr mdq moon nm2 nm4 nreal p27 passes purer2 q2steady qcal2 regsig
-              seedsel shot snr synthrate temporal winnoise)
+              modelerror seedsel shot skynoise snr synthrate temporal winnoise)
     add_executable(calib-${probe} calibration/${probe}.cpp)
     target_include_directories(calib-${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}"
                                                       "${CMAKE_CURRENT_SOURCE_DIR}/calibration")

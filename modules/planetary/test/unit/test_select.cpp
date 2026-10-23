@@ -934,7 +934,8 @@ TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[se
 }
 
 // The first 60 frames of the 2022-09-17 225418 Jupiter (1080p BGGR, R_h 21.5 luma px, in focus), as MeasureAll
-// measures them (stack-probe --frames 60: the truncated capture's own noise model): index, targetFound, cx,
+// measures them (focus-survey --frames 60 --dump-stats, test/focus-survey.cpp, which regenerates these rows
+// exactly: the truncated capture's own noise model): index, targetFound, cx,
 // cy, bx0, by0, bx1, by1, halfRadius, brightness, clippedFraction, quality, qualitySigma, quality2Sigma.
 struct RealFrame {
     int64_t index;
@@ -1879,9 +1880,59 @@ TEST_CASE("a moderate defocus under kGrossBlurLimit is stacked with the focus wa
         CHECK(std::count(o.summary.warnings.begin(), o.summary.warnings.end(), expected) == 1);
         warned += f.outcome == stack::FocusOutcome::Warned;
     }
+    // Both branches of the one-warning rule exercised (region stage's and the selection's), without pinning
+    // which seeds sit on either side of a threshold (seed 607 reads 0.0005 over the limit, 807's region measure
+    // 0.001 under its warn level).
     INFO(stacked << " stacked (" << warned << " also warned by the region stage), " << refused << " refused");
-    CHECK(stacked == 5);
-    CHECK(warned == 3);
+    CHECK(refused + stacked == 10);
+    CHECK(stacked >= 1);
+    CHECK(warned >= 1);
+    CHECK(warned < stacked);
+}
+
+TEST_CASE("the small-disc warn band: warned from kBlurWarn R, refused from kBlurLimit R, never under the floor (Ruling P15b)",
+          "[select][diagnosis][focus]") {
+    // 200 noise-free frames of one disc (Disc: box radius = R, so the small rule judges it at R). sigma' is
+    // the sampling-corrected limb blur step 7 reads, sigma = sqrt(sigma'^2 + kSamplingBlur^2) the one rendered.
+    auto select = [](double radius, double sigmaPrime, const ser::FileInfo& info) {
+        const int lw = static_cast<int>(info.header.width / stack::LumaScale(info)),
+                  lh = static_cast<int>(info.header.height / stack::LumaScale(info));
+        const double sigma = std::sqrt(sigmaPrime * sigmaPrime + stack::kSamplingBlur * stack::kSamplingBlur);
+        std::vector<FrameStats> v;
+        for (int64_t i = 0; i < 200; ++i) v.push_back(Disc(i, lw, lh, lw / 2.0, lh / 2.0, radius, sigma));
+        return SelectFrames(v, info);
+    };
+    // A Bayer capture (floor 3 sensor px = 1.5 luma px): R 14 luma px, warn 0.18 x 14 = 2.52, limit 0.24 x 14
+    // = 3.36 luma px.
+    const ser::FileInfo bayer = Info(1280, 960, ser::ColorId::BayerRGGB);
+    struct Case {
+        double sigmaPrime;
+        bool warned, refused;
+    };
+    for (const Case& c : {Case{2.2, false, false}, Case{2.6, true, false}, Case{3.2, true, false}, Case{3.6, false, true}}) {
+        const Selection sel = select(14, c.sigmaPrime, bayer);
+        INFO("R 14, sigma' " << c.sigmaPrime << ": reading " << sel.focusReading << " (warn " << sel.focusWarn << ", limit "
+                             << sel.focusLimit << ") | " << sel.explanation);
+        REQUIRE(sel.focusJudged);
+        REQUIRE(sel.targetRadius < stack::kMinJudgedRadius);
+        CHECK(sel.focusWarn == Catch::Approx(stack::kBlurWarn));
+        CHECK(sel.focusLimit == Catch::Approx(stack::kBlurLimit));
+        CHECK(sel.focusWarning.empty() != c.warned);
+        CHECK((sel.diagnosis.kind == DiagnosisKind::OutOfFocus) == c.refused);
+        if (c.warned) CHECK(sel.focusWarning.find("may be out of focus") != std::string::npos);
+    }
+    // Mono R 12 (floor 3 px over 0.24 x 12 = 2.88): the floor sets both levels, the band is empty -- a limb
+    // under it can be a focused tiny disc (kBlurFloorPixels), at it the disc is refused.
+    const ser::FileInfo mono = Info(640, 480);
+    for (const Case& c : {Case{2.9, false, false}, Case{3.1, false, true}}) {
+        const Selection sel = select(12, c.sigmaPrime, mono);
+        INFO("mono R 12, sigma' " << c.sigmaPrime << ": reading " << sel.focusReading << " (warn " << sel.focusWarn << ", limit "
+                                  << sel.focusLimit << ") | " << sel.explanation);
+        REQUIRE(sel.focusJudged);
+        CHECK(sel.focusWarn == Catch::Approx(sel.focusLimit));
+        CHECK(sel.focusWarning.empty() != c.warned);
+        CHECK((sel.diagnosis.kind == DiagnosisKind::OutOfFocus) == c.refused);
+    }
 }
 
 TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P20)", "[select][diagnosis][focus][class]") {
