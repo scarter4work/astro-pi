@@ -107,6 +107,10 @@ public:
    void SetStore( JourneyStore* store, const String& storeError );
    void SetEnabled( bool on );
    bool Enabled() const { return m_enabled; }
+   // JourneyService::Stop() ran while this tracker is still in use on the stack (its destruction is
+   // deferred, see JourneyService::Hold): recording stops for good, and a Tick() under way returns at
+   // its next check instead of reading or writing anything more. Not undone by SetEnabled().
+   void Shutdown();
 
    void OnImageCreated( const View& view, double now );
    void OnImageUpdated( const View& view, double now );
@@ -259,6 +263,7 @@ private:
    JourneyStore*            m_store = nullptr;
    String                   m_storeError;
    bool                     m_enabled = true;
+   bool                     m_shutdown = false;      // Shutdown(): no tick does anything again
    bool                     m_inTick = false;
    bool                     m_useModifyCount;
    bool                     m_forceScan = true;
@@ -383,6 +388,19 @@ class JourneyTimerHost;
  * the panel) and user-facing notes the panel drains into the chat log.
  * Root thread only. Stop() (OnUnload) destroys everything on the root thread;
  * if it never ran, the static destructor leaks instead of touching PCL.
+ *
+ * OnUnload can run INSIDE our own code: PixInsight calls it synchronously from
+ * the main window's closeEvent, which any event pump can dispatch -- including
+ * Console::AbortEnabled(), which the busy gate calls in every tick (measured
+ * 2026-10-23: File > Quit queued behind a journey tick ran OnUnload inside
+ * JourneyTracker::Tick; Stop() freed the tracker and the tick went on in freed
+ * memory -- "free(): invalid pointer" / SIGSEGV at quit). So code that keeps a
+ * pointer to the tracker, store or keeper across a call that may pump events
+ * holds a Hold. A Stop() while any Hold is alive stops the timer, shuts the
+ * tracker down and returns; the objects are destroyed when the last Hold ends.
+ * The timer host is then kept (stopped) when that is inside its own tick
+ * handler, and leaked at static destruction like everything else Stop() did
+ * not release.
  */
 class JourneyService
 {
@@ -394,6 +412,17 @@ public:
    void Start();
    void Stop();
    bool Started() const { return m_started; }
+
+   class Hold
+   {
+   public:
+
+      Hold();
+      ~Hold();
+
+      Hold( const Hold& ) = delete;
+      Hold& operator =( const Hold& ) = delete;
+   };
 
    JourneyStore* Store() { return m_store.get(); }
    const String& StoreError() const { return m_storeError; }
@@ -434,6 +463,8 @@ private:
    bool                              m_started = false;
    bool                              m_selfTestPaused = false;
    bool                              m_inOnTick = false;
+   int                               m_holds = 0;           // live Hold objects (root thread)
+   bool                              m_stopPending = false; // Stop() arrived inside a Hold: tear down at the last one
    JourneyTracker*                   m_forward = nullptr;
    int                               m_forwarded[6] = {};
    std::unique_ptr<JourneyStore>     m_store;
@@ -450,6 +481,9 @@ private:
 
    void OpenStore();
    void RunRetention();
+   // Destroys the keeper, the tracker and the store (in that order); the timer host too unless
+   // keepHost (we are inside its own tick handler: it is stopped and kept, never destroyed there).
+   void Teardown( bool keepHost );
 };
 
 } // namespace pcl

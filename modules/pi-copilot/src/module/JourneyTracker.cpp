@@ -565,9 +565,16 @@ int JourneyTracker::FindCopilotNote( const std::string& viewId, const std::strin
    return -1;
 }
 
+void JourneyTracker::Shutdown()
+{
+   // Flags only: it runs inside a call this tracker made, so no container it may be iterating is touched.
+   m_shutdown = true;
+   m_enabled = false;   // QueueEvent() takes nothing more
+}
+
 void JourneyTracker::Tick( double now, bool forceScan )
 {
-   if ( !m_enabled || m_inTick )
+   if ( !m_enabled || m_inTick || m_shutdown )
       return;
    // Never nests an EvaluateScript (history reads, the batch scan) inside a
    // script PI Copilot runs (run_script) or another module EvaluateScript
@@ -595,6 +602,12 @@ void JourneyTracker::Tick( double now, bool forceScan )
       // stall becomes visible through StatusFor().
       {
          const ProcessActivityState a = RecorderActivity();
+         // RecorderActivity() pumps events (Console::AbortEnabled() runs the core's event loop), so a
+         // File > Quit queued behind this tick is handled right here: PixInsight calls OnUnload from the
+         // main window's closeEvent, and JourneyService::Stop() shuts this tracker down (it is destroyed
+         // only after this tick returns, see JourneyService::Hold). Nothing more is read or written.
+         if ( m_shutdown )
+            return;
          if ( a.busy )
          {
             ++m_deferrals;
@@ -2085,9 +2098,21 @@ void JourneyService::OpenStore()
    }
 }
 
+JourneyService::Hold::Hold()
+{
+   ++JourneyService::Instance().m_holds;
+}
+
+JourneyService::Hold::~Hold()
+{
+   JourneyService& s = JourneyService::Instance();
+   if ( --s.m_holds == 0 && s.m_stopPending )
+      s.Teardown( s.m_inOnTick/*keepHost: its tick handler is on the stack*/ );
+}
+
 void JourneyService::Start()
 {
-   if ( m_started )
+   if ( m_started || m_stopPending )
       return;
    m_tracker.reset( new JourneyTracker( nullptr ) );
    m_keeper.reset( new KeeperExporter( nullptr ) );
@@ -2111,17 +2136,39 @@ void JourneyService::Stop()
    {
       if ( m_host )
          m_host->T.Stop();
-      m_host.reset();
    }
    catch ( ... )
    {
    }
+   if ( m_holds > 0 )
+   {
+      // Inside our own code (see the class comment): nothing it points to is destroyed under it.
+      m_stopPending = true;
+      m_started = false;
+      if ( m_tracker )
+         m_tracker->Shutdown();
+      return;
+   }
+   Teardown( false/*keepHost*/ );
+}
+
+void JourneyService::Teardown( bool keepHost )
+{
+   m_stopPending = false;
+   m_started = false;
+   if ( !keepHost )
+      try
+      {
+         m_host.reset();
+      }
+      catch ( ... )
+      {
+      }
    // The keeper goes first: a pending write-up's destructor cancels and waits
    // for its worker, and must never outlive the store it would write into.
    m_keeper.reset();
    m_tracker.reset();
    m_store.reset();
-   m_started = false;
 }
 
 void JourneyService::ApplySettings()
@@ -2180,15 +2227,22 @@ void JourneyService::OnTick()
    if ( !m_started || m_selfTestPaused || m_inOnTick )
       return;
    struct Guard { bool& b; explicit Guard( bool& x ) : b( x ) { b = true; } ~Guard() { b = false; } } guard( m_inOnTick );   // M7
+   // Declared after the guard, so it ends first: a Stop() that ran inside this tick tears down while
+   // m_inOnTick still says the timer host's handler is on the stack (the host is kept, stopped).
+   const Hold hold;
    const double now = JourneyWallNow();
    if ( !m_store && now - m_lastOpenAttempt >= 60 )
       OpenStore();   // the user may have moved a damaged file aside
    m_tracker->Tick( now );
+   if ( m_stopPending )
+      return;   // OnUnload ran inside the tick (its busy gate pumps events): nothing more here
    for ( const String& n : m_tracker->TakeJoinNotes() )
    {
       Console().NoteLn( n );
       AddNote( n );
    }
+   if ( m_stopPending )
+      return;   // a Console write above may pump events too
    if ( m_keeper && m_store && !m_store->InTransaction() )
    {
       // Finished keeper write-ups (Task 9): journey.md, inferred reasons, the export copy.
@@ -2202,7 +2256,10 @@ void JourneyService::OnTick()
          AddNote( n );
       }
    }
-   if ( m_store && m_tracker->Enabled() && !RecorderActivity().busy && !m_store->InTransaction() )
+   if ( m_stopPending || !m_store || !m_tracker->Enabled() )
+      return;
+   const bool busy = RecorderActivity().busy;   // pumps events: OnUnload may run inside it, as in Tick
+   if ( !busy && !m_stopPending && !m_store->InTransaction() )
       RunRetention();
 }
 
@@ -2233,8 +2290,9 @@ void JourneyService::FlushAndPauseForSelfTest()
 {
    if ( m_selfTestPaused )
       return;   // already flushed (the j6 "service" fixture phase); a second flush would record later windows
+   const Hold hold;   // it pumps events (below, and in the tick's busy gate)
    if ( m_started && m_tracker )
-      for ( int i = 0; i < 2; ++i )   // the second: candidates found by the first tick's scan
+      for ( int i = 0; i < 2 && m_started; ++i )   // the second: candidates found by the first tick's scan
       {
          // The busy gate defers a tick right after process activity; wait (pumping) until idle, max 3 s.
          const auto t0 = std::chrono::steady_clock::now();

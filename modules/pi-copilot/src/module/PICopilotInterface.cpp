@@ -737,6 +737,9 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
    m_handlingResult = true;
    AgentStep s;
    {
+      // The tools keep m_journeyHost's tracker / store / keeper pointers while they pump events, and a
+      // File > Quit handled in such a pump runs OnUnload: the journey objects outlive this block.
+      const JourneyService::Hold journeyHold;
       const ToolContext ctx = MakeToolContext();
       s = m_session.OnResponse( r,
          [&ctx]( const ToolCall& call ) { return ExecuteTool( call, ctx ); },
@@ -941,7 +944,9 @@ String PICopilotInterface::KeepJourneyOfView( const IsoString& mainViewId )
       msg = "There is no active image to keep the journey of.";
    else
    {
-      // A host of its own: m_journeyHost belongs to the turn's tools.
+      // A host of its own: m_journeyHost belongs to the turn's tools. Its pointers outlive the
+      // confirm box's event loop even when OnUnload runs inside it (JourneyService::Hold).
+      const JourneyService::Hold journeyHold;
       JourneyToolHost host = MakeJourneyHost();
       const int64 jid = JourneyForView( host, mainViewId );
       if ( jid == 0 )
@@ -986,6 +991,7 @@ void PICopilotInterface::e_Strip_MousePress( Control&, const pcl::Point&, int bu
    JourneyService& s = JourneyService::Instance();
    if ( !s.Started() || s.Store() == nullptr )
       return;   // the strip already says why (recording paused: <reason>)
+   const JourneyService::Hold journeyHold;   // the dialog's event loop runs with *s.Store() in use
    JourneyToolHost host = MakeJourneyHost();
    const int64 jid = JourneyForView( host, ActiveMainViewId() );
    if ( jid == 0 )
