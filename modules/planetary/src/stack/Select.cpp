@@ -83,13 +83,14 @@ struct Prior {
     uint64_t work = 0;  // grid evaluations: the likelihood table plus two per sample and point per EM step
 };
 
-// NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM.
-Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
+// NPMLE of G (Kiefer-Wolfowitz) on a kPriorGrid-point grid over the observed range, by EM. sigma2 (empty,
+// or per sample): the sd of quality^2 -- the likelihood is then that of q^2 (Select.h, step 6).
+Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma, const std::vector<double>& sigma2) {
     Prior p;
     bool noisy = false;
     double lo = q.front(), hi = lo;
     for (size_t i = 0; i < q.size(); ++i) {
-        noisy = noisy || sigma[i] > 0;
+        noisy = noisy || sigma[i] > 0 || (!sigma2.empty() && sigma2[i] > 0);
         lo = std::min(lo, q[i]);
         hi = std::max(hi, q[i]);
     }
@@ -102,10 +103,21 @@ Prior FitPrior(const std::vector<double>& q, const std::vector<double>& sigma) {
     for (size_t j = 0; j < k; ++j) p.u[j] = lo + h * static_cast<double>(j);
     p.lik.resize(n * k);
     for (size_t i = 0; i < n; ++i) {
-        const double sg = std::max(sigma[i], h / 2);
-        for (size_t j = 0; j < k; ++j) {
-            const double z = (q[i] - p.u[j]) / sg;
-            p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
+        const double rho = sigma2.empty() ? 0.0 : sigma2[i];
+        if (rho > 0) {
+            // q^2 ~ N(u^2, rho^2), observed only where it came out positive (a frame of quality 0 is not
+            // ranked): N(q^2; u^2, rho) / Phi(u^2 / rho), rho at least what keeps q's own sd at h / 2.
+            for (size_t j = 0; j < k; ++j) {
+                const double u = p.u[j], re = std::max(rho, h * std::max(u, h));
+                const double z = (q[i] * q[i] - u * u) / re;
+                p.lik[i * k + j] = std::exp(-0.5 * z * z) / re / std::max(1e-300, 0.5 * std::erfc(-u * u / re / std::sqrt(2.0)));
+            }
+        } else {
+            const double sg = std::max(sigma[i], h / 2);
+            for (size_t j = 0; j < k; ++j) {
+                const double z = (q[i] - p.u[j]) / sg;
+                p.lik[i * k + j] = std::exp(-0.5 * z * z) / sg;
+            }
         }
         p.work += k;
     }
@@ -137,16 +149,25 @@ struct Ranked {
 
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma, int64_t need,
                            int64_t floorCount, bool applyFence) {
+    return RankByDetail(quality, sigma, {}, need, floorCount, applyFence);
+}
+
+DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma,
+                           const std::vector<double>& sigma2, int64_t need, int64_t floorCount, bool applyFence) {
     if (sigma.size() != quality.size())
         throw std::invalid_argument("RankByDetail: " + std::to_string(sigma.size()) + " sigmas for " +
+                                    std::to_string(quality.size()) + " qualities");
+    if (!sigma2.empty() && sigma2.size() != quality.size())
+        throw std::invalid_argument("RankByDetail: " + std::to_string(sigma2.size()) + " quality^2 sigmas for " +
                                     std::to_string(quality.size()) + " qualities");
     for (double q : quality)
         if (!(std::isfinite(q) && q > 0)) throw std::invalid_argument("RankByDetail: a quality is not finite and > 0");
     DetailRanking out;
     const size_t nd = quality.size();
     if (nd == 0) return out;
-    std::vector<double> sg(nd);
+    std::vector<double> sg(nd), sg2(sigma2.empty() ? 0 : nd);
     for (size_t i = 0; i < nd; ++i) sg[i] = std::isfinite(sigma[i]) && sigma[i] > 0 ? sigma[i] : 0.0;
+    for (size_t i = 0; i < sg2.size(); ++i) sg2[i] = std::isfinite(sigma2[i]) && sigma2[i] > 0 ? sigma2[i] : 0.0;
 
     // 5. Upper fence on log quality.
     std::vector<size_t> left;
@@ -207,15 +228,35 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
     const int64_t nLeft = static_cast<int64_t>(left.size());
 
     // 6. Deconvolution (Ruling P5): the distribution of the true quality, and each sample's posterior.
-    std::vector<double> qLeft, sLeft;
+    std::vector<double> qLeft, sLeft, s2Left;
     for (size_t i : left) {
         qLeft.push_back(quality[i]);
         sLeft.push_back(sg[i]);
+        if (!sg2.empty()) s2Left.push_back(sg2[i]);
     }
-    const Prior prior = FitPrior(qLeft, sLeft);
+    const Prior prior = FitPrior(qLeft, sLeft, s2Left);
     const int64_t refRank = std::max<int64_t>(std::min<int64_t>(3, nLeft), (nLeft + 99) / 100);
     double qRef = 0;
     if (prior.k > 0) {
+        double m1 = 0, m2 = 0;
+        for (size_t j = 0; j < prior.k; ++j) {
+            m1 += prior.pi[j] * prior.u[j];
+            m2 += prior.pi[j] * prior.u[j] * prior.u[j];
+        }
+        out.priorMean = m1;
+        out.priorSd = std::sqrt(std::max(0.0, m2 - m1 * m1));
+        // The one quality that best explains every sample (G a point mass): the grid's maximum of the
+        // summed log-likelihood, refined by a parabola through its neighbours.
+        std::vector<double> ll(prior.k, 0.0);
+        for (size_t i = 0; i < qLeft.size(); ++i)
+            for (size_t j = 0; j < prior.k; ++j) ll[j] += std::log(std::max(1e-300, prior.lik[i * prior.k + j]));
+        const size_t jb = static_cast<size_t>(std::max_element(ll.begin(), ll.end()) - ll.begin());
+        double u0 = prior.u[jb];
+        if (jb > 0 && jb + 1 < prior.k) {
+            const double den = ll[jb - 1] - 2 * ll[jb] + ll[jb + 1];
+            if (den < 0) u0 += 0.5 * (ll[jb - 1] - ll[jb + 1]) / den * (prior.u[1] - prior.u[0]);
+        }
+        out.pointQuality = u0;
         // The quality the sharpest refRank / N of the TRUE distribution reach (no winner's curse).
         double mass = 0;
         const double topShare = static_cast<double>(refRank) / static_cast<double>(nLeft);
@@ -423,12 +464,13 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
 
     // 5, 6 and 8's ranking (RankByDetail): the fence, the deconvolution and each frame's expected
     // contrast; `detailed` is in frame order, so its positions break ties as frame indices did.
-    std::vector<double> dq, ds;
+    std::vector<double> dq, ds, ds2;
     for (const FrameStats* s : detailed) {
         dq.push_back(s->quality);
         ds.push_back(Sigma(*s));
+        ds2.push_back(std::isfinite(s->quality2Sigma) && s->quality2Sigma > 0 ? s->quality2Sigma : 0.0);
     }
-    const DetailRanking rank = RankByDetail(dq, ds, need, floorCount);
+    const DetailRanking rank = RankByDetail(dq, ds, ds2, need, floorCount);
     std::vector<const FrameStats*> left;
     for (size_t i : rank.left) left.push_back(detailed[i]);
     // 5. The frames RankByDetail fenced off are suspects (Ruling P6): they cannot be told from
@@ -448,15 +490,23 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     const int64_t nLeft = static_cast<int64_t>(left.size());
     const double qRef = rank.qRef;
 
-    // Moments: mu, and tau^2 = the variance the noise does not explain (step 7's spread).
+    // Moments: mu, and tau^2 = the variance the noise does not explain (step 7's spread). In quality^2
+    // when every frame carries quality2Sigma (measured frames): quality^2's noise is linear and its sd
+    // first-order exact, while quality's own sd is calibrated only to ~8% at low SNR (Measure.h), which a
+    // 3000-frame capture's 2-SE bound resolves -- in quality, steady blur at 15% noise read as seeing in 28 of
+    // 200 captures (Ruling P26 fix round 1: calib-classrate's grid with the spread in quality, as 941ab4e7
+    // read it). Otherwise (samples without it) in quality.
+    bool squared = nLeft > 0;
+    for (const FrameStats* s : left) squared = squared && std::isfinite(s->quality2Sigma) && s->quality2Sigma > 0;
+    auto value = [&](const FrameStats* s) { return squared ? s->quality * s->quality : s->quality; };
     double mu = 0, noise2 = 0, var = 0;
     for (const FrameStats* s : left) {
-        mu += s->quality;
-        noise2 += Sigma(*s) * Sigma(*s);
+        mu += value(s);
+        noise2 += squared ? s->quality2Sigma * s->quality2Sigma : Sigma(*s) * Sigma(*s);
     }
     mu /= static_cast<double>(nLeft);
     noise2 /= static_cast<double>(nLeft);
-    for (const FrameStats* s : left) var += (s->quality - mu) * (s->quality - mu);
+    for (const FrameStats* s : left) var += (value(s) - mu) * (value(s) - mu);
     var /= static_cast<double>(nLeft);
     const double tau = std::sqrt(std::max(0.0, var - noise2));
     // tau^2 is an estimate: its standard error ~ sqrt(2 / N) var (sample variance, normal data).
@@ -487,13 +537,47 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
             const double sigma = 1 / (sqrtPi * q * q * radius);
             return small ? std::sqrt(std::max(0.0, sigma * sigma - kSamplingBlur * kSamplingBlur)) : sigma;
         };
-        const double sigmaRef = limbBlur(qRef);
+        // The sharpest frames' blur, at the narrowest spread of the true quality the data cannot rule out
+        // (Select.h step 7, Ruling P26 fix round 1): q_ref's excursion above the one quality that best
+        // explains every frame, scaled by tauLo / G's sd. With qualitySigma the scatter's own, a 53-frame
+        // capture's G at ~3.4 qualitySigma per frame reads a spread its 2-SE bound does not support, and
+        // its top lifts q_ref by up to 29% (R 24 / 24 px, seed 7: 0.0477 against 0.0371 noise-free;
+        // calibration/seedsel.cpp, mdq.cpp): read there it is 0.221, and 941ab4e7, which did, stacked the
+        // grossly defocused blob. A spread the data show
+        // (tauLo >= G's sd) leaves q_ref as it is.
+        // Only where the frames' own SNR leaves G's top to EM's early-stopped smoothing (Ruling P26 fix round
+        // 2): fully at a median quality / qualitySigma of kShrinkSnrFull and under, not at all from
+        // kShrinkSnrNone, log-linear between. A short in-focus capture's G is no smoothing artefact, and its
+        // sharpest frames are its reading as a long one's are.
+        std::vector<double> snr;
+        for (const FrameStats* s : left)
+            if (Sigma(*s) > 0) snr.push_back(s->quality / Sigma(*s));
+        const double r50 = snr.empty() ? std::numeric_limits<double>::infinity() : Quantile(snr, 0.5);
+        const double shrink = std::clamp(std::log(kShrinkSnrNone / r50) / std::log(kShrinkSnrNone / kShrinkSnrFull), 0.0, 1.0);
+        // tauLo in quality (d q = d q^2 / (2 q) when the moments are quality^2's).
+        const double tauLoQ = squared ? tauLo / (2 * std::sqrt(std::max(mu, 1e-300))) : tauLo;
+        const double keepShare = rank.priorSd > tauLoQ ? 1 - shrink * (1 - tauLoQ / rank.priorSd) : 1.0;
+        const double qGross = rank.pointQuality + (qRef - rank.pointQuality) * keepShare;
+        const double sigmaRef = limbBlur(std::min(qRef, std::max(qGross, 1e-12)));
         const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kGrossBlurLimit * radius;
+        sel.focusQuality = std::min(qRef, std::max(qGross, 1e-12));
+        sel.focusReading = sigmaRef / radius;
+        sel.focusLimit = limit / radius;
+        // The warn band (Ruling P15b): stacked, with the focus warning.
+        const double warn = small ? std::max(kBlurWarn * radius, kBlurFloorPixels / scale) : kGrossBlurWarn * radius;
+        sel.focusWarn = warn / radius;
+        if (sigmaRef >= warn && sigmaRef < limit)
+            sel.focusWarning = "The stack may be out of focus: even the sharpest frames blur the limb by " + Num(sigmaRef * scale, 1) +
+                               " px, " + Num(sigmaRef / radius, 2) + " of the disc's radius (in-focus captures: under " +
+                               Num(warn / radius, 2) + ") -- check the focus.";
         if (sigmaRef >= limit) {
             // The spread of the true blur: q at mu -+ 1.2816 tau (p10 / p90 of a normal), not the
             // posterior means (those are pulled together by the noise); tauHi gives the upper bound.
             const double z = 1.2816;
             auto spreadOf = [&](double t) {
+                if (squared)  // quality^2 at mu -+ z tau
+                    return (limbBlur(std::sqrt(std::max(mu - z * t, 1e-4 * mu))) - limbBlur(std::sqrt(mu + z * t))) /
+                           limbBlur(std::sqrt(mu));
                 return (limbBlur(std::max(mu - z * t, 0.01 * mu)) - limbBlur(mu + z * t)) / limbBlur(mu);
             };
             const double spread = spreadOf(tau), spreadHi = spreadOf(tauHi), spreadLo = spreadOf(tauLo);

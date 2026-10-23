@@ -11,12 +11,13 @@
 // top of the image) or TIFF (.tif/.tiff, uncompressed, interleaved, --bits 16 (default; [0, 1] scaled to
 // 0..65535) or 32 (IEEE float)). Probe-only knobs, both through a reader wrapper: --frames N stacks the
 // first N frames; --blur S blurs every frame by a Gaussian of sigma S sensor px before the engine sees it
-// (each colour site plane on its own for a mosaic, each channel for RGB): a synthetic defocus of a real
-// capture, for calibrating the focus floor. --keep-best F (investigation only: the benchmark's Ruling 2
-// round asks whether a gap to AutoStakkert's P20 is the selection's breadth) measures every frame with
-// the engine's own MeasureAll and hands RunStack only the ceil(F N) frames of highest whole-frame
-// quality, which RunStack then selects among as usual -- never a product knob (the spec's anti-goals
-// forbid a percentage). --sample X,Y (repeatable) adds the stack's value at pixel (X, Y)
+// (each colour site plane on its own for a mosaic, each channel for RGB), the capture's own noise put back
+// by level (its noise model, Noise.h): a synthetic defocus of a real capture, for calibrating the focus
+// floor. --keep-best F (investigation only: the benchmark's Ruling 2 round asks whether a gap to
+// AutoStakkert's P20 is the selection's breadth) measures every frame with the engine's own MeasureAll and
+// hands RunStack only the ceil(F N) frames of highest whole-frame quality, which RunStack then selects among
+// as usual -- never a product knob (the spec's anti-goals forbid a percentage). --sample X,Y (repeatable)
+// adds the stack's value at pixel (X, Y)
 // in every channel to the JSON ("samples"; the headless PixInsight probe compares PlanetaryStack's window
 // with them, test/run-probe-stack.sh), next to the image's size ("image") and the first and last frame
 // stacked ("stackedFirst", "stackedLast"). Exit 0 with an image, 2 when diagnosed, 1 on error.
@@ -29,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <random>
@@ -37,88 +39,15 @@
 
 #include "Engine.h"
 #include "Measure.h"
+#include "Noise.h"
+#include "ProbeSource.h"
 #include "SerFile.h"
 
 using namespace planetary;
 
+using probe::ProbeSource;
+
 namespace {
-
-// --frames and --blur.
-class ProbeSource : public ser::FrameSource {
-public:
-    ProbeSource(std::unique_ptr<ser::FrameSource> s, int64_t limit, double blur)
-        : s_(std::move(s)), info_(s_->Info()), blur_(blur) {
-        info_.frameCount = std::min(info_.frameCount, limit);
-        step_ = ser::IsBayer(info_.colorId) || stack::UndeclaredMosaic(info_) ? 2 : 1;
-        if (blur_ > 0) {
-            const double sg = blur_ / step_;  // in site-plane px
-            const int r = static_cast<int>(std::ceil(3 * sg));
-            double sum = 0;
-            for (int k = -r; k <= r; ++k) {
-                kernel_.push_back(std::exp(-0.5 * k * k / (sg * sg)));
-                sum += kernel_.back();
-            }
-            for (double& k : kernel_) k /= sum;
-        }
-    }
-    const ser::FileInfo& Info() const override { return info_; }
-    ser::Frame ReadFrame(int64_t i) const override {
-        if (i >= info_.frameCount) throw ser::SerError("stack-probe: frame past --frames");
-        ser::Frame f = s_->ReadFrame(i);
-        if (blur_ > 0) Blur(f, i);
-        return f;
-    }
-    std::optional<int64_t> FrameTimestamp(int64_t i) const override { return s_->FrameTimestamp(i); }
-
-private:
-    // Separable Gaussian over each plane of same-colour samples (stride step_ in x and y, per channel),
-    // mirrored at the plane's edges; then the plane's own pixel noise is put back (the blur removed it, a
-    // defocused capture keeps it): Gaussian noise of the plane's EstimatePixelNoise before blurring (8-bit
-    // quantisation included), seeded by the frame index, and the result rounded to whole DN again.
-    void Blur(ser::Frame& f, int64_t index) const {
-        const int W = f.width, H = f.height, C = f.channels, r = static_cast<int>(kernel_.size() / 2);
-        std::vector<double> in(static_cast<size_t>(W) * H * C), tmp(in.size());
-        for (size_t k = 0; k < in.size(); ++k) in[k] = f.samples[k];
-        std::mt19937 rng(static_cast<unsigned>(1234567 + index));
-        std::normal_distribution<double> gauss(0, 1);
-        auto mirror = [](int i, int n) {
-            if (n == 1) return 0;
-            while (i < 0 || i >= n) i = i < 0 ? -i : 2 * (n - 1) - i;
-            return i;
-        };
-        for (int py = 0; py < step_; ++py)
-            for (int px = 0; px < step_; ++px)
-                for (int c = 0; c < C; ++c) {
-                    const int pw = (W - px + step_ - 1) / step_, ph = (H - py + step_ - 1) / step_;
-                    auto at = [&](std::vector<double>& v, int x, int y) -> double& {
-                        return v[(static_cast<size_t>(py + y * step_) * W + (px + x * step_)) * C + c];
-                    };
-                    ser::FloatImage plane{pw, ph, 1, std::vector<float>(static_cast<size_t>(pw) * ph)};
-                    for (int y = 0; y < ph; ++y)
-                        for (int x = 0; x < pw; ++x) plane.data[static_cast<size_t>(y) * pw + x] = static_cast<float>(at(in, x, y));
-                    const double noise = stack::EstimatePixelNoise(plane).sigma;  // in DN (the plane is not normalised)
-                    for (int y = 0; y < ph; ++y)
-                        for (int x = 0; x < pw; ++x) {
-                            double s = 0;
-                            for (int k = -r; k <= r; ++k) s += kernel_[static_cast<size_t>(k + r)] * at(in, mirror(x + k, pw), y);
-                            at(tmp, x, y) = s;
-                        }
-                    for (int y = 0; y < ph; ++y)
-                        for (int x = 0; x < pw; ++x) {
-                            double s = 0;
-                            for (int k = -r; k <= r; ++k) s += kernel_[static_cast<size_t>(k + r)] * at(tmp, x, mirror(y + k, ph));
-                            at(in, x, y) = s + noise * gauss(rng);
-                        }
-                }
-        for (size_t k = 0; k < in.size(); ++k) f.samples[k] = static_cast<uint16_t>(std::clamp(std::lround(in[k]), 0L, 65535L));
-    }
-
-    std::unique_ptr<ser::FrameSource> s_;
-    ser::FileInfo info_;
-    double blur_;
-    int step_ = 1;
-    std::vector<double> kernel_;
-};
 
 ser::BayerChoice ParseBayer(const std::string& s) {
     if (s == "auto" || s == "Auto") return ser::BayerChoice::Auto;
@@ -343,8 +272,10 @@ int main(int argc, char** argv) try {
             lastPhase = phase;
         }
     };
+    // --blur puts back the noise the capture itself shows, by level: its model from the unblurred frames.
+    const std::shared_ptr<const stack::NoiseModel> noise = blur > 0 ? probe::UnblurredNoise(path, bayer, limit, threads) : nullptr;
     const stack::SourceFactory probeFactory = [&]() -> std::unique_ptr<ser::FrameSource> {
-        return std::make_unique<ProbeSource>(ser::OpenVideo(path, bayer), limit, blur);
+        return std::make_unique<ProbeSource>(ser::OpenVideo(path, bayer), limit, blur, noise);
     };
     stack::SourceFactory factory = probeFactory;
     std::shared_ptr<std::vector<int64_t>> keep;

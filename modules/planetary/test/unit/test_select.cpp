@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "Align.h"
+#include "Engine.h"
 #include "Measure.h"
 #include "Select.h"
 #include "StackSynth.h"
@@ -932,14 +933,244 @@ TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[se
     }
 }
 
+// The first 60 frames of the 2022-09-17 225418 Jupiter (1080p BGGR, R_h 21.5 luma px, in focus), as MeasureAll
+// measures them (focus-survey --frames 60 --dump-stats, test/focus-survey.cpp, which regenerates these rows
+// exactly: the truncated capture's own noise model): index, targetFound, cx,
+// cy, bx0, by0, bx1, by1, halfRadius, brightness, clippedFraction, quality, qualitySigma, quality2Sigma.
+struct RealFrame {
+    int64_t index;
+    int found;
+    double cx, cy;
+    int bx0, by0, bx1, by1;
+    double halfRadius, brightness, clipped, quality, sigma, sigma2;
+};
+const RealFrame kJupiter225418First60[] = {
+    {0, 1, 470.1353, 236.7224, 440, 208, 500, 268, 21.50, 0.587203, 0.000000, 0.088854918, 0.0027071134, 0.0004810876},
+    {1, 1, 470.0282, 237.4327, 440, 208, 500, 268, 21.50, 0.593043, 0.000000, 0.094931035, 0.0026998601, 0.00051260664},
+    {2, 1, 470.5902, 236.9781, 440, 208, 500, 268, 21.50, 0.601009, 0.000000, 0.098302293, 0.0026648538, 0.0005239272},
+    {3, 1, 470.2405, 236.9922, 440, 208, 500, 268, 21.00, 0.600705, 0.000000, 0.098764895, 0.0026963824, 0.00053262079},
+    {4, 1, 470.1638, 237.0048, 440, 208, 500, 268, 21.00, 0.597232, 0.000000, 0.090022582, 0.0026643322, 0.00047970628},
+    {5, 1, 470.6545, 237.1787, 440, 208, 500, 268, 22.00, 0.592763, 0.000000, 0.091151567, 0.0026270392, 0.000478923},
+    {6, 1, 470.6887, 236.7437, 440, 208, 500, 268, 21.50, 0.591233, 0.000000, 0.093085907, 0.0027162028, 0.00050568654},
+    {7, 1, 469.9101, 237.1383, 440, 208, 500, 268, 21.50, 0.596033, 0.000000, 0.089787013, 0.0026419502, 0.00047443158},
+    {8, 1, 470.1826, 235.7545, 440, 208, 500, 264, 22.00, 0.596787, 0.000000, 0.092099926, 0.0026258571, 0.00048368783},
+    {9, 1, 470.7875, 235.8313, 440, 208, 500, 268, 21.50, 0.587682, 0.000000, 0.09294204, 0.0026796063, 0.00049810189},
+    {10, 1, 470.1109, 236.1905, 440, 208, 500, 268, 21.50, 0.593187, 0.000000, 0.092839072, 0.0026831408, 0.00049820641},
+    {11, 1, 470.6354, 235.7775, 440, 208, 500, 268, 21.50, 0.595546, 0.000000, 0.088707599, 0.0026985711, 0.00047877438},
+    {12, 1, 470.3666, 235.4989, 440, 208, 500, 268, 21.50, 0.588862, 0.000000, 0.093836222, 0.0027048001, 0.00050762229},
+    {13, 1, 470.0383, 235.6276, 440, 208, 500, 264, 21.50, 0.595745, 0.000000, 0.090604741, 0.0026442379, 0.00047916679},
+    {14, 1, 468.1975, 235.3764, 440, 208, 500, 264, 21.50, 0.593838, 0.000000, 0.091898224, 0.0027831814, 0.00051154604},
+    {15, 1, 468.5266, 235.6989, 440, 208, 500, 264, 21.50, 0.594203, 0.000000, 0.09611142, 0.002613214, 0.000502324},
+    {16, 1, 469.1420, 236.4376, 440, 208, 500, 268, 21.50, 0.590079, 0.000000, 0.093909428, 0.0027633982, 0.00051902479},
+    {17, 1, 469.6987, 236.3984, 440, 208, 500, 268, 21.50, 0.597345, 0.000000, 0.09786577, 0.0027038104, 0.00052922612},
+    {18, 1, 469.5382, 236.5331, 440, 208, 500, 268, 21.50, 0.597311, 0.000000, 0.08697806, 0.0027780396, 0.00048326538},
+    {19, 1, 470.7199, 236.3683, 440, 208, 500, 264, 21.00, 0.602826, 0.000000, 0.097071552, 0.002579743, 0.00050084348},
+    {20, 1, 469.8963, 236.4002, 440, 208, 500, 268, 21.00, 0.592858, 0.000000, 0.092446434, 0.0026870251, 0.00049681769},
+    {21, 1, 470.0466, 236.0474, 440, 208, 500, 268, 21.00, 0.597570, 0.000000, 0.092957317, 0.0025907275, 0.00048165901},
+    {22, 1, 469.2396, 235.9585, 440, 208, 500, 264, 22.00, 0.595421, 0.000000, 0.10080224, 0.0027477423, 0.00055396228},
+    {23, 1, 469.1865, 235.6050, 440, 208, 500, 264, 21.50, 0.602274, 0.000000, 0.096996121, 0.0025308782, 0.00049097455},
+    {24, 1, 469.0029, 235.5267, 440, 208, 500, 264, 21.50, 0.600124, 0.000000, 0.095656726, 0.0025873643, 0.00049500202},
+    {25, 1, 468.8395, 235.9451, 440, 208, 500, 264, 21.50, 0.591457, 0.000000, 0.094509012, 0.002670915, 0.00050485646},
+    {26, 1, 469.2426, 235.1377, 440, 208, 500, 264, 22.00, 0.591856, 0.000000, 0.089121351, 0.0027079491, 0.00048267904},
+    {27, 1, 469.0364, 235.2764, 440, 208, 500, 264, 21.50, 0.605330, 0.000000, 0.10017799, 0.0025958569, 0.00052009934},
+    {28, 1, 469.0226, 235.9096, 440, 208, 500, 264, 21.50, 0.599368, 0.000000, 0.091102545, 0.0026136945, 0.00047623383},
+    {29, 1, 469.6366, 235.5344, 440, 208, 500, 264, 22.00, 0.603750, 0.000000, 0.094576686, 0.0025236827, 0.00047736714},
+    {30, 1, 469.6956, 235.5816, 440, 208, 500, 264, 21.50, 0.605285, 0.000000, 0.094324663, 0.0025038609, 0.00047235559},
+    {31, 1, 469.5775, 235.5218, 440, 208, 500, 264, 22.00, 0.594985, 0.000000, 0.092313198, 0.0025797953, 0.00047630317},
+    {32, 1, 469.7618, 235.3110, 440, 208, 500, 264, 22.50, 0.605916, 0.000000, 0.093094115, 0.0025535698, 0.00047544914},
+    {33, 1, 469.0556, 235.6576, 440, 208, 500, 264, 21.50, 0.598382, 0.000000, 0.091541708, 0.0026138444, 0.00047855687},
+    {34, 1, 468.5693, 235.7559, 440, 208, 500, 264, 21.50, 0.603426, 0.000000, 0.097193305, 0.0025412991, 0.00049399836},
+    {35, 1, 470.2285, 235.1268, 440, 208, 500, 264, 22.00, 0.599382, 0.000000, 0.09323973, 0.0025819167, 0.00048147917},
+    {36, 1, 467.7649, 235.5703, 436, 208, 500, 264, 21.50, 0.602826, 0.000000, 0.093175907, 0.0026155472, 0.00048741702},
+    {37, 1, 468.4774, 236.1035, 440, 208, 500, 264, 22.00, 0.595474, 0.000000, 0.092683709, 0.002630719, 0.00048765487},
+    {38, 1, 467.9103, 236.3308, 436, 208, 500, 268, 21.50, 0.594674, 0.000000, 0.095346242, 0.0026693358, 0.0005090275},
+    {39, 1, 469.5738, 236.2434, 440, 208, 500, 264, 22.00, 0.596044, 0.000000, 0.092267457, 0.0026260472, 0.0004846027},
+    {40, 1, 468.8822, 236.7932, 440, 208, 500, 268, 21.50, 0.599946, 0.000000, 0.094663788, 0.0026724124, 0.00050596673},
+    {41, 1, 469.7820, 235.8465, 440, 208, 500, 264, 22.00, 0.603407, 0.000000, 0.094885163, 0.0025671087, 0.00048716542},
+    {42, 1, 470.1578, 236.2743, 440, 208, 500, 264, 21.50, 0.598935, 0.000000, 0.094028722, 0.0026229956, 0.00049327884},
+    {43, 1, 469.3980, 237.4482, 440, 208, 500, 268, 22.00, 0.596393, 0.000000, 0.090144158, 0.0026221377, 0.00047274644},
+    {44, 1, 469.0264, 237.2319, 440, 208, 500, 268, 21.50, 0.597050, 0.000000, 0.09252216, 0.0026171554, 0.00048429491},
+    {45, 1, 469.3108, 237.0143, 440, 208, 500, 268, 21.50, 0.607780, 0.000000, 0.091153703, 0.0026220834, 0.00047803069},
+    {46, 1, 469.7023, 236.3201, 440, 208, 500, 268, 22.00, 0.601459, 0.000489, 0.095954584, 0.0025749082, 0.00049415277},
+    {47, 1, 468.5561, 236.6054, 440, 208, 500, 268, 21.00, 0.598613, 0.000000, 0.092969792, 0.0026784086, 0.0004980279},
+    {48, 1, 469.4162, 236.0290, 440, 208, 500, 264, 22.00, 0.602082, 0.000000, 0.09784146, 0.0026749424, 0.00052344542},
+    {49, 1, 469.1792, 236.3808, 440, 208, 500, 268, 21.00, 0.591471, 0.000000, 0.086080928, 0.0027867247, 0.0004797765},
+    {50, 1, 469.1451, 236.7239, 440, 208, 500, 268, 22.00, 0.592216, 0.000000, 0.090882832, 0.0026155036, 0.0004754142},
+    {51, 1, 468.2311, 236.5399, 440, 208, 500, 268, 21.50, 0.595711, 0.000000, 0.092513372, 0.0026228429, 0.00048530131},
+    {52, 1, 471.1646, 236.5289, 440, 208, 504, 268, 21.50, 0.594607, 0.000000, 0.090068735, 0.0026612964, 0.0004794053},
+    {53, 1, 469.1451, 236.6973, 440, 208, 500, 268, 22.50, 0.606190, 0.000000, 0.097840834, 0.0025447709, 0.00049796881},
+    {54, 1, 469.6495, 236.6158, 440, 208, 500, 268, 22.00, 0.589168, 0.000000, 0.096064002, 0.0026957702, 0.00051793832},
+    {55, 1, 469.8355, 236.4928, 440, 208, 500, 268, 22.00, 0.598149, 0.000000, 0.091603162, 0.0025990891, 0.00047617471},
+    {56, 1, 468.9511, 238.1885, 440, 212, 500, 268, 21.50, 0.599151, 0.000000, 0.094534352, 0.0025803004, 0.00048785857},
+    {57, 1, 469.7721, 238.4664, 440, 212, 500, 268, 21.50, 0.594346, 0.000000, 0.092226129, 0.0026431354, 0.00048753779},
+    {58, 1, 469.5575, 237.7923, 440, 208, 500, 268, 21.00, 0.597971, 0.000000, 0.095984304, 0.0026408721, 0.00050696939},
+    {59, 1, 469.7129, 237.6286, 440, 208, 500, 268, 22.00, 0.603488, 0.000000, 0.09624899, 0.0025634908, 0.00049347096},
+};
+
+namespace {
+std::vector<FrameStats> ToStats(const RealFrame* rows, size_t n) {
+    std::vector<FrameStats> stats;
+    for (size_t i = 0; i < n; ++i) {
+        const RealFrame& r = rows[i];
+        FrameStats s;
+        s.index = r.index;
+        s.targetFound = r.found != 0;
+        s.cx = r.cx;
+        s.cy = r.cy;
+        s.bx0 = r.bx0;
+        s.by0 = r.by0;
+        s.bx1 = r.bx1;
+        s.by1 = r.by1;
+        s.halfRadius = r.halfRadius;
+        s.brightness = r.brightness;
+        s.clippedFraction = r.clipped;
+        s.quality = r.quality;
+        s.qualitySigma = r.sigma;
+        s.quality2Sigma = r.sigma2;
+        stats.push_back(s);
+    }
+    return stats;
+}
+}  // namespace
+
+TEST_CASE("a short in-focus capture is read at its sharpest frames (Ruling P26 fix round 2, N1)", "[select][diagnosis][focus]") {
+    // A short capture's spread is not significant (tauLo 0 at 8-60 frames), yet its frames carry ~41
+    // qualitySigma each: no smoothing artefact to remove, and its reading is its sharpest frames' -- q_ref --
+    // as a long capture's is: 0.1314 of R_h at 60 frames (fix round 1 read it at the point quality, 0.1398).
+    for (const size_t n : {size_t{30}, size_t{60}}) {
+        const std::vector<FrameStats> stats = ToStats(kJupiter225418First60, n);
+        const Selection sel = SelectFrames(stats, Info(1920, 1080, ser::ColorId::BayerBGGR));
+        INFO(n << " frames: reading " << sel.focusReading << " against " << sel.focusLimit << ", " << sel.explanation);
+        REQUIRE(sel.diagnosis.kind == DiagnosisKind::None);
+        REQUIRE(sel.focusJudged);
+        std::vector<double> q, sg, sg2;
+        for (const FrameStats& s : stats) {
+            q.push_back(s.quality);
+            sg.push_back(s.qualitySigma);
+            sg2.push_back(s.quality2Sigma);
+        }
+        const int64_t need = std::min<int64_t>(stack::kMinStackFrames, (static_cast<int64_t>(n) + 1) / 2);
+        const int64_t floorCount = std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));
+        CHECK(sel.focusQuality == Catch::Approx(stack::RankByDetail(q, sg, sg2, need, floorCount).qRef));
+        // Ruling P15 binds as written (P15a): an in-focus capture reads at least 2x under the limit.
+        CHECK(sel.focusLimit == Catch::Approx(stack::kGrossBlurLimit));
+        CHECK(2 * sel.focusReading <= sel.focusLimit);
+        CHECK(sel.focusWarning.empty());  // and under the warn band (Ruling P15b)
+    }
+}
+
+namespace {
+// The FrameStats of a whole real capture, as focus-survey --dump-stats (test/focus-survey.cpp) prints them:
+// the 2022-09-17 1080p BGGR Jupiters (R_h 21.5 luma px), in focus as captured, their first 60 frames (the
+// truncated capture's own noise model), and blurred by 12 / 16 sensor px (6 / 8 luma; ProbeSource.h's --blur,
+// the capture's own noise put back by level).
+const RealFrame kJupiter225418[] = {
+#include "real/jupiter-2022-09-17-225418.inc"
+};
+const RealFrame kJupiter230420[] = {
+#include "real/jupiter-2022-09-17-230420.inc"
+};
+const RealFrame kJupiter230420First60[] = {
+#include "real/jupiter-2022-09-17-230420-first60.inc"
+};
+const RealFrame kJupiter225418Blur12[] = {
+#include "real/jupiter-2022-09-17-225418-blur12.inc"
+};
+const RealFrame kJupiter230420Blur12[] = {
+#include "real/jupiter-2022-09-17-230420-blur12.inc"
+};
+const RealFrame kJupiter230420Blur16[] = {
+#include "real/jupiter-2022-09-17-230420-blur16.inc"
+};
+}  // namespace
+
+TEST_CASE("the large-disc warn band: real defocus is warned or refused, in focus is silent (Ruling P15b)", "[select][diagnosis][focus]") {
+    struct Case {
+        const char* name;
+        const RealFrame* rows;
+        size_t n;
+        double reading;  // focus-survey's, to 4 decimals
+        enum { Silent, Warned, WarnedOrRefused } expect;
+    };
+    const Case cases[] = {
+        {"225418 in focus", kJupiter225418, std::size(kJupiter225418), 0.1182, Case::Silent},
+        {"230420 in focus", kJupiter230420, std::size(kJupiter230420), 0.1388, Case::Silent},
+        {"225418 first 30", kJupiter225418First60, 30, 0, Case::Silent},
+        {"225418 first 60", kJupiter225418First60, 60, 0.1314, Case::Silent},
+        {"230420 first 30", kJupiter230420First60, 30, 0, Case::Silent},
+        {"230420 first 60", kJupiter230420First60, 60, 0.1301, Case::Silent},
+        {"225418 at 6 luma px", kJupiter225418Blur12, std::size(kJupiter225418Blur12), 0.2520, Case::Warned},
+        {"230420 at 6 luma px", kJupiter230420Blur12, std::size(kJupiter230420Blur12), 0.2472, Case::Warned},
+        // 0.2793 against the limit 0.28: either verdict is right, silence is not.
+        {"230420 at 8 luma px", kJupiter230420Blur16, std::size(kJupiter230420Blur16), 0.2793, Case::WarnedOrRefused},
+    };
+    for (const Case& c : cases) {
+        const Selection sel = SelectFrames(ToStats(c.rows, c.n), Info(1920, 1080, ser::ColorId::BayerBGGR));
+        INFO(c.name << ": reading " << sel.focusReading << " (warn " << sel.focusWarn << ", limit " << sel.focusLimit << ") | "
+                    << sel.explanation << " | " << sel.focusWarning);
+        REQUIRE(sel.focusJudged);
+        REQUIRE(sel.targetRadius >= stack::kMinJudgedRadius);
+        CHECK(sel.focusWarn == Catch::Approx(stack::kGrossBlurWarn));
+        if (c.reading > 0) CHECK(sel.focusReading == Catch::Approx(c.reading).margin(5e-5));  // the fixture reads as measured
+        const bool refused = sel.diagnosis.kind == DiagnosisKind::OutOfFocus || sel.diagnosis.kind == DiagnosisKind::PoorSeeing;
+        const bool warned = !sel.focusWarning.empty();
+        CHECK_FALSE((refused && warned));
+        switch (c.expect) {
+            case Case::Silent:
+                CHECK(sel.diagnosis.kind == DiagnosisKind::None);
+                CHECK_FALSE(warned);
+                break;
+            case Case::Warned:
+                CHECK(sel.diagnosis.kind == DiagnosisKind::None);
+                CHECK(warned);
+                CHECK(sel.focusWarning.find("may be out of focus") != std::string::npos);
+                CHECK(sel.focusWarning.find("check the focus") != std::string::npos);
+                break;
+            case Case::WarnedOrRefused:
+                CHECK((warned || refused));
+                break;
+        }
+    }
+}
+
+TEST_CASE("steady blur is not called seeing when quality carries its measured noise (Ruling P26 fix round 1, I4)",
+          "[select][diagnosis]") {
+    // A steady grossly blurred disc (R 60 by 20 px) as MeasureFrame reports it at 15% quality noise:
+    // quality^2 = u^2 + N(0, rho^2), rho = 0.3 u^2 (quality2Sigma), qualitySigma Measure.h's soft-floored
+    // form of it. qualitySigma is the scatter's own only to ~7% at such SNR, which a 3000-frame capture's
+    // 2-SE bound resolves: with the spread read in quality, 6 of these 20 seeds were called seeing (941ab4e7;
+    // 19 of 50 in a longer run); read in quality^2, where rho is exact, none.
+    const double u2 = 1 / (std::sqrt(M_PI) * 60 * 20.0), rho = 0.3 * u2;
+    int seeing = 0;
+    for (uint32_t seed = 1; seed <= 20; ++seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> v;
+        for (int64_t i = 0; i < 3000; ++i) {
+            FrameStats s = Disc(i, 640, 480, 320, 240, 60, 20.0);
+            const double q2 = u2 + rho * n01(rng), f = stack::kSigmaFloor * rho;
+            s.quality = q2 > 0 ? std::sqrt(q2) : 0.0;
+            s.qualitySigma = q2 > 0 ? rho / (2 * std::pow(q2 * q2 * q2 * q2 + f * f * f * f, 0.125)) : 0.0;
+            s.quality2Sigma = q2 > 0 ? rho : 0.0;
+            v.push_back(s);
+        }
+        const Selection sel = SelectFrames(v, Info(640, 480));
+        REQUIRE(sel.diagnosis.kind != DiagnosisKind::None);
+        seeing += sel.diagnosis.kind == DiagnosisKind::PoorSeeing;
+    }
+    CHECK(seeing == 0);
+}
+
 TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[select][diagnosis]") {
-    // Blurred disc (limb 20 px on R = 60), 500 frames, true blur spread g, quality noise `noise`.
+    // Blurred disc (limb 24 px on R = 60, 0.40 R; at 20 px, 0.33 R, the sharpest frames of 6% seeing come
+    // near kGrossBlurLimit 0.28 and only 37 of 50 seeds read PoorSeeing below), 500 frames, true blur
+    // spread g, quality noise `noise`.
     auto capture = [](double g, double noise, uint32_t seed) {
         std::mt19937 rng(seed);
         std::normal_distribution<double> n01(0, 1);
         std::vector<FrameStats> v;
         for (int64_t i = 0; i < 500; ++i) {
-            const double qt = DiscQuality(60, 20.0 * (1 + g * n01(rng)));
+            const double qt = DiscQuality(60, 24.0 * (1 + g * n01(rng)));
             v.push_back(DiscQ(i, qt * (1 + noise * n01(rng)), noise * qt));
         }
         return v;
@@ -1489,7 +1720,7 @@ namespace {
 // (steady: the optics), pixel noise `noise` added after. Frames reach R + 3 blur + 30 px out from the
 // centre each way, so the blurred halo stays inside. `sky`: the sky level when >= 0 (MakeDisc's is 0.02,
 // 2 noise sd above black at noise 0.01: the 16-bit capture clips 2.3% of it at 0).
-Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
+testing::Capture MeasuredDiscCapture(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
     const int half = static_cast<int>(radius + 3 * blur + 30), w = 2 * half, h = 2 * half;
     testing::Scene s = testing::MakeDisc(seed, half + 0.3, half - 0.2, radius);
     if (sky >= 0) s.sky = sky;
@@ -1538,6 +1769,10 @@ Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, 
         }
         cap.Add(v);
     }
+    return cap;
+}
+Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
+    const testing::Capture cap = MeasuredDiscCapture(radius, blur, convolve, noise, seed, sky);
     return SelectFrames(stack::MeasureAll(cap.Factory(), cap.info, 8, {}), cap.info);
 }
 }  // namespace
@@ -1554,19 +1789,22 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         double sky = -1;  // MakeDisc's 0.02 unless given
     };
     // Ruling P19 (an unbiased pixel noise): R 24 blurred 10 px at noise 0.01 read 0.245 and was stacked
-    // while the noise estimate read s^2 ~5% low (0.263 now), and the convolved R 24 / 12 px at noise 0.01
-    // sat on the limit (0.267; 0.312 now; noise-free 0.334). The faint blobs, at noise 0.01 over a sky of
-    // 0.06 that does not clip: R 40 / 20 px and R 24 / 24 px were stacked and are refused. Over the
-    // default sky of 0.02 the capture clips 2.3% of the sky at 0, its noise there reads low, and R 40 /
-    // 20 px stays stacked -- a known limit (Select.h step 7) that fails safe: a soft image, warned by the
-    // region stage.
+    // while the noise estimate read s^2 ~5% low (0.263 then, 0.267 with Ruling P26); refused at
+    // kGrossBlurLimit 0.25, it is stacked again at 0.28 (Ruling P15a; seed by seed in the next test), and the convolved
+    // R 24 / 12 px at noise 0.01 sat on the limit (0.267; 0.312 after P19; 0.363 after P26; noise-free
+    // 0.334). The faint blob R 40 / 20 px at noise 0.01 over a sky of 0.06 that does not clip was stacked
+    // and is refused (0.377 after P19, 0.325 after P26; noise-free 0.342). Over the default sky of 0.02 the
+    // capture clips 2.3% of the sky at 0: with one noise level, measured on that sky, the target's noise
+    // read low (the sky's variance is 0.960 of the target's) and R 40 / 20 px was stacked (0.240); with
+    // the capture's noise model (Ruling P26: each level's own noise, the clipped sky's included) it reads
+    // 0.312 and is refused -- in every one of seeds 7, 107, ..., 907 (0.304-0.375).
     for (const Case& c : {Case{24, 0.6, false, 0.01, false}, Case{24, 2, false, 0.01, false}, Case{24, 3, false, 0.01, false},
                           Case{40, 4, false, 0.01, false}, Case{24, 2, true, 0.005, false}, Case{40, 3, true, 0.005, false},
                           Case{24, 2, true, 0.01, false}, Case{40, 3, true, 0.01, false},
                           Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true},
-                          Case{24, 10, false, 0.01, true}, Case{24, 12, true, 0.01, true},
-                          Case{40, 20, true, 0.01, true, 0.06}, Case{24, 24, true, 0.01, true, 0.06},
-                          Case{40, 3, true, 0.01, false, 0.06}, Case{40, 20, true, 0.01, false}}) {
+                          Case{24, 10, false, 0.01, false}, Case{24, 12, true, 0.01, true},
+                          Case{40, 20, true, 0.01, true, 0.06}, Case{40, 3, true, 0.01, false, 0.06},
+                          Case{40, 20, true, 0.01, true}}) {
         const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7, c.sky);
         std::string numbers;
         for (const auto& [name, v] : sel.diagnosis.numbers) numbers += name + " " + std::to_string(v) + "; ";
@@ -1585,6 +1823,115 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         // blurred by R the centre dims and the half-contrast radius moves out (R 24 by 24 px: 33.5).
         if (c.blur <= 0.5 * c.radius) CHECK(Number(sel.diagnosis, "target radius (pixels)") == Catch::Approx(c.radius).epsilon(0.15));
         CHECK(Number(sel.diagnosis, "limb blur (pixels)") >= Number(sel.diagnosis, "blur limit (pixels)"));
+    }
+    // The faintest: R 24 convolved by 24 px over the unclipped sky (noise-free 0.400), each frame's quality
+    // at a median 3.35-3.57 qualitySigma (seeds 7 / 107 / 207), refused in every seed (Ruling P15: it is
+    // ~4.7x the in-focus 0.086). Before Ruling P26 (851ba41b) it read 0.293-0.343 over seeds 7, 107, ...,
+    // 907; with P26's calibrated qualitySigma the deconvolution's G took a spread its 2-SE bound does not
+    // support, its top lifted seed 7's q_ref 28% and the reading fell to 0.222 (941ab4e7: 9 of 10). Read at
+    // the narrowest spread the data allow (Select.h step 7): 0.520 / 0.419 / 0.434 / 0.418 / 0.385 / 0.594 /
+    // 0.801 / 0.444 / 0.578 / 0.336; the clipped-sky R 40 / 20 px 0.327-0.380 (0.304-0.375 at 941ab4e7).
+    int refused = 0, refusedClipped = 0;
+    for (unsigned seed = 7; seed < 1000; seed += 100) {
+        refused += MeasuredDisc(24, 24, true, 0.01, seed, 0.06).diagnosis.kind == DiagnosisKind::OutOfFocus;
+        refusedClipped += MeasuredDisc(40, 20, true, 0.01, seed).diagnosis.kind == DiagnosisKind::OutOfFocus;
+    }
+    INFO("R 24 / 24 px over sky 0.06 refused in " << refused << " of 10 seeds, R 40 / 20 px over the clipped sky in "
+                                                  << refusedClipped);
+    CHECK(refused == 10);
+    CHECK(refusedClipped == 10);
+}
+
+TEST_CASE("a moderate defocus under kGrossBlurLimit is stacked with the focus warning, not refused (Ruling P15a)", "[select][engine][focus]") {
+    // R 24 blurred 10 px (0.42 R) reads 0.267-0.290 over seeds 7, 107, ..., 907 (Select.h step 7), across the
+    // limit: 0.2669 / 0.2852 / 0.2881 / 0.2820 / 0.2805 / 0.2768 / 0.2899 / 0.2783 / 0.2780 / 0.2710. Seeds 107-407
+    // and 607 are refused; 7, 507, 707, 807 and 907 are stacked -- never refused under the limit (Ruling P15a) --
+    // and each is over step 7's warn level kGrossBlurWarn 0.21, so each carries the focus warning (Ruling P15b).
+    // The region stage reads their limb at 0.420 / 0.423 / 0.418 / 0.399 / 0.394 of the radius against its own
+    // warn level kDiscWarnAbove 0.40: it would have warned only seeds 7, 507 and 707.
+    int stacked = 0, refused = 0, warned = 0;
+    for (unsigned seed = 7; seed < 1000; seed += 100) {
+        const testing::Capture cap = MeasuredDiscCapture(24, 10, false, 0.01, seed);
+        const Selection sel = SelectFrames(stack::MeasureAll(cap.Factory(), cap.info, 8, {}), cap.info);
+        const stack::StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+        const stack::FocusCheck& f = o.summary.focus;
+        INFO("seed " << seed << ": reading " << sel.focusReading << " (limit " << stack::kGrossBlurLimit << "); region focus "
+                     << f.measure << " of the radius " << f.radius << " | " << o.diagnosis.message);
+        REQUIRE(sel.focusJudged);
+        REQUIRE(sel.targetRadius >= stack::kMinJudgedRadius);
+        if (sel.focusReading >= stack::kGrossBlurLimit) {
+            CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+            CHECK_FALSE(o.image.has_value());
+            ++refused;
+            continue;
+        }
+        ++stacked;
+        CHECK(o.diagnosis.kind == DiagnosisKind::None);
+        CHECK(o.image.has_value());
+        CHECK(f.disc);
+        // Step 7's warn band (Ruling P15b) warns every one; the region stage too on 7 / 507 / 707 -- one warning
+        // either way: the region stage's when it warns, else step 7's.
+        CHECK(sel.focusReading >= stack::kGrossBlurWarn);
+        CHECK_FALSE(sel.focusWarning.empty());
+        int focusWarnings = 0;
+        for (const auto& wtext : o.summary.warnings) focusWarnings += wtext.find("may be out of focus") != std::string::npos;
+        CHECK(focusWarnings == 1);
+        const std::string expected = f.outcome == stack::FocusOutcome::Warned ? stack::FocusWarning(f) : sel.focusWarning;
+        CHECK(std::count(o.summary.warnings.begin(), o.summary.warnings.end(), expected) == 1);
+        warned += f.outcome == stack::FocusOutcome::Warned;
+    }
+    // Both branches of the one-warning rule exercised (region stage's and the selection's), without pinning
+    // which seeds sit on either side of a threshold (seed 607 reads 0.0005 over the limit, 807's region measure
+    // 0.001 under its warn level).
+    INFO(stacked << " stacked (" << warned << " also warned by the region stage), " << refused << " refused");
+    CHECK(refused + stacked == 10);
+    CHECK(stacked >= 1);
+    CHECK(warned >= 1);
+    CHECK(warned < stacked);
+}
+
+TEST_CASE("the small-disc warn band: warned from kBlurWarn R, refused from kBlurLimit R, never under the floor (Ruling P15b)",
+          "[select][diagnosis][focus]") {
+    // 200 noise-free frames of one disc (Disc: box radius = R, so the small rule judges it at R). sigma' is
+    // the sampling-corrected limb blur step 7 reads, sigma = sqrt(sigma'^2 + kSamplingBlur^2) the one rendered.
+    auto select = [](double radius, double sigmaPrime, const ser::FileInfo& info) {
+        const int lw = static_cast<int>(info.header.width / stack::LumaScale(info)),
+                  lh = static_cast<int>(info.header.height / stack::LumaScale(info));
+        const double sigma = std::sqrt(sigmaPrime * sigmaPrime + stack::kSamplingBlur * stack::kSamplingBlur);
+        std::vector<FrameStats> v;
+        for (int64_t i = 0; i < 200; ++i) v.push_back(Disc(i, lw, lh, lw / 2.0, lh / 2.0, radius, sigma));
+        return SelectFrames(v, info);
+    };
+    // A Bayer capture (floor 3 sensor px = 1.5 luma px): R 14 luma px, warn 0.18 x 14 = 2.52, limit 0.24 x 14
+    // = 3.36 luma px.
+    const ser::FileInfo bayer = Info(1280, 960, ser::ColorId::BayerRGGB);
+    struct Case {
+        double sigmaPrime;
+        bool warned, refused;
+    };
+    for (const Case& c : {Case{2.2, false, false}, Case{2.6, true, false}, Case{3.2, true, false}, Case{3.6, false, true}}) {
+        const Selection sel = select(14, c.sigmaPrime, bayer);
+        INFO("R 14, sigma' " << c.sigmaPrime << ": reading " << sel.focusReading << " (warn " << sel.focusWarn << ", limit "
+                             << sel.focusLimit << ") | " << sel.explanation);
+        REQUIRE(sel.focusJudged);
+        REQUIRE(sel.targetRadius < stack::kMinJudgedRadius);
+        CHECK(sel.focusWarn == Catch::Approx(stack::kBlurWarn));
+        CHECK(sel.focusLimit == Catch::Approx(stack::kBlurLimit));
+        CHECK(sel.focusWarning.empty() != c.warned);
+        CHECK((sel.diagnosis.kind == DiagnosisKind::OutOfFocus) == c.refused);
+        if (c.warned) CHECK(sel.focusWarning.find("may be out of focus") != std::string::npos);
+    }
+    // Mono R 12 (floor 3 px over 0.24 x 12 = 2.88): the floor sets both levels, the band is empty -- a limb
+    // under it can be a focused tiny disc (kBlurFloorPixels), at it the disc is refused.
+    const ser::FileInfo mono = Info(640, 480);
+    for (const Case& c : {Case{2.9, false, false}, Case{3.1, false, true}}) {
+        const Selection sel = select(12, c.sigmaPrime, mono);
+        INFO("mono R 12, sigma' " << c.sigmaPrime << ": reading " << sel.focusReading << " (warn " << sel.focusWarn << ", limit "
+                                  << sel.focusLimit << ") | " << sel.explanation);
+        REQUIRE(sel.focusJudged);
+        CHECK(sel.focusWarn == Catch::Approx(sel.focusLimit));
+        CHECK(sel.focusWarning.empty() != c.warned);
+        CHECK((sel.diagnosis.kind == DiagnosisKind::OutOfFocus) == c.refused);
     }
 }
 

@@ -309,12 +309,14 @@ AxisWeight AxisWeightAt(const RegionLayout& layout, bool vertical, double u) {
     return a;
 }
 
-RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, bool fullFrame) {
+RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, bool fullFrame,
+                          const NoiseModel& noise) {
     CheckLuma(reference, "PlaceRegions");
     const int w = reference.width, h = reference.height;
     RegionLayout lay;
     lay.width = w;
     lay.height = h;
+    lay.noise = noise;
     int bx0 = 0, by0 = 0, bx1 = w, by1 = h;
     if (fullFrame) {
         lay.size = RegionSize(static_cast<double>(std::min(w, h)) / kRegionsAcrossFrame);
@@ -348,7 +350,7 @@ RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& re
 
     // Structure: the predicted error of one frame's local shift (kMaxShiftNoise), from the window's
     // gradient energy less the reference's own noise share (2 s^2 per forward difference).
-    // The region-stage noise reading, chosen once for the capture from the reference (Ruling P25).
+    // The reference's texture-blind noise reading, pixels or bins chosen from it (Ruling P25).
     lay.noiseOnBins = RegionNoiseOnBins(reference, bx0, by0, bx1, by1);
     const double sRef = RegionNoise(reference, bx0, by0, bx1, by1, lay.noiseOnBins).sigma;
     const double sf = std::max(sRef * std::sqrt(static_cast<double>(kReferenceFrames)), kMinFrameNoise);
@@ -388,10 +390,10 @@ RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& re
     return lay;
 }
 
-RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats) {
+RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& refStats, const NoiseModel& noise) {
     CheckLuma(reference, "PlaceRegions");
     const bool full = !refStats.targetFound || FillsFrame(refStats, reference.width, reference.height);
-    return PlaceRegions(reference, refStats, full);
+    return PlaceRegions(reference, refStats, full, noise);
 }
 
 RegionMeasurer::RegionMeasurer(const ser::FloatImage& reference, const RegionLayout& layout) : layout_(layout) {
@@ -403,14 +405,6 @@ RegionMeasurer::RegionMeasurer(const ser::FloatImage& reference, const RegionLay
     pyr[0] = reference;
     for (int l = 1; l < kLocalLevels; ++l) Halve(pyr[l - 1].data.data(), pyr[l - 1].width, pyr[l - 1].height, pyr[l], tmp);
     windows_.resize(layout.regions.size());
-    ex0_ = layout.width;
-    ey0_ = layout.height;
-    for (const Region& reg : layout.regions) {
-        ex0_ = std::min(ex0_, reg.x0);
-        ey0_ = std::min(ey0_, reg.y0);
-        ex1_ = std::max(ex1_, reg.x1);
-        ey1_ = std::max(ey1_, reg.y1);
-    }
     for (size_t r = 0; r < layout.regions.size(); ++r) {
         const Region& reg = layout.regions[r];
         for (int l = 0; l < kLocalLevels; ++l) {
@@ -460,10 +454,32 @@ FrameRegions RegionMeasurer::Measure(const ser::FloatImage& frameLuma, int64_t f
     out.regions.resize(layout_.regions.size());
     if (layout_.regions.empty()) return out;
 
-    // Texture-blind (MeasureFrame's smoothest-tile estimate reads a lunar surface's texture as noise and
-    // would zero the quality of every smooth region): RegionNoise over the windows' extent, on the
-    // pixels or the bins as the layout chose for the capture (Ruling P25).
-    const NoiseEstimate noise = RegionNoise(frameLuma, ex0_, ey0_, ex1_, ey1_, layout_.noiseOnBins);
+    // Each pixel's noise variance, once for every window (the regions' windows overlap): the capture's model
+    // at its 3 x 3 mean (PixelVariance, Ruling P26), over the regions' extent moved by the global shift and
+    // grown by the most a local shift adds (the windows' quality rectangles all lie inside it). An
+    // unmeasured model (a capture of 1-3 frames, Noise.h): the frame's own texture-blind reading there.
+    int ex0 = layout_.width, ey0 = layout_.height, ex1 = 0, ey1 = 0;
+    for (const Region& reg : layout_.regions) {
+        ex0 = std::min(ex0, reg.x0);
+        ey0 = std::min(ey0, reg.y0);
+        ex1 = std::max(ex1, reg.x1);
+        ey1 = std::max(ey1, reg.y1);
+    }
+    const int reachX = static_cast<int>(std::ceil(kMaxLocalShift)) + 1;
+    const int gx = static_cast<int>(std::lround(global.dx)), gy = static_cast<int>(std::lround(global.dy));
+    ex0 = std::clamp(ex0 + gx - reachX, 0, frameLuma.width);
+    ey0 = std::clamp(ey0 + gy - reachX, 0, frameLuma.height);
+    ex1 = std::clamp(ex1 + gx + reachX, 0, frameLuma.width);
+    ey1 = std::clamp(ey1 + gy + reachX, 0, frameLuma.height);
+    NoiseModel ownSky;
+    if (!layout_.noise.Measured()) ownSky = NoiseModel::FromSkyNoise(RegionNoise(frameLuma, ex0, ey0, ex1, ey1, layout_.noiseOnBins));
+    const NoiseModel& frameNoise = layout_.noise.Measured() ? layout_.noise : ownSky;
+    thread_local std::vector<float> variance;
+    variance.clear();
+    if (!frameNoise.Zero() && ex1 > ex0 && ey1 > ey0) {
+        variance.resize(static_cast<size_t>(ex1 - ex0) * (ey1 - ey0));
+        PixelVariance(frameLuma.data.data(), frameLuma.width, ex0, ey0, ex1, ey1, frameNoise, variance.data(), ex1 - ex0);
+    }
     thread_local std::vector<ser::FloatImage> pyr;
     thread_local std::vector<float> sample, tmp;
     pyr.resize(kLocalLevels);
@@ -628,9 +644,11 @@ FrameRegions RegionMeasurer::Measure(const ser::FloatImage& frameLuma, int64_t f
         m.confidence = static_cast<float>(ok ? ncc : 0);
         if (m.aligned) {
             const QualityEstimate q =
-                RegionQuality(frameLuma.data.data(), frameLuma.width, rx0, ry0, rx1, ry1, sMean, noise);
+                RegionQuality(frameLuma.data.data(), frameLuma.width, rx0, ry0, rx1, ry1, sMean, frameNoise,
+                              variance.empty() ? nullptr : variance.data(), ex0, ey0, ex1 - ex0);
             m.quality = static_cast<float>(q.quality);
             m.qualitySigma = static_cast<float>(q.sigma);
+            m.quality2Sigma = static_cast<float>(q.sigma2);
             gainNum += sSum;
             gainDen += tSum;
         }
@@ -695,7 +713,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             if (conf.empty()) continue;
             std::sort(conf.begin(), conf.end());
             d.confidenceCut = kAlignRelative * conf[(conf.size() - 1) / 2];
-            std::vector<double> q, sg;
+            std::vector<double> q, sg, sg2;
             std::vector<size_t> pos;
             for (size_t f = 0; f < nf; ++f) {
                 const RegionMeasure& m = measured[order[f]].regions[r];
@@ -704,6 +722,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
                 if (!(std::isfinite(m.quality) && m.quality > 0)) continue;
                 q.push_back(m.quality);
                 sg.push_back(m.qualitySigma);
+                sg2.push_back(m.quality2Sigma);
                 pos.push_back(f);
             }
             const auto n = static_cast<int64_t>(q.size());
@@ -729,7 +748,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             // frame the global one, Select's suspects included once admitted); a trail or a hot pixel that
             // raises one frame's quality here is removed sample by sample in the Accumulator, not by
             // dropping the frame, and a garbage frame does not align.
-            const DetailRanking rank = RankByDetail(q, sg, need, floorCount, false);
+            const DetailRanking rank = RankByDetail(q, sg, sg2, need, floorCount, false);
             std::vector<double> keptSigma;
             for (size_t k = 0; k < rank.keep; ++k) {
                 const size_t i = rank.ranked[k];

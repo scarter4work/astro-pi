@@ -23,7 +23,10 @@ namespace planetary::stack {
 // The passes (every one reads through the hot-pixel wrapper below, so no stage sees an unrepaired frame):
 //  0. Hot pixels: kHotPixelFrames frames spread evenly over the capture (frame i * N / n) are observed
 //     by HotPixelMap, one map per worker, merged; Finish decides the sensor's hot sites.
-//  1. Measuring: MeasureAll over every frame; SelectFrames (no image when it diagnoses).
+//  1. Measuring: the capture's noise model (FitNoiseModel over NoiseRuns: runs of consecutive frames,
+//     Noise.h, Ruling P26), then MeasureAll over every frame with it; SelectFrames (no image when it
+//     diagnoses). The model is every detail measure's noise: the frames', and the regions' (the layout
+//     carries it).
 //  2. Aligning: BuildReference from the clean selection (suspects never enter it, Ruling P6); the
 //     region layout is placed on it (PlaceRegions with the capture-level fullFrameTarget). Then one
 //     streaming pass (Ruling P1) over the selected frames AND the suspects, ascending: per frame its
@@ -35,9 +38,13 @@ namespace planetary::stack {
 //     reads the kFocusFrames sharpest kept frames once more and can only warn, never refuse.
 //  3. Stacking: Accumulator over every frame the plan uses (RegionPlan::Uses), each read once more,
 //     DemosaicHQ, Add; Finish is the image.
-// So the capture is read in full once (measuring), then the selected frames once (aligning) and the
-// stacked ones once more (stacking); BuildReference and the focus measure read up to kReferenceFrames
-// frames each.
+// So the noise model's runs are read first, once per pass (35 frames per run of 32 triples, up to
+// kNoiseResponses responses: 807 triples, 885 frames, of the 240 x 180-luma Jupiter 195830, 65 triples, 74
+// frames, of the 1080p Moon 193142, stack-region-probe's "noise" line; both passes 1.41 s of Jupiter
+// 195830's 5.29 s, 0.89 s of the Moon 193142's 30.4 s, stack-probe's phase times on the 32-thread
+// development machine), then
+// the capture in full once (measuring), the selected frames once (aligning) and the stacked ones once
+// more (stacking); BuildReference and the focus measure read up to kReferenceFrames frames each.
 // ResidualScale observes every frame of the alignment pass over kMinAlignConfidence: a superset of
 // the frames stacked, since the cut and the plan come after the pass. The extra frames -- those between
 // the floor and the cut (torn or shaken: 6 of 1750 on the 2023-02-02 Moon, Align.h) and those no region
@@ -53,7 +60,7 @@ namespace planetary::stack {
 //
 // Progress (StackTypes.h): three phases, in this order, each reported from the calling thread with a
 // fixed total and a done count that only grows and ends at the total:
-//   kPhaseMeasuring  done / (hot-pixel frames + every frame)
+//   kPhaseMeasuring  done / (hot-pixel frames + kNoisePasses x the noise model's runs + every frame)
 //   kPhaseAligning   done / (3 x the reference's frames + the frames of the alignment pass + up to
 //                    kFocusFrames read for the focus measure); a turned-down reference anchor
 //                    (Align.h) is folded into the first part
@@ -86,6 +93,11 @@ constexpr int kHotPixelFrames = 64;
 //    region alignment against 26 ms observing, so 32 workers need ~9 observers busy.
 //  - Per worker: the raw frame (2 bytes per sample), its luma (4 per luma pixel) and alignment
 //    scratch (kWorkerScratchBytes: the correlation windows, at most 512 x 512 complex doubles twice);
+//    the regions' and the frame quality's noise variances over their rectangles (4 per luma pixel at
+//    most, and three rows of doubles: Ruling P26); the noise phase's four NoisePlanes (8 bytes per
+//    sampled centre, at most kNoiseResponsesPerTriple of them) and the runs it holds for its in-order
+//    merge, counted for the measuring workers when larger (noiseWorkerBytes: larger on a small frame,
+//    a 64 x 64 luma's 223 KB; 4K mono's 84 MB is under the 166 MB a measuring worker holds);
 //    in the stacking pass the demosaic's two float planes (8 bytes per pixel) and the demosaiced frame
 //    with room for its prefilter (8 bytes per output sample).
 //    Workers per pass are capped so fixed + observers + workers stay within kMemoryBudget (a 4K RGB
@@ -107,6 +119,7 @@ struct MemoryPlan {
     int observers = 1;                 // ResidualScale instances
     size_t observerBytes = 0;          // one instance
     size_t measureWorkerBytes = 0, alignWorkerBytes = 0, stackWorkerBytes = 0;  // one worker of each pass
+    size_t noiseWorkerBytes = 0;  // one noise-phase worker (FitNoiseModel), within measureWorkerBytes
     size_t fixedBytes = 0;             // Accumulator sums, reference, residual scale
     size_t focusBytes = 0;             // the focus measure's kFocusFrames luma frames
     // The largest of the three passes' totals (fixed + observers + workers): what the engine itself holds
@@ -193,7 +206,13 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 //     195137 (R 11.8) 0.071, Neptune 204515 (R 2.0) 0.378;
 //   195830 blurred 2 / 4 / 8 / 16: 0.26 / 0.38 / 0.53 / 0.57; Neptune blurred 1 / 2 / 3: 0.49 / 0.55 /
 //   0.57 (by 4 it is no longer found: NoTarget).
-// kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px.
+// kDiscWarnAbove 0.4 (Neptune's 0.378 at 851ba41b, rounded up; 0.382 at head, stack-probe): a Jupiter is
+// warned from a blur of ~5 sensor px. A large one later, in sensor px: the 2022-09-17 1080p Jupiters (R
+// 20.2-20.7 luma px, all frames; test/run-focus-survey.sh stack) blurred 4 / 8 / 12 / 16 read 230420 0.241
+// / 0.310 / 0.409 / 0.473 (warned from 12) and 225418 0.228 / 0.305 / 0.385 (at 16 Select refuses it) --
+// so 225418 at 12 px, under kGrossBlurLimit, is not warned here; step 7's warn band warns it (Ruling P15b,
+// Select.h kGrossBlurWarn), and RunStack reports one focus warning: this one when it fires, else the
+// selection's.
 //
 // A frame-filling target: the measure is the detail scale D in sensor px, pooled over Hann-tapered
 // windows of kFocusWindow sensor px on the placed regions (FocusWindows, JudgeFocus; the taper's own
@@ -352,7 +371,7 @@ struct StackSummary {
     //             image: Select's diagnoses and Unaligned.
     std::string selection, alignment;
     double seconds = 0;      // wall time of the whole call
-    // Wall time per step, in order: "Hot pixels", "Measuring frames", "Selecting", "Building
+    // Wall time per step, in order: "Hot pixels", "Measuring noise", "Measuring frames", "Selecting", "Building
     // reference", "Aligning frames", "Planning regions", "Judging focus", "Stacking" (steps not reached
     // are absent).
     std::vector<std::pair<std::string, double>> phaseSeconds;
@@ -368,7 +387,8 @@ struct StackSummary {
     int64_t rejectedCells = 0;  // Accumulator::RejectedCells
     MemoryPlan memory;       // the plan the passes ran with
     // The region-stage focus verdict and its numbers (Rulings P4, P15). Warned: the image is made and
-    // `warnings` holds FocusWarning(focus).
+    // `warnings` holds FocusWarning(focus); otherwise it holds the selection's focusWarning when step 7's warn
+    // band fired (Ruling P15b) -- one focus warning at most.
     FocusCheck focus;
 };
 
