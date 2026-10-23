@@ -430,6 +430,13 @@ void PICopilotInterface::SendCurrentInput()
 
 void PICopilotInterface::StartRequest()
 {
+   if ( PICopilotUnloadStarted() )
+   {
+      // File > Quit ran OnUnload inside this turn (a tool's event pump): no new request once unload began.
+      EndTurn( m_session.AbortTurn( "PixInsight is quitting: the turn ended without another request",
+                                    RequestErrorKind::Cancelled ), 0 );
+      return;
+   }
    String why;
    if ( !HistoryIsApiValid( m_session.History(), why ) )
    {
@@ -717,7 +724,9 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
    const ProcessActivityState activity = (!m_stopRequested && imageTools) ? CurrentProcessActivity()
                                                                           : ProcessActivityState();
    const double waited = std::chrono::duration<double>( std::chrono::steady_clock::now() - m_heldSince ).count();
-   switch ( DecideHeldReply( m_stopRequested, m_heldResult.ok, imageTools, activity.busy, waited, m_busyWaitNoted ) )
+   // CurrentProcessActivity() pumps events: a Quit handled there means no tool runs (they report "not executed").
+   switch ( DecideHeldReply( m_stopRequested || PICopilotUnloadStarted(), m_heldResult.ok, imageTools, activity.busy,
+                             waited, m_busyWaitNoted ) )
    {
    case HeldReplyAction::WaitAndNote:
       AppendToLog( PlainText( "(waiting for PixInsight: " + activity.reason + ". PI Copilot changes an image only "
@@ -752,7 +761,7 @@ void PICopilotInterface::e_Poll_Timer( Timer& )
       const ToolContext ctx = MakeToolContext();
       s = m_session.OnResponse( r,
          [&ctx]( const ToolCall& call ) { return ExecuteTool( call, ctx ); },
-         [this]() { return m_stopRequested; },
+         [this]() { return m_stopRequested || PICopilotUnloadStarted(); },   // no further tool once quitting
          [this]( const String& line ) { AppendToLog( PlainText( line ) + "\n" ); } );
    }
    m_handlingResult = false;

@@ -29,6 +29,13 @@ public:
 
 extern PICopilotModule* ThePICopilotModule;
 
+// True from the first line of OnUnload on: PixInsight is quitting. OnUnload can
+// run INSIDE our own code (any event pump dispatches File > Quit, see
+// JourneyService), so code that resumes afterwards checks this and starts
+// nothing new: no model request, no journey write-up, no further tool.
+// Root thread.
+bool PICopilotUnloadStarted();
+
 } // namespace pcl
 
 #endif // __PICopilotModule_h

@@ -105,8 +105,19 @@ void PICopilotModule::OnLoad()
       JourneyService::Instance().Start();
 }
 
+namespace
+{
+bool g_unloadStarted = false;
+} // namespace
+
+bool PICopilotUnloadStarted()
+{
+   return g_unloadStarted;
+}
+
 void PICopilotModule::OnUnload()
 {
+   g_unloadStarted = true;   // first: whatever resumes after this call (see the header) starts nothing new
    JourneyService::Instance().Stop();
    DisarmJourneySpikeProbe();
 }

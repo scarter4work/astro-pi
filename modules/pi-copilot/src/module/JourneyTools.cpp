@@ -7,6 +7,7 @@
 #include "WorkspaceIcons.h"
 #include "MasterFacts.h"
 #include "ToolHelpers.h"   // TextBlock, StringField, Fail (shared with AgentTools)
+#include "PICopilotModule.h"   // PICopilotUnloadStarted
 #include "Utf8.h"
 #include "ViewContext.h"   // ViewContextFileName
 
@@ -783,6 +784,13 @@ KeepFlowResult RunKeepFlow( JourneyToolHost& host, int64 journeyId, const IsoStr
          r.declined = true;
          r.message = r.modelMessage = "The user declined to keep this journey; nothing was kept. Do not ask again unless "
                                       "they bring it up.";
+         return r;
+      }
+      if ( PICopilotUnloadStarted() )
+      {
+         // File > Quit ran OnUnload while the confirm was up (its event pump): nothing is kept and no write-up
+         // request starts once unload began.
+         r.message = r.modelMessage = "PixInsight is quitting: the journey was not kept.";
          return r;
       }
       int64 endImage = 0;
