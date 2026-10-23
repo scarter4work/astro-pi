@@ -22,18 +22,21 @@ noise-power k over the box (stack-region-probe --keff-box, the judged reading; t
 reading beside it). The measured / model ratio is taken per END bin and summarised over
 0.21-0.30 cycles/px, where END's restoration error is decided.
 
-THE CALIBRATION (calibrate; Ruling P28 fix rounds 1-3). The engine is run on synthetic RGGB captures
+THE CALIBRATION (calibrate; Ruling P28 fix rounds 1-4). The engine is run on synthetic RGGB captures
 whose truth is known -- a banded disc and a lunar field, static, 6 scenes per kind (CAL_SEEDS) each at
-0.3 and 0.7 px of per-frame jitter, 8-bit, noise of variance a m + c, 600 frames -- split even/odd,
-stacked with stack-probe, both halves' k over A's target box from stack-region-probe, and the ratio
-taken with the MEASURED photon-transfer line (noise.photon_transfer on the first FRAMES frames, as a real
-capture is measured; review I-F), so the estimator's read-high (+7 % on a disc) sits in R_cal as it
-sits in R. D holds the engine's own noise only (the synthetics are static: the halves never choose
-different frames, so the real-data term "unshared signal" is absent by construction -- on real data it
-can only raise R). Per kind it gives R_cal(f), the engine's honest ratio per END bin, and the tolerance
-over 0.21-0.30: mean -+ k s (s over every run, ddof 1), k the two-sided normal tolerance factor at 99 %
-coverage and 95 % confidence for n_eff = the number of SCENES (the scene, not the jitter, dominates the
-spread: review N2-m2). `calibrate --write` freezes it in bench/calibration.json.
+0.3 and 0.7 px of per-frame jitter (CAL_JITTERS), each without and with a 3 DN black pedestal
+(CAL_PEDESTALS; re-review 3 N3-m6: every real capture but one fits a negative intercept), 8-bit,
+noise of variance a s + c, 600 frames -- split even/odd, stacked with stack-probe, both halves' k over
+A's target box from stack-region-probe, and the ratio taken with the MEASURED photon-transfer line
+(noise.photon_transfer on the first FRAMES frames, as a real capture is measured; review I-F), so the
+estimator's read-high (+7 % on a disc) sits in R_cal as it sits in R. D holds the engine's own noise
+only (the synthetics are static: the halves never choose different frames, so the real-data term
+"unshared signal" is absent by construction -- on real data it can only raise R). Per kind it gives
+R_cal(f), the engine's honest ratio per END bin (the mean over every run), and the tolerance over
+0.21-0.30: mean -+ k s (s over every run, ddof 1), k the
+two-sided normal tolerance factor at 99 % coverage and 95 % confidence for n_eff = the number of SCENES
+(the scene, not the jitter or the pedestal, dominates the spread: review N2-m2).
+`calibrate --write` freezes it in bench/calibration.json.
 What is guaranteed about real data: calibrate opens no capture (synthetic_frames only), and
 calibration.json is committed on its own, before the real-data run that uses it -- git history shows
 the order. What is NOT claimed: that the procedure predates real data. Earlier rounds read real
@@ -69,7 +72,10 @@ import refs      # noqa: E402
 BAYER_RGGB = 8
 HIGH_BINS = slice(5, 8)          # END_EDGES bins 0.21-0.24, 0.24-0.27, 0.27-0.30
 CALIBRATION_FILE = os.path.join(HERE, "calibration.json")
-CAL_SEEDS = (1, 2, 3, 4, 5, 6)        # scenes per kind (each at jitter 0.3 and 0.7 px)
+CAL_SEEDS = (1, 2, 3, 4, 5, 6)        # scenes per kind (each at every CAL_JITTERS and CAL_PEDESTALS)
+CAL_JITTERS = (0.3, 0.7)              # px of per-frame jitter
+CAL_PEDESTALS = (0.0, 3.0)            # DN of black offset (re-review 3 N3-m6: the real captures' regime)
+CAL_SHOT, CAL_READ, CAL_PEDESTAL_READ = 0.15, 0.6, 0.05   # noise a s + c; c with the pedestal (a sky that rounds flat)
 COVERAGE, CONFIDENCE = 0.99, 0.95     # the tolerance interval: 99 % of honest runs, at 95 % confidence
 TILE = 32                             # px: refined_difference removes each tile's local shift (Ruling P28d)
 
@@ -296,18 +302,24 @@ def summary_line(rec) -> str:
 
 # --- calibration: the engine's own ratio on synthetic captures ---------------------------------
 
-def synthetic_frames(kind, n, jitter, a, c, seed, blur=None):
-    """(frames n x h x w uint8 RGGB mosaic, noise-free mean frame in DN, PhotonTransfer truth).
+def synthetic_frames(kind, n, jitter, a, c, seed, blur=None, pedestal=0.0):
+    """(frames n x h x w uint8 RGGB mosaic, mean frame in DN (noise-free, pedestal included),
+    PhotonTransfer truth). Noise of variance a s + c on the signal s.
     `blur`: None (every frame at the scene's own seeing, as the calibration uses), or n per-frame
     Gaussian sigmas in px applied on top -- per-frame seeing, a real reason for the engine to keep a
-    subset (ruling E3). The jitter and noise draws are the same either way."""
+    subset (ruling E3). The jitter and noise draws are the same either way.
+    `pedestal` b > 0: the capture regime of every real bench capture but one (re-review 3 N3-m6) -- the
+    sky has no signal (a 4 / 6 DN sky becomes 0 / a 0-2 DN strip), b DN of black offset is added after
+    the noise, so a sky with a small c rounds to one 8-bit value, and the line is v = a m + (c + 1/12 -
+    a b): a negative intercept, as the real captures fit (-0.03 to -3.17)."""
     from conftest import lunar_scene, planet_scene
     rng = np.random.default_rng(seed)
+    sky = 0.0 if pedestal else (4.0 if kind == "disc" else 6.0)
     if kind == "disc":
-        scene = 4 + 200 * planet_scene(size=(240, 320), radius=55, seed=seed, seeing=1.2)
+        scene = sky + 200 * planet_scene(size=(240, 320), radius=55, seed=seed, seeing=1.2)
     else:
-        scene = 6 + 180 * lunar_scene(size=(288, 384), seed=seed, seeing=1.2)
-        scene[:, :60] = 6 + 2 * rng.random((scene.shape[0], 60))   # sky beside a limb
+        scene = sky + 180 * lunar_scene(size=(288, 384), seed=seed, seeing=1.2)
+        scene[:, :60] = sky + 2 * rng.random((scene.shape[0], 60))   # sky beside a limb
         scene = ndimage.gaussian_filter(scene, 0.8)
     gains = np.empty_like(scene)
     gains[0::2, 0::2], gains[0::2, 1::2], gains[1::2, 0::2], gains[1::2, 1::2] = 1.0, 0.8, 0.8, 0.55
@@ -325,10 +337,10 @@ def synthetic_frames(kind, n, jitter, a, c, seed, blur=None):
     for i in range(n):
         Fi = F if blur is None or blur[i] == 0 else F * np.exp(-2 * np.pi ** 2 * blur[i] ** 2 * f2)
         shifted = np.real(np.fft.ifft2(ndimage.fourier_shift(Fi, rng.normal(0, jitter, 2))))[:h, :w] * gains
-        total += shifted
+        total += shifted + pedestal
         noisy = shifted + rng.standard_normal(scene.shape) * np.sqrt(a * np.clip(shifted, 0, None) + c)
-        frames.append(np.clip(np.round(noisy), 0, 255))
-    ptc = noise.PhotonTransfer(a, c + noise.QUANTISATION, (), 0, n - 1)
+        frames.append(np.clip(np.round(noisy + pedestal), 0, 255))
+    ptc = noise.PhotonTransfer(a, c + noise.QUANTISATION - a * pedestal, (), 0, n - 1)
     return np.array(frames, dtype=np.uint8), total / n, ptc
 
 
@@ -339,17 +351,29 @@ def _run(cmd):
     return r.stdout
 
 
+def calibration_conditions():
+    """(kind, jitter, scene, pedestal) of every calibration run: each scene at each jitter, without and
+    with the black pedestal (CAL_PEDESTALS; re-review 3 N3-m6)."""
+    return [(k, j, s, p) for k in ("disc", "lunar") for j in CAL_JITTERS for s in CAL_SEEDS for p in CAL_PEDESTALS]
+
+
+def condition_tag(kind, jitter, seed, pedestal=0.0):
+    return f"{kind}-j{jitter}-s{seed}" + (f"-p{pedestal:g}" if pedestal else "")
+
+
+
 def calibrate(work, stack_probe, region_probe, conditions=None):
-    """The engine's measured / model over 0.21-0.30 on synthetic captures (see THE TOLERANCE)."""
+    """The engine's measured / model over 0.21-0.30 on synthetic captures (see THE CALIBRATION)."""
     os.makedirs(work, exist_ok=True)
-    conditions = conditions or [(k, j, s) for k in ("disc", "lunar") for j in (0.3, 0.7) for s in CAL_SEEDS]
+    conditions = conditions or calibration_conditions()
     out = []
-    for kind, jitter, seed in conditions:
-        frames, mean, truth = synthetic_frames(kind, 600, jitter, 0.15, 0.6, seed)
+    for kind, jitter, seed, pedestal in conditions:
+        c = CAL_PEDESTAL_READ if pedestal else CAL_READ
+        frames, mean, truth = synthetic_frames(kind, 600, jitter, CAL_SHOT, c, seed, pedestal=pedestal)
         # The MEASURED photon-transfer line, from the capture's first frames as noise.measure_video takes
         # a real capture's (review I-F): the estimator's own bias then sits in R_cal as it does in R.
         ptc = noise.photon_transfer(frames[:noise.FRAMES])
-        tag = f"{kind}-j{jitter}-s{seed}"
+        tag = condition_tag(kind, jitter, seed, pedestal)
         k, probes, sers, fits = {}, [], {}, {}
         for half, sl in (("A", slice(0, None, 2)), ("B", slice(1, None, 2))):
             sers[half] = os.path.join(work, f"{tag}-{half}.ser")
@@ -371,8 +395,9 @@ def calibrate(work, stack_probe, region_probe, conditions=None):
             k[half] = kv
             os.remove(sers[half])
         r = ratio(os.path.join(work, f"{tag}-A.fits"), os.path.join(work, f"{tag}-B.fits"), k["A"], k["B"], ptc, mean)
-        out.append({"condition": tag, "kind": kind, "scene": seed, "k": [k["A"], k["B"]], "high": r["high"],
-                    "ratio": r["ratio"], "ptc": [ptc.a, ptc.c], "ptc_true": [truth.a, truth.c],
+        out.append({"condition": tag, "kind": kind, "scene": seed, "jitter": jitter, "pedestal": pedestal,
+                    "k": [k["A"], k["B"]], "high": r["high"], "ratio": r["ratio"], "tiles": r["tiles"],
+                    "ptc": [ptc.a, ptc.c], "ptc_true": [truth.a, truth.c],
                     "mean_kept_k": [benchset.ours_frames_mean(pr) for pr in probes]})
         print(f"{tag}: k {k['A']:.0f}/{k['B']:.0f}, 0.21-0.30 x{r['high']:.3f}, per bin "
               + " ".join(f"{v:.2f}" for v in r["ratio"]), flush=True)
@@ -407,12 +432,16 @@ def _main(argv=None):
         n, m, sd = len(hs), float(hs.mean()), float(hs.std(ddof=1))
         n_eff = len({r["scene"] for r in rs})      # the scene dominates the spread (review N2-m2)
         kf = tolerance_factor(n_eff)
-        kinds[kind] = {"n": n, "n_eff": n_eff, "high_mean": m, "high_sd": sd, "tolerance_factor": kf,
-                       "tolerance": [max(m - kf * sd, 0.0), m + kf * sd],
+        lo, hi = max(m - kf * sd, 0.0), m + kf * sd
+        by_ped = {f"{p:g}": float(np.mean([r["high"] for r in rs if r["pedestal"] == p])) for p in CAL_PEDESTALS}
+        kinds[kind] = {"n": n, "n_eff": n_eff, "high_mean": m, "high_sd": sd,
+                       "high_min": float(hs.min()), "high_max": float(hs.max()), "high_mean_by_pedestal": by_ped,
+                       "tolerance_factor": kf, "tolerance": [lo, hi],
                        "r_cal": [float(v) for v in np.mean([r["ratio"] for r in rs], axis=0)],
                        "runs": rs}
-        print(f"{kind}: n {n} (scenes {n_eff}), 0.21-0.30 mean {m:.3f} sd {sd:.3f} (ddof 1), k {kf:.2f}: tolerance "
-              f"{kinds[kind]['tolerance'][0]:.3f}-{kinds[kind]['tolerance'][1]:.3f}; r_cal per bin "
+        print(f"{kind}: n {n} (scenes {n_eff}), 0.21-0.30 mean {m:.3f} sd {sd:.3f} (ddof 1), runs {hs.min():.3f}-"
+              f"{hs.max():.3f}, mean by pedestal " + ", ".join(f"{p} DN {v:.3f}" for p, v in by_ped.items())
+              + f"; k {kf:.2f}: tolerance {lo:.3f}-{hi:.3f}; r_cal per bin "
               + " ".join(f"{v:.2f}" for v in kinds[kind]["r_cal"]))
     if a.write:
         import datetime

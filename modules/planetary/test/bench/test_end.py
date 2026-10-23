@@ -617,6 +617,32 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
         assert not naive["high"] == pytest.approx(cal["high_mean"], rel=0.30)
 
 
+def test_the_calibration_runs_every_scene_and_jitter_with_and_without_a_pedestal():
+    """Re-review 3 N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative intercept (a black
+    pedestal), so the calibration measures that regime too, on the same scenes and jitters."""
+    import halves
+    conds = halves.calibration_conditions()
+    for kind in ("disc", "lunar"):
+        for j in halves.CAL_JITTERS:
+            for s in halves.CAL_SEEDS:
+                assert {p for k, jj, ss, p in conds if (k, jj, ss) == (kind, j, s)} == {0.0, 3.0}
+
+
+def test_a_pedestal_synthetic_fits_the_negative_intercept_real_captures_fit():
+    """Re-review 3 N3-m6: with the pedestal the sky rounds to one 8-bit value and the line is
+    v = a m + (c + 1/12 - a b) < 0, as the real captures' fits read (-0.03 to -3.17); the measured line
+    must find it, as on the real captures, or the calibration would not represent them."""
+    import halves
+    for kind in ("disc", "lunar"):
+        frames, _, truth = halves.synthetic_frames(kind, noise.FRAMES, 0.3, halves.CAL_SHOT, halves.CAL_PEDESTAL_READ,
+                                                   1, pedestal=3.0)
+        m = noise.photon_transfer(frames)
+        print(f"\n{kind}, 3 DN pedestal: {m}, zero at {-m.c / m.a:.2f} DN; true a {truth.a}, c {truth.c:.3f}")
+        assert truth.c < 0 and m.c < 0
+        assert m.a == pytest.approx(truth.a, rel=0.08)
+        assert m.c == pytest.approx(truth.c, abs=0.15)
+
+
 # --- Ruling P28b: ours charged its measured noise -----------------------------------------------
 
 def test_charge_is_the_measured_ratio_over_the_calibrated_one_never_below_one():
