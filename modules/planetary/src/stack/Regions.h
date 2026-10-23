@@ -133,11 +133,15 @@ struct Region {
 //    193142 0.025 and 193554 0.028 on their first 300 frames) and 0.028-0.079 on the discs (Saturn 0.079 the
 //    highest), against 0.173 for the test's dark mare (0.3 of the surface, frame noise 0.02, 20% of the frame;
 //    unguarded it lost 2170 of its 15311 px to m < 1) and 0.011 for its sky sliver. 0.09 is near the geometric
-//    mean of 0.052 and 0.173 (1.7x over the highest real sky, 1.9x under the mare); a mare darker still, or
-//    shadow at a sky's level, is masked -- the fallback there, where shadow has no lucky detail. The share
-//    under the threshold: 0.32-0.57 on those Moons, 0.022 for the 2.3% sliver (masked now; at 0.05 it was not),
-//    0.067 for the mare; 0.015 keeps the dark end a population, not just the quantile's own tail. No real
-//    capture without sky was at hand.
+//    mean of 0.052 and 0.173 (1.7x over the highest frame-filling sky -- discs never meet this test -- and
+//    1.9x under the mare). On that synthetic a mare loses regions only below ~0.15 of the surface at 40% of
+//    the frame, ~0.10 at 6% or more (re-review 2's PlaceRegions sweep on e2e9e27b); real maria sit at
+//    ~0.4-0.6 of the highlands. Shadow at a sky's level is masked -- the fallback there, where shadow has no
+//    lucky detail. The share under the threshold: 0.32-0.57 on those Moons, 0.022 for the 2.3% sliver (masked
+//    now; at 0.05 it was not), 0.067 for the mare, and 0.017-0.027 for sky-free MakeSurface frames at frame
+//    noise 0.0025-0.02 (re-review 2): the share passes those and kMaxSkyLevel is what keeps them unmasked. The
+//    share's measured effect is the sliver edge: a sky corner under ~1.5% of the frame stays unmasked (1.35%
+//    measured). No real capture without sky was at hand.
 // The measured residual, accepted (fix round 1 ruling): just outside a Moon's mask the region stacks' glow is
 // darker than the fallback's -- 5.7-6.4e-4 below the sky 40 px out on the 2023-02-12 Moon, ~3% of its sky, over
 // ~10 luma px (the taper and grow), at grow 2-8 / taper 4-8 alike (stack-region-probe, 687fcb09's tree, mean
