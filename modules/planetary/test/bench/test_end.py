@@ -558,23 +558,30 @@ def test_region_probe_box_k_matches_analytic_layouts():
 
 
 @pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")
-@pytest.mark.parametrize("kind, jitter, seed, n", [("disc", 0.5, 7, 400), ("lunar", 0.6, 10, 600)])
-def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed, n):
+@pytest.mark.parametrize("kind, jitter, seed, n, steady", [("disc", 0.5, 7, 400, None), ("lunar", 0.6, 10, 600, 0.3)])
+def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed, n, steady):
     """Synthetic RGGB frames of known noise (a m + c) -> noise.photon_transfer -> the engine stacks the
     even and odd halves -> stack-region-probe's noise-power k over A's box (checked against
     stack-probe's plan) -> noise.box_noise -> the halves' difference against sigma_frame^2 (1/k_A +
     1/k_B) / 4, with the MEASURED photon-transfer line. It must lie within the kind's frozen tolerance
     and within 30 % of the kind's calibrated ratio. Both cases are held out of the calibration (scenes 7
     and 10, outside halves.CAL_SEEDS, at jitters it does not use), so the 30 % check is not circular
-    (review N2-m4). The lunar case is one where the engine's regions keep few frames over the box (k 18
-    and 16 of 300): there the half's frame count as k misses the model by about 17 x, so the test
-    discriminates the k (review M2). (The box k and the mean-kept reading agree on these synthetics,
-    whose regions are alike, so they are not told apart here.)"""
+    (review N2-m4).
+    The lunar case carries per-frame seeing (ruling E3): a random `steady` share of the frames at the
+    scene's own seeing, the rest blurred by a further sigma 1.5 px. The engine then has a real reason
+    to keep a subset, so its box k is well under the half's frame count, and the half's frame count as
+    k misses the model: the test discriminates the k (review M2). The two seeing levels are far apart,
+    so each half keeps steady frames only and the kept sets hold the same blur (no unshared signal in
+    D, as in the calibration). Until fix round 4 this case relied on the generator's wrapped edge
+    (e3-report.md), which made the engine keep 18 and 16 of 300 for a reason the scene did not have.
+    (The box k and the mean-kept reading agree on these synthetics, whose regions are alike, so they
+    are not told apart here.)"""
     import halves
     import json as _json
     assert seed not in halves.CAL_SEEDS
     assert f"{kind}-j{jitter}-s{seed}" not in {r["condition"] for r in halves.load_calibration()["kinds"][kind]["runs"]}
-    frames, mean, truth = halves.synthetic_frames(kind, n, jitter, 0.15, 0.6, seed)
+    blur = None if steady is None else np.where(np.random.default_rng(seed + 1000).random(n) < steady, 0.0, 1.5)
+    frames, mean, truth = halves.synthetic_frames(kind, n, jitter, 0.15, 0.6, seed, blur=blur)
     measured = noise.photon_transfer(frames[:64])
     print(f"\nphoton transfer {measured} (true a {truth.a}, c {truth.c:.3f})")
     assert measured.a == pytest.approx(truth.a, rel=0.10)
@@ -601,10 +608,12 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
     r = halves.ratio(str(tmp_path / "hA.fits"), str(tmp_path / "hB.fits"), k["A"], k["B"], measured, mean)
     naive = halves.ratio(str(tmp_path / "hA.fits"), str(tmp_path / "hB.fits"), n // 2, n // 2, measured, mean)
     print(f"{kind}: k {k['A']:.0f}/{k['B']:.0f} (used {used['A']}/{used['B']}): 0.21-0.30 x{r['high']:.3f} "
-          f"(calibrated {cal['high_mean']:.3f}); with the half's {n // 2} frames as k x{naive['high']:.3f}")
+          f"(calibrated {cal['high_mean']:.3f}); with the half's {n // 2} frames as k x{naive['high']:.3f}"
+          + ("" if blur is None else f"; steady frames per half {int((blur[0::2] == 0).sum())}/{int((blur[1::2] == 0).sum())}"))
     assert lo <= r["high"] <= hi
     assert r["high"] == pytest.approx(cal["high_mean"], rel=0.30)
-    if kind == "lunar":
+    if steady is not None:
+        assert max(k.values()) < 0.6 * (n // 2)           # the engine dropped the blurred frames
         assert not naive["high"] == pytest.approx(cal["high_mean"], rel=0.30)
 
 

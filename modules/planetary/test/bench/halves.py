@@ -246,8 +246,11 @@ def summary_line(rec) -> str:
 
 # --- calibration: the engine's own ratio on synthetic captures ---------------------------------
 
-def synthetic_frames(kind, n, jitter, a, c, seed):
-    """(frames n x h x w uint8 RGGB mosaic, noise-free mean frame in DN, PhotonTransfer truth)."""
+def synthetic_frames(kind, n, jitter, a, c, seed, blur=None):
+    """(frames n x h x w uint8 RGGB mosaic, noise-free mean frame in DN, PhotonTransfer truth).
+    `blur`: None (every frame at the scene's own seeing, as the calibration uses), or n per-frame
+    Gaussian sigmas in px applied on top -- per-frame seeing, a real reason for the engine to keep a
+    subset (ruling E3). The jitter and noise draws are the same either way."""
     from conftest import lunar_scene, planet_scene
     rng = np.random.default_rng(seed)
     if kind == "disc":
@@ -258,10 +261,20 @@ def synthetic_frames(kind, n, jitter, a, c, seed):
         scene = ndimage.gaussian_filter(scene, 0.8)
     gains = np.empty_like(scene)
     gains[0::2, 0::2], gains[0::2, 1::2], gains[1::2, 0::2], gains[1::2, 1::2] = 1.0, 0.8, 0.8, 0.55
-    F = np.fft.fft2(scene)
+    # Shift the scene's mirror (even) extension, which is periodic without a step, and crop it back: a
+    # circular shift of the scene itself wraps one edge onto the other (the lunar sky strip onto its
+    # bright right edge), and a frame moved by ~0.5 px gains a hard edge the scene does not have.
+    h, w = scene.shape
+    F = np.fft.fft2(np.pad(scene, ((0, h), (0, w)), mode="symmetric"))
+    if blur is not None:
+        blur = np.asarray(blur, dtype=float)
+        if blur.shape != (n,) or (blur < 0).any():
+            raise ValueError(f"blur: {n} sigmas >= 0, not {blur.shape}")
+        f2 = np.fft.fftfreq(2 * h)[:, None] ** 2 + np.fft.fftfreq(2 * w)[None, :] ** 2
     frames, total = [], np.zeros_like(scene)
-    for _ in range(n):
-        shifted = np.real(np.fft.ifft2(ndimage.fourier_shift(F, rng.normal(0, jitter, 2)))) * gains
+    for i in range(n):
+        Fi = F if blur is None or blur[i] == 0 else F * np.exp(-2 * np.pi ** 2 * blur[i] ** 2 * f2)
+        shifted = np.real(np.fft.ifft2(ndimage.fourier_shift(Fi, rng.normal(0, jitter, 2))))[:h, :w] * gains
         total += shifted
         noisy = shifted + rng.standard_normal(scene.shape) * np.sqrt(a * np.clip(shifted, 0, None) + c)
         frames.append(np.clip(np.round(noisy), 0, 255))
