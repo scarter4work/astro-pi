@@ -22,6 +22,9 @@
 #   its bin/ directory; once Planetary is installed from the repository that
 #   would load the installed Planetary next to the -m= dev build. The slot is
 #   seeded with a Modules list of every installed module except Planetary.
+#   PLANETARY_SLOT_EXCLUDE (space-separated file names, e.g. "PICopilot-pxm.so")
+#   leaves those installed modules out too (a run that must not load them); the
+#   launch then checks that the running PixInsight maps none of them.
 # - Every launch goes through pi_headless (tools/pi-headless.sh): private Xvfb,
 #   no Wayland, throwaway XDG_DATA_HOME (an installed PI Copilot would record
 #   test images into the user's journey library otherwise).
@@ -175,10 +178,11 @@ planetary_seed_slot_modules()
       echo "FAIL: slot $PLANETARY_SLOT settings bootstrap failed (rc=$rc); log: $PLANETARY_RUN_DIR/seed-bootstrap.log"
       return 1
    fi
-   python3 - "$PLANETARY_SLOT_SETTINGS" "$PLANETARY_PI_BIN_DIR" <<'PY' || { echo "FAIL: could not seed the Modules list of $PLANETARY_SLOT_SETTINGS"; return 1; }
+   python3 - "$PLANETARY_SLOT_SETTINGS" "$PLANETARY_PI_BIN_DIR" ${PLANETARY_SLOT_EXCLUDE:-} <<'PY' || { echo "FAIL: could not seed the Modules list of $PLANETARY_SLOT_SETTINGS"; return 1; }
 import glob, os, re, sys
 from xml.sax.saxutils import escape
 path, bindir = sys.argv[1], sys.argv[2]
+exclude = set(sys.argv[3:])
 s = open(path, encoding="utf-8").read()
 if not re.search(r'<v k="LastVersion" t="s">[^<]+</v>', s):
     sys.exit("no LastVersion in the bootstrapped settings: PixInsight would rescan bin/ and load an installed Planetary")
@@ -187,18 +191,28 @@ if 'k="Modules"' in s:
 mods = sorted(os.path.basename(p) for p in glob.glob(os.path.join(bindir, "*-pxm.so")))
 if not mods:
     sys.exit("no *-pxm.so found in %s" % bindir)
-mods = [m for m in mods if m != "Planetary-pxm.so"]
+missing = sorted(exclude - set(mods))
+if missing:
+    sys.exit("PLANETARY_SLOT_EXCLUDE names modules not installed in %s: %s" % (bindir, " ".join(missing)))
+mods = [m for m in mods if m != "Planetary-pxm.so" and m not in exclude]
 vals = "".join('<v k="%08d" t="s">%s</v>' % (i + 1, escape("@pxi_bin_dir/" + m)) for i, m in enumerate(mods))
 end = s.rindex("</xsdt>")
 s = s[:end] + '<i k="Modules">' + vals + "</i>" + s[end:]
 tmp = path + ".seed-tmp"
 open(tmp, "w", encoding="utf-8").write(s)
 os.replace(tmp, path)
-print("slot settings seeded: %d installed modules, any installed Planetary-pxm.so excluded" % len(mods))
+print("slot settings seeded: %d installed modules, any installed Planetary-pxm.so excluded%s"
+      % (len(mods), "".join(", " + m + " excluded" for m in sorted(exclude))))
 PY
    if grep -q 'Planetary-pxm\.so' "$PLANETARY_SLOT_SETTINGS"; then
       echo "FAIL: seeded $PLANETARY_SLOT_SETTINGS still names a Planetary-pxm.so"; return 1
    fi
+   local m
+   for m in ${PLANETARY_SLOT_EXCLUDE:-}; do
+      if grep -qF "/$m<" "$PLANETARY_SLOT_SETTINGS"; then
+         echo "FAIL: seeded $PLANETARY_SLOT_SETTINGS still names the excluded $m"; return 1
+      fi
+   done
 }
 
 # The running PixInsight of this slot maps exactly one Planetary-pxm.so: the
@@ -214,6 +228,13 @@ planetary_assert_only_dev_mapped()
       echo "FAIL: PixInsight (slot $PLANETARY_SLOT, pid $pid) maps [${maps//$'\n'/ }], expected ONLY the dev build $so"; return 1
    fi
    echo "only the dev module is mapped (pid $pid): $maps"
+   local m
+   for m in ${PLANETARY_SLOT_EXCLUDE:-}; do
+      if grep -qF -- "/$m" "/proc/$pid/maps"; then
+         echo "FAIL: PixInsight (slot $PLANETARY_SLOT, pid $pid) maps the excluded $m"; return 1
+      fi
+      echo "excluded module not mapped (pid $pid): $m"
+   done
 }
 
 # The video files (.ser, .avi, an AVI's .avi.txt sidecar, a Save as SER

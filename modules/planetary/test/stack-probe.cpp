@@ -3,6 +3,7 @@
 //
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
 //               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
+//               [--cancel-at measuring|aligning|stacking,F]
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -24,6 +25,7 @@
 #include <sys/resource.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -194,6 +196,11 @@ int main(int argc, char** argv) try {
     double blur = 0;
     double keepBest = 0;
     std::vector<std::pair<int, int>> samples;
+    // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
+    // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
+    // take it. Exit 3 when RunStack throws StackCancelled.
+    std::string cancelPhase;
+    double cancelFraction = 0;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&] {
@@ -217,6 +224,17 @@ int main(int argc, char** argv) try {
             if (comma == std::string::npos) throw std::invalid_argument("--sample: X,Y");
             samples.emplace_back(std::stoi(v.substr(0, comma)), std::stoi(v.substr(comma + 1)));
         }
+        else if (a == "--cancel-at") {
+            const std::string v = next();
+            const size_t comma = v.find(',');
+            if (comma == std::string::npos) throw std::invalid_argument("--cancel-at: PHASE,F");
+            const std::string ph = v.substr(0, comma);
+            cancelPhase = ph == "measuring" ? stack::kPhaseMeasuring : ph == "aligning" ? stack::kPhaseAligning
+                        : ph == "stacking" ? stack::kPhaseStacking : "";
+            cancelFraction = std::stod(v.substr(comma + 1));
+            if (cancelPhase.empty() || !(cancelFraction >= 0 && cancelFraction <= 1))
+                throw std::invalid_argument("--cancel-at: measuring|aligning|stacking,F with F in [0, 1]");
+        }
         else throw std::invalid_argument("unknown argument " + a);
     }
     if (bits != 16 && bits != 32) throw std::invalid_argument("--bits: 16 or 32");
@@ -224,7 +242,19 @@ int main(int argc, char** argv) try {
     stack::Progress progress;
     auto lastPrint = std::chrono::steady_clock::now();
     std::string lastPhase;
+    const std::vector<std::string> phases = {stack::kPhaseMeasuring, stack::kPhaseAligning, stack::kPhaseStacking};
+    auto phaseIndex = [&](const std::string& p) {
+        return static_cast<int>(std::find(phases.begin(), phases.end(), p) - phases.begin());
+    };
+    std::atomic<bool> cancelNow{false};
+    std::string cancelSeen;
     progress.report = [&](const std::string& phase, int64_t done, int64_t total) {
+        if (!cancelPhase.empty() && !cancelNow.load() &&
+            (phaseIndex(phase) > phaseIndex(cancelPhase) ||
+             (phase == cancelPhase && static_cast<double>(done) >= cancelFraction * static_cast<double>(total)))) {
+            cancelSeen = phase + " " + std::to_string(done) + "/" + std::to_string(total);
+            cancelNow.store(true);
+        }
         const auto now = std::chrono::steady_clock::now();
         if (phase != lastPhase || done == total || now - lastPrint > std::chrono::seconds(2)) {
             std::fprintf(stderr, "  %s %lld/%lld\n", phase.c_str(), static_cast<long long>(done), static_cast<long long>(total));
@@ -259,7 +289,18 @@ int main(int argc, char** argv) try {
         std::shared_ptr<const std::vector<int64_t>> k = keep;
         factory = [probeFactory, k]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<SubsetSource>(probeFactory(), k); };
     }
-    const stack::StackOutcome o = stack::RunStack(factory, threads, progress);
+    progress.cancelled = [&] { return cancelNow.load(); };
+    stack::StackOutcome o;
+    try {
+        o = stack::RunStack(factory, threads, progress);
+    } catch (const stack::StackCancelled&) {
+        std::printf("cancelled in %s\n", cancelSeen.c_str());
+        return 3;
+    }
+    if (!cancelPhase.empty()) {
+        std::fprintf(stderr, "error: --cancel-at %s never fired\n", cancelPhase.c_str());
+        return 1;
+    }
     rusage ru{};
     getrusage(RUSAGE_SELF, &ru);
     const double peakMB = ru.ru_maxrss / 1024.0;  // KiB on Linux
