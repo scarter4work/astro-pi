@@ -133,6 +133,7 @@ if [ "${1:-}" = "--package-test" ]; then
   LT="$OUT/$DATE-linux-x64-Planetary-$LV.tar.gz"
   build_module_tgz "$NT" NukeX "$3" "$4" "$NUKEX_DOC"
   module_pkg_check "$NT" NukeX "$NUKEX_DOC" || die "NukeX package check failed"
+  "$ROOT/modules/pi-copilot/test/check-no-selftest-hooks.sh" "$5" || die "PICopilot-pxm.so carries self-test hooks"
   build_module_tgz "$PT" PICopilot "$5" "$6" "$PICOPILOT_DOC"
   module_pkg_check "$PT" PICopilot "$PICOPILOT_DOC" || die "PICopilot package check failed"
   build_module_tgz "$LT" Planetary "$7" "$8" "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
@@ -294,6 +295,7 @@ SO="$(find "$ROOT/modules/nukex/build-portable" -name 'NukeX-pxm.so' -print -qui
 [ -n "$SO" ] || die "NukeX-pxm.so not found after build"
 PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build-portable" -name 'PICopilot-pxm.so' -print -quit)"
 [ -n "$PICOPILOT_SO" ] || die "PICopilot-pxm.so not found after build"
+"$ROOT/modules/pi-copilot/test/check-no-selftest-hooks.sh" "$PICOPILOT_SO" || die "PICopilot-pxm.so carries self-test hooks"
 PLANETARY_SO="$(find "$ROOT/modules/planetary/build-portable" -name 'Planetary-pxm.so' -print -quit)"
 [ -n "$PLANETARY_SO" ] || die "Planetary-pxm.so not found after build"
 
