@@ -30,6 +30,9 @@
 #include <pcl/MessageBox.h>
 #include <pcl/Settings.h>
 
+#include <chrono>
+#include <thread>
+
 namespace pcl
 {
 
@@ -37,6 +40,8 @@ PICopilotInterface* ThePICopilotInterface = nullptr;
 
 std::function<bool( const String& )> PICopilotInterface::s_confirmKeeperForSelfTest;
 std::function<String()> PICopilotInterface::s_apiKeyForSelfTest;
+String PICopilotInterface::s_messagesUrlForSelfTest;
+String PICopilotInterface::s_chatKeyForSelfTest;
 
 namespace
 {
@@ -351,6 +356,9 @@ void PICopilotInterface::SendCurrentInput()
    }
 
    KeyStore::State ks;
+   if ( !s_chatKeyForSelfTest.IsEmpty() )
+      ks.key = s_chatKeyForSelfTest;   // GUI test: never the keyring (no real key reaches the loopback stub)
+   else
    {
       // A keyring read can block on the desktop's unlock prompt: say so on
       // the Send button (painted by the call's event pump), then restore it.
@@ -435,7 +443,8 @@ void PICopilotInterface::StartRequest()
    {
       // ChatThread serializes key, prompt, history snapshot and tools HERE (UI thread).
       m_thread = new ChatThread( m_apiKey, BuildSystemPrompt( m_turnMode ), m_session.History(),
-                                 m_turnModel, PICOPILOT_MESSAGES_URL,
+                                 m_turnModel,
+                                 s_messagesUrlForSelfTest.IsEmpty() ? String( PICOPILOT_MESSAGES_URL ) : s_messagesUrlForSelfTest,
                                  PICopilotRequestTimeoutSeconds, ToolDefinitions( m_turnMode ),
                                  ProductionRequestShape( m_turnModel ) );
       m_thread->Start();
@@ -1012,6 +1021,56 @@ void PICopilotInterface::e_Strip_MousePress( Control&, const pcl::Point&, int bu
 }
 
 // ── Self-test probe ──────────────────────────────────────────────
+
+nlohmann::json PICopilotInterface::StartTurnForSelfTest( const nlohmann::json& payload )
+{
+   if ( GUI == nullptr )
+      throw Error( "StartTurnForSelfTest: the panel has not been launched" );
+   if ( TurnInProgress() )
+      throw Error( "StartTurnForSelfTest: a turn is already in progress" );
+   s_messagesUrlForSelfTest = String( payload.at( "url" ).get<std::string>().c_str() );
+   s_chatKeyForSelfTest = String( payload.at( "key" ).get<std::string>().c_str() );
+   s_apiKeyForSelfTest = []() { return String(); };   // journey write-ups: no key, no request
+   DataConsent::Grant();   // the test slot's settings only (wiped by the harness)
+   GUI->Mode_ComboBox.SetCurrentItem( int( AgentMode::Copilot ) );
+   GUI->IncludeView_CheckBox.SetChecked( false );
+   GUI->ChatInput.SetText( String( payload.at( "prompt" ).get<std::string>().c_str() ) );
+   SendCurrentInput();
+   return { { "turnInProgress", TurnInProgress() }, { "mode", int( AgentModeFromIndex( GUI->Mode_ComboBox.CurrentItem() ) ) } };
+}
+
+nlohmann::json PICopilotInterface::ArmKeepForSelfTest( const nlohmann::json& payload )
+{
+   if ( GUI == nullptr )
+      throw Error( "ArmKeepForSelfTest: the panel has not been launched" );
+   const double seconds = payload.value( "seconds", 4.0 );
+   s_apiKeyForSelfTest = []() { return String(); };   // no write-up request
+   DataConsent::Grant();
+   // The real confirm box is modal (measured: Ctrl+Q while it is up does not quit); this stand-in pumps
+   // events WITH user input for `seconds`, so a Quit pressed meanwhile runs OnUnload inside the keep flow.
+   // payload.standIn false keeps the real box (to measure that).
+   const auto pumpThenYes = [seconds]( const String& )
+   {
+      const auto t0 = std::chrono::steady_clock::now();
+      while ( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() < seconds )
+      {
+         ThePICopilotModule->ProcessEvents( false/*user input too*/ );
+         std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+      }
+      return true;
+   };
+   const bool standIn = payload.value( "standIn", true );
+   if ( standIn )
+      s_confirmKeeperForSelfTest = pumpThenYes;
+   else
+      s_confirmKeeperForSelfTest = nullptr;
+   UpdateJourneyStrip();
+   // ★'s centre on screen (the driver clicks it; enabled is false while the calling script runs).
+   const pcl::Point c = GUI->Keep_ToolButton.LocalToGlobal(
+      pcl::Point( GUI->Keep_ToolButton.Width()/2, GUI->Keep_ToolButton.Height()/2 ) );
+   return { { "x", c.x }, { "y", c.y }, { "enabled", GUI->Keep_ToolButton.IsEnabled() }, { "standIn", standIn },
+            { "activeView", ActiveMainViewId().c_str() } };
+}
 
 nlohmann::json PICopilotInterface::ProbeResizeForSelfTest()
 {

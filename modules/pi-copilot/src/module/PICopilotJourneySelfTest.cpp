@@ -837,6 +837,31 @@ nlohmann::json PhaseGuiKeepInFlight( const nlohmann::json& payload )
    return r;
 }
 
+// gui.turn / gui.keepArm -- test/quit-in-turn.sh only (GUI runs): a chat turn
+// against a loopback stub, and ★ Keep with a confirm stand-in that pumps
+// events (see PICopilotInterface::StartTurnForSelfTest / ArmKeepForSelfTest).
+// Each writes its result to payload.out.
+nlohmann::json WriteOut( const nlohmann::json& payload, const nlohmann::json& r )
+{
+   if ( payload.contains( "out" ) )
+      File::WriteTextFile( String( payload.at( "out" ).get<std::string>().c_str() ), IsoString( r.dump().c_str() ) );
+   return r;
+}
+
+nlohmann::json PhaseGuiTurn( const nlohmann::json& payload )
+{
+   if ( ThePICopilotInterface == nullptr )
+      throw Error( "gui.turn: ThePICopilotInterface is null" );
+   return WriteOut( payload, ThePICopilotInterface->StartTurnForSelfTest( payload ) );
+}
+
+nlohmann::json PhaseGuiKeepArm( const nlohmann::json& payload )
+{
+   if ( ThePICopilotInterface == nullptr )
+      throw Error( "gui.keepArm: ThePICopilotInterface is null" );
+   return WriteOut( payload, ThePICopilotInterface->ArmKeepForSelfTest( payload ) );
+}
+
 // Adding a phase: one entry here + one checkPhase( id, payload ) call in
 // test/selftest.js. Handlers run in-process: they may READ history, never
 // create it.
@@ -862,6 +887,8 @@ const std::map<std::string, SelfTestPhaseHandler>& SelfTestPhaseHandlers()
       { "j10.gx.end",   PhaseJ10GxEnd },
       { "gui.keepInFlight", PhaseGuiKeepInFlight },
       { "gui.panel", PhaseGuiPanel },
+      { "gui.turn", PhaseGuiTurn },
+      { "gui.keepArm", PhaseGuiKeepArm },
       { "undo",      PhaseUndoTool },   // Section JU (PICopilotUndoSelfTest.cpp)
    };
    return handlers;

@@ -79,6 +79,16 @@ public:
    // Use it at EVERY site that inserts non-literal text into the chat log.
    static String PlainText( const String& text );
 
+   // GUI tests only (test/quit-in-turn.sh, through the gui.* self-test phases, which exist only under
+   // PICOPILOT_SELFTEST_OUT): no keyring read, no request to Anthropic.
+   // Starts a chat turn as Send would, in Copilot mode, against payload.url (a loopback stub) with
+   // payload.key, after granting the data consent in the test slot.
+   nlohmann::json StartTurnForSelfTest( const nlohmann::json& payload );
+   // ★ Keep's confirm becomes payload.seconds of event pumping (user input included) answered Yes (unless
+   // payload.standIn is false: the real modal box), and the write-up key is empty; returns the ★ button's
+   // centre in screen coordinates for the driver.
+   nlohmann::json ArmKeepForSelfTest( const nlohmann::json& payload );
+
 private:
 
    friend bool RunAgentSelfTest( nlohmann::json& out );
@@ -207,6 +217,9 @@ private:
    static std::function<bool( const String& )> s_confirmKeeperForSelfTest;
    // Self-test: replaces the write-up key (no keyring read, no request).
    static std::function<String()> s_apiKeyForSelfTest;
+   // GUI tests (StartTurnForSelfTest): the Messages endpoint and the chat key; empty = production.
+   static String s_messagesUrlForSelfTest;
+   static String s_chatKeyForSelfTest;
 
    // UI thread only: captures the turn view's (m_turnViewId) context +
    // preview (when "Include view" is checked) and returns the composed user
