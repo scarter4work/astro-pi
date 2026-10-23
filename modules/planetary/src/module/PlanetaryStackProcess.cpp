@@ -53,8 +53,8 @@ String PlanetaryStackProcess::Description() const
       "<p>When the capture has no usable frames (no target, the target leaving the frame, a saturated target, "
       "out of focus, poor seeing, frames that do not line up) no image is made: execution fails with the "
       "diagnosis and its numbers on the Process Console.</p>"
-      "<p>Reads only the chosen file and its sidecar; no network, no external programs; writes nothing to "
-      "disk.</p>"
+      "<p>Reads only the chosen file and its sidecar; no network, no external programs. Stacking writes "
+      "nothing to disk; Save pattern... in its window writes the AVI's .txt sidecar.</p>"
       "</html>";
 }
 
