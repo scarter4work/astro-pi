@@ -1371,3 +1371,92 @@ TEST_CASE("Where the blend mask is 0 the stack is the fallback alone -- warp inc
     REQUIRE(covered >= 500);
     CHECK(worst < 1e-5);
 }
+
+TEST_CASE("A blend mask of 1 changes nothing up to the frame's edges (E1 fix round 2)", "[accumulate]") {
+    // Review N2: the stack samples the mask at its warp grid, whose points reach past the luma grid -- the first
+    // at luma -0.25 on Bayer input, the last up to kWarpGrid px past the bottom and right edges. A mask that
+    // read 0 there (the form before 85d5c8df) dimmed those points' region weights: a frame-filling Moon's bottom
+    // rows went dark (2023-03-05), and Bayer input's top and left edge points read 0.75 of the edge value.
+    stack::BlendMask ones;
+    ones.width = 64;
+    ones.height = 48;
+    ones.m = std::make_shared<std::vector<float>>(64 * 48, 1.f);
+    for (double v : {0.0, 23.5, 47.0}) {
+        CHECK(ones.At(-3, v) == 1.0);
+        CHECK(ones.At(-0.25, v) == 1.0);
+        CHECK(ones.At(66.5, v) == 1.0);
+    }
+    for (double u : {0.0, 31.2, 63.0}) {
+        CHECK(ones.At(u, -3) == 1.0);
+        CHECK(ones.At(u, -0.25) == 1.0);
+        CHECK(ones.At(u, 50.75) == 1.0);
+    }
+    CHECK(ones.At(-0.25, -0.25) == 1.0);
+    // The stack: a frame-filling layout whose regions keep different frames and shift locally; with a mask of 1
+    // over the whole luma grid it must be the stack without one, edges included -- Bayer (luma scale 2) and mono.
+    for (const ser::ColorId colour : {ser::ColorId::BayerRGGB, ser::ColorId::Mono}) {
+        const int W = 128, H = 96, s = colour == ser::ColorId::Mono ? 1 : 2, lw = W / s, lh = H / s;
+        const Scene sc = testing::MakeSurface(5, W, H);
+        FloatImage ref{lw, lh, 1, std::vector<float>(static_cast<size_t>(lw) * lh)};
+        for (int y = 0; y < lh; ++y)
+            for (int x = 0; x < lw; ++x) ref.data[static_cast<size_t>(y) * lw + x] = static_cast<float>(sc.Eval(s * x + 0.5 * (s - 1), s * y + 0.5 * (s - 1), 0.8));
+        const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, s), true, stack::NoiseModel{});
+        REQUIRE(lay.flatEdges);
+        REQUIRE(lay.mask.Empty());
+        REQUIRE(lay.regions.size() > 2);
+        std::mt19937 rng(3);
+        std::normal_distribution<double> nd(0, 1);
+        std::vector<FrameRegions> measured;
+        const int frames = 24;
+        for (int k = 0; k < frames; ++k) {
+            FrameRegions m;
+            m.frameIndex = k;
+            m.global = Shift{0.3 * nd(rng), 0.3 * nd(rng), 1};
+            for (size_t r = 0; r < lay.regions.size(); ++r) {
+                stack::RegionMeasure q;
+                q.aligned = true;
+                q.confidence = 0.95f;
+                q.dx = static_cast<float>(0.4 * nd(rng));
+                q.dy = static_cast<float>(0.4 * nd(rng));
+                q.quality = static_cast<float>(0.3 * std::exp(0.4 * nd(rng)));
+                q.qualitySigma = 0.001f;
+                m.regions.push_back(q);
+            }
+            measured.push_back(m);
+        }
+        const stack::RegionPlan plain = stack::PlanRegions(lay, measured);
+        stack::RegionPlan masked = plain;
+        masked.layout.mask = ones;
+        masked.layout.mask.width = lw;
+        masked.layout.mask.height = lh;
+        masked.layout.mask.m = std::make_shared<std::vector<float>>(static_cast<size_t>(lw) * lh, 1.f);
+        ser::FileInfo info = testing::NewCapture(W, H, colour).info;
+        const FloatImage noRejection{lw, lh, 1, std::vector<float>(static_cast<size_t>(lw) * lh, 1.f)};
+        stack::Accumulator a(plain, ref, noRejection, info), b(masked, ref, noRejection, info);
+        const int C = colour == ser::ColorId::Mono ? 1 : 3;
+        for (int k = 0; k < frames; ++k) {
+            FloatImage f{W, H, C, std::vector<float>(static_cast<size_t>(W) * H * C)};
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x)
+                    for (int c = 0; c < C; ++c)
+                        f.data[(static_cast<size_t>(y) * W + x) * C + c] = static_cast<float>(sc.Eval(x, y, 0.8) + 0.01 * nd(rng));
+            a.Add(k, f);
+            b.Add(k, f);
+        }
+        const FloatImage pa = a.Finish(), pb = b.Finish();
+        double worst = 0;
+        int wx = 0, wy = 0;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                for (int c = 0; c < C; ++c) {
+                    const double d = std::fabs(pa.data[(static_cast<size_t>(y) * W + x) * C + c] - pb.data[(static_cast<size_t>(y) * W + x) * C + c]);
+                    if (d > worst) {
+                        worst = d;
+                        wx = x;
+                        wy = y;
+                    }
+                }
+        INFO((C == 1 ? "mono" : "Bayer") << ": worst |masked - unmasked| " << worst << " at " << wx << ", " << wy);
+        CHECK(worst < 1e-6);
+    }
+}
