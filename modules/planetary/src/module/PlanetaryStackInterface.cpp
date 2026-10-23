@@ -284,11 +284,19 @@ void PlanetaryStackInterface::Fail( const String& message, bool interactive )
       }
    };
    attempt( "stopping the stack", [this]() { StopStack( "of an error" ); } );
-   attempt( "clearing the window", [this]() { ClearAll(); } );
+   // A finished result of the file and pattern shown stays (final review, module
+   // m4): a failure to open its window, or any other step after it, is not about
+   // the stack, and dropping it would cost a stack of minutes to redo.
+   attempt( "clearing the window", [this]()
+   {
+      if ( !HoldsResultForInstance() )
+         ClearAll();
+   } );
    attempt( "showing the error", [this, &message]()
    {
       m_error = ToUtf8( message );
       ShowText();
+      UpdateControls();
    } );
    attempt( "writing the console", [&message]()
    {
@@ -308,7 +316,12 @@ void PlanetaryStackInterface::LoadFromInstance()
       ReadInfo( false/*interactive*/ );
 }
 
-void PlanetaryStackInterface::ReadInfo( bool interactive )
+bool PlanetaryStackInterface::HoldsResultForInstance() const
+{
+   return m_outcome && m_outcomePath == instance.p_filePath.Trimmed() && m_outcomePattern == instance.p_bayerPattern;
+}
+
+bool PlanetaryStackInterface::ReadInfo( bool interactive )
 {
    const String path = instance.p_filePath.Trimmed();
    const String fileName = File::ExtractNameAndExtension( path );
@@ -320,14 +333,17 @@ void PlanetaryStackInterface::ReadInfo( bool interactive )
    }
    catch ( const ser::SerError& e )
    {
-      ClearAll();
+      // The result of this file and pattern stays, with the last info read: the
+      // file cannot be read now, which says nothing about the stack made from it.
+      if ( !HoldsResultForInstance() )
+         ClearAll();
       const String message = fileName + ": " + FromUtf8( e.what() ) + "\nPath: " + path;
       m_error = ToUtf8( message );
       ShowText();
       UpdateControls();
       if ( interactive )
          MessageBox( message, "PlanetaryStack", StdIcon::Error, StdButton::Ok ).Execute();
-      return;
+      return false;
    }
    // A stack stays only while it is what Stack! would make now: the same file
    // and the same capture (stackcards::SameCapture: size, depth, frames, the
@@ -349,6 +365,10 @@ void PlanetaryStackInterface::ReadInfo( bool interactive )
          GUI->Progress_Bar.SetIdle( m_status );
       }
    }
+   // A result that stays is what Stack! would make with the pattern now chosen
+   // (Save pattern...'s Auto names the same pattern through the new sidecar).
+   if ( m_outcome )
+      m_outcomePattern = instance.p_bayerPattern;
    m_info = info;
    m_infoLine = stackcards::StackInfoLine( ToUtf8( fileName ), info );
    m_warnings.clear();
@@ -356,12 +376,14 @@ void PlanetaryStackInterface::ReadInfo( bool interactive )
       m_warnings += "\nWarning: " + planetary::preview::StackWindowWarning( w );
    ShowText();
    UpdateControls();
+   return true;
 }
 
 void PlanetaryStackInterface::DropResult()
 {
    m_outcome.reset();
    m_outcomePath.Clear();
+   m_outcomePattern = 0;
    m_times = StackTimes();
    m_status.Clear();
    if ( GUI != nullptr )
@@ -448,6 +470,7 @@ void PlanetaryStackInterface::StartStack( bool openWhenDone )
    std::unique_ptr<Run> run = std::make_unique<Run>();
    run->path = ToUtf8( path );
    run->bayer = BayerChoiceFor( instance.p_bayerPattern, "PlanetaryStack" );
+   run->pattern = instance.p_bayerPattern;
    run->threads = StackThreads();
    run->frames = m_info->frameCount;
    WriteStackContext( path, *m_info, run->threads );
@@ -546,6 +569,7 @@ void PlanetaryStackInterface::FinishStack()
    {
       m_outcome = std::move( run->outcome );
       m_outcomePath = path;
+      m_outcomePattern = run->pattern;
       m_times = run->times;
       WriteStackResult( path, *m_outcome, stackcards::WarningsFor::Window );
       if ( m_outcome->image )
@@ -612,9 +636,10 @@ void PlanetaryStackInterface::ExecuteStack()
       throw Error( "PlanetaryStack: no video loaded: click Open... to choose one." );
    // The file read again first: a stack of a file since replaced under the same
    // name (other frames or geometry) is dropped (ReadInfo, SameCapture), not opened.
-   ReadInfo( true/*interactive*/ );
-   if ( !m_info )
-      return; // the file can no longer be read: ReadInfo has said so
+   // A file that cannot be read now opens nothing; its stack stays (ReadInfo has
+   // said why), and Execute opens it once the file reads again.
+   if ( !ReadInfo( true/*interactive*/ ) || !m_info )
+      return;
    if ( m_outcome )
    {
       if ( !m_outcome->image )

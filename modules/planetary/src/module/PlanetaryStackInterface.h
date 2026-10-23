@@ -103,6 +103,7 @@ private:
    {
       std::string path;
       planetary::ser::BayerChoice bayer;
+      pcl_enum pattern = 0;  // instance.p_bayerPattern the run was started with
       int threads = 1;
       int64_t frames = 0;   // the capture's frame count, for the progress text
       std::atomic<uint64_t> progress{ 0 };  // the phase and its done / total counts (PackProgress)
@@ -121,6 +122,7 @@ private:
    // (dropped when either changes), and its SER frame times.
    std::optional<planetary::stack::StackOutcome> m_outcome;
    String m_outcomePath;
+   pcl_enum m_outcomePattern = 0;  // instance.p_bayerPattern it was stacked with
    StackTimes m_times;
    String m_status;   // the idle progress bar's line
 
@@ -162,9 +164,15 @@ private:
 
    // Reads instance.p_filePath with instance.p_bayerPattern (the reader closed
    // again at once) for the info block; drops a stack made from another file or
-   // another effective pattern. A failure clears the window and is shown (plus a
-   // message box when interactive).
-   void ReadInfo( bool interactive );
+   // another effective pattern. A failure is shown (plus a message box when
+   // interactive) and clears the window -- except a finished result of this file
+   // and pattern (HoldsResultForInstance), which stays with the last info read: a file
+   // that cannot be read right now (a network share's hiccup) says nothing about
+   // the stack (final review, module m4). Returns whether the read succeeded.
+   bool ReadInfo( bool interactive );
+   // A finished result (stack or diagnosis) of the file and Bayer pattern the
+   // window now names: kept through a failure that is not about it.
+   bool HoldsResultForInstance() const;
    void LoadFromInstance();
    void DropResult();
    void ClearAll();
