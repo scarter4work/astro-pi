@@ -71,18 +71,15 @@ namespace planetary::stack {
 //
 // Memory (asserted by BytesHeld): per output pixel (channels + 1) float sums and as many float sums of
 // rejected samples; the reference and residual scale at luma size; the plan (frames x regions x 9
-// bytes plus ~40 bytes per frame) -- 1080p RGB: 66 MB. Per Add call: the frame itself (moved in and
+// bytes plus ~40 bytes per frame) -- 1080p RGB: 66 MB (32 bytes x 1920 x 1080). Per Add call: the frame itself (moved in and
 // prefiltered in place) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per
 // concurrent Add, independent of the number of frames. (Not the O(regions x region size) of
 // per-region stacks: the blend above needs none.)
 //
-// Cost (measured 2026-10-21, Ryzen 9 9950X, 128 synthetic 1920 x 1080 frames moved in): Bayer (RGB
-// output) 45 ms per Add on one thread, 219 frames/s on 16 threads and 281 on 32 (4000 frames: 18.3 /
-// 14.2 s); mono 42 ms, 333 / 397 frames/s (12.0 / 10.1 s). Before the review round: 72 ms and 96 /
-// 85 frames/s (Bayer). What made it so -- the prefilter in two streaming passes, no libm floor in the
-// sampling, the 3 channels' taps as 12 vectorisable lanes, rows through a ring that stays in cache,
-// float sums -- changes the stack by at most 4e-7 (float rounding; A/B against the double-sum
-// version on mono and Bayer captures with sharp point features).
+// Cost: what a whole capture's stacking pass takes is in stack-probe's phase times ("Stacking"). It is
+// kept down by the prefilter in two streaming passes, no libm floor in the sampling, the 3 channels'
+// taps as 12 vectorisable lanes, rows through a ring that stays in cache, and float sums -- which
+// change the stack only at float rounding (below).
 //
 // Thread safety: Add() may be called from many threads at once (rows are added under per-kLockRows
 // locks, each frame starting at its own row). The sums are float: the order frames arrive in changes
@@ -128,7 +125,7 @@ void LocalWarpAt(const RegionLayout& layout, const AxisWeight& ax, const AxisWei
 // 1080p mono 41 MB (20 bytes x 960 x 540 and x 1920 x 1080) -- so RunStack does not give every worker one:
 // its ObserverPool holds PlanMemory's `observers` instances (as many as kResidualBudget allows, at most
 // the workers; Engine.h), each worker checking one out per Observe, then merges them. Not thread-safe:
-// one instance per thread at a time, then Merge. Cost: 26 ms per 1920 x 1080 mono frame (one thread).
+// one instance per thread at a time, then Merge.
 class ResidualScale {
 public:
     // Throws std::invalid_argument when the reference is not a 1-channel image of the layout's size.
@@ -163,7 +160,7 @@ private:
 // of its peak: ratio <= 0.8; a hot pixel's neighbours are the background, ~1). On texture -- a hot pixel
 // inside a tracked disc -- the ring is not flat: a neighbour on the slope of a belt or a spot comes within
 // a tenth of the hot pixel's excess of it, and the first test fails in a varying share of the frames
-// (measured, Task 6's capture: a 112 x 96 disc of R 24 with MakeDisc's texture, seeing blur and local
+// (measured at 40b255d6, Task 6's capture: a 112 x 96 disc of R 24 with MakeDisc's texture, seeing blur and local
 // jitter, no drift, 50 frames; a hot pixel on each of the 1386 sites within 21 px of the centre, found
 // when isolated in >= kHotShare of the frames, HotPixelMap as a whole: mono +0.35 573, +0.2 6, +0.15 0;
 // Bayer +0.35 177, +0.5 411). So a site also counts when it stands above the whole ring by kHotMin AND
@@ -175,7 +172,7 @@ private:
 // unpredicted is 0.14 at PSF sigma 1.6 px, a line's well under 0.9 above ~0.65 px; an edge, a limb,
 // never stands above the whole ring). In a mosaic the ring is 2 px out, and native sampling of a 2.9 um
 // sensor at f/9-f/12 is PSF sigma 1.0-1.1 px, 0.5 ring steps: still points and lines that sharp pass
-// the surface test too (review round 1, 6 seeds x ~21 features, 50 frames, amplitude 0.25: sigma 1.0
+// the surface test too (review round 1 at 0cf84db2, 6 seeds x ~21 features, 50 frames, amplitude 0.25: sigma 1.0
 // lines on a disc 0 -> 8, on sky 0 -> 13; sigma 0.8 points on a disc 0 -> 70, lines 0 -> 59). So in a
 // mosaic the site must also leave the different-colour samples 1 px away at the local level: the
 // larger of the rises of the 1-px pair over the same colours 3 px out, along x and along y, is under
@@ -185,7 +182,7 @@ private:
 // excess at PSF sigma 0.6 / 0.8 / 1.0 / 1.1 / 1.2 px (and none pass from 1.3), and the brighter of the
 // two colour pairs counts, so a neighbour colour half as bright still clears the gate from sigma 1.0
 // (0.45 against 0.25) and just reaches it at 0.8 (scan of noise-free features, amplitude 0.1-1).
-// Measured with the gate (same scans): no more false flags than the first test alone at any sigma
+// Measured with the gate at 0cf84db2 (same scans): no more false flags than the first test alone at any sigma
 // 0.8-2.5, still or jittered 0.2 px, on disc or sky (sigma 0.8 points on sky: 16, as before; every
 // other cell 0); found on Task 6's disc, Bayer: 1160 (+0.35; 1207 without the gate), 1228 (+0.5), 493
 // (+0.15). The clean disc flags nothing. Still segments with hard (non-optical) ends do pass in mono

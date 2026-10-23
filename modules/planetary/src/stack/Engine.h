@@ -89,10 +89,9 @@ constexpr int kHotPixelFrames = 64;
 //  - ResidualScale (Accumulate.h): 16 bytes per luma pixel plus its own copy of the reference (4 more),
 //    per instance, and an instance cannot be shared by two threads at once. Observers are therefore
 //    capped by kResidualBudget, NOT by the worker count: workers check an instance out of a pool for
-//    each Observe (26 ms per 1080p mono frame) and give it back. 1080p mono: 41 MB each -> 12
-//    observers; 1080p Bayer (960 x 540 luma): 10 MB -> as many as workers. Twelve observers keep up
-//    with 32 workers there: per frame the alignment pass spends ~90 ms on reading, luma, global and
-//    region alignment against 26 ms observing, so 32 workers need ~9 observers busy.
+//    each Observe and give it back, waiting only while every instance is busy. 1080p mono: 41 MB each
+//    -> 12 observers (unit test "PlanMemory caps ResidualScale observers ..."); 1080p Bayer (960 x 540
+//    luma): 10 MB -> as many as workers.
 //  - Per worker: the raw frame (2 bytes per sample), its luma (4 per luma pixel; measuring, 1 more for its
 //    clipped-sample counts) and alignment scratch (kWorkerScratchBytes: the correlation windows, at most
 //    512 x 512 complex doubles twice);

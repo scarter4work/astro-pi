@@ -322,9 +322,9 @@ struct FrameRegions {
 // Accuracy (unit tests, 32-px windows, frame noise 0.01): shift error rms < 0.05 luma px (noise-
 // limited: ~s sqrt(2 / sum |grad T|^2)); an 8 px error of the global shift recovered to 0.08; inside
 // the displaced part of a torn frame (4-6 px) every window reports the tear (0.1).
-// Cost (measured 2026-10-21, per frame on each of 16 busy threads): 0.4 ms per 240 x 180 Jupiter luma
-// frame (9 regions); 47 ms per 1920 x 1080 mono lunar frame (324 regions of 128 px, the refinement
-// about half of it); a 1080p Bayer capture's 960 x 540 luma is about a quarter of that.
+// Cost: per frame, in proportion to the regions' total window area (a 1080p Bayer capture's 960 x 540
+// luma holds about a quarter of a 1080p mono frame's); what a whole capture's alignment pass takes is
+// in stack-probe's phase times ("Aligning frames").
 class RegionMeasurer {
 public:
     // Throws std::invalid_argument when the reference is not a non-empty 1-channel image of the
@@ -448,8 +448,8 @@ struct RegionPlan {
 // them, in frame order, with SelectFrames' need = max(1, min(kMinStackFrames, ceil(n / 2))) and floor =
 // max(need, ceil(sqrt(n))), keeps the region's own sharpest frames: the count follows the region's
 // quality distribution -- few where the region's sharpness comes and goes with the seeing, most where
-// it is steady (measured 2026-10-21: the steady 2026-01-30 Jupiter keeps 260-300 of 300 per region,
-// spread +-3%; the same night's Moon a median 199 of 300). Deterministic and order-independent.
+// it is steady (what each region keeps on a real capture: stack-probe's regionDetail, the bench's
+// probe.json). Deterministic and order-independent.
 // Ruling P27, before the ranking: a region with fewer than kMinStackFrames candidates, or whose median
 // candidate's quality is under kRegionDetailSigmas of its qualitySigma, keeps no frame (noiseOnly: the
 // fallback's plain mean of the stacked frames -- ranked, its noise-floor "detail" kept a handful, once
