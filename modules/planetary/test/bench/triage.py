@@ -21,7 +21,9 @@ HALVES: is the excess the region stage's or the frames'?
   * D of the region stacks decomposed tile by tile (32 px) in the END band (0.06-0.30): the share of
     its power explained by a gain on A (a level or gain offset between kept subsets multiplies the
     texture), a local shift (dA/dy, dA/dx: the halves' regions registered differently) and a local
-    blur (lap A)."""
+    blur (lap A). The decomposition takes D with the global refinement only (refined_difference
+    tile=None), so it still shows what a local shift explains; the R it prints is the bench's, with
+    the tile shifts removed (Ruling P28d, fix round 4)."""
 import argparse
 import json
 import os
@@ -118,7 +120,7 @@ def rows(out, cid):
 
     A = metric.luminance(refs.load_image(os.path.join(d, "halfA.fits")))
     B = metric.luminance(refs.load_image(os.path.join(d, "halfB.fits")))
-    _, box, reg, coef = halves.refined_difference(A, B)
+    _, box, reg, coef, _ = halves.refined_difference(A, B, tile=None)   # D as rebuilt below: the global refinement
     Bs = np.real(np.fft.ifft2(ndimage.fourier_shift(np.fft.fft2(refs.apply_orientation(B, reg.orientation)), reg.shift)))
     gy, gx = np.gradient(A)
     D = (A - A.mean() - coef[0] * (Bs - Bs.mean()) - coef[1] * gy - coef[2] * gx) / 2   # the refinement, full frame
@@ -150,7 +152,7 @@ def _bandpass(x, lo=0.06, hi=0.30):
 
 def decompose(A, B, tile=32):
     """Shares of D's END-band power explained tile by tile by a gain on A, a local shift, a local blur."""
-    D, bx, _, _ = halves.refined_difference(A, B)
+    D, bx, _, _, _ = halves.refined_difference(A, B, tile=None)   # what a local shift explains before P28d removes it
     a, dd = A[bx.y0:bx.y1, bx.x0:bx.x1], D[bx.y0:bx.y1, bx.x0:bx.x1]
     gy, gx = np.gradient(a)
     lap = np.gradient(gy, axis=0) + np.gradient(gx, axis=1)

@@ -12,7 +12,10 @@ random noise.
 
 THE RATIO (ratio). Stack A (even) and stack B (odd) are each stacked by the engine. B is registered
 to A (refs.register) and moved onto A's grid by an exact Fourier shift (it keeps B's power spectrum);
-D = (A - B) / 2. Where the halves agree on the signal, D is noise only, of power (N_A + N_B) / 4.
+D = (A - B) / 2, after B's gain, a residual global shift and each 32 px tile's local shift field are
+removed (refined_difference; the tiles: Ruling P28d, fix round 4 -- the halves' region stacks register
+differently region by region, and that is registration, not noise). Where the halves agree on the
+signal, D is noise only, of power (N_A + N_B) / 4.
 END's model says N = sigma_frame^2 / k, so D's model is sigma_frame^2 (1/k_A + 1/k_B) / 4 on A's
 target box: sigma_frame^2 from the raw frames (noise.box_noise), k_A and k_B each half's own
 noise-power k over the box (stack-region-probe --keff-box, the judged reading; the mean-kept-fraction
@@ -68,6 +71,7 @@ HIGH_BINS = slice(5, 8)          # END_EDGES bins 0.21-0.24, 0.24-0.27, 0.27-0.3
 CALIBRATION_FILE = os.path.join(HERE, "calibration.json")
 CAL_SEEDS = (1, 2, 3, 4, 5, 6)        # scenes per kind (each at jitter 0.3 and 0.7 px)
 COVERAGE, CONFIDENCE = 0.99, 0.95     # the tolerance interval: 99 % of honest runs, at 95 % confidence
+TILE = 32                             # px: refined_difference removes each tile's local shift (Ruling P28d)
 
 
 def tolerance_factor(n, coverage=COVERAGE, confidence=CONFIDENCE):
@@ -134,12 +138,52 @@ def split(video, size, even_path, odd_path):
     return tuple(n)
 
 
-def refined_difference(A, B):
-    """(D, box, registration): B registered to A (refs.register, then an exact Fourier shift, which
-    keeps B's power spectrum), and then a least-squares refinement on A's target box -- B's gain and a
-    residual sub-pixel shift (A ~ g B + dy dA/dy + dx dA/dx), removed before D = (A - g B') / 2.
-    Without it a residual misregistration of hundredths of a pixel leaks the signal into D: on the
-    13 px Mars disc 0.017 px of it read as x10 the model (fix round 2, review I-E)."""
+def _tile_edges(n, tile):
+    """Tile starts over 0..n: whole `tile`-px tiles, the remainder (under a tile) joined to the last."""
+    k = max(1, n // tile)
+    return [i * tile for i in range(k)] + [n]
+
+
+def remove_tile_shifts(e, gy, gx, tile=TILE):
+    """(e minus each tile's local shift, the per-tile (dy, dx) at its centre in px). Per `tile`-px tile
+    of the box (_tile_edges) the local shift is fitted as a first-order field, dy(u, v) = dy0 + dy_u u +
+    dy_v v and dx likewise (u, v the tile's centred coordinates over half a tile), by least squares:
+    e ~ c + dy(u, v) dA/dy + dx(u, v) dA/dx. Only the shift terms are removed; the intercept c is
+    fitted so a local level offset is not read as a shift, and it stays in e, because a level offset
+    between the halves is not registration (Ruling P28d).
+    Why first order, not one constant shift per tile (fix round 3's estimate): the engine blends its
+    regions with sin^2 weights on a grid of half-overlapping windows (Regions.h), so the halves' shift
+    difference varies smoothly from node to node, 64 px apart on a 1080p surface. Measured on a
+    synthetic pair with that field (nodes 64 px apart, 0.1 px sd per node; test_end.py's P28d tests):
+    the 0.06-0.09 bin reads x4.75 the noise unremoved, x2.77 with one shift per tile, x1.09 first order.
+    Cost: 6 of each tile's 1024 noise degrees of freedom; on noise alone the 0.06-0.09 bin reads x0.90
+    against x0.97 unremoved, the 0.15-0.30 bins within 1 % (the calibration measures with it)."""
+    out, shifts = e.copy(), []
+    ys, xs = _tile_edges(e.shape[0], tile), _tile_edges(e.shape[1], tile)
+    for y0, y1 in zip(ys[:-1], ys[1:]):
+        for x0, x1 in zip(xs[:-1], xs[1:]):
+            s = (slice(y0, y1), slice(x0, x1))
+            u, v = np.mgrid[y0:y1, x0:x1].astype(float)
+            u, v = (u - u.mean()) / (tile / 2), (v - v.mean()) / (tile / 2)
+            terms = [gy[s], u * gy[s], v * gy[s], gx[s], u * gx[s], v * gx[s]]
+            X = np.stack([np.ones(e[s].size)] + [t.ravel() for t in terms], 1)
+            c, *_ = np.linalg.lstsq(X, e[s].ravel(), rcond=None)
+            out[s] = e[s] - (X[:, 1:] @ c[1:]).reshape(e[s].shape)
+            shifts.append((c[1], c[4]))
+    return out, np.array(shifts)
+
+
+def refined_difference(A, B, tile=TILE):
+    """(D, box, registration, coef, tile shifts): B registered to A (refs.register, then an exact
+    Fourier shift, which keeps B's power spectrum), and then a least-squares refinement on A's target
+    box -- B's gain and a residual sub-pixel shift (A ~ g B + dy dA/dy + dx dA/dx), removed before
+    D = (A - g B') / 2. Without it a residual misregistration of hundredths of a pixel leaks the signal
+    into D: on the 13 px Mars disc 0.017 px of it read as x10 the model (fix round 2, review I-E).
+    Then each `tile`-px tile's own residual shift field is removed (remove_tile_shifts; Ruling P28d;
+    tile=None skips it): the halves' region stacks register differently from region to region, and that
+    local shift is registration, which the full stack carries as a geometric offset END does not see,
+    not noise (fix round 3 triage: a local shift was 85 % of the 2024-02-01 Moon's END-band D). The
+    calibration measures with it, so its small cost in noise sits in R_cal as it sits in R."""
     reg = refs.register(B, A)
     Bo = refs.apply_orientation(B, reg.orientation)
     Bs = np.real(np.fft.ifft2(ndimage.fourier_shift(np.fft.fft2(Bo), reg.shift)))
@@ -149,22 +193,28 @@ def refined_difference(A, B):
     gy, gx = np.gradient(a)
     X = np.stack([bm.ravel(), gy.ravel(), gx.ravel()], 1)
     coef, *_ = np.linalg.lstsq(X, am.ravel(), rcond=None)
+    e = am - (X @ coef).reshape(a.shape)
+    shifts = np.zeros((0, 2))
+    if tile:
+        e, shifts = remove_tile_shifts(e, gy, gx, tile)
     D = np.zeros_like(A)
-    D[box.y0:box.y1, box.x0:box.x1] = (am - (X @ coef).reshape(a.shape)) / 2
-    return D, box, reg, coef
+    D[box.y0:box.y1, box.x0:box.x1] = e / 2
+    return D, box, reg, coef, shifts
 
 
 def ratio(path_a, path_b, k_a, k_b, ptc, raw_mean):
     """Per END bin (and 0.40-0.50 last): D's power over the model sigma_frame^2 (1/k_a + 1/k_b) / 4."""
     A = metric.luminance(refs.load_image(path_a))
     B = metric.luminance(refs.load_image(path_b))
-    D, box, reg, coef = refined_difference(A, B)
+    D, box, reg, coef, shifts = refined_difference(A, B)
     s = metric.measure(A, box).signal
     p = metric.periodogram(D[box.y0:box.y1, box.x0:box.x1] / s)
     d = metric.band_means(p, metric.END_EDGES) + metric.band_means(p, metric.NOISE_BAND)
     s2 = noise.box_noise(ptc, noise.raw_under(raw_mean, A, box))
     model = s2 * (1 / k_a + 1 / k_b) / 4
+    mag = np.hypot(shifts[:, 0], shifts[:, 1]) if len(shifts) else np.zeros(1)
     return {"box": list(box), "shift": list(reg.shift), "refine": [float(v) for v in coef], "sigma_frame2": s2,
+            "tiles": {"n": int(len(shifts)), "shift_rms": float(np.sqrt(np.mean(mag ** 2))), "shift_max": float(mag.max())},
             "model": model, "ratio": [v / model for v in d], "high": float(np.mean([v / model for v in d[HIGH_BINS]]))}
 
 

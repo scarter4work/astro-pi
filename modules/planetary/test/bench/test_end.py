@@ -698,9 +698,12 @@ def test_a_local_shift_between_the_halves_is_not_charged_as_noise():
     import halves
     honest = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA)
     shifted = _halves_ratio(*_halves_pair(0.1, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA)
+    unremoved = _halves_ratio(*_halves_pair(0.1, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA, tile=None)
     charge = halves.charge(list(shifted) + [1.0], list(honest) + [1.0])
-    print("\nlocal shift: per END bin " + " ".join(f"{v:.2f}" for v in shifted) + "; charge " + " ".join(f"{v:.2f}" for v in charge))
+    print("\nlocal shift: per END bin " + " ".join(f"{v:.2f}" for v in shifted) + "; charge " + " ".join(f"{v:.2f}" for v in charge)
+          + "; without the tile shifts " + " ".join(f"{v:.2f}" for v in unremoved))
     assert max(charge) < 1.25
+    assert unremoved[0] > 3 * shifted[0]          # a field the global refinement alone leaks
 
 
 def test_noise_between_the_halves_is_still_charged():
