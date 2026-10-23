@@ -11,7 +11,9 @@ by subproject) -- never a new per-folder memory directory. No CLAUDE.md below th
 ## What ships
 - `modules/nukex/` → `NukeX-pxm` module (ID string `"NukeX"` is STABLE — never rename; existing installs update by ID).
 - `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
-- `modules/planetary/` → `Planetary-pxm` module, process `SERViewer` (docs deploy as `doc/tools/SERViewer/`).
+- `modules/planetary/` → `Planetary-pxm` module, processes `SERViewer` and `PlanetaryStack` (docs deploy as
+  `doc/tools/SERViewer/` and `doc/tools/PlanetaryStack/`). PlanetaryStack is on branch `feat/planetary-stack`, UNRELEASED
+  (source version stays 0.2.2.0 until Scott approves a release; that release needs a bump: the published 0.2.2.0 package lacks its docs).
   0.2.2.0 (Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process id `SERViewer` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
 - `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
@@ -34,6 +36,10 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
    PI Copilot: `modules/pi-copilot/src/module/PICopilotVersion.h`;
    Planetary: `modules/planetary/src/module/PlanetaryVersion.h`;
    EZ scripts: the `#define VERSION` in each `.js`).
+2a. Update the bumped product's update-repository description (`<product>/package-description.xml`; EZ:
+   `scripts/ez-stretch/package-description/<Name>.xml`; Gaia sidecar: `gaia-depth-grade/sidecar-package-description.xml`).
+   release.sh rewrites every package's `<description>` from these on every release and fails when one names a
+   version other than its package's (CPD 6.1: no description outlives its release).
 3. Run `./release.sh` — it builds, native-signs, packages, writes ONE `repository/updates.xri`,
    signs the manifest LAST, and integrity-checks every declared sha1 vs the on-disk artifact.
 4. Signing order is load-bearing: `.xsgn` embeds a timestamp → hash AFTER packaging, sign manifest LAST.
@@ -73,13 +79,18 @@ cd build && ctest --output-on-failure
 cd modules/planetary && cmake -B build -DPCLDIR=$HOME/PCL -DPLANETARY_BUILD_MODULE=ON && cmake --build build -j$(nproc)
 (cd build && ctest --output-on-failure)
 bash test/run-probe.sh                  # headless SERViewer.executeGlobal() over synthetic fixtures, slot 96
-bash test/gui-smoke.sh <out-dir>        # real GUI on a private Xvfb, XTest-driven, slot 97; PNGs in <out-dir>
+bash test/run-probe-stack.sh            # headless PlanetaryStack.executeGlobal() over synthetic captures vs stack-probe, slot 96
+bash test/gui-smoke.sh <out-dir>        # SERViewer: real GUI on a private Xvfb, XTest-driven, slot 97; PNGs in <out-dir>
+bash test/gui-smoke-stack.sh <out-dir>  # PlanetaryStack: the same (Stack!, progress, Cancel, zoom, Execute), slot 97
 bash test/run-real-data.sh              # 2026-09-07 Saturn capture from the NAS -> SER fixtures -> probe + GUI smoke (96/97)
 bash test/run-avi-real.sh               # all NAS AVIs via build/test/avi-probe: frames vs ffmpeg, open time, Bayer phase, >1 GB round trip
 ```
-run-probe.sh, gui-smoke.sh and run-real-data.sh sign the module and need `/tmp/.pi_codesign_pass`; without it they print
+run-probe.sh, run-probe-stack.sh, gui-smoke.sh, gui-smoke-stack.sh and run-real-data.sh sign the module and need `/tmp/.pi_codesign_pass`; without it they print
 BLOCKED and exit 2 before touching a settings slot. They test the host build by default; `PLANETARY_SO=build-portable/src/module/Planetary-pxm.so
-PLANETARY_MAKE_FIXTURES=build-portable/test/make-fixtures` runs them against the container build (`tools/build-env/build-modules.sh`).
+PLANETARY_MAKE_FIXTURES=build-portable/test/make-fixtures` (plus `PLANETARY_STACK_PROBE=build-portable/test/stack-probe` for the
+two stack scripts) runs them against the container build (`tools/build-env/build-modules.sh`).
+Stack engine benchmark and focus survey (host-only, read the NAS, never launch PixInsight): `bash test/run-stack-bench.sh`
+(see `test/bench/README.md`), `bash test/run-focus-survey.sh`.
 run-avi-real.sh neither signs nor launches PixInsight: it runs the PCL-free reader (`build/test/avi-probe`, host build)
 against ffmpeg/ffprobe and needs `/mnt/qnap`, ffmpeg, ffprobe and numpy; the NAS is only read.
 
