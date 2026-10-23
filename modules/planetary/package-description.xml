@@ -1,0 +1,5 @@
+<p>
+   <b>Planetary</b>
+</p>
+<p>Planetary imaging for PixInsight, with two processes. SERViewer opens SER video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview, opens it as a PixInsight image, and can save an AVI as a SER file. PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest frames and aligns them, region by region, with nothing to set, previews the stack with zoom, and opens it as a new image, or says why a capture gives none.</p>
+<p>Both read only the video file you choose and an AVI&apos;s .txt sidecar. SERViewer writes only the SER file you choose; either process writes, if you click Save pattern..., the .txt sidecar next to the AVI. Neither uses the network or runs external programs. Documentation: doc/tools/SERViewer/SERViewer.html and doc/tools/PlanetaryStack/PlanetaryStack.html.</p>

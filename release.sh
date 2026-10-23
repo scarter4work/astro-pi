@@ -13,46 +13,61 @@ DATE="$(date +%Y%m%d)"
 die(){ echo "ERROR: $*" >&2; exit 1; }
 
 # ── Module packages: bin/ + the module's documentation ──────────────────────
-# A module tarball deploys bin/<Name>-pxm.{so,xsgn} and doc/tools/<DocId>/.
+# A module tarball deploys bin/<Name>-pxm.{so,xsgn} and doc/tools/<DocId>/ for
+# each of its processes.
 # doc/tools is the deployment directory the PixInsight Update Repository
 # Reference (section 4.2, Example 2) assigns to documentation of PCL modules,
 # and the core's Browse Documentation opens doc/tools/<ProcessId>/<ProcessId>.html,
 # so the folder and the page carry the process Id: <DocId> is the module name
-# where the two agree ("NukeX", "PICopilot"), and is passed explicitly where
-# they differ (module Planetary, process "SERViewer").
+# where the two agree ("NukeX", "PICopilot"); module Planetary has two processes,
+# "SERViewer" and "PlanetaryStack", so it ships two doc folders.
 # doc/docs is for documents "not related to a particular module or script".
-# The source is modules/<m>/doc/<DocId>/: <DocId>.html (CPD rule 6.1 -- what the
-# module does, its network connections, external programs and file locations)
-# and THIRD_PARTY_NOTICES.txt (CPD rule 7.3 -- PCL License 2.0 conditions 2 and
-# 4, and every linked component's notice).
-NUKEX_DOC="$ROOT/modules/nukex/doc/NukeX"
-PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc/PICopilot"
-PLANETARY_DOC="$ROOT/modules/planetary/doc/SERViewer"
-PLANETARY_DOC_ID=SERViewer
+# The source of each is modules/<m>/doc/<DocId>/: <DocId>.html (CPD rule 6.1 --
+# what the process does, its network connections, external programs and file
+# locations) and THIRD_PARTY_NOTICES.txt (CPD rule 7.3 -- PCL License 2.0
+# conditions 2 and 4, and every linked component's notice). Every folder under
+# modules/<m>/doc/ must be one of the module's doc ids, so none is left unshipped.
+NUKEX_DOC="$ROOT/modules/nukex/doc"
+NUKEX_DOC_IDS=(NukeX)
+PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc"
+PICOPILOT_DOC_IDS=(PICopilot)
+PLANETARY_DOC="$ROOT/modules/planetary/doc"
+PLANETARY_DOC_IDS=(SERViewer PlanetaryStack)
 PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
 
 modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
 
-module_doc_check(){ # <doc source dir> <DocId>
-  local d="$1" n="$2"
-  [ -f "$d/$n.html" ] || die "$d/$n.html missing: every module package ships its user documentation (CPD rule 6.1)"
-  [ -f "$d/THIRD_PARTY_NOTICES.txt" ] || die "$d/THIRD_PARTY_NOTICES.txt missing (CPD rule 7.3)"
-  tr -s '[:space:]' ' ' < "$d/THIRD_PARTY_NOTICES.txt" | grep -qF "$PCL_ACK" \
-    || die "$d/THIRD_PARTY_NOTICES.txt lacks the PCL License 2.0 condition-4 acknowledgment"
-  grep -qF 'PixInsight Class Library License' "$d/THIRD_PARTY_NOTICES.txt" \
-    && grep -qF 'Redistributions in binary form must reproduce the above copyright notice' "$d/THIRD_PARTY_NOTICES.txt" \
-    || die "$d/THIRD_PARTY_NOTICES.txt lacks the full PCL licence text (PCL License 2.0 condition 2)"
+module_doc_check(){ # <doc root> <DocId>... : each <root>/<DocId>/ complete, and no other folder under <root>
+  local root="$1" n d; shift
+  [ $# -ge 1 ] || die "module_doc_check $root: no doc id"
+  for n in "$@"; do
+    d="$root/$n"
+    [ -f "$d/$n.html" ] || die "$d/$n.html missing: every module package ships its user documentation (CPD rule 6.1)"
+    [ -f "$d/THIRD_PARTY_NOTICES.txt" ] || die "$d/THIRD_PARTY_NOTICES.txt missing (CPD rule 7.3)"
+    tr -s '[:space:]' ' ' < "$d/THIRD_PARTY_NOTICES.txt" | grep -qF "$PCL_ACK" \
+      || die "$d/THIRD_PARTY_NOTICES.txt lacks the PCL License 2.0 condition-4 acknowledgment"
+    grep -qF 'PixInsight Class Library License' "$d/THIRD_PARTY_NOTICES.txt" \
+      && grep -qF 'Redistributions in binary form must reproduce the above copyright notice' "$d/THIRD_PARTY_NOTICES.txt" \
+      || die "$d/THIRD_PARTY_NOTICES.txt lacks the full PCL licence text (PCL License 2.0 condition 2)"
+  done
+  for d in "$root"/*; do
+    n="$(basename "$d")"
+    printf '%s\n' "$@" | grep -qxF "$n" || die "$d is not one of the doc ids this package ships ($*): it would never be installed"
+  done
 }
 
-build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc source dir> [<DocId>, default <Name>]
-  local out="$1" n="$2" so="$3" xsgn="$4" doc="$5" id="${6:-$2}" st
+build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc root> <DocId>...
+  local out="$1" n="$2" so="$3" xsgn="$4" doc="$5" id st; shift 5
   [ "$(basename "$so")" = "$n-pxm.so" ] && [ "$(basename "$xsgn")" = "$n-pxm.xsgn" ] \
     || die "build_module_tgz $n: expected $n-pxm.so + $n-pxm.xsgn, got $so + $xsgn"
-  module_doc_check "$doc" "$id"
+  module_doc_check "$doc" "$@"
   st="$(mktemp -d)"
-  mkdir -p "$st/bin" "$st/doc/tools/$id"
+  mkdir -p "$st/bin"
   cp "$so" "$xsgn" "$st/bin/"
-  cp -R "$doc/." "$st/doc/tools/$id/"
+  for id in "$@"; do
+    mkdir -p "$st/doc/tools/$id"
+    cp -R "$doc/$id/." "$st/doc/tools/$id/"
+  done
   # World-readable whatever the build's umask: the updater installs as root
   # while PixInsight runs as the user (the published PICopilot 0.2.1.1
   # tarball carries a 0700 .so and a 0600 .xsgn).
@@ -60,35 +75,38 @@ build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc sourc
   rm -rf "$st"
 }
 
-module_pkg_check(){ # <tgz> <Name> <doc source dir> [<DocId>, default <Name>] : deploys exactly bin/<Name>-pxm.{so,xsgn} + doc/tools/<DocId>/ (Repository Reference 4.2), docs == source
-  python3 - "$1" "$2" "$3" "${4:-$2}" <<'PY'
+module_pkg_check(){ # <tgz> <Name> <doc root> <DocId>... : deploys exactly bin/<Name>-pxm.{so,xsgn} + each doc/tools/<DocId>/ (Repository Reference 4.2), docs == source
+  python3 - "$@" <<'PY'
 import os,sys,tarfile
-tgz,n,doc,i=sys.argv[1:5]
+tgz,n,root=sys.argv[1:4]; ids=sys.argv[4:]
 want={}
-for r,_,fs in os.walk(doc):
-    for f in fs:
-        p=os.path.join(r,f)
-        want["doc/tools/%s/%s"%(i,os.path.relpath(p,doc))]=open(p,'rb').read()
+for i in ids:
+    doc=os.path.join(root,i)
+    for r,_,fs in os.walk(doc):
+        for f in fs:
+            p=os.path.join(r,f)
+            want["doc/tools/%s/%s"%(i,os.path.relpath(p,doc))]=(open(p,'rb').read(),p)
 need={"bin/%s-pxm.so"%n,"bin/%s-pxm.xsgn"%n}|set(want)
-dirs={"bin","doc","doc/tools","doc/tools/"+i}
+dirs={"bin","doc","doc/tools"}|{"doc/tools/"+i for i in ids}
 errs=[]
 with tarfile.open(tgz) as t:
     files={}
     for m in t.getmembers():
         name=m.name[2:] if m.name.startswith("./") else m.name
         if m.isdir():
-            if name.rstrip("/") not in dirs and not name.startswith("doc/tools/%s/"%i): errs.append("unexpected directory "+name)
+            if name.rstrip("/") not in dirs and not any(name.startswith("doc/tools/%s/"%i) for i in ids): errs.append("unexpected directory "+name)
         elif m.isfile():
             files[name]=m
             if m.mode & 0o044 != 0o044: errs.append("%s is not world-readable (mode %o)"%(name,m.mode))
         else: errs.append("not a regular file or directory: "+name)
-    for f in sorted(set(files)-need): errs.append("deploys %s, outside bin/%s-pxm.* and doc/tools/%s/"%(f,n,i))
+    outside=" and ".join("doc/tools/%s/"%i for i in ids)
+    for f in sorted(set(files)-need): errs.append("deploys %s, outside bin/%s-pxm.* and %s"%(f,n,outside))
     for f in sorted(need-set(files)): errs.append("missing "+f)
     for f in sorted(set(want)&set(files)):
-        if t.extractfile(files[f]).read()!=want[f]: errs.append("%s differs from %s"%(f,os.path.join(doc,f.split("/",3)[3])))
+        if t.extractfile(files[f]).read()!=want[f][0]: errs.append("%s differs from %s"%(f,want[f][1]))
 if errs:
     print("  "+os.path.basename(tgz)+":"); [print("    "+e) for e in errs]; sys.exit(1)
-print("  OK  %s: bin/%s-pxm.{so,xsgn} + %d doc file(s) in doc/tools/%s/, all world-readable, docs match source"%(os.path.basename(tgz),n,len(want),i))
+print("  OK  %s: bin/%s-pxm.{so,xsgn} + %d doc file(s) in %s, all world-readable, docs match source"%(os.path.basename(tgz),n,len(want),", ".join("doc/tools/%s/"%i for i in ids)))
 PY
 }
 
@@ -107,19 +125,128 @@ module_tgz(){ # <Module> <ver>
 # A published (committed) module tarball is reused byte for byte, never rebuilt
 # (see package_module). That is only correct while it already deploys exactly
 # the current documentation; otherwise the version must be bumped.
-published_pkg_reusable(){ # <tarball> <Name> <doc source dir> [<DocId>, default <Name>]; 0 = new package, or published and up to date
+published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new package, or published and up to date
   git -C "$ROOT" ls-files --error-unmatch "repository/$1" >/dev/null 2>&1 || { echo "  new package $1"; return 0; }
-  local tmp rc=0; tmp="$(mktemp -d)"
-  git -C "$ROOT" show ":repository/$1" > "$tmp/$1"
-  module_pkg_check "$tmp/$1" "$2" "$3" "${4:-$2}" || rc=1
+  local tgz="$1" tmp rc=0; shift; tmp="$(mktemp -d)"
+  git -C "$ROOT" show ":repository/$tgz" > "$tmp/$tgz"
+  module_pkg_check "$tmp/$tgz" "$@" || rc=1
   rm -rf "$tmp"
   return $rc
+}
+
+# ── Package descriptions in updates.xri ─────────────────────────────────────
+# Every package's <description> is rewritten from its product's source on every
+# release (CPD rule 6.1: a manifest description that outlives its release reads
+# as documentation of a version that no longer ships; NukeX 5.2.0.1 was served
+# with 5.1.0.3's text). A source is the inner XML of <description>, as served;
+# the repository's own <description> comes from tools/repository-description.xml.
+# A description names no version but its package's own: any dotted number of
+# three or more parts, or v<n>.<n>..., must be that version (two-part numbers --
+# glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
+# fails the release until the description has been brought up to date.
+EZ_NAMES=(EZStretch EZDonutRepair EZHazeKill)
+declare -A EZVER=( [EZStretch]=1.0.11 [EZDonutRepair]=1.0.4 [EZHazeKill]=1.0.2 )
+GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
+REPO_DESC="$ROOT/tools/repository-description.xml"
+declare -A PKG_DESC=(
+  [NukeX]="$ROOT/modules/nukex/package-description.xml"
+  [PICopilot]="$ROOT/modules/pi-copilot/package-description.xml"
+  [Planetary]="$ROOT/modules/planetary/package-description.xml"
+  [EZStretch]="$ROOT/scripts/ez-stretch/package-description/EZStretch.xml"
+  [EZDonutRepair]="$ROOT/scripts/ez-stretch/package-description/EZDonutRepair.xml"
+  [EZHazeKill]="$ROOT/scripts/ez-stretch/package-description/EZHazeKill.xml"
+  [GaiaDepthGrade]="$ROOT/gaia-depth-grade/package-description.xml"
+  [GaiaDepthGradeSidecar]="$ROOT/gaia-depth-grade/sidecar-package-description.xml"
+)
+# The packages' fileNames in a manifest, in order.
+manifest_files(){ sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$1"; }
+# <fileName>=<source> for each fileName given (dies on one without a source).
+desc_args(){
+  local fn key
+  for fn in "$@"; do
+    case "$fn" in
+      *-linux-x64-GaiaDepthGradeSidecar-*) key=GaiaDepthGradeSidecar ;;
+      gaia-depth-grade_v*) key=GaiaDepthGrade ;;
+      *-linux-x64-*.tar.gz) key="${fn#*-linux-x64-}"; key="${key%%-*}" ;;
+      *_v*.zip) key="${fn%%_v*}" ;;
+      *) key= ;;
+    esac
+    [ -n "$key" ] && [ -n "${PKG_DESC[$key]:-}" ] || die "no description source for package $fn"
+    echo "$fn=${PKG_DESC[$key]}"
+  done
+}
+# descriptions <check|apply|verify> <manifest> <fileName>=<source>...
+#   check : every source is well-formed and names no version but its fileName's (manifest unused)
+#   apply : check, then rewrite the manifest's <description> of each fileName (exactly one entry
+#           each) and the repository's own; every package in the manifest must be listed
+#   verify: the manifest's descriptions are exactly the sources (after a later step, e.g. signing)
+descriptions(){
+  python3 - "$REPO_DESC" "$@" <<'PY'
+import re,sys
+import xml.etree.ElementTree as ET
+repo_desc,mode,mf=sys.argv[1:4]; pairs=[a.split("=",1) for a in sys.argv[4:]]
+def version(fn):
+    m=re.search(r'(?:-|_v)(\d+(?:\.\d+)+)\.(?:tar\.gz|zip)$',fn)
+    if not m: sys.exit("descriptions: no version in package fileName "+fn)
+    return m.group(1)
+def body(src):
+    t=open(src,encoding="utf-8").read().strip("\n")
+    try: ET.fromstring("<description>"+t+"</description>")
+    except ET.ParseError as e: sys.exit("descriptions: %s is not well-formed XML: %s"%(src,e))
+    return t
+def rendered(t,ind=12):  # as served: a package's description is indented 9, its lines 12; the repository's 3 and 6
+    return "<description>\n"+"\n".join(" "*ind+l if l else l for l in t.split("\n"))+"\n"+" "*(ind-3)+"</description>"
+errs=[]
+srcs={}
+for fn,src in pairs:
+    t=body(src); v=version(fn); srcs[fn]=t
+    for m in re.finditer(r'(?<![A-Za-z0-9.])(v?)(\d+(?:\.\d+)+)',t):
+        num=m.group(2)
+        if (num.count(".")>=2 or m.group(1)) and num!=v:
+            errs.append("%s names version %s%s, but the package (%s) is %s"%(src,m.group(1),num,fn,v))
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+if mode=="check":
+    print("  OK  %d package descriptions are well-formed and name only their own package's version"%len(pairs)); sys.exit(0)
+s=open(mf,encoding="utf-8").read()
+pkgs=re.findall(r'<package fileName="([^"]+)"',s)
+for fn in pkgs:
+    if fn not in srcs: errs.append("updates.xri package %s has no description source"%fn)
+for fn in srcs:
+    if pkgs.count(fn)!=1: errs.append("updates.xri has %d package entries for %s"%(pkgs.count(fn),fn))
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+def pkg_span(fn):
+    m=re.search(r'<package fileName="'+re.escape(fn)+r'"[^>]*>.*?</package>',s,re.S)
+    return m
+def top_span():
+    head=s[:s.index("<platform")]
+    m=re.search(r'<description>.*?</description>',head,re.S)
+    if not m: sys.exit("descriptions: updates.xri has no repository <description> before its first <platform>")
+    return m
+top=body(repo_desc)
+if mode=="apply":
+    for fn,t in srcs.items():
+        m=pkg_span(fn); pk=m.group(0)
+        if len(re.findall(r'<description>',pk))!=1: sys.exit("descriptions: package %s has not exactly one <description>"%fn)
+        pk=re.sub(r'<description>.*?</description>',lambda _:rendered(t),pk,flags=re.S)
+        s=s[:m.start()]+pk+s[m.end():]
+    m=top_span(); s=s[:m.start()]+rendered(top,6)+s[m.end():]
+    open(mf,"w",encoding="utf-8").write(s)
+    print("  OK  wrote %d package descriptions and the repository description into %s"%(len(srcs),mf)); sys.exit(0)
+for fn,t in srcs.items():
+    d=re.search(r'<description>.*?</description>',pkg_span(fn).group(0),re.S).group(0)
+    if d!=rendered(t): errs.append("updates.xri description of %s is not its source"%fn)
+if top_span().group(0)!=rendered(top,6): errs.append("updates.xri repository description is not tools/repository-description.xml")
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+print("  OK  every description in %s is its source and names only its package's version"%mf)
+PY
 }
 
 # Packaging self-test: the same build_module_tgz + module_pkg_check the release
 # uses, on any .so/.xsgn pair (e.g. a container build and a stand-in .xsgn),
 # into a scratch directory, then the reuse verdict step 0b would give for the
-# current module versions. No build, no signing, no manifest, repository/ untouched.
+# current module versions, and the description rewrite on a copy of the
+# manifest (<outdir>/updates.xri, unsigned). No build, no signing, repository/
+# untouched.
 #   ./release.sh --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>
 if [ "${1:-}" = "--package-test" ]; then
   [ $# -eq 8 ] || die "usage: $0 --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>"
@@ -131,20 +258,27 @@ if [ "${1:-}" = "--package-test" ]; then
   NT="$OUT/$DATE-linux-x64-NukeX-$NV.tar.gz"
   PT="$OUT/$DATE-linux-x64-PICopilot-$PV.tar.gz"
   LT="$OUT/$DATE-linux-x64-Planetary-$LV.tar.gz"
-  build_module_tgz "$NT" NukeX "$3" "$4" "$NUKEX_DOC"
-  module_pkg_check "$NT" NukeX "$NUKEX_DOC" || die "NukeX package check failed"
-  build_module_tgz "$PT" PICopilot "$5" "$6" "$PICOPILOT_DOC"
-  module_pkg_check "$PT" PICopilot "$PICOPILOT_DOC" || die "PICopilot package check failed"
-  build_module_tgz "$LT" Planetary "$7" "$8" "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
-  module_pkg_check "$LT" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" || die "Planetary package check failed"
+  build_module_tgz "$NT" NukeX "$3" "$4" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
+  module_pkg_check "$NT" NukeX "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}" || die "NukeX package check failed"
+  build_module_tgz "$PT" PICopilot "$5" "$6" "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}"
+  module_pkg_check "$PT" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}" || die "PICopilot package check failed"
+  build_module_tgz "$LT" Planetary "$7" "$8" "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
+  module_pkg_check "$LT" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" || die "Planetary package check failed"
   for t in "$NT" "$PT" "$LT"; do echo "== $(basename "$t")"; tar -tzvf "$t"; done
   echo "== release step 0b verdict for the current versions"
-  published_pkg_reusable "$(module_tgz NukeX "$NV")" NukeX "$NUKEX_DOC" \
+  published_pkg_reusable "$(module_tgz NukeX "$NV")" NukeX "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}" \
     || echo "  release.sh would STOP: NukeX $NV is published without the current docs -- bump its version"
-  published_pkg_reusable "$(module_tgz PICopilot "$PV")" PICopilot "$PICOPILOT_DOC" \
+  published_pkg_reusable "$(module_tgz PICopilot "$PV")" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}" \
     || echo "  release.sh would STOP: PICopilot $PV is published without the current docs -- bump its version"
-  published_pkg_reusable "$(module_tgz Planetary "$LV")" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" \
+  published_pkg_reusable "$(module_tgz Planetary "$LV")" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
     || echo "  release.sh would STOP: Planetary $LV is published without the current docs -- bump its version"
+  echo "== package descriptions, rewritten into a copy of the manifest: $OUT/updates.xri"
+  # The manifest's own fileNames (they change only at a release), each with its product's source.
+  DESC_LIST="$(desc_args $(manifest_files "$REPO/updates.xri"))" || die "a package in updates.xri has no description source"
+  mapfile -t DESC_ARGS <<< "$DESC_LIST"
+  sed '/<Signature developerId=/d' "$REPO/updates.xri" > "$OUT/updates.xri"
+  descriptions apply "$OUT/updates.xri" "${DESC_ARGS[@]}" || die "description rewrite failed"
+  descriptions verify "$OUT/updates.xri" "${DESC_ARGS[@]}" || die "description check failed"
   exit 0
 fi
 
@@ -262,28 +396,38 @@ reuse_if_published(){ # <file in repository/>: restore the committed bytes of an
     echo "   $1 already published -- reusing the committed bytes"
   fi
 }
-package_module(){ # <tarball> <Name> <module .so> <module .xsgn> <doc source dir> [<DocId>, default <Name>]
-  local tgz="$1" id="${6:-$2}"
+package_module(){ # <tarball> <Name> <module .so> <module .xsgn> <doc root> <DocId>...
+  local tgz="$1" n="$2" so="$3" xsgn="$4" doc="$5"; shift 5
   if git -C "$ROOT" ls-files --error-unmatch "repository/$tgz" >/dev/null 2>&1; then
     git -C "$ROOT" checkout -- "repository/$tgz"
     echo "   $tgz already published -- reusing the committed bytes"
   else
-    build_module_tgz "$REPO/$tgz" "$2" "$3" "$4" "$5" "$id"
+    build_module_tgz "$REPO/$tgz" "$n" "$so" "$xsgn" "$doc" "$@"
   fi
-  module_pkg_check "$REPO/$tgz" "$2" "$5" "$id" || die "$tgz does not deploy exactly bin/$2-pxm.{so,xsgn} + the current doc/tools/$id/"
+  module_pkg_check "$REPO/$tgz" "$n" "$doc" "$@" || die "$tgz does not deploy exactly bin/$n-pxm.{so,xsgn} + the current doc/tools/{$*}/"
 }
 # Fail now, not after the build: the docs each package will ship must be
 # complete, and an already-published version can only be reused if its
 # tarball already carries exactly the current docs (else: bump the version).
-module_doc_check "$NUKEX_DOC" NukeX
-module_doc_check "$PICOPILOT_DOC" PICopilot
-module_doc_check "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
-published_pkg_reusable "$MOD_TGZ" NukeX "$NUKEX_DOC" \
+module_doc_check "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
+module_doc_check "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}"
+module_doc_check "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
+published_pkg_reusable "$MOD_TGZ" NukeX "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}" \
   || die "NukeX $NUKEX_VER is already published as $MOD_TGZ without the current doc/tools/NukeX/ -- bump NukeX's version so a new package is built"
-published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" \
+published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}" \
   || die "PICopilot $PICOPILOT_VER is already published as $PICOPILOT_TGZ without the current doc/tools/PICopilot/ -- bump PICopilot's version so a new package is built"
-published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" \
-  || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/$PLANETARY_DOC_ID/ -- bump Planetary's version so a new package is built"
+published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
+  || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/{${PLANETARY_DOC_IDS[*]}}/ -- bump Planetary's version so a new package is built"
+# The descriptions this release will write (step 3f) must already name only
+# these versions: a bumped version with last release's text stops here.
+SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
+[[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
+EZ_ZIPS=(); for name in "${EZ_NAMES[@]}"; do EZ_ZIPS+=("${name}_v${EZVER[$name]}.zip"); done
+DESC_LIST="$(desc_args "$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "gaia-depth-grade_v${GAIA_VER}.zip" \
+  "$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz")" || die "a package has no description source"
+mapfile -t DESC_ARGS <<< "$DESC_LIST"
+descriptions check "$REPO/updates.xri" "${DESC_ARGS[@]}" \
+  || die "a package description names a version other than its package's -- bring it up to date for this release"
 
 echo "== 1/6 build NukeX + PICopilot + Planetary modules (portable Rocky 9 container) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
@@ -338,7 +482,7 @@ print("  signed+verified:", ", ".join(r["verified"]))
 PY
 
 echo "== 3/6 package NukeX module tarball =="
-package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC"
+package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
 python3 - "$REPO/updates.xri" "$MOD_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
@@ -348,7 +492,7 @@ open(mf,'w').write(s)
 PY
 
 echo "== 3a/6 package PICopilot module tarball =="
-package_module "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$PICOPILOT_DOC"
+package_module "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}"
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
 # git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
@@ -364,18 +508,13 @@ if re.search(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', s):
 else:
     # First release: insert a new <package> entry into the linux/x64
     # platform block (the same block NukeX lives in). sha1/releaseDate
-    # are placeholders -- step 4 (write_pkg) fills in the real values.
+    # are placeholders -- step 4 (write_pkg) fills in the real values --
+    # and step 3f writes the description from its source.
     entry = ('\n      <package fileName="' + fn + '" '
              'sha1="0000000000000000000000000000000000000000" '
              'type="module" releaseDate="00000000">\n'
              '         <title>PI Copilot</title>\n'
-             '         <description>\n'
-             '            <p>\n'
-             '               <b>PI Copilot</b>\n'
-             '            </p>\n'
-             '            <p>PI Copilot — AI assistant panel for PixInsight '
-             '(bring your own Anthropic API key).</p>\n'
-             '         </description>\n'
+             '         <description></description>\n'
              '      </package>\n')
     new_s,n=re.subn(
         r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
@@ -388,8 +527,8 @@ open(mf,'w').write(s)
 PY
 [ -f "$REPO/$PICOPILOT_TGZ" ] || die "tarball $PICOPILOT_TGZ not produced"
 
-echo "== 3a2/6 package Planetary module tarball (docs deploy as doc/tools/$PLANETARY_DOC_ID/) =="
-package_module "$PLANETARY_TGZ" Planetary "$PLANETARY_SO" "$PLANETARY_XSGN" "$PLANETARY_DOC" "$PLANETARY_DOC_ID"
+echo "== 3a2/6 package Planetary module tarball (docs deploy as doc/tools/{${PLANETARY_DOC_IDS[*]}}/) =="
+package_module "$PLANETARY_TGZ" Planetary "$PLANETARY_SO" "$PLANETARY_XSGN" "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
 python3 - "$REPO/updates.xri" "$PLANETARY_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
@@ -400,23 +539,13 @@ if re.search(pat, s):
     s=re.sub(pat, 'fileName="'+fn+'"', s)
 else:
     # First release: a new <package> in the linux/x64 platform block, with
-    # placeholder sha1/releaseDate that step 4 (write_pkg) fills in. No version
-    # in the description: later releases only rename fileName (as for PICopilot),
-    # so a version written here would go stale.
+    # placeholder sha1/releaseDate that step 4 (write_pkg) fills in, and an
+    # empty description that step 3f writes from its source.
     entry = ('\n      <package fileName="' + fn + '" '
              'sha1="0000000000000000000000000000000000000000" '
              'type="module" releaseDate="00000000">\n'
              '         <title>Planetary</title>\n'
-             '         <description>\n'
-             '            <p>\n'
-             '               <b>Planetary</b>\n'
-             '            </p>\n'
-             '            <p>Planetary: SER and AVI video viewer for PixInsight. SERViewer opens SER video '
-             'files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview '
-             'and opens it as a PixInsight image, and it can save an AVI as a SER file. '
-             'It reads only the video file you choose (and an AVI\'s .txt sidecar), writes only the SER file you choose and, '
-             'if you click Save pattern..., the .txt sidecar next to the AVI; it uses no network and runs no external programs.</p>\n'
-             '         </description>\n'
+             '         <description></description>\n'
              '      </package>\n')
     new_s,n=re.subn(
         r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
@@ -430,7 +559,6 @@ PY
 [ -f "$REPO/$PLANETARY_TGZ" ] || die "tarball $PLANETARY_TGZ not produced"
 
 echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
-declare -A EZVER=( [EZStretch]=1.0.11 [EZDonutRepair]=1.0.4 [EZHazeKill]=1.0.2 )
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
 for name in EZStretch EZDonutRepair EZHazeKill; do
   ver="${EZVER[$name]}"
@@ -456,7 +584,6 @@ echo "== 3c/6 package gaia-depth-grade script zip =="
 # doc/scripts is for script documentation; the folder and page carry the
 # #feature-id "GaiaDepthGrade"). Modes are normalised world-readable: the updater
 # installs as root while PixInsight runs as the user.
-GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
 GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
 GAIA_STAGE="$(mktemp -d)"
 mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade"
@@ -479,8 +606,7 @@ echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-gr
 # exactly like the module tarballs: bump gaia_depth_grade.__version__ to ship
 # new bytes. Building one takes the portable Rocky 9 image and network access
 # (pinned, hash-checked inputs); see gaia-depth-grade/tools/build-sidecar.sh.
-SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
-[[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
+# SIDECAR_VER: read in step 0b.
 grep -qE "^#define SIDECAR_VERSION +\"$SIDECAR_VER\"" "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh" \
   || die "gaia_depth_grade_lib.jsh SIDECAR_VERSION is not $SIDECAR_VER: the scripts would refuse the sidecar this release ships"
 SIDECAR_TGZ="$(git -C "$ROOT" ls-files "repository/*-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz" | sed 's#^repository/##')"
@@ -505,6 +631,13 @@ PY
 echo "== 3e/6 publish the NukeX camera database (repository/qe_*) =="
 for f in "${QE_FILES[@]}"; do cp "$QE_SRC/$f" "$REPO/$f"; done
 qe_check "$REPO" || die "published QE set in repository/ does not verify"
+
+echo "== 3f/6 write every package description from its source (and the repository's) =="
+# Every fileName is final by now; each entry gets its product's text, so none
+# outlives the release it was written for.
+DESC_LIST="$(desc_args $(manifest_files "$REPO/updates.xri"))" || die "a package in updates.xri has no description source"
+mapfile -t DESC_ARGS <<< "$DESC_LIST"
+descriptions apply "$REPO/updates.xri" "${DESC_ARGS[@]}" || die "could not write the package descriptions"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
@@ -536,6 +669,9 @@ for fn,h in re.findall(r'fileName="([^"]+)"\s+sha1="([0-9a-fA-F]{40})"', s):
     else: print("OK",fn)
 sys.exit(1 if bad else 0)
 PY
+
+echo "== 6a/6 the signed manifest's descriptions are their sources and name only their own versions =="
+descriptions verify "$REPO/updates.xri" "${DESC_ARGS[@]}" || die "updates.xri carries a stale package description"
 
 echo "== 6b/6 integrity check: camera-database publication, with the module's own verifier =="
 qe_check "$REPO" || die "repository/ QE publication is stale, unsigned or does not match the embedded database"
