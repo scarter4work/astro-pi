@@ -41,6 +41,7 @@ enum class BayerChoice { Auto, None, RGGB, GRBG, GBRG, BGGR };
 // ASIAIR capture-log fields, raw strings as read from the sidecar.
 struct AsiairSidecar {
     std::string camera, colourFormat, bayer, flip, gain, exposure, captureArea;
+    std::string startX, startY;  // the ROI origin on the sensor, as written (ResolveBayer checks parity)
     // The section was [SERViewer] (WriteAsiairSidecar): `camera` is empty, never "SERViewer".
     bool writtenBySERViewer = false;
 };

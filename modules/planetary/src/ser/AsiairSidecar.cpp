@@ -66,6 +66,8 @@ std::optional<AsiairSidecar> ParseAsiairSidecar(const std::string& text) {
         else if (key == "Gain") sc.gain = value;
         else if (key == "Exposure") sc.exposure = value;
         else if (key == "Capture Area Size") sc.captureArea = value;
+        else if (key == "StartX") sc.startX = value;
+        else if (key == "StartY") sc.startY = value;
     }
     if (!sawSection && !sawKey) return std::nullopt;
     return sc;
@@ -126,23 +128,39 @@ ColorId ResolveBayer(BayerChoice choice, const std::optional<AsiairSidecar>& sid
         warnings.push_back("sidecar Colour Format is " + sidecar->colourFormat +
                            ", not RAW8; using its Bayer value anyway");
 
-    if (sidecar->flip.rfind("Vert", 0) == 0) {
-        const int rotated = 3 - found;  // RGGB<->BGGR, GRBG<->GBRG
-        source = std::string("sidecar ") + names[found] + ", Flip=Vert \xE2\x86\x92 " +
-                 patterns[rotated];
-        // An inference, not a fact (Ruling 10): of the 40 Flip=Vert planet files measured (33
-        // captures), 35 carry the rotated phase, 3 keep the sidecar's own and 2 are unmeasurable;
-        // nothing found in the headers or sidecars tells them apart.
-        warnings.push_back(std::string("Bayer pattern inferred from Flip=Vert (") + patterns[rotated] +
-                           "); some ASIAIR captures are " + patterns[found] +
-                           " -- if red and blue look swapped, choose " + patterns[found] +
-                           " under Bayer pattern");
-        return ids[rotated];
-    }
-    // Only None and Vert were measured (Ruling 15): any other Flip keeps the sidecar's pattern.
-    if (!sidecar->flip.empty() && sidecar->flip != "None")
+    // Flip: "None" and "Vert(unimplemented)" are measured, and both mean the frame is the sensor as
+    // read out, so the sidecar's Bayer value is the frame's pattern. "Vert(unimplemented)" (every
+    // 2022-2023 sidecar: ASI071MC Pro, ASI2400MC Pro, ASI462MC) says what it is: ASIAIR recorded the
+    // setting and did not apply it. Measured without colour (spec amendment 2026-10-23, superseding
+    // Ruling 10's 180-degree rotation): the fixed-pattern noise of every resolvable such video sits
+    // pixel for pixel on an ASIAIR full-frame FITS of the same camera (BAYERPAT RGGB) cropped at
+    // StartX/StartY -- not flipped, not rotated -- and a vertical flip could never have produced the
+    // rotated phase anyway (it moves rows, not the red/blue columns). Any other Flip is unmeasured
+    // (Ruling 15): a bare "Vert" may be a flip a later ASIAIR applies.
+    if (!sidecar->flip.empty() && sidecar->flip != "None" && sidecar->flip != "Vert(unimplemented)")
         warnings.push_back("sidecar Flip=" + sidecar->flip + " is unmeasured; using " + patterns[found] +
                            " as the sidecar says -- if colours look wrong, choose the pattern under Bayer pattern");
+
+    // ROI origin parity. ZWO's SDK (ASICamera2.h, ASISetROIFormat / ASISetStartPos) requires
+    // width % 8 == 0 and height % 2 == 0 and states no rule for the start position, and its Bayer
+    // pattern (ASI_CAMERA_INFO.BayerPattern, the sidecar's Bayer value) does not depend on it. Every
+    // sidecar seen has an even StartX/StartY, where the frame is exactly the sensor from that
+    // origin, phase unchanged. An odd origin would start one site into the CFA if the camera honours
+    // it as given; no capture shows whether it does, so the sidecar's pattern stands with a warning.
+    auto odd = [](const std::string& v) {
+        if (v.empty() || v.size() > 9) return false;
+        for (char c : v)
+            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        return (v.back() - '0') % 2 == 1;
+    };
+    std::string oddAxes;
+    if (odd(sidecar->startX)) oddAxes = "StartX=" + sidecar->startX;
+    if (odd(sidecar->startY)) oddAxes += (oddAxes.empty() ? "" : ", ") + std::string("StartY=") + sidecar->startY;
+    if (!oddAxes.empty())
+        warnings.push_back("sidecar ROI origin " + oddAxes +
+                           " is odd; how an odd origin shifts the Bayer pattern is unmeasured -- using " +
+                           patterns[found] +
+                           " as the sidecar says; if colours look wrong, choose the pattern under Bayer pattern");
     source = sidecar->writtenBySERViewer ? "sidecar (SERViewer)" : "sidecar";
     return ids[found];
 }

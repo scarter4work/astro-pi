@@ -39,7 +39,7 @@ public:
 };
 
 // AVI only (a SER carries its own ColorID): the CFA pattern. Auto = the ASIAIR
-// sidecar's Bayer value (rotated for Flip=Vert); with no sidecar, raw mono and a warning.
+// sidecar's Bayer value as it stands; with no sidecar, raw mono and a warning.
 class SVBayerPattern : public MetaEnumeration
 {
 public:
