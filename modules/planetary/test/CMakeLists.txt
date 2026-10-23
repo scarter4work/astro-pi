@@ -71,3 +71,16 @@ target_link_libraries(stack-region-probe PRIVATE planetary_stack)
 # NAS captures.
 add_executable(stack-probe stack-probe.cpp)
 target_link_libraries(stack-probe PRIVATE planetary_stack)
+
+# Test-only: Select's step-7 focus reading on a real capture (the in-focus survey and the defocus series
+# behind kGrossBlurLimit and kBlurLimit; test/run-focus-survey.sh runs it). Not a ctest case, it needs the
+# NAS captures.
+add_executable(focus-survey focus-survey.cpp)
+target_link_libraries(focus-survey PRIVATE planetary_stack)
+
+# Test-only: the in-focus limb read directly off a stack of a real capture's sharpest half, and each frame's
+# quality with and without the capture's noise model (Select.h step 7: why the in-focus reading doubled with
+# Ruling P26). Not a ctest case, it needs the NAS captures.
+add_executable(limb-probe limb-probe.cpp)
+target_include_directories(limb-probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+target_link_libraries(limb-probe PRIVATE planetary_stack)

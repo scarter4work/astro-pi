@@ -204,7 +204,10 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 //     195137 (R 11.8) 0.071, Neptune 204515 (R 2.0) 0.378;
 //   195830 blurred 2 / 4 / 8 / 16: 0.26 / 0.38 / 0.53 / 0.57; Neptune blurred 1 / 2 / 3: 0.49 / 0.55 /
 //   0.57 (by 4 it is no longer found: NoTarget).
-// kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px.
+// kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px. A large
+// one later, in sensor px: the 2022-09-17 1080p Jupiters (R 20.2-20.7 luma px, all frames) blurred 4 / 8 / 12 /
+// 16 read 230420 0.241 / 0.310 / 0.409 / 0.473 (warned from 12) and 225418 0.228 / 0.305 / 0.385 (at 16 Select
+// refuses it) -- so 225418 at 12 px, under kGrossBlurLimit, stacks without the warning (Ruling P15a, Select.h).
 //
 // A frame-filling target: the measure is the detail scale D in sensor px, pooled over Hann-tapered
 // windows of kFocusWindow sensor px on the placed regions (FocusWindows, JudgeFocus; the taper's own

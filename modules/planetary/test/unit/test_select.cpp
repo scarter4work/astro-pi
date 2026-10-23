@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "Align.h"
+#include "Engine.h"
 #include "Measure.h"
 #include "Select.h"
 #include "StackSynth.h"
@@ -1043,6 +1044,9 @@ TEST_CASE("a short in-focus capture is read at its sharpest frames (Ruling P26 f
         const int64_t need = std::min<int64_t>(stack::kMinStackFrames, (static_cast<int64_t>(n) + 1) / 2);
         const int64_t floorCount = std::max<int64_t>(need, static_cast<int64_t>(std::ceil(std::sqrt(static_cast<double>(n)))));
         CHECK(sel.focusQuality == Catch::Approx(stack::RankByDetail(q, sg, sg2, need, floorCount).qRef));
+        // Ruling P15 binds as written (P15a): an in-focus capture reads at least 2x under the limit.
+        CHECK(sel.focusLimit == Catch::Approx(stack::kGrossBlurLimit));
+        CHECK(2 * sel.focusReading <= sel.focusLimit);
     }
 }
 
@@ -1075,13 +1079,15 @@ TEST_CASE("steady blur is not called seeing when quality carries its measured no
 }
 
 TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[select][diagnosis]") {
-    // Blurred disc (limb 20 px on R = 60), 500 frames, true blur spread g, quality noise `noise`.
+    // Blurred disc (limb 24 px on R = 60, 0.40 R; at 20 px, 0.33 R, the sharpest frames of 6% seeing come
+    // near kGrossBlurLimit 0.28 and only 37 of 50 seeds read PoorSeeing below), 500 frames, true blur
+    // spread g, quality noise `noise`.
     auto capture = [](double g, double noise, uint32_t seed) {
         std::mt19937 rng(seed);
         std::normal_distribution<double> n01(0, 1);
         std::vector<FrameStats> v;
         for (int64_t i = 0; i < 500; ++i) {
-            const double qt = DiscQuality(60, 20.0 * (1 + g * n01(rng)));
+            const double qt = DiscQuality(60, 24.0 * (1 + g * n01(rng)));
             v.push_back(DiscQ(i, qt * (1 + noise * n01(rng)), noise * qt));
         }
         return v;
@@ -1631,7 +1637,7 @@ namespace {
 // (steady: the optics), pixel noise `noise` added after. Frames reach R + 3 blur + 30 px out from the
 // centre each way, so the blurred halo stays inside. `sky`: the sky level when >= 0 (MakeDisc's is 0.02,
 // 2 noise sd above black at noise 0.01: the 16-bit capture clips 2.3% of it at 0).
-Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
+testing::Capture MeasuredDiscCapture(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
     const int half = static_cast<int>(radius + 3 * blur + 30), w = 2 * half, h = 2 * half;
     testing::Scene s = testing::MakeDisc(seed, half + 0.3, half - 0.2, radius);
     if (sky >= 0) s.sky = sky;
@@ -1680,6 +1686,10 @@ Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, 
         }
         cap.Add(v);
     }
+    return cap;
+}
+Selection MeasuredDisc(double radius, double blur, bool convolve, double noise, unsigned seed, double sky = -1) {
+    const testing::Capture cap = MeasuredDiscCapture(radius, blur, convolve, noise, seed, sky);
     return SelectFrames(stack::MeasureAll(cap.Factory(), cap.info, 8, {}), cap.info);
 }
 }  // namespace
@@ -1696,7 +1706,8 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         double sky = -1;  // MakeDisc's 0.02 unless given
     };
     // Ruling P19 (an unbiased pixel noise): R 24 blurred 10 px at noise 0.01 read 0.245 and was stacked
-    // while the noise estimate read s^2 ~5% low (0.263 then, 0.269 with Ruling P26), and the convolved
+    // while the noise estimate read s^2 ~5% low (0.263 then, 0.267 with Ruling P26); refused at
+    // kGrossBlurLimit 0.25, it is stacked again at 0.28 (Ruling P15a; seed by seed in the next test), and the convolved
     // R 24 / 12 px at noise 0.01 sat on the limit (0.267; 0.312 after P19; 0.363 after P26; noise-free
     // 0.334). The faint blob R 40 / 20 px at noise 0.01 over a sky of 0.06 that does not clip was stacked
     // and is refused (0.377 after P19, 0.325 after P26; noise-free 0.342). Over the default sky of 0.02 the
@@ -1708,7 +1719,7 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
                           Case{40, 4, false, 0.01, false}, Case{24, 2, true, 0.005, false}, Case{40, 3, true, 0.005, false},
                           Case{24, 2, true, 0.01, false}, Case{40, 3, true, 0.01, false},
                           Case{24, 12, false, 0.01, true}, Case{24, 12, true, 0.005, true}, Case{40, 20, true, 0.005, true},
-                          Case{24, 10, false, 0.01, true}, Case{24, 12, true, 0.01, true},
+                          Case{24, 10, false, 0.01, false}, Case{24, 12, true, 0.01, true},
                           Case{40, 20, true, 0.01, true, 0.06}, Case{40, 3, true, 0.01, false, 0.06},
                           Case{40, 20, true, 0.01, true}}) {
         const Selection sel = MeasuredDisc(c.radius, c.blur, c.convolve, c.noise, 7, c.sky);
@@ -1746,6 +1757,47 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
                                                   << refusedClipped);
     CHECK(refused == 10);
     CHECK(refusedClipped == 10);
+}
+
+TEST_CASE("a moderate defocus under kGrossBlurLimit is stacked with the focus warning, not refused (Ruling P15a)", "[select][engine][focus]") {
+    // R 24 blurred 10 px (0.42 R) reads 0.267-0.290 over seeds 7, 107, ..., 907 (Select.h step 7), across the
+    // limit: 0.2669 / 0.2852 / 0.2881 / 0.2820 / 0.2805 / 0.2768 / 0.2899 / 0.2783 / 0.2780 / 0.2710. Seeds 107-407
+    // and 607 are refused; 7, 507, 707, 807 and 907 are stacked -- never refused under the limit (Ruling P15a). The
+    // region stage reads their limb at 0.420 / 0.423 / 0.418 / 0.399 / 0.394 of the radius against its warn level
+    // kDiscWarnAbove 0.40: seeds 7, 507 and 707 carry the focus warning, 807 and 907 sit 0.001-0.006 under it and
+    // stack without one (reported with P15a; the limit is not lowered for it).
+    int stacked = 0, refused = 0, warned = 0;
+    for (unsigned seed = 7; seed < 1000; seed += 100) {
+        const testing::Capture cap = MeasuredDiscCapture(24, 10, false, 0.01, seed);
+        const Selection sel = SelectFrames(stack::MeasureAll(cap.Factory(), cap.info, 8, {}), cap.info);
+        const stack::StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+        const stack::FocusCheck& f = o.summary.focus;
+        INFO("seed " << seed << ": reading " << sel.focusReading << " (limit " << stack::kGrossBlurLimit << "); region focus "
+                     << f.measure << " of the radius " << f.radius << " | " << o.diagnosis.message);
+        REQUIRE(sel.focusJudged);
+        REQUIRE(sel.targetRadius >= stack::kMinJudgedRadius);
+        if (sel.focusReading >= stack::kGrossBlurLimit) {
+            CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+            CHECK_FALSE(o.image.has_value());
+            ++refused;
+            continue;
+        }
+        ++stacked;
+        CHECK(o.diagnosis.kind == DiagnosisKind::None);
+        CHECK(o.image.has_value());
+        CHECK(f.disc);
+        CHECK(f.measure > stack::kDiscWarnAbove - 0.01);  // at the warn level, if not over it
+        int warnings = 0;
+        for (const auto& wtext : o.summary.warnings) warnings += wtext == stack::FocusWarning(f);
+        if (f.measure > stack::kDiscWarnAbove) {
+            CHECK(f.outcome == stack::FocusOutcome::Warned);
+            CHECK(warnings == 1);
+            ++warned;
+        }
+    }
+    INFO(stacked << " stacked (" << warned << " with the focus warning), " << refused << " refused");
+    CHECK(stacked == 5);
+    CHECK(warned == 3);
 }
 
 TEST_CASE("a small disc blurred into a large box stays small: the region stage judges it (P4 and P20)", "[select][diagnosis][focus][class]") {

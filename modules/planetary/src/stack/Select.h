@@ -146,12 +146,13 @@ constexpr double kBlurLimit = 0.24;
 // the sampling correction and floor below; the region stage judges them too, warn-only (Ruling P20).
 constexpr double kMinJudgedRadius = 15;
 // A disc of at least kMinJudgedRadius is refused only when grossly blurred: sigma(q_ref) >= this times
-// its half-contrast radius (FrameStats::halfRadius). Set at twice the highest in-focus reading before
-// Ruling P26; with P26's noise-corrected quality that reading is 0.139 (the 2022-09-17 230420 Jupiter),
-// 1.80x under it, while the real defocus series reach it from 6-8 luma px of blur (0.247-0.293, step 7).
-// Diagnoses refuse the image, and a false refusal of a good capture is worse than a missed one (Rulings
-// P15 and P20: refuse only on gross failure, and only here -- the region stage never refuses).
-constexpr double kGrossBlurLimit = 0.25;
+// its half-contrast radius (FrameStats::halfRadius). Twice the highest in-focus large-disc reading of the
+// survey (step 7), rounded up to 2 decimals: 2 x 0.1388 (the 2022-09-17 230420 Jupiter, all 761 frames) =
+// 0.2776 -> 0.28 (Ruling P15a: P15 binds as written; 0.25 before, 1.80x). A defocus that reads under it is
+// stacked, not refused, and the region stage warns where its limb reading is over kDiscWarnAbove (Engine.h):
+// a false refusal of a good capture leaves the user nothing, a missed moderate defocus still gives an image
+// (Rulings P15, P15a and P20: refuse only on gross failure, and only here -- the region stage never refuses).
+constexpr double kGrossBlurLimit = 0.28;
 // Limb width the luma sampling itself gives a perfectly sharp edge, removed in quadrature (luma px).
 constexpr double kSamplingBlur = 0.5;
 // A small disc is called blurred only when its limb blur is also at least this many sensor pixels:
@@ -280,12 +281,17 @@ constexpr double kShrinkSnrNone = 15;
 //    over R -- texture raises q in focus and limb darkening lowers it once the texture is gone, so a
 //    real Jupiter softened by only 0.5-1 luma px already reads 0.09-0.20 -- and a refusal must be
 //    safe. Surveyed again with Ruling P26 (fix round 2; 851ba41b -> head, reading as here): the same 46
-//    planetary files, none refused for focus or seeing either way. The large class, the two 2022-09-17
-//    1080p Jupiters (R_h 21.5): 225418 0.053 -> 0.118 (606 frames; 0.124-0.131 over its first 8 / 30 / 60 /
-//    120), 230420 0.053 -> 0.139 (761; 0.112-0.134) -- at most 1.80x under kGrossBlurLimit, where they read
-//    4.7x under before. The old readings were low: on 225418 each frame's quality with its sky's noise
-//    alone read a mean 0.147 against 0.093 for a stack of its sharpest 303 frames (near noise-free) and
-//    0.098 with the capture's model -- the disc's own shot noise kept as detail -- and the limb fitted on
+//    planetary files, none refused for focus or seeing either way. The large class (Ruling P15a widened the
+//    search: every AVI / SER on the NAS, 2026-10-22 -- the rest are small, frame-filling, or hold no disc; the
+//    2026-01-30 195830 Jupiter is R_h 8, the 2023-02-11 191831 Jupiter R_h 5, the largest small disc the
+//    2022-08-03 015840 Jupiter at R_h 14.2-14.5, reading 0.098-0.119) is the two 2022-09-17 1080p Jupiters
+//    (R_h 21.5), as captured and over their first 8 / 30 / 60 / 120 frames (test/run-focus-survey.sh):
+//      225418  606 frames 0.1182 (0.053 before P26);  8 / 30 / 60 / 120: 0.1307 / 0.1235 / 0.1314 / 0.1311
+//      230420  761 frames 0.1388 (0.053 before P26);  8 / 30 / 60 / 120: 0.1115 / 0.1340 / 0.1301 / 0.1318
+//    kGrossBlurLimit = 2 x 0.1388 rounded up = 0.28: the in-focus readings 2.02x under it at the least,
+//    where they read 4.7x under the old limit before P26. The old readings were low: on 225418 each
+//    frame's quality with its sky's noise alone read a mean 0.147 against 0.093 for a stack of its
+//    sharpest 303 frames (near noise-free) and 0.098 with the capture's model -- the disc's own shot noise kept as detail -- and the limb fitted on
 //    that stack is 3.9-4.3 luma px wide, 0.18-0.20 R_h (the reading at q_ref: 0.109 now, 0.053 before).
 //    Defocused (stack-probe --blur, the capture's own noise put back; 2 / 4 / 6 / 8 / 12 / 16 sensor px, 1-8
 //    luma px on these Bayer captures) the readings did not move: 225418 0.143 / 0.162 / 0.188 / 0.203 /
@@ -293,13 +299,18 @@ constexpr double kShrinkSnrNone = 15;
 //    0.216 / 0.247 / 0.279 (0.251 / 0.290 before at 12 / 16), the 2022-08-03 Jupiter at 16 px (R_h 15, large)
 //    0.350 (0.349) -- a blurred limb's noise is small against it. StackSynth: R 24 by 10 px 0.267-0.290
 //    over seeds 7, 107, ..., 907, every other refused case 0.300 and over. So the margin closed from above,
-//    not below: P15's 2x would put the limit at 0.278 or more, over 230420's 0.279 at 8 luma px and R 24
-//    by 10 px's 0.267-0.290; at 0.25 every one of these is refused but 230420 at 6 luma px (0.247).
+//    not below, and at 0.28 a moderate defocus is no longer refused: 225418 at 6 luma px (0.252), 230420 at
+//    6 and 8 (0.247, 0.279) and R 24 by 10 px on seeds 7 / 507 / 707 / 807 / 907 (0.267-0.278) stack, where
+//    0.25 refused all but 230420 at 6. Each is judged again by the region stage, warned over kDiscWarnAbove
+//    0.40 (Engine.h; RunStack, all frames): 230420 at 6 / 8 luma px reads 0.409 / 0.473 and is warned,
+//    225418 at 6 reads 0.385 and is not; R 24 by 10 px reads 0.418-0.423 on seeds 7 / 507 / 707 (warned) and
+//    0.399 / 0.394 on 807 / 907 (not). Refused still: 225418 at 8 luma px (0.294), the 2022-08-03 Jupiter at
+//    8 (0.350), R 24 by 10 px on seeds 107-407 and 607 (0.280-0.290), every other StackSynth case above.
 //    StackSynth (unit test, 60 frames, noise 0.01 unless said; seed 7, re-measured 2026-10-22 with
 //    Ruling P19's unbiased pixel noise, the earlier reading in brackets): R 24 blurred 0.6 / 2 / 3 px
 //    0.027 / 0.080 / 0.114, R 40 by 4 px 0.084 (stacked); R 24 by 10 px 0.263 (0.245: it was
-//    stacked), by 12 px (Task 6's case) 0.312 (0.274) (refused); convolved (true defocus) at noise
-//    0.005: R 24 by 2 px 0.086, R 40 by 3 px 0.075 (stacked), R 24 by 12 px 0.344 (0.325), R 40 by
+//    stacked; 0.267 with P26, refused at 0.25, stacked at 0.28), by 12 px (Task 6's case) 0.312
+//    (0.274) (refused); convolved (true defocus) at noise 0.005: R 24 by 2 px 0.086, R 40 by 3 px 0.075 (stacked), R 24 by 12 px 0.344 (0.325), R 40 by
 //    20 px 0.344 (0.305) (refused); at noise 0.01 R 24 by 2 px 0.087, R 40 by 3 px 0.073 (stacked), R
 //    24 by 12 px 0.312 (0.267, on the limit) (refused). Noise-free, the convolved R 24 / 12 px reads
 //    0.334, R 40 / 20 px 0.342 and R 24 / 24 px 0.400. With s^2 read 4.3-5.2% low, q kept ~0.18 s^2 per
@@ -307,7 +318,7 @@ constexpr double kShrinkSnrNone = 15;
 //    weaker (its gradient energy is a few percent of the noise's 4 s^2), and q stopped falling: the
 //    faint blobs were stacked. Over a sky of 0.06 at noise 0.01 (seeds 7 / 107 / 207): R 40 / 20 px
 //    0.377 / 0.348 / 0.339 (0.225 / 0.212 / 0.188), R 24 / 24 px 0.327 / 0.313 / 0.321 (0.130 / 0.129 /
-//    0.124) -- now refused -- and R 24 / 12 px 0.332-0.362 (0.255-0.287), 1.33-1.45x the limit.
+//    0.124) -- now refused -- and R 24 / 12 px 0.332-0.362 (0.255-0.287), 1.19-1.29x the limit.
 //    With s measured on the sky and taken as the target's, the reading was low again where they differ:
 //    MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit capture clips 2.3% of
 //    it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a target's own shot
