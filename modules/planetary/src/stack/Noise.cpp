@@ -3,14 +3,17 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 
 #include "Measure.h"
+#include "Parallel.h"
 #include "SerFile.h"
 
 namespace planetary::stack {
@@ -80,40 +83,36 @@ void NoiseSamples::Merge(const NoiseSamples& o) {
     tileOverlap = std::max(tileOverlap, o.tileOverlap);
 }
 
-NoisePlane::NoisePlane(const ser::FloatImage& im) : w(im.width), h(im.height) {
-    CheckLuma(im, "NoisePlane");
-    if (w < 5 || h < 5) return;
-    const size_t n = static_cast<size_t>(w) * h;
-    const float* p = im.data.data();
-    // [1 -2 1] along x, then along y; the level: the 3 x 3 mean, PixelVariance's (Measure.h), so the
-    // curve is the noise given the very level the measures look it up by.
-    std::vector<float> hd(n, 0.f), hl(n, 0.f);
-    for (int y = 0; y < h; ++y) {
-        const float* r = p + static_cast<size_t>(y) * w;
-        float* o = hd.data() + static_cast<size_t>(y) * w;
-        float* l = hl.data() + static_cast<size_t>(y) * w;
-        for (int x = 1; x + 1 < w; ++x) {
-            o[x] = r[x - 1] - 2 * r[x] + r[x + 1];
-            l[x] = (r[x - 1] + r[x] + r[x + 1]) / 3;
-        }
-    }
-    response.assign(n, 0.f);
-    level.assign(n, 0.f);
-    for (int y = 1; y + 1 < h; ++y) {
-        const float* a = hd.data() + static_cast<size_t>(y - 1) * w;
-        const float* b = hl.data() + static_cast<size_t>(y - 1) * w;
-        float* o = response.data() + static_cast<size_t>(y) * w;
-        float* l = level.data() + static_cast<size_t>(y) * w;
-        for (int x = 1; x + 1 < w; ++x) {
-            o[x] = a[x] - 2 * a[x + w] + a[x + 2 * w];
-            l[x] = (b[x] + b[x + w] + b[x + 2 * w]) / 3;
-        }
-    }
-}
-
 int NoiseStep(int w, int h) {
     const double points = std::max(1.0, static_cast<double>(w - 4) * (h - 4));
     return std::max(1, static_cast<int>(std::ceil(std::sqrt(points / kNoiseResponsesPerTriple))));
+}
+
+NoisePlane::NoisePlane(const ser::FloatImage& im) : w(im.width), h(im.height) {
+    CheckLuma(im, "NoisePlane");
+    if (w < 5 || h < 5) return;
+    step = NoiseStep(w, h);
+    nx = (w - 4 + step - 1) / step;
+    ny = (h - 4 + step - 1) / step;
+    response.resize(static_cast<size_t>(nx) * ny);
+    level.resize(response.size());
+    const float* p = im.data.data();
+    // At each sampled centre: [1 -2 1] x [1 -2 1], and the level: the 3 x 3 mean, PixelVariance's
+    // (Measure.h), so the curve is the noise given the very level the measures look it up by.
+    for (int j = 0; j < ny; ++j) {
+        const int y = 2 + j * step;
+        const float* a = p + static_cast<size_t>(y - 1) * w;
+        const float* b = a + w;
+        const float* c = b + w;
+        for (int i = 0; i < nx; ++i) {
+            const int x = 2 + i * step;
+            const double ra = a[x - 1] - 2.0 * a[x] + a[x + 1], rb = b[x - 1] - 2.0 * b[x] + b[x + 1],
+                         rc = c[x - 1] - 2.0 * c[x] + c[x + 1];
+            const double sa = a[x - 1] + a[x] + a[x + 1], sb = b[x - 1] + b[x] + b[x + 1], sc = c[x - 1] + c[x] + c[x + 1];
+            response[static_cast<size_t>(j) * nx + i] = static_cast<float>(ra - 2 * rb + rc);
+            level[static_cast<size_t>(j) * nx + i] = static_cast<float>((sa + sb + sc) / 9);
+        }
+    }
 }
 
 namespace {
@@ -129,13 +128,11 @@ void AddTriple(const NoisePlane& p0, const NoisePlane& p1, const NoisePlane& p2,
                const NoiseModel* first) {
     if (p0.w != p1.w || p2.w != p1.w || levels.w != p1.w || p0.h != p1.h || p2.h != p1.h || levels.h != p1.h)
         throw std::invalid_argument("AddTriple: the frames differ in size");
-    const int w = p1.w, h = p1.h;
     ++out.frames;
-    if (w < 5 || h < 5) return;
-    const int step = NoiseStep(w, h);
-    const int nx = (w - 4 + step - 1) / step, ny = (h - 4 + step - 1) / step;
+    if (p1.response.empty()) return;  // under 5 x 5
+    const int step = p1.step, nx = p1.nx, ny = p1.ny;
     auto response = [&](int i, int j, double& level) {
-        const size_t p = static_cast<size_t>(2 + j * step) * w + 2 + i * step;
+        const size_t p = static_cast<size_t>(j) * nx + i;
         const double r = static_cast<double>(p0.response[p]) - 2.0 * p1.response[p] + p2.response[p];
         level = levels.level[p];
         return r * r / kResponseGain;
@@ -243,16 +240,30 @@ std::vector<Point> FineBinPoints(const NoiseSamples& s) {
 // clipped to one value whose rare flips are spikes (the 2026-01-30 Jupiter 195830 AVI's 8-bit sky: median
 // kurtosis at the cap, its tiles' median ratio to pass 1's mean square 0.24) -- and the bin's plain mean
 // ratio is taken.
-std::vector<Point> TilePoints(const NoiseSamples& s) {
-    std::vector<Point> pts;
+struct TileRatios {
+    std::vector<Point> bins;
+    std::vector<double> binLo, binHi;  // per bin, its lowest and highest tile level
+};
+TileRatios TilePoints(const NoiseSamples& s) {
+    TileRatios out;
+    std::vector<Point>& pts = out.bins;
     std::vector<size_t> order(s.tiles.size());
     for (size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](size_t i, size_t j) {
         return s.tiles[i].level != s.tiles[j].level ? s.tiles[i].level < s.tiles[j].level : i < j;
     });
     for (size_t b0 = 0; b0 < order.size();) {
-        size_t b1 = std::min(order.size(), b0 + kBinTiles);
-        if (order.size() - b1 < static_cast<size_t>(kBinTiles)) b1 = order.size();  // the short last one joins
+        // kBinTiles tiles (a short last run joins the one before), never across a gap in level of more than
+        // kTileSpread of it: a bin straddling levels no tile takes would read a mix as one level's ratio.
+        auto gapAt = [&](size_t i) {
+            const double a = s.tiles[order[i - 1]].level, b = s.tiles[order[i]].level;
+            return b - a > kTileSpread * b;
+        };
+        size_t b1 = b0 + 1;
+        while (b1 < order.size() && b1 - b0 < static_cast<size_t>(kBinTiles) && !gapAt(b1)) ++b1;
+        size_t tail = b1;  // a short contiguous remainder joins
+        while (tail < order.size() && tail - b1 < static_cast<size_t>(kBinTiles) && !gapAt(tail)) ++tail;
+        if (tail - b1 < static_cast<size_t>(kBinTiles) && (tail == order.size() || gapAt(tail))) b1 = tail;
         std::vector<double> ratio, kap, cnt;
         double lev = 0, mean = 0;
         for (size_t i = b0; i < b1; ++i) {
@@ -284,9 +295,11 @@ std::vector<Point> TilePoints(const NoiseSamples& s) {
             var = pr * (1 - pr) / (N * dens * dens) * tau2 * c * c;  // the quantile's sampling variance
         }
         pts.push_back({lev, c, N, var});
+        out.binLo.push_back(s.tiles[order[b0]].level);
+        out.binHi.push_back(s.tiles[order[b1 - 1]].level);
         b0 = b1;
     }
-    return pts;
+    return out;
 }
 
 // Each point's value averaged with its neighbours' (weighted by their weight) until they hold `weight`, and
@@ -294,14 +307,24 @@ std::vector<Point> TilePoints(const NoiseSamples& s) {
 struct Smooth {
     std::vector<double> v, sd;
 };
-Smooth Smoothed(const std::vector<Point>& pts, double weight) {
+// reach > 0: only neighbours within reach x the point's level of it (no average across a gap in level).
+Smooth Smoothed(const std::vector<Point>& pts, double weight, double reach = 0) {
     Smooth out{std::vector<double>(pts.size()), std::vector<double>(pts.size())};
     for (size_t j = 0; j < pts.size(); ++j) {
+        const double span = reach > 0 ? reach * pts[j].x : std::numeric_limits<double>::infinity();
+        auto near = [&](size_t i) { return std::fabs(pts[i].x - pts[j].x) <= span; };
         size_t lo = j, hi = j;
         double n = pts[j].n;
-        while (n < weight && (lo > 0 || hi + 1 < pts.size())) {
-            if (lo > 0) n += pts[--lo].n;
-            if (n < weight && hi + 1 < pts.size()) n += pts[++hi].n;
+        for (bool grew = true; n < weight && grew;) {
+            grew = false;
+            if (lo > 0 && near(lo - 1)) {
+                n += pts[--lo].n;
+                grew = true;
+            }
+            if (n < weight && hi + 1 < pts.size() && near(hi + 1)) {
+                n += pts[++hi].n;
+                grew = true;
+            }
         }
         double sv = 0, svar = 0;
         for (size_t i = lo; i <= hi; ++i) {
@@ -440,20 +463,42 @@ NoiseModel CurveFromPoints(const std::vector<Point>& pts, int sites, int frames)
     return model;
 }
 
-// Pass 2's correction of pass 1's points: each times the tiles' ratio at its level (TilePoints smoothed
-// over kKnotTiles tiles, linear between their levels, held beyond the ends).
-std::vector<Point> Corrected(std::vector<Point> pts, const std::vector<Point>& ratios) {
-    const std::vector<double> c = Smoothed(ratios, kKnotTiles).v;
+// Pass 2's correction of pass 1's points: less the texture pass 1 holds, T = m (1 - c) at each tile bin
+// (c: TilePoints smoothed over kKnotTiles tiles within kTileSpread of its level; m: pass 1's variance at the
+// bin's level), linear in level between the bins, held beyond the outermost ones as far as kTileSpread of
+// the level or their own tiles' levels reach, none farther (no clean reading there: pass 1's own).
+// Subtracted, not scaled: texture does not grow with the noise, so the model rises by exactly the noise
+// added to a capture wherever T was read or interpolated (test "the capture's noise model rises by exactly
+// an added noise ..."; 941ab4e7 scaled pass 1 by a ratio interpolated from a bin straddling the 2023-02-02
+// Moon's gap between its sky tiles and its surface's, and rose there by 1.28-1.84 v0). A point keeps at
+// least the smaller ratio of its two bins times its own reading, so an interpolated T cannot take a dim
+// level's whole variance.
+std::vector<Point> Corrected(std::vector<Point> pts, const TileRatios& tiles, const NoiseModel& first) {
+    const std::vector<Point>& r = tiles.bins;
+    const std::vector<double> c = Smoothed(r, kKnotTiles, kTileSpread).v;
+    std::vector<double> T(r.size());
+    for (size_t i = 0; i < r.size(); ++i) T[i] = first.VarianceAtMean(r[i].x) * (1 - c[i]);
     for (Point& p : pts) {
-        const auto it = std::lower_bound(ratios.begin(), ratios.end(), p.x, [](const Point& r, double x) { return r.x < x; });
-        double f = 1;  // beyond the levels one-level tiles cover: no clean reading, pass 1's own
-        if (it != ratios.begin() && it != ratios.end()) {
-            const size_t i = static_cast<size_t>(it - ratios.begin());
-            const double t = (p.x - ratios[i - 1].x) / std::max(1e-12, ratios[i].x - ratios[i - 1].x);
-            f = c[i - 1] + t * (c[i] - c[i - 1]);
+        if (r.empty()) break;
+        const auto it = std::lower_bound(r.begin(), r.end(), p.x, [](const Point& b, double x) { return b.x < x; });
+        const double reach = kTileSpread * p.x;
+        // The bins on either side, each only within reach of this level or inside its own tiles' levels.
+        const bool hasLo = it != r.begin(), hasHi = it != r.end();
+        const size_t i = static_cast<size_t>(it - r.begin());
+        const bool lo = hasLo && (hasHi || p.x - r[i - 1].x <= reach || p.x <= tiles.binHi[i - 1]);
+        const bool hi = hasHi && (hasLo || r[i].x - p.x <= reach || p.x >= tiles.binLo[i]);
+        double t, cMin;
+        if (lo && hi) {
+            const double f = (p.x - r[i - 1].x) / std::max(1e-12, r[i].x - r[i - 1].x);
+            t = T[i - 1] + f * (T[i] - T[i - 1]);
+            cMin = std::min(c[i - 1], c[i]);
+        } else if (lo || hi) {
+            t = lo ? T[i - 1] : T[i];
+            cMin = lo ? c[i - 1] : c[i];
+        } else {
+            continue;  // no one-level tile near this level: no clean reading, pass 1's own
         }
-        p.v *= f;
-        p.var *= f * f;
+        p.v = std::max(p.v - t, std::max(0.0, cMin) * p.v);
     }
     return pts;
 }
@@ -469,7 +514,7 @@ NoiseModel FitNoise(const NoiseSamples& s, int sites) {
 NoiseModel FitNoise(const NoiseSamples& first, const NoiseSamples& second, int sites) {
     const NoiseModel one = FitNoise(first, sites);
     if (second.tiles.empty()) return one;
-    NoiseModel m = CurveFromPoints(Corrected(FineBinPoints(first), TilePoints(second)), sites, first.frames);
+    NoiseModel m = CurveFromPoints(Corrected(FineBinPoints(first), TilePoints(second), one), sites, first.frames);
     m.responses = one.responses;
     return m;
 }
@@ -496,25 +541,29 @@ std::vector<NoiseRun> NoiseRuns(const ser::FileInfo& info) {
     const int64_t total = std::max<int64_t>(0, info.frameCount);
     const double scale = LumaScale(info);
     const int lw = static_cast<int>(info.header.width / scale), lh = static_cast<int>(info.header.height / scale);
+    if (lw < 5 || lh < 5) return {};  // no response in a frame: nothing to read (the model is unmeasured)
     const int step = NoiseStep(lw, lh);
-    const double perTriple = std::max(1.0, std::ceil(std::max(0, lw - 4) / static_cast<double>(step)) *
-                                               std::ceil(std::max(0, lh - 4) / static_cast<double>(step)));
+    const double perTriple = std::ceil((lw - 4) / static_cast<double>(step)) * std::ceil((lh - 4) / static_cast<double>(step));
     const int64_t possible = std::max<int64_t>(0, total - 3);
-    const int64_t triples =
-        std::min<int64_t>(possible, std::max<int64_t>(1, static_cast<int64_t>(static_cast<double>(kNoiseResponses) / perTriple)));
+    const int64_t triples = std::min<int64_t>(
+        {possible, kNoiseMaxTriples, std::max<int64_t>(1, static_cast<int64_t>(static_cast<double>(kNoiseResponses) / perTriple))});
     const int64_t runs = triples > 0 ? (triples + kNoiseRun - 1) / kNoiseRun : 0;
+    // Runs spread evenly, back to back when every triple is read: run r starts after the triples of the
+    // runs before it plus its share of the (possible - triples) left out.
     std::vector<NoiseRun> plan;
+    int64_t before = 0;
     for (int64_t r = 0; r < runs; ++r) {
         const int64_t n = triples / runs + (r < triples % runs ? 1 : 0);
-        const int64_t first = runs > 1 ? r * (possible - n) / (runs - 1) : (possible - n) / 2;
-        plan.push_back({first, n});
+        const int64_t gap = runs > 1 ? r * (possible - triples) / (runs - 1) : (possible - triples) / 2;
+        plan.push_back({before + gap, n});
+        before += n;
     }
     return plan;
 }
 
 NoiseModel FitNoiseModel(const std::vector<ser::FloatImage>& frames, int sites) {
+    if (frames.size() < 4 || frames[0].width < 5 || frames[0].height < 5) return NoiseModel::Unmeasured();
     NoiseSamples s1, s2;
-    if (frames.size() < 4) return FitNoise(s1, sites);
     const auto frame = [&](int64_t i) { return frames[static_cast<size_t>(i)]; };
     const auto triples = static_cast<int64_t>(frames.size()) - 3;
     AddRun(frame, 0, triples, s1, nullptr);
@@ -535,64 +584,60 @@ NoiseModel FitNoiseModel(const std::function<std::unique_ptr<ser::FrameSource>()
     const auto runs = static_cast<int64_t>(plan.size());
     const int64_t total = kNoisePasses * runs;
     if (progress.report) progress.report(phase, 0, total);
-    if (plan.empty()) return FitNoise(NoiseSamples{}, LumaSites(info));
+    if (plan.empty()) return NoiseModel::Unmeasured();
     if (!factory) throw std::invalid_argument("FitNoiseModel: no reader factory");
-    // One pass over every run on up to `threads` workers, its samples merged in the plan's order.
+    const int workers = static_cast<int>(std::min<int64_t>(std::max(1, threads), runs));
+    // One pass over every run on `workers` threads. Each run's samples are merged into one accumulator in
+    // the plan's order as soon as the runs before it are in (deterministic for any thread count), and a
+    // worker claims a run only within 2 x workers of the next one to merge, so at most that many runs'
+    // samples are held at once.
     auto pass = [&](const NoiseModel* model, int64_t base) {
-        std::vector<NoiseSamples> per(plan.size());
         if (progress.cancelled && progress.cancelled()) throw StackCancelled("cancelled while measuring the noise");
-        const int workers = static_cast<int>(std::min<int64_t>(std::max(1, threads), runs));
-        std::atomic<size_t> next{0};
-        std::atomic<int64_t> done{0};
-        std::atomic<bool> stop{false};
+        NoiseSamples all;
+        std::vector<std::unique_ptr<NoiseSamples>> pending(plan.size());
+        size_t next = 0, merged = 0;
         std::mutex m;
-        std::exception_ptr error;
-        auto work = [&] {
-            try {
-                const std::unique_ptr<ser::FrameSource> src = factory();
-                if (!src) throw ser::SerError("FitNoiseModel: the reader factory returned no reader");
-                for (size_t i; !stop.load() && (i = next.fetch_add(1)) < plan.size();) {
-                    AddRun([&](int64_t f) {
-                        if (stop.load()) throw StackCancelled("cancelled while measuring the noise");
-                        return MeasurementLuma(src->ReadFrame(f), info);
-                    }, plan[i].first, plan[i].triples, per[i], model);
-                    done.fetch_add(1);
-                }
-            } catch (...) {
-                std::lock_guard<std::mutex> lock(m);
-                if (!error) error = std::current_exception();
-                stop = true;
-            }
-        };
-        std::vector<std::thread> pool;
-        struct Joiner {
-            std::vector<std::thread>& pool;
-            std::atomic<bool>& stop;
-            ~Joiner() {
-                stop = true;
-                for (std::thread& t : pool)
-                    if (t.joinable()) t.join();
-            }
-        } joiner{pool, stop};
-        for (int w = 0; w < workers; ++w) pool.emplace_back(work);
-        // Report and poll on this thread until every run is in, a worker failed, or cancelled.
-        bool cancelled = false;
+        std::condition_variable cv;
+        std::atomic<bool> stop{false};
+        std::atomic<int64_t> done{0};
+        const size_t window = 2 * static_cast<size_t>(workers);
         int64_t reported = 0;
-        for (;;) {
+        const PoolOutcome pool = RunPool(workers, stop, [&](int) {
+            const std::unique_ptr<ser::FrameSource> src = factory();
+            if (!src) throw ser::SerError("FitNoiseModel: the reader factory returned no reader");
+            for (;;) {
+                size_t i;
+                {
+                    std::unique_lock<std::mutex> lock(m);
+                    // Timed: a stop set by the pool on its way out (RunPool) notifies no one.
+                    while (!(stop.load() || next >= plan.size() || next < merged + window))
+                        cv.wait_for(lock, std::chrono::milliseconds(10));
+                    if (stop.load() || next >= plan.size()) return;
+                    i = next++;
+                }
+                auto s = std::make_unique<NoiseSamples>();
+                AddRun([&](int64_t f) {
+                    if (stop.load()) throw StackCancelled("cancelled while measuring the noise");
+                    return MeasurementLuma(src->ReadFrame(f), info);
+                }, plan[i].first, plan[i].triples, *s, model);
+                {
+                    std::lock_guard<std::mutex> lock(m);
+                    pending[i] = std::move(s);
+                    for (; merged < plan.size() && pending[merged]; ++merged) {
+                        all.Merge(*pending[merged]);
+                        pending[merged].reset();
+                    }
+                }
+                cv.notify_all();
+                done.fetch_add(1);
+            }
+        }, [&] {
             const int64_t d = done.load();
             if (progress.report && d != reported) progress.report(phase, base + (reported = d), total);
-            if (!cancelled && progress.cancelled && progress.cancelled()) {
-                cancelled = true;
-                stop = true;
-            }
-            if (d >= runs || stop.load()) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        for (std::thread& t : pool) t.join();
-        if (cancelled) throw StackCancelled("cancelled while measuring the noise");
-        if (error) std::rethrow_exception(error);
-        NoiseSamples all;
-        for (const NoiseSamples& s : per) all.Merge(s);
+            return progress.cancelled && progress.cancelled();
+        });
+        if (pool.cancelled) throw StackCancelled("cancelled while measuring the noise");
+        if (pool.error) std::rethrow_exception(pool.error);
         return all;
     };
     const int sites = LumaSites(info);

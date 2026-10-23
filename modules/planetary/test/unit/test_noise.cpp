@@ -4,6 +4,8 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <memory>
+#include <optional>
 #include <cmath>
 #include <random>
 #include <string>
@@ -11,6 +13,7 @@
 
 #include "Engine.h"
 #include "Measure.h"
+#include "Noise.h"
 #include "StackSynth.h"
 
 using namespace planetary;
@@ -245,6 +248,8 @@ TEST_CASE("the capture's noise model: the line, the clipped sky, texture and a s
         const std::vector<float> clean = DiscScene(w, h, 0.05, 0.8);
         CHECK(stack::FitNoiseModel(NoisyFrames(clean, w, h, 0, 0, 6, 8)).VarianceAtMean(0.3) < 1e-9);
         CHECK(stack::FitNoiseModel(std::vector<ser::FloatImage>{}).Zero());
+        CHECK_FALSE(stack::FitNoiseModel(std::vector<ser::FloatImage>{}).Measured());  // unmeasured, not a measured 0
+        CHECK(stack::FitNoiseModel(NoisyFrames(clean, w, h, 0, 0, 6, 8)).Measured());
         stack::NoiseEstimate sky;
         sky.sigma = 0.01;
         sky.varSigma2 = 1e-10;
@@ -253,4 +258,149 @@ TEST_CASE("the capture's noise model: the line, the clipped sky, texture and a s
         CHECK(one.Lookup(0.7) == Catch::Approx(1e-4));
         CHECK(one.LineVariance(0.7) == Catch::Approx(1e-10));
     }
+}
+
+TEST_CASE("a capture too short for the model measures each frame on its own sky (Ruling P26 fix round 1, I1)", "[noise]") {
+    // 1-3 frames give no frame triple: the capture's model is unmeasured, and each frame takes its own sky
+    // noise (FromSkyNoise of its PixelNoise), as one image does. With the zero model in its place quality
+    // read 1.164x the noise-free one and qualitySigma 0 (941ab4e7, review round 1).
+    const int w = 160, h = 160;
+    testing::Scene s = testing::MakeDisc(3, 80.3, 79.6, 40);
+    s.sky = 0.05;
+    std::vector<float> clean(static_cast<size_t>(w) * h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) clean[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 2.0));
+    const testing::Capture still = StillCapture(clean, w, h, 0, 0, 3, 1);
+    const double truth = stack::MeasureAll(still.Factory(), still.info, 4, {})[0].quality;
+    for (const int frames : {1, 2, 3}) {
+        const testing::Capture cap = StillCapture(clean, w, h, 0.01, 0, frames, 21);
+        CHECK_FALSE(stack::FitNoiseModel(cap.Factory(), cap.info, 2, {}).Measured());
+        for (const stack::FrameStats& st : stack::MeasureAll(cap.Factory(), cap.info, 2, {})) {
+            INFO(frames << " frames, frame " << st.index << ": quality " << st.quality << " against " << truth << " noise-free, sigma "
+                        << st.qualitySigma);
+            // The one-image reading's own accuracy: 0.97 of the noise-free here (review round 1: 0.971-0.973).
+            CHECK(st.quality / truth == Catch::Approx(1).margin(0.04));
+            CHECK(st.qualitySigma > 0);
+            CHECK(st.quality2Sigma > 0);
+        }
+    }
+}
+
+TEST_CASE("the noise runs: none without a response, capped, each triple once (Ruling P26 fix round 1)", "[noise]") {
+    auto info = [](int w, int h, int64_t frames) {
+        ser::FileInfo i;
+        i.header.width = w;
+        i.header.height = h;
+        i.header.depth = 16;
+        i.normDepth = 16;
+        i.colorId = ser::ColorId::Mono;
+        i.frameCount = frames;
+        return i;
+    };
+    // Frames under 5 x 5 hold no response: no run, the model unmeasured -- not the whole capture read for
+    // nothing (941ab4e7 planned min(frames - 3, 2^25) triples there).
+    CHECK(stack::NoiseRuns(info(4, 4, 100000)).empty());
+    CHECK(stack::NoiseRuns(info(800, 3, 100)).empty());
+    // A small frame of a long capture: at most kNoiseMaxTriples triples per pass (941ab4e7: 49 997 of a
+    // 24 x 24 capture of 50 000 frames, each pass).
+    int64_t triples = 0;
+    for (const stack::NoiseRun& r : stack::NoiseRuns(info(24, 24, 50000))) triples += r.triples;
+    CHECK(triples == stack::kNoiseMaxTriples);
+    // Every triple read, each once: runs back to back (941ab4e7 read triple 24 twice and 72 not at all of
+    // 100 frames).
+    for (const int64_t frames : {5, 37, 100, 1000}) {
+        const std::vector<stack::NoiseRun> plan = stack::NoiseRuns(info(64, 48, frames));
+        std::vector<int> seen(static_cast<size_t>(frames - 3), 0);
+        for (const stack::NoiseRun& r : plan)
+            for (int64_t t = r.first; t < r.first + r.triples; ++t) ++seen[static_cast<size_t>(t)];
+        INFO(frames << " frames");
+        CHECK(std::all_of(seen.begin(), seen.end(), [](int c) { return c == 1; }));
+    }
+    // Spread over a capture when not all are read: no run overlaps another, none past the end.
+    const std::vector<stack::NoiseRun> spread = stack::NoiseRuns(info(1920, 1080, 20000));
+    for (size_t i = 0; i < spread.size(); ++i) {
+        CHECK(spread[i].first + spread[i].triples + 3 <= 20000);
+        if (i > 0) CHECK(spread[i].first >= spread[i - 1].first + spread[i - 1].triples);
+    }
+}
+
+TEST_CASE("the noise phase: cancel and a reader's error stop it, every worker joined (Ruling P26 fix round 1)", "[noise]") {
+    const int w = 96, h = 80;
+    const std::vector<float> clean(static_cast<size_t>(w) * h, 0.3f);
+    const testing::Capture cap = StillCapture(clean, w, h, 0.01, 0, 200, 31);
+    // Cancelled once the first run is in: StackCancelled, whatever the thread count.
+    for (const int threads : {1, 4}) {
+        stack::Progress p;
+        int64_t seen = 0;
+        p.report = [&](const std::string&, int64_t done, int64_t) { seen = std::max(seen, done); };
+        p.cancelled = [&] { return seen >= 1; };
+        CHECK_THROWS_AS(stack::FitNoiseModel(cap.Factory(), cap.info, threads, p), stack::StackCancelled);
+    }
+    // A reader that fails on one frame: its error, rethrown after every worker is joined.
+    class Failing : public ser::FrameSource {
+    public:
+        explicit Failing(std::unique_ptr<ser::FrameSource> s) : s_(std::move(s)) {}
+        const ser::FileInfo& Info() const override { return s_->Info(); }
+        ser::Frame ReadFrame(int64_t i) const override {
+            if (i == 77) throw ser::SerError("frame 77 is unreadable");
+            return s_->ReadFrame(i);
+        }
+        std::optional<int64_t> FrameTimestamp(int64_t i) const override { return s_->FrameTimestamp(i); }
+
+    private:
+        std::unique_ptr<ser::FrameSource> s_;
+    };
+    const stack::SourceFactory base = cap.Factory();
+    const stack::SourceFactory failing = [&]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<Failing>(base()); };
+    for (const int threads : {1, 4})
+        CHECK_THROWS_WITH(stack::FitNoiseModel(failing, cap.info, threads, {}), Catch::Matchers::ContainsSubstring("frame 77"));
+}
+
+TEST_CASE("the capture's noise model rises by exactly an added noise, across levels no clean tile takes (Ruling P26 fix round 1, I5)",
+          "[noise][model]") {
+    // The samples of a lunar capture like the 2023-02-02 Moon's, built directly: pass 1 reads noise
+    // N(t) = 1e-6 + 1e-4 t at every level, plus as much seeing-moved texture from 0.03 up; pass 2's one-level
+    // tiles take the sky (0.019-0.021, ratio 1) and the surface (0.13-0.6, ratio 0.5: no texture in them),
+    // nothing between -- the levels a limb's pixels take. Adding noise v0 everywhere must raise the model by
+    // v0 at every level, measured or interpolated: texture does not grow with the noise.
+    auto noise = [](double t) { return 1e-6 + 1e-4 * t; };
+    auto texture = [&](double t) { return t >= 0.03 ? noise(t) : 0.0; };
+    auto samples = [&](double v0, stack::NoiseSamples& s1, stack::NoiseSamples& s2) {
+        for (int k = 0; k < stack::kFineBins; ++k) {
+            const double t = (k + 0.5) / stack::kFineBins;
+            if (!((t > 0.018 && t < 0.022) || (t > 0.03 && t < 0.6))) continue;
+            const double v = noise(t) + texture(t) + v0, n = 4000;
+            s1.n[static_cast<size_t>(k)] = n;
+            s1.level[static_cast<size_t>(k)] = n * t;
+            s1.r2[static_cast<size_t>(k)] = n * v;
+            s1.r4[static_cast<size_t>(k)] = n * 3 * v * v;
+        }
+        s1.overlap = 1;
+        s1.frames = 100;
+        std::mt19937 rng(3);
+        std::normal_distribution<double> n01(0, 1);
+        std::uniform_real_distribution<double> uni(0, 1);
+        auto tile = [&](double t) {
+            const double clean = (noise(t) + v0) / (noise(t) + texture(t) + v0);
+            const double tau = std::sqrt(2.0 / 256);
+            s2.tiles.push_back({static_cast<float>(t), static_cast<float>(clean * (1 + tau * n01(rng))), 3.0f, 256.0f});
+        };
+        for (int i = 0; i < 1000; ++i) tile(0.019 + 0.002 * uni(rng));  // not a multiple of the 64-tile bin
+        for (int i = 0; i < 3000; ++i) tile(0.13 + 0.47 * uni(rng));
+        s2.tileOverlap = 1;
+        s2.frames = 100;
+    };
+    stack::NoiseSamples a1, a2, b1, b2;
+    const double v0 = 2e-5;
+    samples(0, a1, a2);
+    samples(v0, b1, b2);
+    const stack::NoiseModel a = stack::FitNoise(a1, a2, 1), b = stack::FitNoise(b1, b2, 1);
+    for (const double t : {0.04, 0.06, 0.08, 0.1, 0.12, 0.2, 0.4}) {
+        INFO("level " << t << ": " << a.VarianceAtMean(t) << " -> " << b.VarianceAtMean(t) << ", rise / v0 "
+                      << (b.VarianceAtMean(t) - a.VarianceAtMean(t)) / v0);
+        CHECK((b.VarianceAtMean(t) - a.VarianceAtMean(t)) / v0 == Catch::Approx(1).margin(0.05));
+    }
+    // And the measured levels read the noise alone.
+    CHECK(a.VarianceAtMean(0.02) == Catch::Approx(noise(0.02)).epsilon(0.05));
+    CHECK(a.VarianceAtMean(0.4) == Catch::Approx(noise(0.4)).epsilon(0.05));
 }

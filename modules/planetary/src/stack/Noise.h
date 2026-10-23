@@ -71,14 +71,23 @@ struct NoiseEstimate;  // Measure.h
 //    limb's own noise at luma 0.13, from the limb's edges at that level);
 //  - pass 2, that texture out: kNoiseTile x kNoiseTile tiles of one level (NoiseSamples::Tile, AddTriple),
 //    each its responses' summed square over pass 1's variance summed at their levels; per kBinTiles tiles
-//    by level, the median ratio, unbiased to the mean through the tiles' chi^2 law (TilePoints); smoothed
-//    over kKnotTiles tiles, it scales pass 1's bins at its levels, linearly between the tiles' levels, and
-//    leaves pass 1's alone beyond them (a small disc has no tile of one level: the 2026-01-30 Jupiter
-//    195830 disc, ~20 luma px across, kept pass 1's 0.88-0.97 of its own noise, where the sky's ratio
-//    carried over read 1.22-1.34). Measured against each window's own spatio-temporal noise, 300
-//    triples: the Moon 193142's dark limb at 0.13 / 0.047 / 0.019, 1.06 / 1.07 / 1.01 (pass 1 alone:
-//    1.43 / 1.46 / 1.01), its bright surface at 0.91 / 0.94, 1.01 / 1.04; Neptune 204515's disc 1.01;
-//    the 2023-02-11 / 2026-01-30 Jupiters' skies 0.99 / 1.16;
+//    by level (never across a gap in level: a bin straddling levels no tile takes reads a mix as one
+//    level's), the median ratio c, unbiased to the mean through the tiles' chi^2 law (TilePoints). The
+//    texture pass 1 holds there, m (1 - c) (m pass 1's curve; c smoothed over kKnotTiles tiles within
+//    kTileSpread of the level), is subtracted from pass 1's bins: linearly in level between the bins,
+//    held to the outermost bins' own tile levels, none beyond (Corrected). Subtracted, not scaled:
+//    texture does not grow with the noise, so the model rises by exactly the noise added to a capture
+//    (fix round 1: a ratio interpolated across the 2023-02-02 Moon's gap between its sky tiles and its
+//    surface's, from a bin straddling it, rose by 1.28-1.84 v0 there). A small disc has no tile of one
+//    level: the 2026-01-30 Jupiter 195830 disc, ~20 luma px across, keeps pass 1's 0.88-0.97 of its own
+//    noise, where the sky's ratio carried over read 1.22-1.34. Measured against each window's own
+//    spatio-temporal noise, 300 triples: the Moon 193142's dark limb at 0.13 / 0.047 / 0.019, 1.05 / 1.02
+//    / 1.01 (pass 1 alone: 1.43 / 1.46 / 1.01), its bright surface at 0.91 / 0.94, 1.01 / 1.04; Neptune
+//    204515's disc 1.01; the 2023-02-11 / 2026-01-30 Jupiters' skies 0.99 / 1.16. With Gaussian noise
+//    of 1.5 / 3 DN added to every raw sample of the 2023-02-02 Moon (8-bit, a raw mosaic: v0 = (DN^2 +
+//    1/12) / 255^2 / 4), the model rises by 1.01-1.15 / 0.98-1.09 v0 over luma 0.03-0.6 (pass 1 alone:
+//    0.95-1.15 / 0.98-1.02) and less where the data clip: 0.71-0.77 / 0.80-0.92 from 0.7 (saturation),
+//    0.88 at the 3-DN sky (black);
 //  - the line: Theil-Sen start (the median of the slopes between bins), then weighted least squares
 //    iterated with Tukey's biweight (kTukey) on each bin's relative error (sampling error plus kFitSlack);
 //    a, b >= 0; bins within kClipSigmas of a sample's noise of black (a sample of a K-sample luma pixel has
@@ -109,6 +118,19 @@ struct NoiseModel {
         bool clipped = false;
     };
     std::vector<Knot> knots;
+
+    // Not measured at all (FitNoiseModel of a capture with no frame triple to read: under 4 frames, or
+    // frames under 5 x 5) -- unlike a measured zero, which says the capture shows no noise. Measures given
+    // an unmeasured model take each frame's own sky noise instead (MeasureFrame, MeasureAll; RegionMeasurer
+    // the frame's texture-blind reading, Regions.h): with the zero model in its place, a 1-3 frame capture's
+    // quality read 1.164x its noise-free value and qualitySigma 0.
+    bool unmeasured = false;
+    bool Measured() const { return !unmeasured; }
+    static NoiseModel Unmeasured() {
+        NoiseModel m;
+        m.unmeasured = true;
+        return m;
+    }
 
     bool Zero() const { return !(a > 0 || b > 0); }
     double Line(double t) const { return std::max(0.0, a + b * t); }
@@ -162,6 +184,9 @@ constexpr int kNoiseResponsesPerTriple = 1 << 20;
 constexpr int64_t kNoiseResponses = int64_t{1} << 25;
 constexpr int kNoiseRun = 32;
 constexpr int kNoisePasses = 2;
+// At most this many triples per pass whatever the frame size: a 24 x 24-luma capture of 50 000 frames
+// would otherwise be read twice in full (2^25 responses of 400 a triple) for a curve 2048 triples fix.
+constexpr int64_t kNoiseMaxTriples = 2048;
 
 // A pass's samples. Add any number of triples, Merge in a fixed order (sums, appended tiles), so a fit is
 // the same for any thread count.
@@ -183,17 +208,17 @@ struct NoiseSamples {
     void Merge(const NoiseSamples& other);
 };
 
-// One frame prepared: its spatial responses ([1 -2 1] x [1 -2 1], at 1 <= x < w - 1, 1 <= y < h - 1) and
-// levels (the 3 x 3 mean weighted by the response's weights squared, [1 4 1] x [1 4 1] / 36), each w x h,
-// row-major, set at 1 <= x < w - 1, 1 <= y < h - 1. std::invalid_argument for an
-// empty or non-1-channel image.
+// The sampling step (both axes) that keeps a frame's responses within kNoiseResponsesPerTriple.
+int NoiseStep(int width, int height);
+// One frame prepared, at the sampled centres only (x = 2 + i step, y = 2 + j step, i < nx, j < ny; step =
+// NoiseStep): its spatial responses ([1 -2 1] x [1 -2 1]) and levels (the 3 x 3 mean), nx x ny row-major
+// (8 bytes per sampled centre, at most kNoiseResponsesPerTriple of them). Empty under 5 x 5.
+// std::invalid_argument for an empty or non-1-channel image.
 struct NoisePlane {
-    int w = 0, h = 0;
+    int w = 0, h = 0, step = 1, nx = 0, ny = 0;
     std::vector<float> response, level;
     explicit NoisePlane(const ser::FloatImage& luma);
 };
-// The sampling step (both axes) that keeps a frame's responses within kNoiseResponsesPerTriple.
-int NoiseStep(int width, int height);
 // Adds the responses of three consecutive frames (the same size; std::invalid_argument otherwise).
 // `levels`: a frame outside the triple (the next one), whose level at a pixel is independent of the
 // triple's noise there. `first` null: pass 1 (the fine bins); else pass 2 (the tiles, standardised by it).
@@ -203,21 +228,25 @@ void AddTriple(const NoisePlane& previous, const NoisePlane& middle, const Noise
 // final one from both passes' samples (pass 1's model when pass 2 holds no tile).
 NoiseModel FitNoise(const NoiseSamples& samples, int sites);
 NoiseModel FitNoise(const NoiseSamples& first, const NoiseSamples& second, int sites);
-// Runs of consecutive triples a capture's model reads: as many triples as kNoiseResponses allows (all of
-// them in a short or small capture), in runs of up to kNoiseRun spread evenly over the capture.
+// Runs of consecutive triples a capture's model reads: as many triples as kNoiseResponses allows, at most
+// kNoiseMaxTriples (all of them in a short or small capture), in runs of up to kNoiseRun spread evenly over
+// the capture -- back to back, each triple once, when all are read. None (the model unmeasured) under 4
+// frames or for frames under 5 x 5 luma, which hold no response.
 struct NoiseRun {
     int64_t first = 0, triples = 0;  // frames first .. first + triples + 2
 };
 std::vector<NoiseRun> NoiseRuns(const ser::FileInfo& info);
 // The model of consecutive frames (tests, tools): every triple (0, 1, 2), (1, 2, 3), ..., each with the
-// levels of the frame after it.
+// levels of the frame after it. Unmeasured under 4 frames or 5 x 5.
 NoiseModel FitNoiseModel(const std::vector<ser::FloatImage>& frames, int sites = 1);
 // Samples per luma pixel of a capture: 4 (Bayer, an undeclared mosaic), 3 (RGB), 1 (mono).
 int LumaSites(const ser::FileInfo& info);
 // The model of a capture, over NoiseRuns(info), read through `factory` as MeasurementLuma (Measure.h) on up
-// to `threads` workers (one run at a time each). Deterministic for any thread count. Fewer than 4 frames:
-// the zero model. Progress phase "Measuring noise" (done, kNoisePasses x runs: each run is read once per
-// pass); cancel -> StackCancelled; a worker's error is rethrown after every thread is joined.
+// to `threads` workers (one run at a time each; RunPool, Parallel.h). Each run's samples are merged in plan
+// order as soon as the runs before it are in, and a worker claims a run only within 2 x workers of the next
+// to merge, so at most that many runs' samples are held: deterministic for any thread count. No run:
+// NoiseModel::Unmeasured(). Progress phase "Measuring noise" (done, kNoisePasses x runs: each run is read
+// once per pass); cancel -> StackCancelled; a worker's error is rethrown after every thread is joined.
 NoiseModel FitNoiseModel(const std::function<std::unique_ptr<ser::FrameSource>()>& factory,
                          const ser::FileInfo& info, int threads, const Progress& progress);
 

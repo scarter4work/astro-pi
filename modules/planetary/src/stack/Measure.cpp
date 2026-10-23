@@ -14,6 +14,7 @@
 
 #include "Demosaic.h"
 #include "Noise.h"
+#include "Parallel.h"
 #include "SerFile.h"
 
 namespace planetary::stack {
@@ -324,6 +325,9 @@ int DetectionBlock(int width, int height) {
 // MeasureFrame, also handing out the noise its quality used (EstimatePixelNoise).
 static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel* model,
                                    NoiseEstimate* qualityNoise) {
+    // An unmeasured capture model (Noise.h: 1-3 frames, or frames under 5 x 5) is no model: the frame's own
+    // sky, as for one image alone.
+    if (model && !model->Measured()) model = nullptr;
     if (luma.width <= 0 || luma.height <= 0)
         throw std::invalid_argument("MeasureFrame: empty image");
     if (luma.channels != 1)
@@ -501,26 +505,29 @@ void PixelVariance(const float* p, int w, int x0, int y0, int x1, int y1, const 
     if (x1 <= x0 || y1 <= y0) return;
     const int rw = x1 - x0;
     // 3 x 3 sums within the rectangle, separably: along each row (with the count of pixels in it), then
-    // down the columns.
-    thread_local std::vector<double> rows;
+    // down the columns, three row sums held at a time (rows y - 1, y, y + 1 in a ring).
+    thread_local std::vector<double> ring;
     thread_local std::vector<int> counts;
-    rows.assign(static_cast<size_t>(rw) * (y1 - y0), 0.0);
-    counts.assign(static_cast<size_t>(rw), 0);
+    ring.resize(3 * static_cast<size_t>(rw));
+    counts.resize(static_cast<size_t>(rw));
     for (int x = x0; x < x1; ++x) counts[static_cast<size_t>(x - x0)] = 1 + (x > x0) + (x + 1 < x1);
-    for (int y = y0; y < y1; ++y) {
+    auto rowSum = [&](int y) {
         const float* r = p + static_cast<size_t>(y) * w;
-        double* o = rows.data() + static_cast<size_t>(y - y0) * rw;
+        double* o = ring.data() + static_cast<size_t>((y - y0) % 3) * rw;
         for (int x = x0; x < x1; ++x) {
             double s = r[x];
             if (x > x0) s += r[x - 1];
             if (x + 1 < x1) s += r[x + 1];
             o[x - x0] = s;
         }
-    }
+    };
+    auto row = [&](int y) { return ring.data() + static_cast<size_t>((y - y0) % 3) * rw; };
+    rowSum(y0);
     for (int y = y0; y < y1; ++y) {
-        const double* c = rows.data() + static_cast<size_t>(y - y0) * rw;
-        const double* a = y > y0 ? c - rw : nullptr;
-        const double* d = y + 1 < y1 ? c + rw : nullptr;
+        if (y + 1 < y1) rowSum(y + 1);
+        const double* c = row(y);
+        const double* a = y > y0 ? row(y - 1) : nullptr;
+        const double* d = y + 1 < y1 ? row(y + 1) : nullptr;
         const int ny = 1 + (a != nullptr) + (d != nullptr);
         float* o = out + static_cast<size_t>(y - y0) * stride;
         for (int i = 0; i < rw; ++i) {
@@ -531,7 +538,7 @@ void PixelVariance(const float* p, int w, int x0, int y0, int x1, int y1, const 
 }
 
 QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,
-                              const NoiseModel& noise, const float* variance) {
+                              const NoiseModel& noise, const float* variance, int planeX0, int planeY0, int planeStride) {
     QualityEstimate out;
     if (rx1 <= rx0 || ry1 <= ry0) return out;
     const int rw = rx1 - rx0, rh = ry1 - ry0;
@@ -545,8 +552,8 @@ QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, 
     const bool noisy = !noise.Zero();
     thread_local std::vector<float> vb;
     const float* vplane = variance;
-    size_t vstride = static_cast<size_t>(w);
-    int vx0 = 0, vy0 = 0;
+    size_t vstride = static_cast<size_t>(planeStride > 0 ? planeStride : w);
+    int vx0 = variance ? planeX0 : 0, vy0 = variance ? planeY0 : 0;
     if (noisy && !vplane) {
         vb.resize(static_cast<size_t>(rw) * rh);
         PixelVariance(p, w, rx0, ry0, rx1, ry1, noise, vb.data(), rw);
@@ -611,21 +618,22 @@ QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, 
         const float* r = p + static_cast<size_t>(y) * w;
         const float* up = r - w;
         const float* dn = r + w;
-        const float* vr = vplane + static_cast<size_t>(y - vy0) * vstride - vx0;
+        const float* vr = vplane + static_cast<size_t>(y - vy0) * vstride;  // column x at vr[x - vx0]
         const float* vu = vr - vstride;
         const float* vd = vr + vstride;
         const double ownW = 2 * ih + 2 * iv, ow2 = ownW * ownW, ih2 = ih * ih, iv2 = iv * iv;
         for (int x = rx0 + 1; x + 1 < rx1; ++x) {
-            const double L = r[x], v = vr[x], dl = L - b;
+            const double L = r[x], v = vr[x - vx0], dl = L - b;
             const double dR = r[x + 1] - L, dL = r[x - 1] - L, dD = dn[x] - L, dU = up[x] - L;
             e += dl * dl;
             noiseE += v;
             gh += dR * dR;
-            noiseH += v + vr[x + 1];
+            noiseH += v + vr[x + 1 - vx0];
             gv += dD * dD;
-            noiseV += v + vd[x];
+            noiseV += v + vd[x - vx0];
             const double lap = ih * (dR + dL) + iv * (dD + dU);
-            const double nbr = ih2 * (static_cast<double>(vr[x + 1]) + vr[x - 1]) + iv2 * (static_cast<double>(vd[x]) + vu[x]);
+            const double nbr = ih2 * (static_cast<double>(vr[x + 1 - vx0]) + vr[x - 1 - vx0]) +
+                               iv2 * (static_cast<double>(vd[x - vx0]) + vu[x - vx0]);
             lapEnergy += v * (lap * lap - (ow2 * v + nbr));
             sigEnergy += v * (dl * dl - v);
             cross += v * (lap * dl + ownW * v);
@@ -689,82 +697,41 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
 
     std::atomic<int64_t> nextFrame{0}, done{0};
     std::atomic<bool> stop{false};
-    std::mutex m;
-    std::condition_variable cv;
-    std::exception_ptr error;
-    int finished = 0;
-
-    auto work = [&] {
-        try {
-            const std::unique_ptr<ser::FrameSource> src = factory();
-            if (!src) throw ser::SerError("MeasureAll: the reader factory returned no reader");
-            const ser::FileInfo& si = src->Info();
-            auto describe = [](const ser::FileInfo& f) {
-                return std::to_string(f.header.width) + "x" + std::to_string(f.header.height) + ", " +
-                       std::to_string(f.frameCount) + " frames, " + ser::ColorIdName(f.colorId) + ", depth " +
-                       std::to_string(f.normDepth);
-            };
-            if (si.frameCount != info.frameCount || si.header.width != info.header.width ||
-                si.header.height != info.header.height || si.colorId != info.colorId || si.normDepth != info.normDepth)
-                throw ser::SerError("MeasureAll: a reader opened " + describe(si) + "; expected " + describe(info));
-            while (!stop.load(std::memory_order_relaxed)) {
-                const int64_t first = nextFrame.fetch_add(kRun);
-                if (first >= total) break;
-                const int64_t last = std::min(total, first + kRun);
-                for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
-                    out[static_cast<size_t>(i)] =
-                        MeasureFrame(MeasurementLuma(src->ReadFrame(i), info), i, scale, model);
-                    done.fetch_add(1);
-                }
-            }
-        } catch (...) {
-            std::lock_guard<std::mutex> lock(m);
-            if (!error) error = std::current_exception();
-            stop = true;
-        }
-        std::lock_guard<std::mutex> lock(m);
-        ++finished;
-        cv.notify_all();
-    };
-
-    // Joins every started worker on every way out (including a throwing callback).
-    std::vector<std::thread> pool;
-    struct Joiner {
-        std::vector<std::thread>& pool;
-        std::atomic<bool>& stop;
-        ~Joiner() {
-            stop = true;
-            for (std::thread& t : pool)
-                if (t.joinable()) t.join();
-        }
-    } joiner{pool, stop};
-
-    pool.reserve(static_cast<size_t>(workers));
-    for (int k = 0; k < workers; ++k) pool.emplace_back(work);
-
     if (progress.report) progress.report(kPhase, 0, total);
     int64_t reported = 0;
-    bool cancelled = false;
-    std::unique_lock<std::mutex> lock(m);
-    while (finished < workers) {
-        cv.wait_for(lock, std::chrono::milliseconds(10), [&] { return finished == workers; });
-        lock.unlock();
+    // Joins every started worker on every way out (including a throwing callback).
+    const PoolOutcome pool = RunPool(workers, stop, [&](int) {
+        const std::unique_ptr<ser::FrameSource> src = factory();
+        if (!src) throw ser::SerError("MeasureAll: the reader factory returned no reader");
+        const ser::FileInfo& si = src->Info();
+        auto describe = [](const ser::FileInfo& f) {
+            return std::to_string(f.header.width) + "x" + std::to_string(f.header.height) + ", " +
+                   std::to_string(f.frameCount) + " frames, " + ser::ColorIdName(f.colorId) + ", depth " +
+                   std::to_string(f.normDepth);
+        };
+        if (si.frameCount != info.frameCount || si.header.width != info.header.width ||
+            si.header.height != info.header.height || si.colorId != info.colorId || si.normDepth != info.normDepth)
+            throw ser::SerError("MeasureAll: a reader opened " + describe(si) + "; expected " + describe(info));
+        while (!stop.load(std::memory_order_relaxed)) {
+            const int64_t first = nextFrame.fetch_add(kRun);
+            if (first >= total) break;
+            const int64_t last = std::min(total, first + kRun);
+            for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
+                const ser::FloatImage luma = MeasurementLuma(src->ReadFrame(i), info);
+                out[static_cast<size_t>(i)] = MeasureFrame(luma, i, scale, model);
+                done.fetch_add(1);
+            }
+        }
+    }, [&] {
         const int64_t d = done.load();
         if (progress.report && d != reported) {
             progress.report(kPhase, d, total);
             reported = d;
         }
-        if (!cancelled && progress.cancelled && progress.cancelled()) {
-            cancelled = true;
-            stop = true;
-        }
-        lock.lock();
-    }
-    lock.unlock();
-    for (std::thread& t : pool) t.join();
-
-    if (cancelled) throw StackCancelled("cancelled while measuring frames");
-    if (error) std::rethrow_exception(error);
+        return progress.cancelled && progress.cancelled();
+    });
+    if (pool.cancelled) throw StackCancelled("cancelled while measuring frames");
+    if (pool.error) std::rethrow_exception(pool.error);
     if (progress.report && reported != total) progress.report(kPhase, total, total);
     return out;
 }

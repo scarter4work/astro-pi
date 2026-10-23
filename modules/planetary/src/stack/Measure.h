@@ -193,7 +193,8 @@ constexpr double kClippedLuma = 0.999;
 // i.e. the target's RMS spatial frequency: gradient energy over signal energy. The noise terms are the
 // noise's expected share of each: N_s the mean pixel variance v_i, N_g the mean of v_i + v_j over the
 // differences (4 s^2 and s^2 for white noise s), v_i the capture's noise model at pixel i's level (the
-// mean of its 3 x 3 neighbourhood within the region; Noise.h, Ruling P26) -- or, for one image alone,
+// mean of its 3 x 3 neighbourhood within the rectangle the variances are made over: the quality's box here,
+// all the windows' extent for the regions (RegionMeasurer); Noise.h, Ruling P26) -- or, for one image alone,
 // its sky's s^2 everywhere. Why this one:
 //  - brightness: numerator and denominator both scale with brightness^2, so a frame dimmed by
 //    haze measures the same detail (no brightness term survives);
@@ -249,7 +250,8 @@ constexpr double kClippedLuma = 0.999;
 // 2.9), and Regions.h's noise-only gate takes over.
 // One image alone: the quality's noise is its sky's (NoiseModel::FromSkyNoise of EstimatePixelNoise).
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
-// A frame of a capture: the quality's noise is the capture's model (Noise.h); MeasureAll's form.
+// A frame of a capture: the quality's noise is the capture's model (Noise.h); MeasureAll's form. An unmeasured
+// model (NoiseModel::Measured false: a capture of 1-3 frames) is taken as none: the form above.
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel& model);
 
 // The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
@@ -266,17 +268,20 @@ NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma);
 // [rx0, rx1) x [ry0, ry1) of a row-major 1-channel image of row length w (the rectangle must lie
 // inside it), with background level b and the noise model `noise`. All 0 when the noise-corrected
 // gradient or signal energy is not positive (or the rectangle is empty); the sigmas 0 for a zero model.
-// Thread-safe (thread_local scratch: 8 bytes per region pixel).
+// Thread-safe (thread_local scratch: 4 bytes per region pixel, and PixelVariance's three rows).
 struct QualityEstimate {
     double quality = 0, sigma = 0;
     double sigma2 = 0;  // sd of quality^2 (FrameStats::quality2Sigma)
 };
-// `variance`: each pixel's noise variance on the image's grid (row length w; PixelVariance), when the
-// caller made it once for many rectangles; null: made here, over the rectangle.
+// `variance`: each pixel's noise variance, made by the caller once for many rectangles (PixelVariance over
+// a rectangle holding them all): pixel (x, y) at variance[(y - planeY0) * planeStride + (x - planeX0)]
+// (planeStride 0: w). Null: made here, over the rectangle.
 QualityEstimate RegionQuality(const float* p, int w, int rx0, int ry0, int rx1, int ry1, double b,
-                              const NoiseModel& noise, const float* variance = nullptr);
+                              const NoiseModel& noise, const float* variance = nullptr, int planeX0 = 0, int planeY0 = 0,
+                              int planeStride = 0);
 // Each pixel's noise variance for the quality: the model at the mean of its 3 x 3 neighbourhood within
-// [x0, x1) x [y0, y1) (NoiseModel::Lookup), written to out[(y - y0) * stride + (x - x0)].
+// [x0, x1) x [y0, y1) (NoiseModel::Lookup), written to out[(y - y0) * stride + (x - x0)]. Scratch: three
+// rows of doubles (thread_local).
 void PixelVariance(const float* p, int w, int x0, int y0, int x1, int y1, const NoiseModel& noise, float* out, int stride);
 // qualitySigma's soft floor on quality^2, in quality^2's own sd ("qualitySigma" above).
 constexpr double kSigmaFloor = 1.7;
@@ -285,14 +290,16 @@ constexpr double kSigmaFloor = 1.7;
 using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 
 // Measures frames 0 .. info.frameCount - 1: the capture's noise model first (FitNoiseModel, its own
-// reads, cancellable, not reported), then each frame is read, turned into luma with
+// reads, cancellable, not reported; unmeasured under 4 frames, when each frame takes its own sky), then
+// each frame is read, turned into luma with
 // MeasurementLuma(frame, info) and measured with the model. `threads` workers (fewer when
 // there are fewer frames; < 1 counts as 1) each open their own reader through `factory` and take
 // runs of consecutive frames, so every reader reads forward. Result: one FrameStats per frame,
 // in frame order, identical for any thread count.
 // Memory: besides its reader and the frame in flight, each worker thread keeps MeasureFrame's
-// thread_local scratch alive for the life of the thread (two opened-luma buffers, ~16 MB at 1080p
-// mono, 4 bytes per luma pixel each), so budget ~16 MB per worker at 1080p on top of the frames.
+// thread_local scratch alive for the life of the thread: two opened-luma buffers (4 bytes per luma pixel
+// each) and the quality's variance over the target's box (4 per luma pixel at most, and three rows of
+// doubles) -- ~25 MB at 1080p mono; Engine.h's MemoryPlan counts it (measureWorkerBytes).
 // Progress phase "Measuring frames" (done, frameCount); report() and cancelled() are only called
 // from the calling thread. Cancel: workers stop, every thread is joined, StackCancelled is thrown.
 // A worker's exception (a read error, a factory that throws or returns null, a reader whose size,

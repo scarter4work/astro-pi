@@ -351,8 +351,8 @@ RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& re
     // Structure: the predicted error of one frame's local shift (kMaxShiftNoise), from the window's
     // gradient energy less the reference's own noise share (2 s^2 per forward difference).
     // The reference's texture-blind noise reading, pixels or bins chosen from it (Ruling P25).
-    const bool onBins = RegionNoiseOnBins(reference, bx0, by0, bx1, by1);
-    const double sRef = RegionNoise(reference, bx0, by0, bx1, by1, onBins).sigma;
+    lay.noiseOnBins = RegionNoiseOnBins(reference, bx0, by0, bx1, by1);
+    const double sRef = RegionNoise(reference, bx0, by0, bx1, by1, lay.noiseOnBins).sigma;
     const double sf = std::max(sRef * std::sqrt(static_cast<double>(kReferenceFrames)), kMinFrameNoise);
     const float* p = reference.data.data();
     for (int j = 0; j < lay.ny; ++j)
@@ -454,14 +454,31 @@ FrameRegions RegionMeasurer::Measure(const ser::FloatImage& frameLuma, int64_t f
     out.regions.resize(layout_.regions.size());
     if (layout_.regions.empty()) return out;
 
-    // Each pixel's noise variance, once for the whole frame (the regions' windows overlap): the capture's
-    // model at its 3 x 3 mean (PixelVariance, Ruling P26).
+    // Each pixel's noise variance, once for every window (the regions' windows overlap): the capture's model
+    // at its 3 x 3 mean (PixelVariance, Ruling P26), over the regions' extent moved by the global shift and
+    // grown by the most a local shift adds (the windows' quality rectangles all lie inside it). An
+    // unmeasured model (a capture of 1-3 frames, Noise.h): the frame's own texture-blind reading there.
+    int ex0 = layout_.width, ey0 = layout_.height, ex1 = 0, ey1 = 0;
+    for (const Region& reg : layout_.regions) {
+        ex0 = std::min(ex0, reg.x0);
+        ey0 = std::min(ey0, reg.y0);
+        ex1 = std::max(ex1, reg.x1);
+        ey1 = std::max(ey1, reg.y1);
+    }
+    const int reachX = static_cast<int>(std::ceil(kMaxLocalShift)) + 1;
+    const int gx = static_cast<int>(std::lround(global.dx)), gy = static_cast<int>(std::lround(global.dy));
+    ex0 = std::clamp(ex0 + gx - reachX, 0, frameLuma.width);
+    ey0 = std::clamp(ey0 + gy - reachX, 0, frameLuma.height);
+    ex1 = std::clamp(ex1 + gx + reachX, 0, frameLuma.width);
+    ey1 = std::clamp(ey1 + gy + reachX, 0, frameLuma.height);
+    NoiseModel ownSky;
+    if (!layout_.noise.Measured()) ownSky = NoiseModel::FromSkyNoise(RegionNoise(frameLuma, ex0, ey0, ex1, ey1, layout_.noiseOnBins));
+    const NoiseModel& frameNoise = layout_.noise.Measured() ? layout_.noise : ownSky;
     thread_local std::vector<float> variance;
     variance.clear();
-    if (!layout_.noise.Zero()) {
-        variance.resize(frameLuma.data.size());
-        PixelVariance(frameLuma.data.data(), frameLuma.width, 0, 0, frameLuma.width, frameLuma.height, layout_.noise, variance.data(),
-                      frameLuma.width);
+    if (!frameNoise.Zero() && ex1 > ex0 && ey1 > ey0) {
+        variance.resize(static_cast<size_t>(ex1 - ex0) * (ey1 - ey0));
+        PixelVariance(frameLuma.data.data(), frameLuma.width, ex0, ey0, ex1, ey1, frameNoise, variance.data(), ex1 - ex0);
     }
     thread_local std::vector<ser::FloatImage> pyr;
     thread_local std::vector<float> sample, tmp;
@@ -627,8 +644,8 @@ FrameRegions RegionMeasurer::Measure(const ser::FloatImage& frameLuma, int64_t f
         m.confidence = static_cast<float>(ok ? ncc : 0);
         if (m.aligned) {
             const QualityEstimate q =
-                RegionQuality(frameLuma.data.data(), frameLuma.width, rx0, ry0, rx1, ry1, sMean, layout_.noise,
-                              variance.empty() ? nullptr : variance.data());
+                RegionQuality(frameLuma.data.data(), frameLuma.width, rx0, ry0, rx1, ry1, sMean, frameNoise,
+                              variance.empty() ? nullptr : variance.data(), ex0, ey0, ex1 - ex0);
             m.quality = static_cast<float>(q.quality);
             m.qualitySigma = static_cast<float>(q.sigma);
             m.quality2Sigma = static_cast<float>(q.sigma2);

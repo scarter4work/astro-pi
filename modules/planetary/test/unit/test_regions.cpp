@@ -649,6 +649,39 @@ TEST_CASE("a region's qualitySigma tracks its quality's scatter from low to high
         CHECK(empirical / rms == Catch::Approx(1).margin(0.1));
         CHECK(empirical / sg[sg.size() / 2] == Catch::Approx(1).margin(0.1));
     }
+    // Under that (Ruling P26 fix round 1, M8): the same window at A 0 / 0.0004 / 0.0006 / 0.0008 / 0.001 reads a
+    // median ratio of 2.83 / 3.01 / 3.04 / 3.05 / 3.12 -- no window's median ratio falls below pure noise's
+    // ~2.8, the frames with q > 0 being those the noise lifted -- and there quality's scatter is 0.33 / 0.34 /
+    // 0.54 / 0.84 / 0.89 of qualitySigma's rms: qualitySigma overstates the scatter of a quality that is
+    // the positive part of noise. Such a region's ratio is under kRegionDetailSigmas, so it takes the plain
+    // mean (P27) and its qualitySigma ranks nothing. A frame's target at that SNR is not found at all (the
+    // smooth blob of "qualitySigma tracks quality's scatter ..." at contrast 0.065: no frame with detail).
+    for (const double A : {0.0, 0.0006}) {
+        std::vector<float> clean(static_cast<size_t>(n) * n);
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                double v = 0.3;
+                for (const Wave& wv : waves) v += A * wv.a * std::sin(2 * M_PI * (wv.fx * x + wv.fy * y) + wv.ph);
+                clean[static_cast<size_t>(y) * n + x] = static_cast<float>(v);
+            }
+        std::mt19937 rng(77);
+        std::normal_distribution<double> g(0, 0.01);
+        std::vector<double> ratio;
+        for (int k = 0; k < runs; ++k) {
+            std::vector<float> im = clean;
+            double mean = 0;
+            for (float& v : im) {
+                v = static_cast<float>(v + g(rng));
+                mean += v;
+            }
+            const stack::QualityEstimate e = stack::RegionQuality(im.data(), n, 0, 0, n, n, mean / (n * n), model);
+            if (e.quality > 0) ratio.push_back(e.quality / e.sigma);
+        }
+        std::sort(ratio.begin(), ratio.end());
+        INFO("contrast " << A << ": median q / qualitySigma " << ratio[ratio.size() / 2] << " over " << ratio.size());
+        CHECK(ratio[ratio.size() / 2] > 2.5);
+        CHECK(ratio[ratio.size() / 2] < stack::kRegionDetailSigmas);
+    }
 }
 
 TEST_CASE("RegionNoise is unbiased on pixels and on bins, chosen once per capture (Ruling P25)", "[regions][noise]") {

@@ -91,6 +91,11 @@ constexpr int kHotPixelFrames = 64;
 //    region alignment against 26 ms observing, so 32 workers need ~9 observers busy.
 //  - Per worker: the raw frame (2 bytes per sample), its luma (4 per luma pixel) and alignment
 //    scratch (kWorkerScratchBytes: the correlation windows, at most 512 x 512 complex doubles twice);
+//    the regions' and the frame quality's noise variances over their rectangles (4 per luma pixel at
+//    most, and three rows of doubles: Ruling P26); the noise phase's four NoisePlanes (8 bytes per
+//    sampled centre, at most kNoiseResponsesPerTriple of them) and the runs it holds for its in-order
+//    merge, counted for the measuring workers when larger (noiseWorkerBytes: larger on a small frame,
+//    a 64 x 64 luma's 223 KB; 4K mono's 84 MB is under the 166 MB a measuring worker holds);
 //    in the stacking pass the demosaic's two float planes (8 bytes per pixel) and the demosaiced frame
 //    with room for its prefilter (8 bytes per output sample).
 //    Workers per pass are capped so fixed + observers + workers stay within kMemoryBudget (a 4K RGB
@@ -112,6 +117,7 @@ struct MemoryPlan {
     int observers = 1;                 // ResidualScale instances
     size_t observerBytes = 0;          // one instance
     size_t measureWorkerBytes = 0, alignWorkerBytes = 0, stackWorkerBytes = 0;  // one worker of each pass
+    size_t noiseWorkerBytes = 0;  // one noise-phase worker (FitNoiseModel), within measureWorkerBytes
     size_t fixedBytes = 0;             // Accumulator sums, reference, residual scale
     size_t focusBytes = 0;             // the focus measure's kFocusFrames luma frames
     // The largest of the three passes' totals (fixed + observers + workers): what the engine itself holds

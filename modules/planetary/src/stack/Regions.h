@@ -98,20 +98,25 @@ struct RegionLayout {
     std::vector<int> node;        // nx * ny: index into regions, -1 where no region was placed
     // The capture's noise model (Noise.h), as PlaceRegions was given it: every region quality's noise.
     NoiseModel noise;
+    // The reference's texture-blind reading is taken on 2 x 2 bins, not the pixels (RegionNoiseOnBins over
+    // the target's box, decided once by PlaceRegions; Ruling P25): placement's, and a frame's own reading
+    // when `noise` is unmeasured (RegionMeasurer).
+    bool noiseOnBins = false;
 };
 
-// The reference's pixel noise for placement (Ruling P25; until Ruling P26 also each frame's for the
-// region quality), blind to texture: MaskNoise -- the trimmed second moment of the [1 -2 1] x [1 -2 1]
-// responses, Regions.cpp -- on the pixels of [x0, x1) x [y0, y1) (clipped to the image), or with onBins
-// twice that on their 2 x 2 bins (white noise s gives s / 2 in a bin). Each reading misreads one texture
-// as noise: a raw colour mosaic read as mono carries its pattern at Nyquist in every frame, which the
-// pixels see and a bin (one cell of the pattern) cancels; texture at 4-8 px, coarse for the pixels, is
-// fine for the bins. The capture's own data says which applies (RegionNoiseOnBins, on the reference) --
-// not the smaller of the two, which read s^2 0.923 / 0.961 / 0.981 / 0.989 / 0.995 of the truth on white
-// noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured 2026-10-22), taking whichever fluctuated low. Each reading alone (test "RegionNoise is unbiased ...", white noise, 32^2-512^2):
-// pixels 1.000-1.006 of the truth (1.010 at 32^2 before the trimmed moment's constant was taken at the
-// share actually kept), bins 0.999-1.009 from 48^2 and 1.022 at 32^2 (16 x 16 bins, 196 responses: the
-// trimmed moment's small-sample excess).
+// The reference's pixel noise for placement, and a frame's own for its region quality when the capture's
+// model is unmeasured (Ruling P25; every frame's until Ruling P26), blind to texture: MaskNoise -- the
+// trimmed second moment of the [1 -2 1] x [1 -2 1] responses, Regions.cpp -- on the pixels of [x0, x1) x
+// [y0, y1) (clipped to the image), or with onBins twice that on their 2 x 2 bins (white noise s gives s / 2
+// in a bin). Each reading misreads one texture as noise: a raw colour mosaic read as mono carries its
+// pattern at Nyquist in every frame, which the pixels see and a bin (one cell of the pattern) cancels;
+// texture at 4-8 px, coarse for the pixels, is fine for the bins. The capture's own data says which applies
+// (RegionNoiseOnBins, on the reference) -- not the smaller of the two, which read s^2 0.923 / 0.961 / 0.981
+// / 0.989 / 0.995 of the truth on white noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured
+// 2026-10-22), taking whichever fluctuated low. Each reading alone (test "RegionNoise is unbiased ...",
+// white noise, 32^2-512^2): pixels 1.000-1.006 of the truth (1.010 at 32^2 before the trimmed moment's
+// constant was taken at the share actually kept), bins 0.999-1.009 from 48^2 and 1.022 at 32^2 (16 x 16
+// bins, 196 responses: the trimmed moment's small-sample excess).
 // varSigma2 = kRegionNoiseVariance s^4 / (pixels measured: the rectangle's, a quarter of it for
 // bins): measured Var(s^2) x pixels / s^4 = 8.6-11.6 on pixels and 8.8-12.3 on bins (bins counted),
 // 32^2 to 1024^2: 0.71-1.23 of the formula, 1.23 the 32^2 bins (the 21.8 s^4 / area it replaces was ~2x
@@ -290,7 +295,12 @@ struct RegionDetail {
 //    with real seeing variation ...": half contrast, noise 0.01, 150 frames): 3.71-11.97, 4 of 165
 //    under 4 (they take the plain mean).
 // 4 is over pure noise's p99 from ~150 candidates and its 400-candidate maximum, and under every real
-// region by 2.5x.
+// region by 2.5x. A fixed gate, so pure noise passes it more often with fewer candidates (2000 regions
+// each, 32 / 64 px windows, exactly C candidates): 14.9 / 17.2% at C = 10, 1.4 / 2.6% at 30, none at 100 or
+// 300. A noise-only region that passes is ranked, and the deconvolution keeps nearly every frame of a
+// spread that is noise (Neptune 204515: 92-93 of 93); under kMinStackFrames candidates a region takes
+// the plain mean anyway. A count-dependent gate would trade that for real low-SNR regions of short
+// captures: no single threshold separates the two there.
 constexpr double kRegionDetailSigmas = 4;
 
 struct RegionPlan {
