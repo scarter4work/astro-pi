@@ -24,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 201 tests + 32 strict xfails (C1), ~3.5 min with the NAS; the engine tests need the built probes
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 148 tests + 26 strict xfails without the NAS, ~1.5 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 213 tests + 32 strict xfails (C1), ~3.2 min with the NAS (final fix round, b35e770c); the engine tests need the built probes
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 160 tests + 26 strict xfails without the NAS, ~1.5 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -368,38 +368,52 @@ shifts). The 0.21-0.30 ratio of fix round 3 is beside it; what moved it is in th
   in the top bin). Net on END they are neutral for ours: END_interior 1.020 with them against 1.018
   without (+0.0017), and 1.059 with the field capped at 1 px.
 
-### What the excess is (fix round 3, review I-E; `triage.py`)
+**The final fix round's run** (2026-10-23 18:23-18:38; the engine with the final review's fixes,
+calibration re-frozen at b35e770c, generated 18:23:10, with its identity) gives every verdict and every
+number of the table above again: 4 pass, 4 review, 0 fail; the diagnosis cases pass. Against the
+round-4 run each stack differs by at most 1.9e-6 per pixel and each END ratio by at most 5e-5 (float
+rounding of the threaded sums), the frames used and our k are the same, and every split-half ratio
+agrees within 4e-5. None of the engine fixes changes a frame choice on these captures (the Unaligned
+change acts only on selections under 2 x kMinStackFrames).
+
+### What the excess is (`triage.py`; fix round 3, review I-E; re-measured in the final fix round)
 
 `triage.py halves` re-stacks both halves with `stack-region-probe --fits-out`: the region stack (the
 engine's flow) and the global-only stack of the same frames (no regions, so no kept subsets and no
-level offsets between them; Task 9 Investigation 2). It also decomposes D of the region stacks tile
-by tile (32 px) in the END band into a gain on A (a level or gain offset between kept subsets
-multiplies the texture), a local shift (the halves' regions registered differently) and a local blur.
+level offsets between them; Task 9 Investigation 2). It prints the bench's R for each (tile shifts
+removed, Ruling P28d) and decomposes D of each tile by tile (32 px) in the END band into a gain on A (a
+level or gain offset between kept subsets multiplies the texture), a shift (the halves registered
+differently, locally or as a whole) and a local blur. D is taken after the registration and one global
+gain only: fix round 3's decomposition took it after `refined_difference`'s global gain-and-shift fit,
+which turns a smooth gain field into a pseudo-shift, so it read a level offset as a local shift (a pure
+3 % gain field: 0.13 gain / 0.82 shift; `test_triage.py`, final review M4). Re-measured with the fixed
+decomposition on the final fix round's run (calibration b35e770c; `triage.py halves`, at 047d3c50's
+triage):
 
-| Capture | Region stacks: 0.21-0.30 / 0.06-0.09 | Global-only: 0.21-0.30 / 0.06-0.09 | D explained by gain / local shift / local blur |
-|---|---|---|---|
-| 2024-02-01 Moon | x2.17 / x14.9 | x0.99 / x1.84 | 0.008 / 0.847 / 0.010 |
-| 2023-02-12 Moon | x1.22 / x30.8 | x1.95 / x6.84 | 0.127 / 0.579 / 0.082 |
-| 2026-01-30 Jupiter | x3.94 / x31.9 | x1.76 / x8.83 | 0.000 / 0.437 / 0.003 |
-| Mars (no regions) | x2.18 / x6.18 | the same | 0.056 / 0.011 / 0.116 |
+| Capture | Region stacks: 0.21-0.30 / 0.06-0.09 | Global-only: 0.21-0.30 / 0.06-0.09 | Region stacks' D explained by gain / shift / local blur | Global-only's D: gain / shift / blur |
+|---|---|---|---|---|
+| 2024-02-01 Moon | x0.95 / x1.17 | x0.94 / x1.17 | 0.008 / 0.854 / 0.009 | 0.022 / 0.230 / 0.033 |
+| 2023-02-12 Moon | x1.27 / x14.9 | x1.92 / x5.18 | 0.121 / 0.597 / 0.078 | 0.026 / 0.138 / 0.039 |
+| 2026-01-30 Jupiter | x3.72 / x9.56 | x1.77 / x7.71 | 0.001 / 0.820 / 0.001 | 0.002 / 0.713 / 0.000 |
+| Mars (no regions) | x1.74 / x5.23 | the same | 0.003 / 0.956 / 0.004 | the same |
 
-* **The 2024-02-01 Moon.** The excess is the region stage's, and it is local registration. The
-  global-only stacks of the same frames agree with the model (x0.99). A local shift explains 85 % of
-  D's END-band power, a gain on A 0.8 %. Investigation 2's level offsets would show as that gain term,
-  so they are not what the charge holds here. Removing each tile's shift before measuring (an
-  estimate, not the bench's procedure) gives x0.96 and a charge of 1.39 ... 1.07.
-* **The 2023-02-12 Moon.** Mostly local shift too (0.58), but a gain on A carries 13 %: this is the
-  capture Investigation 2 found the level offsets on. Net of local shift the low-bin charge is still
-  x18 (estimate).
-* **The 2026-01-30 Jupiter.** Local shift carries 44 % of D, and the global-only stacks still read
-  x1.76. The rest is not established (below).
-* **Mars** has no regions, and no term explains more than 12 %. Not established.
+* **The 2024-02-01 Moon.** The tile shifts already took its excess out (x0.95, inside the band), and
+  what is left of D is still mostly shift (0.85), a gain on A 0.8 %: with the fixed decomposition a
+  level offset would read as gain, so the region stacks' level offsets are not what D holds here.
+  Fix round 3's reading (0.847 shift, 0.008 gain, before the tile shifts) stands.
+* **The 2023-02-12 Moon.** Mostly shift too (0.60), but a gain on A carries 12 %: the capture
+  Investigation 2 found the level offsets on. Its low bins stay charged (x14.9) after the tile shifts.
+* **The 2026-01-30 Jupiter.** Shift explains 82 % of the region stacks' D and 71 % of the global-only
+  stacks'. On a 52 x 56 box the tile is the whole box, so this "shift" is the halves' residual global
+  and affine registration (README, round-4 run). Fix round 3 read 44 % (an untested guess at the gap: the global fit it decomposed after had
+  already taken the global part).
+* **Mars** has no regions. Shift explains 96 % of D: the same global / affine residual on a one-tile
+  48 px box; fix round 3, decomposing after the global fit, found no term over 12 %.
 
-A local shift between the two half-stacks is registration, not noise. In the full stack it is a
-geometric offset, which END does not see, so charging it as noise over-charges ours. Fix round 4
-removes it (Ruling P28d; "Local registration is not charged", above); this table is fix round 3's,
-taken before that, and `triage.py` still decomposes D without the tile shifts so it shows what they
-explain.
+A shift between the two half-stacks is registration, not noise; in the full stack it is a geometric
+offset that END does not see, and P28d's per-tile first-order fit removes it from R. On the disc
+boxes that fit is one global affine field; the 2026-01-30 Jupiter and Mars still read outside their
+band after it (x3.72 / x1.74), and what the rest of their D is, is not established.
 
 ### What the interleaved halves share (fix round 2, review I-D)
 
@@ -504,8 +518,11 @@ the real 29 px 2_12_2023 AS_P20 Jupiter, blurring only the interior (more than 2
 limb) costs DAN_full 2.7 % at sigma 0.7, 5.2 % at sigma 1 and 15 % at sigma 2. So an interior
 softened by sigma 0.7 behind a crisp limb passes the 0.97 bar on DAN_full. Its limb sigma
 estimates 2.33 px, so the interior window is eroded 4.7 px, and the eroded disc is 18.8 px: by the
-20 px rule that capture is limb-only. 2026-01-30 Jupiter (28.5 px) and Saturn (23.5 px) are
-judged on both scores.
+20 px rule that capture is limb-only. In the bench only the 2026-01-30 Jupiter carries the interior
+bar (27.98 px with ours as anchor); Saturn, 23.5 px from its reference alone, measures 17.37 px in the
+bench and is limb-only, as are the 2023-02-11 Jupiter (18.15 px) and Mars (6.28 px) -- the final fix
+round's run at b35e770c, each run's compare.json `interior_diameter` (summary.md's limb-only notes).
+Why Saturn shrinks: see "The benchmark set" below (ruling F1).
 
 ### Validation (measured 2026-10-22)
 
@@ -599,11 +616,16 @@ target size), which still separates x1 / x1.5 / x3.
 
 Frame counts, sizes, sidecars, reference files, size-derived factors and recorded patterns are
 checked against the NAS by `test_benchset.py`. Paths are under `/mnt/qnap/astro_data/`. "Eroded"
-is the interior window's equivalent diameter (>= 20 px: interior judged), from the references'
-sharpest limb. Once our stack joins, the sharpest of ours and the references sets the erosion.
-A sharper stack of ours can only enlarge the window; a softer one cannot shrink it. The window's
-outline is ours' target mask, so the reviewer's own stack of the 2026-01-30 Jupiter measured 28.0 px
-on its own limb, against 28.5 here. DAN values compare
+is the interior window's equivalent diameter (>= 20 px: interior judged) from the references alone
+(`benchset.py survey`, re-run at b35e770c: 18.8 / 28.5 / 23.5 / 7.4 px). Once our stack joins, the
+sharpest limb of ours and the references sets how far the window is eroded, but the outline it erodes
+is ours' own target mask (`refs.compare`: the anchor's 15 % contour). So a sharper stack of ours
+cannot shrink the window through its limb, but a stack of ours with a TIGHTER contour shrinks it all
+the same, and can take a capture under 20 px and out of the END_interior bar: Saturn reads 23.5 px
+from ASIStudio's own mask and 17.37 px in the bench (ours' mask), so in the bench it is limb-only, and
+only the 2026-01-30 Jupiter (27.98 px) carries the interior bar; the 2023-02-11 Jupiter reads 18.15 px
+and Mars 6.28 px (final fix round's run at b35e770c, compare.json `interior_diameter`). This is what
+the code does, stated rather than changed after real results were read (ruling F1). DAN values compare
 reference against reference on the capture's common box; our stack joins in Task 9's run.
 
 ### Planets
@@ -612,7 +634,7 @@ reference against reference on the capture's common box; our stack joins in Task
 |---|---|---|---|---|---|---|---|
 | 2023-02-11-jupiter | `2_12_2023/2023-02-11-191831-Jupiter-Bin1 13.3F.avi` | 6516, 640x480, 2.0 GB | RGGB (camera spec; AS used BGGR) | 18.8 px: limb-only | `2_12_2023/AS_P20/2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap1_Drizzle30.png` (x3) | 0.3257; 0.3171 | AS native and drizzled |
 | 2026-01-30-jupiter | `processing-archive-2026-10-03/videos/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F.avi` | 4088, 480x360, 0.7 GB | RGGB (camera spec = Scott's Save pattern; ASI same) | 28.5 px | `.../ASIVideoStack_Output/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F_Planet_40.fit`; `..._Planet_50.fit` | 0.1893 (0.2291); 0.1887 (0.2283) | Larger Jupiter: interior judged |
-| 2023-09-29-saturn | `9_30_2023/2023-09-29-204604-Saturn-Bin1 LPro 14.9F.avi` | 3973, 1280x960, 4.9 GB | RGGB (camera spec; ASI same) | 23.5 px | `9_30_2023/ASIVideoStack_Output/2023-09-29-204604-Saturn-Bin1 LPro 14.9F_Planet_74.fit` | 0.5828 (0.6038) | Rings; small target in a large frame |
+| 2023-09-29-saturn | `9_30_2023/2023-09-29-204604-Saturn-Bin1 LPro 14.9F.avi` | 3973, 1280x960, 4.9 GB | RGGB (camera spec; ASI same) | 23.5 px (17.37 px in the bench: limb-only) | `9_30_2023/ASIVideoStack_Output/2023-09-29-204604-Saturn-Bin1 LPro 14.9F_Planet_74.fit` | 0.5828 (0.6038) | Rings; small target in a large frame |
 | 2023-02-11-mars | `2_12_2023/2023-02-11-192403-Mars-Bin1 16.5F.avi` | 13 251, 320x240, 1.0 GB | RGGB (camera spec; AS used BGGR) | 7.4 px: limb-only | `2_12_2023/AS_P25/2023-02-11-192403-Mars-Bin1 16.5F_lapl5_ap1_Drizzle30.png` (x3; bright edge strip, cols 305-317) | 5.870 | Smallest disc; longest capture. **Limb-only: human review decides** |
 
 ### Lunar
@@ -800,8 +822,8 @@ The Python functions behind it, for the side-by-side and summary code:
   * sigma_frame comes from the first 128 frames.
 * DAN's white floor (secondary): interpolated or resampled stacks have less noise near Nyquist than
   mid-band, so some of their mid-band noise counts as detail (measured above: 1.1-38 x).
-* Small discs: below a 20 px eroded interior (Mars, and the 2_12_2023 Jupiter at 18.8 px) only the
-  limb is measured, and an interior softened by sigma 0.7 behind a crisp limb passes DAN_full (numbers
+* Small discs: below a 20 px eroded interior (Mars; the 2_12_2023 Jupiter at 18.8 px; Saturn in the
+  bench, where ours' tighter mask makes 23.5 px 17.37) only the limb is measured, and an interior softened by sigma 0.7 behind a crisp limb passes DAN_full (numbers
   above). Those captures are marked limb-only, and Scott's review decides.
 * Area-resampling a x3 drizzle to native is itself a 1-native-pixel box filter (Ruling 1), so
   references drizzled x3 carry that cost.
