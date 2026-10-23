@@ -9,8 +9,8 @@
 #                                                               BLOCKED (exit 2): no signing pass file
 #
 # Captures: make-fixtures --stack (the probe's synthetic captures) and
-# --stack-long gui-long.avi (the long Bayer capture, 1500 frames: ~5.5 s on 32
-# threads, so the progress bar, Cancel, a close and a Quit land mid-run). What
+# --stack-long gui-long.avi (the long Bayer capture, 2500 frames: it must stack in at least 7 s,
+# checked below, so the progress bar, Cancel, a collapse and expand, a close and a Quit land mid-run). What
 # each must give comes from the engine itself (stack-probe on the same file),
 # so a capture that stops giving it fails here, before PixInsight starts.
 #
@@ -22,7 +22,7 @@
 #     Execute                                                      -> 07-execute.png
 #     gui-smoke-stack-ipc.js (-x): exactly one image window, <stem>_stack, 1024x768 RGB, NCOMBINE /
 #     NFRAMES the engine's, its centre sample the engine's (within 1e-5): the stack Stack! made,
-#     opened without stacking again (it exists 1.5 s after the click; a stack takes ~5.5 s).
+#     opened without stacking again (it exists 1.5 s after the click; a stack takes at least 7 s).
 #     The window is then closed.
 #  4. --stack-cancel: Stack! again -> mid-run                      -> 08-cancel-progress.png
 #     Cancel -> idle                                               -> 09-cancelled.png
@@ -82,7 +82,7 @@ FIX="$PLANETARY_RUN_DIR/fixtures"
 "$MAKE_FIXTURES" --stack "$FIX" >"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
    || { echo "FAIL: make-fixtures --stack failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
 LONG="$FIX/gui-long.avi"
-"$MAKE_FIXTURES" --stack-long "$LONG" 1500 >>"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
+"$MAKE_FIXTURES" --stack-long "$LONG" 2500 >>"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
    || { echo "FAIL: make-fixtures --stack-long failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
 DIAG="$FIX/diag-notarget.ser" MOSAIC="$FIX/stack-mosaic.avi" SOFT="$FIX/stack-soft-disc.ser" BAYER="$FIX/stack-bayer.avi"
 [ ! -e "$MOSAIC.txt" ] || { echo "FAIL: $MOSAIC must have no sidecar (Save pattern... writes one)"; exit 1; }
@@ -119,8 +119,11 @@ engine "$SOFT" auto image "may be out of focus" || exit 1
 engine "$BAYER" auto image "" || exit 1
 engine "$BAYER" BGGR image "" || exit 1
 LONG_JSON="$OUT/engine-gui-long.avi-auto.json"
-jq -e '.seconds >= 3' "$LONG_JSON" >/dev/null \
-   || { echo "FAIL: gui-long.avi stacks in $(jq .seconds "$LONG_JSON") s: too fast for Cancel, a close and a Quit to land mid-run"; exit 1; }
+# At least 7 s: the collapse-and-expand step (4b) spends ~4.8 s from its mid-run shot to 09c2, which must
+# still show the run going on (measured: 09b 17:54:33.54 -> 09c2 17:54:38.31 on the host build; with 1500
+# frames, 5.2 s, the run had ended by 09c2 -- final fix round).
+jq -e '.seconds >= 7' "$LONG_JSON" >/dev/null \
+   || { echo "FAIL: gui-long.avi stacks in $(jq .seconds "$LONG_JSON") s: too fast for Cancel, a collapse and expand, a close and a Quit to land mid-run"; exit 1; }
 
 planetary_sign "$SO" || exit 1
 planetary_seed_slot_modules || exit 1
