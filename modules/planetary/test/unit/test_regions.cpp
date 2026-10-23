@@ -773,7 +773,7 @@ TEST_CASE("RegionNoise is unbiased on pixels and on bins, chosen once per captur
     CHECK(onPixels > 1.3 * onBins);
 }
 
-TEST_CASE("A disc's blend mask is 1 over the disc and its limb and 0 over the sky; a frame-filling layout has none (E1)", "[regions]") {
+TEST_CASE("The blend mask is 1 over the target and its limb and 0 over the sky; a frame-filling surface without sky has none (E1)", "[regions]") {
     const int w = 160, h = 128;
     const double cx = 62.4, cy = 70.3, R = 16;
     const Scene s = testing::MakeDisc(11, cx, cy, R);
@@ -806,6 +806,24 @@ TEST_CASE("A disc's blend mask is 1 over the disc and its limb and 0 over the sk
     // The mask is the layout's: copies share it.
     const RegionLayout copy = lay;
     CHECK(copy.mask.m == lay.mask.m);
-    // A frame-filling layout keeps every region weight: no mask.
-    CHECK(stack::PlaceRegions(ref, st, true, testing::WhiteNoise(0.01)).mask.Empty());
+    // The same reference laid out as frame-filling (fix round 1): masked the same way -- 1 over the disc, 0 over
+    // the sky past the taper.
+    const RegionLayout full = stack::PlaceRegions(ref, st, true, testing::WhiteNoise(0.01));
+    REQUIRE(full.flatEdges);
+    REQUIRE_FALSE(full.mask.Empty());
+    CHECK(full.mask.At(cx, cy) == 1.0);
+    CHECK(full.mask.At(cx + R + 2, cy) == 1.0);
+    CHECK(full.mask.At(2, 2) == 0.0);
+    CHECK(full.mask.At(w - 3, 2) == 0.0);
+    // A frame-filling surface with no sky (its darkest end is surface, kMinSkyShare): no mask, every region kept.
+    const Scene surf = testing::MakeSurface(31, w, h);
+    FloatImage sref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            sref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(surf.Eval(x, y, 1.0) + 0.0025 * n(rng));
+    const stack::FrameStats sst = stack::MeasureFrame(sref, 0, 1);
+    REQUIRE(sst.targetFound);
+    const RegionLayout surface = stack::PlaceRegions(sref, sst, true, testing::WhiteNoise(0.01));
+    REQUIRE_FALSE(surface.regions.empty());
+    CHECK(surface.mask.Empty());
 }

@@ -28,7 +28,7 @@
 // weight). --fits-out DIR writes DIR/ours.fits (the region stack) and DIR/global.fits (the global-only
 // stack of the same frames), 32-bit float as stack-probe's --out: for the bench's split-half triage
 // (P28 fix round 3, review I-E: is a half-to-half excess the region stage's or the frames'?). --mask-out FILE
-// writes the blend mask on the luma grid (1 everywhere for a frame-filling layout) to FILE and the reference
+// writes the blend mask on the luma grid (1 everywhere when the layout has none) to FILE and the reference
 // to FILE.ref.fits (E1: where the regions blend). The "mask" line prints its extent and how much of it is 1.
 #include <algorithm>
 #include <array>

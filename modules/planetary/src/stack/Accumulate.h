@@ -17,7 +17,7 @@ namespace planetary::stack {
 //
 // The blend. Region r keeps K_r frames; its stack is their mean S_r; the image is sum_r w_r S_r where
 // w_r = m(p) x the layout's sin^2 weights (those a partition of unity; m the layout's blend mask,
-// RegionLayout::mask: 1 over a disc and its limb, 0 over the sky, Regions.h), plus the fallback stack --
+// RegionLayout::mask: 1 over the target and its limb, 0 over the sky, Regions.h), plus the fallback stack --
 // every planned frame, equally -- with weight 1 - sum_r w_r where regions do not cover (the sky around a
 // disc, a region with no kept frame). That sum is linear in the frames, so it is accumulated directly:
 // frame f adds alpha_f(p) x its sample at p, alpha_f(p) = sum_{r keeps f} w_r(p) / K_r + (1 - sum_r

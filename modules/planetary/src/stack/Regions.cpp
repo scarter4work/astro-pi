@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -264,7 +264,6 @@ double MaskNoiseOn(const ser::FloatImage& im, int x0, int y0, int x1, int y1, bo
     return 2 * MaskNoise(b.data(), static_cast<size_t>(bw), bw, bh);
 }
 
-
 // Squared Euclidean distance transform along one line (Felzenszwalb and Huttenlocher, "Distance transforms
 // of sampled functions", 2012): d[q] = min_p ((q - p)^2 + f[p]), f 0 at seeds and kFar elsewhere.
 // Scratch v (n ints) and z (n + 1 doubles).
@@ -354,13 +353,16 @@ AxisWeight AxisWeightAt(const RegionLayout& layout, bool vertical, double u) {
 
 double BlendMask::At(double u, double v) const {
     if (!m) return 1;
-    const double x = u - x0, y = v - y0;
-    if (!(x > -1 && y > -1 && x < width && y < height)) return 0;
+    const double x = std::clamp(u - x0, -1.0, static_cast<double>(width)), y = std::clamp(v - y0, -1.0, static_cast<double>(height));
+    // Beyond the rectangle the nearest edge sample holds: a disc's rectangle is its grid's extent, outside which
+    // every region weight is 0 anyway; a frame-filling one is the image, and the stack's warp grid has points up
+    // to kWarpGrid px past its edge, which must not fade toward 0 (a frame-filling Moon's bottom rows went dark
+    // when they did: 2023-03-05, fix round 1).
     const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
     const double fx = x - ix, fy = y - iy;
     const std::vector<float>& a = *m;
     auto at = [&](int i, int j) {
-        return i < 0 || j < 0 || i >= width || j >= height ? 0.0 : static_cast<double>(a[static_cast<size_t>(j) * width + i]);
+        return static_cast<double>(a[static_cast<size_t>(std::clamp(j, 0, height - 1)) * width + std::clamp(i, 0, width - 1)]);
     };
     return (1 - fy) * ((1 - fx) * at(ix, iy) + fx * at(ix + 1, iy)) + fy * ((1 - fx) * at(ix, iy + 1) + fx * at(ix + 1, iy + 1));
 }
@@ -370,37 +372,13 @@ BlendMask RegionBlendMask(const ser::FloatImage& reference, const FrameStats& re
     if (reference.width != lay.width || reference.height != lay.height)
         throw std::invalid_argument("RegionBlendMask: the reference is not the layout's size");
     BlendMask out;
-    if (lay.flatEdges || lay.regions.empty() || lay.step <= 0 || !refStats.targetFound) return out;
+    if (lay.regions.empty() || lay.step <= 0 || !refStats.targetFound) return out;
     const int W = reference.width, H = reference.height;
     const float* r = reference.data.data();
-    // The sky: the reference outside the target's box.
-    std::vector<float> sky;
+    // The reference's 3 x 3 mean (within the image): what the seeds are judged on.
+    std::vector<float> mean3(static_cast<size_t>(W) * H);
     for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-            if (x < refStats.bx0 || x >= refStats.bx1 || y < refStats.by0 || y >= refStats.by1)
-                sky.push_back(r[static_cast<size_t>(y) * W + x]);
-    if (sky.size() < 64) return out;
-    std::nth_element(sky.begin(), sky.begin() + static_cast<std::ptrdiff_t>(sky.size() / 2), sky.end());
-    const double level = sky[sky.size() / 2];
-    const NoiseModel& model = lay.noise;
-    const double own = EstimatePixelNoise(reference).sigma;
-    const double sigma = std::max(model.Measured() ? std::sqrt(std::max(0.0, model.VarianceAtMean(level))) : own, own);
-    // Above the sky by kMaskSigmas of a frame's noise there and by kMaskContrast of the target's mean level over it.
-    const double thr = level + std::max(kMaskSigmas * sigma, kMaskContrast * (refStats.brightness - level));
-    const double grow = kMaskGrow, taper = kMaskTaper;
-    // The grid's extent (every node window), clipped; seeds are looked for out to grow + taper beyond it.
-    const int gx0 = std::max(0, lay.originX), gy0 = std::max(0, lay.originY);
-    const int gx1 = std::min(W, lay.originX + (lay.nx - 1) * lay.step + lay.size);
-    const int gy1 = std::min(H, lay.originY + (lay.ny - 1) * lay.step + lay.size);
-    if (gx1 <= gx0 || gy1 <= gy0) return out;
-    const int reach = static_cast<int>(std::ceil(grow + taper)) + 1;
-    const int ex0 = std::max(0, gx0 - reach), ey0 = std::max(0, gy0 - reach);
-    const int ex1 = std::min(W, gx1 + reach), ey1 = std::min(H, gy1 + reach);
-    const int ew = ex1 - ex0, eh = ey1 - ey0;
-    // Seeds: the reference's 3 x 3 mean (within the image) above the threshold.
-    std::vector<double> f(static_cast<size_t>(ew) * eh);
-    for (int y = ey0; y < ey1; ++y)
-        for (int x = ex0; x < ex1; ++x) {
+        for (int x = 0; x < W; ++x) {
             double s = 0;
             int n = 0;
             for (int j = std::max(0, y - 1); j <= std::min(H - 1, y + 1); ++j)
@@ -408,8 +386,55 @@ BlendMask RegionBlendMask(const ser::FloatImage& reference, const FrameStats& re
                     s += r[static_cast<size_t>(j) * W + i];
                     ++n;
                 }
-            f[static_cast<size_t>(y - ey0) * ew + (x - ex0)] = s / n > thr ? 0.0 : kFar;
+            mean3[static_cast<size_t>(y) * W + x] = static_cast<float>(s / n);
         }
+    // The sky's level. A disc: the median of the reference outside the target's box. A frame-filling target
+    // (no outside): the kSkyQuantile of the 3 x 3 means -- the sky's own darkest end where there is sky.
+    double level = 0;
+    if (!lay.flatEdges) {
+        std::vector<float> sky;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                if (x < refStats.bx0 || x >= refStats.bx1 || y < refStats.by0 || y >= refStats.by1)
+                    sky.push_back(r[static_cast<size_t>(y) * W + x]);
+        if (sky.size() < 64) return out;
+        std::nth_element(sky.begin(), sky.begin() + static_cast<std::ptrdiff_t>(sky.size() / 2), sky.end());
+        level = sky[sky.size() / 2];
+    } else {
+        std::vector<float> all(mean3);
+        const size_t k = static_cast<size_t>(kSkyQuantile * static_cast<double>(all.size() - 1));
+        std::nth_element(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(k), all.end());
+        level = all[k];
+    }
+    const NoiseModel& model = lay.noise;
+    const double own = EstimatePixelNoise(reference).sigma;
+    const double sigma = std::max(model.Measured() ? std::sqrt(std::max(0.0, model.VarianceAtMean(level))) : own, own);
+    // Above the sky by kMaskSigmas of a frame's noise there and by kMaskContrast of the target's mean level over it.
+    const double thr = level + std::max(kMaskSigmas * sigma, kMaskContrast * (refStats.brightness - level));
+    // A frame-filling target has sky only where at least kMinSkyShare of the frame lies under the threshold;
+    // otherwise its darkest end is surface, and the mask would be 1 everywhere: none.
+    if (lay.flatEdges) {
+        size_t under = 0;
+        for (float v : mean3) under += !(v > thr);
+        if (static_cast<double>(under) < kMinSkyShare * static_cast<double>(mean3.size())) return out;
+    }
+    const double grow = kMaskGrow, taper = kMaskTaper;
+    // The grid's extent (every node window; the whole image for flat edges, whose outer nodes reach the edge),
+    // clipped; seeds are looked for out to grow + taper beyond it.
+    const int gx0 = lay.flatEdges ? 0 : std::max(0, lay.originX), gy0 = lay.flatEdges ? 0 : std::max(0, lay.originY);
+    const int gx1 = lay.flatEdges ? W : std::min(W, lay.originX + (lay.nx - 1) * lay.step + lay.size);
+    const int gy1 = lay.flatEdges ? H : std::min(H, lay.originY + (lay.ny - 1) * lay.step + lay.size);
+    if (gx1 <= gx0 || gy1 <= gy0) return out;
+    const int reach = static_cast<int>(std::ceil(grow + taper)) + 1;
+    const int ex0 = std::max(0, gx0 - reach), ey0 = std::max(0, gy0 - reach);
+    const int ex1 = std::min(W, gx1 + reach), ey1 = std::min(H, gy1 + reach);
+    const int ew = ex1 - ex0, eh = ey1 - ey0;
+    // Seeds: the 3 x 3 mean above the threshold.
+    std::vector<double> f(static_cast<size_t>(ew) * eh);
+    for (int y = ey0; y < ey1; ++y)
+        for (int x = ex0; x < ex1; ++x)
+            f[static_cast<size_t>(y - ey0) * ew + (x - ex0)] = mean3[static_cast<size_t>(y) * W + x] > thr ? 0.0 : kFar;
+    mean3 = {};
     // Squared distance to the nearest seed: columns, then rows.
     const int longest = std::max(ew, eh);
     std::vector<double> line(static_cast<size_t>(longest)), d(static_cast<size_t>(longest)), z(static_cast<size_t>(longest) + 1);
@@ -520,7 +545,7 @@ RegionLayout PlaceRegions(const ser::FloatImage& reference, const FrameStats& re
             lay.node[static_cast<size_t>(j) * lay.nx + i] = static_cast<int>(lay.regions.size());
             lay.regions.push_back({x0, y0, x1, y1, shiftNoise, i, j});
         }
-    if (!fullFrame) lay.mask = RegionBlendMask(reference, refStats, lay);
+    lay.mask = RegionBlendMask(reference, refStats, lay);
     return lay;
 }
 

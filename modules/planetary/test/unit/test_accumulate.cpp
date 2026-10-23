@@ -138,6 +138,26 @@ FloatImage PlainMean(const Capture& cap, const Pipeline& p, const std::vector<in
     return out;
 }
 
+// The fallback alone: the same stacked frames with their gains, on the global shift, no region (the stack
+// where the regions' blend mask is 0).
+FloatImage FallbackAlone(const Capture& cap, const Pipeline& p) {
+    stack::RegionLayout none = p.plan.layout;
+    none.regions.clear();
+    std::fill(none.node.begin(), none.node.end(), -1);
+    std::vector<FrameRegions> bare;
+    for (const FrameRegions& m : p.measured)
+        if (p.plan.Uses(m.frameIndex)) {
+            FrameRegions b = m;
+            b.regions.clear();
+            bare.push_back(b);
+        }
+    const stack::RegionPlan plan = stack::PlanRegions(none, bare);
+    stack::Accumulator fb(plan, p.reference, p.sigma, p.info);
+    auto src = cap.Factory()();
+    for (const FrameRegions& b : bare) fb.Add(b.frameIndex, stack::DemosaicHQ(src->ReadFrame(b.frameIndex), p.info.colorId, p.info.normDepth));
+    return fb.Finish();
+}
+
 }  // namespace
 
 TEST_CASE("Lucky regions beat the plain global-aligned mean on a frame-filling surface", "[accumulate]") {
@@ -264,7 +284,9 @@ TEST_CASE("Tears up to 6 px are absorbed locally: no doubled features", "[accumu
     CHECK(rt < 1.1 * rc);
 }
 
-TEST_CASE("A flat field stacks without seams, whatever frames each region keeps", "[accumulate]") {
+// taper: the layout also gets a blend mask (RegionLayout::mask) falling from 1 to 0 across the frame through
+// several region windows (E1 fix round 1, review M2): the weights' partition of unity where it tapers.
+static void FlatFieldStacksWithoutSeams(bool taper) {
     // A surface reference places regions; the frames are a flat field with noise and a gain that
     // varies from frame to frame (haze); each region keeps a different random subset.
     const int w = 192, h = 160;
@@ -272,7 +294,20 @@ TEST_CASE("A flat field stacks without seams, whatever frames each region keeps"
     FloatImage ref{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) ref.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0.6));
-    const stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
+    stack::RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
+    REQUIRE(lay.mask.Empty());  // a surface without sky
+    if (taper) {
+        auto m = std::make_shared<std::vector<float>>(static_cast<size_t>(w) * h);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const double t = std::clamp((x - 48) / 96.0, 0.0, 1.0);
+                (*m)[static_cast<size_t>(y) * w + x] = static_cast<float>(0.5 * (1 + std::cos(M_PI * t)));
+            }
+        lay.mask.width = w;
+        lay.mask.height = h;
+        lay.mask.m = m;
+        REQUIRE(lay.size <= 48);  // the taper crosses several windows
+    }
     REQUIRE(lay.regions.size() > 10);
     // The flat field the frames show; the reference for rejection is the same flat level.
     FloatImage flatRef{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 0.5f)};
@@ -349,6 +384,14 @@ TEST_CASE("A flat field stacks without seams, whatever frames each region keeps"
                                                                         out.data[static_cast<size_t>(y) * w + x])));
     CHECK(maxGrad < 6 * std::sqrt(2.0) * pixNoise);
     CHECK(acc.RejectedCells() < 0.001 * frames * w * h);
+}
+
+TEST_CASE("A flat field stacks without seams, whatever frames each region keeps", "[accumulate]") {
+    FlatFieldStacksWithoutSeams(false);
+}
+
+TEST_CASE("A flat field stacks without seams where the blend mask tapers (E1 fix round 1)", "[accumulate]") {
+    FlatFieldStacksWithoutSeams(true);
 }
 
 TEST_CASE("A single-frame streak is rejected", "[accumulate]") {
@@ -1240,24 +1283,7 @@ TEST_CASE("The sky beside a frame-filling target keeps the fallback's noise (E1 
     const Pipeline p = Run(cap, true);
     REQUIRE(p.sel.fullFrameTarget);
     REQUIRE(p.plan.layout.flatEdges);
-    stack::RegionLayout none = p.plan.layout;
-    none.regions.clear();
-    std::fill(none.node.begin(), none.node.end(), -1);
-    std::vector<FrameRegions> bare;
-    for (const FrameRegions& m : p.measured)
-        if (p.plan.Uses(m.frameIndex)) {
-            FrameRegions b = m;
-            b.regions.clear();
-            bare.push_back(b);
-        }
-    const stack::RegionPlan fallbackPlan = stack::PlanRegions(none, bare);
-    stack::Accumulator fb(fallbackPlan, p.reference, p.sigma, p.info);
-    {
-        auto src = cap.Factory()();
-        for (const FrameRegions& b : bare)
-            fb.Add(b.frameIndex, stack::DemosaicHQ(src->ReadFrame(b.frameIndex), p.info.colorId, p.info.normDepth));
-    }
-    const FloatImage base = fb.Finish();
+    const FloatImage base = FallbackAlone(cap, p);
     const auto& lay = p.plan.layout;
     // High-pass (pixel minus its 3 x 3 mean) RMS, so the glow-free sky's level does not count.
     auto hp = [&](const FloatImage& im, int x, int y) {
@@ -1289,4 +1315,59 @@ TEST_CASE("The sky beside a frame-filling target keeps the fallback's noise (E1 
     INFO("sky high-pass RMS under lucky regions over the fallback alone's: " << ratio << " (" << n << " px); stacked "
                                                                             << p.plan.stackedCount);
     CHECK(ratio < 1.25);
+}
+
+TEST_CASE("Where the blend mask is 0 the stack is the fallback alone -- warp included (E1 fix round 1)", "[accumulate]") {
+    // Review M1: the mask scales the region weights in the warp as well as in the blend; over sky a region's
+    // local shift is noise. LocalWarpAt itself: mask 0 gives no local shift, mask 1 the unmasked one.
+    {
+        stack::RegionLayout lay;
+        lay.width = lay.height = 64;
+        lay.size = 32;
+        lay.step = 16;
+        lay.nx = lay.ny = 1;
+        lay.flatEdges = true;
+        lay.regions.push_back({0, 0, 32, 32, 0.01, 0, 0});
+        lay.node = {0};
+        const float dx[1] = {1.5f}, dy[1] = {-0.75f};
+        const uint8_t usable[1] = {1};
+        const stack::AxisWeight a = stack::AxisWeightAt(lay, false, 10), b = stack::AxisWeightAt(lay, true, 10);
+        double ox = 9, oy = 9;
+        stack::LocalWarpAt(lay, a, b, 0.0, dx, dy, usable, ox, oy);
+        CHECK(ox == 0.0);
+        CHECK(oy == 0.0);
+        stack::LocalWarpAt(lay, a, b, 1.0, dx, dy, usable, ox, oy);
+        CHECK(ox == Catch::Approx(1.5));
+        CHECK(oy == Catch::Approx(-0.75));
+    }
+    // The stack: the red test's disc. Where the mask is 0 every frame enters as in the fallback alone -- the
+    // same weight and the global shift -- so the two images agree there to float rounding; with the warp
+    // unmasked the sky's resampling at the regions' noisy shifts differed by about the stack's noise.
+    const int w = 160, h = 128;
+    const double cx = 62.4, cy = 70.3, R = 16;
+    const Scene s = testing::MakeDisc(11, cx, cy, R);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(91);
+    RenderCapture(cap, s, 300, [&](int) { return Seeing(rng, w, h, 2.0, 28); });
+    const Pipeline p = Run(cap);
+    REQUIRE_FALSE(p.plan.layout.mask.Empty());
+    const FloatImage base = FallbackAlone(cap, p);
+    double worst = 0;
+    int64_t n = 0, covered = 0;
+    const auto& lay = p.plan.layout;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            // Only where the mask is 0 at every warp-grid point around the pixel (the stack samples it there).
+            bool zero = true;
+            for (int j = -4; j <= 4 && zero; j += 4)
+                for (int i = -4; i <= 4 && zero; i += 4) zero = lay.mask.At(x + i, y + j) == 0.0;
+            if (!zero) continue;
+            const stack::AxisWeight ax = stack::AxisWeightAt(lay, false, x), ay = stack::AxisWeightAt(lay, true, y);
+            covered += (ax.w0 + ax.w1) * (ay.w0 + ay.w1) > 0;  // under some region window
+            ++n;
+            worst = std::max(worst, static_cast<double>(std::fabs(p.ours.data[static_cast<size_t>(y) * w + x] - base.data[static_cast<size_t>(y) * w + x])));
+        }
+    INFO(n << " px where the mask is 0, " << covered << " of them under a region window; worst |stack - fallback alone| " << worst);
+    REQUIRE(covered >= 500);
+    CHECK(worst < 1e-5);
 }
