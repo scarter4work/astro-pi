@@ -363,8 +363,10 @@ FocusCheck JudgeSurfaceFocus(const std::vector<FocusProfile>& profiles, double l
 std::string FocusWarning(const FocusCheck& check);
 
 // The alignment line's region part: how many regions, how many frames each stacks of its own (of the
-// alignedFrames kept), and the regions without measurable detail in any frame, which take the plain
-// mean of the stackedFrames (the Accumulator's fallback where no region keeps a frame). Sky-only regions
+// alignedFrames kept), and the regions that keep no frame, which take the plain mean of the stackedFrames
+// (the Accumulator's fallback where no region keeps a frame), with the reason: no detail above the
+// measurement noise, or too few frames aligned there to rank (RegionDetail::tooFewFrames: every region of a
+// 1-4 frame capture -- final review, engine M2). Sky-only regions
 // (RegionDetail::skyOnly) are not counted as placed on the target's detail: a last clause names them.
 std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames);
 

@@ -961,12 +961,16 @@ TEST_CASE("MeasureFocus: noise-free frames are judged (no noise is infinite sign
 }
 
 TEST_CASE("The alignment line's region phrase never claims a region stacks 0 frames of its own", "[engine]") {
-    auto detail = [](std::vector<int64_t> kept) {
+    // A region keeping no frame had `candidates` frames aligned there with detail: the noise gate's (P27) when
+    // there were enough to rank, too few otherwise (PlanRegions sets tooFewFrames the same way).
+    auto detail = [](std::vector<int64_t> kept, int64_t candidates = 300) {
         std::vector<stack::RegionDetail> d;
         for (int64_t k : kept) {
             stack::RegionDetail r;
             r.kept = k;
-            r.candidates = k;
+            r.candidates = k > 0 ? k : candidates;
+            r.noiseOnly = k == 0;
+            r.tooFewFrames = k == 0 && r.candidates < stack::kMinStackFrames;
             d.push_back(r);
         }
         return d;
@@ -985,6 +989,36 @@ TEST_CASE("The alignment line's region phrase never claims a region stacks 0 fra
           "326 regions placed on the target's detail: 319 stacking their own sharpest 5-2102 of 2102 frames (median "
           "2043), 7 with no detail above the measurement noise taking the mean of the 2102 stacked frames");
     CHECK(stack::RegionPhrase({}, 40, 40) == "no region holds detail to rank on, so the 40 aligned frames are stacked whole");
+    CHECK(stack::RegionPhrase({}, 1, 1) == "no region holds detail to rank on, so the 1 aligned frame is stacked whole");
+    // Final review, engine M2: a region with fewer than kMinStackFrames candidates is not blamed on noise.
+    CHECK(stack::RegionPhrase(detail({0, 0, 0}, 3), 3, 3) ==
+          "3 regions placed on the target's detail: 3 with too few frames aligned there to rank (under 5) taking the mean "
+          "of the 3 stacked frames");
+    CHECK(stack::RegionPhrase(detail({0}, 1), 1, 1) ==
+          "1 region placed on the target's detail: 1 with too few frames aligned there to rank (under 5) taking the mean "
+          "of the 1 stacked frame");
+    std::vector<stack::RegionDetail> both = detail({120, 0}, 300);
+    const std::vector<stack::RegionDetail> few = detail({0}, 2);
+    both.insert(both.end(), few.begin(), few.end());
+    CHECK(stack::RegionPhrase(both, 300, 300) ==
+          "3 regions placed on the target's detail: 1 stacking their own sharpest 120 of 300 frames, 1 with no detail above "
+          "the measurement noise and 1 with too few frames aligned there to rank (under 5) taking the mean of the 300 "
+          "stacked frames");
+}
+
+TEST_CASE("RunStack: a 3-frame capture's regions are too few frames to rank, not noise (final review, engine M2)", "[engine]") {
+    const Capture cap = DiscCapture(160, 128, 80.3, 63.7, 30, 3, 91, 1.0);
+    const StackOutcome o = stack::RunStack(cap.Factory(), 4, {});
+    INFO(o.diagnosis.message << " | " << o.summary.alignment);
+    REQUIRE(o.image.has_value());
+    REQUIRE(o.frames.regions > 0);
+    for (const stack::RegionDetail& d : o.frames.regionDetail) {
+        CHECK(d.kept == 0);
+        CHECK((d.skyOnly || d.tooFewFrames));
+    }
+    CHECK(o.summary.alignment.find("with too few frames aligned there to rank (under 5) taking the mean of the 3 stacked frames") !=
+          std::string::npos);
+    CHECK(o.summary.alignment.find("measurement noise") == std::string::npos);
 }
 
 namespace {

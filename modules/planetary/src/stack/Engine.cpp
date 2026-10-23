@@ -633,13 +633,17 @@ std::string FocusWarning(const FocusCheck& c) {
 }
 
 std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames) {
-    if (detail.empty()) return "no region holds detail to rank on, so the " + Count(alignedFrames) + " aligned frames are stacked whole";
+    if (detail.empty())
+        return "no region holds detail to rank on, so the " +
+               Plural(alignedFrames, "aligned frame is", "aligned frames are") + " stacked whole";
     std::vector<int64_t> k;
-    int64_t none = 0, sky = 0;
+    int64_t noise = 0, few = 0, sky = 0;
     for (const RegionDetail& d : detail)
         if (d.skyOnly) ++sky;  // its stack never reaches the image (RegionDetail::skyOnly)
         else if (d.kept > 0) k.push_back(d.kept);
-        else ++none;
+        else if (d.tooFewFrames) ++few;  // too few frames there to rank: not a statement about its detail
+        else ++noise;
+    const int64_t none = noise + few;
     const int64_t regions = static_cast<int64_t>(detail.size()) - sky;
     const std::string skyPart = sky > 0 ? Count(sky) + " over the sky only, outside the target's blend mask, where the stack is the mean of the " +
                                               Count(stackedFrames) + " stacked frames"
@@ -649,16 +653,22 @@ std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t aligne
     if (!k.empty()) {
         std::sort(k.begin(), k.end());
         const std::string range = Count(k.front()) + (k.front() == k.back() ? "" : "-" + Count(k.back())) + " of " +
-                                  Count(alignedFrames) + " frames";
+                                  Plural(alignedFrames, "frame", "frames");
         const std::string median = k.size() > 1 ? " (median " + Count(k[(k.size() - 1) / 2]) + ")" : "";
         if (none == 0)
             out += (regions == 1 ? ", stacking its own sharpest " : ", each stacking its own sharpest ") + range + median;
         else
             out += ": " + Count(static_cast<int64_t>(k.size())) + " stacking their own sharpest " + range + median + ",";
     }
-    if (none > 0)
-        out += (k.empty() ? ": " : " ") + Count(none) + " with no detail above the measurement noise taking the mean of the " +
-               Count(stackedFrames) + " stacked frames";
+    if (none > 0) {
+        std::string why;
+        if (noise > 0) why = Count(noise) + " with no detail above the measurement noise";
+        if (few > 0)
+            why += (why.empty() ? "" : " and ") + Count(few) + " with too few frames aligned there to rank (under " +
+                   Count(kMinStackFrames) + ")";
+        out += (k.empty() ? ": " : " ") + why + " taking the mean of the " +
+               Plural(stackedFrames, "stacked frame", "stacked frames");
+    }
     if (sky > 0) out += "; " + skyPart;
     return out;
 }

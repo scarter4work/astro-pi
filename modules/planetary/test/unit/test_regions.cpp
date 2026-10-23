@@ -444,6 +444,7 @@ TEST_CASE("A featureless region stacks every frame; textured ones keep their luc
             ++flat;
             CHECK(d.candidates > 0);  // the case that matters: noise-floor "detail" in some frames
             CHECK(d.noiseOnly);
+            CHECK_FALSE(d.tooFewFrames);  // enough frames to rank: it is the noise (RegionPhrase says so)
             CHECK(d.kept == 0);       // the fallback: the plain mean of the stacked frames
         } else if (clear) {
             ++textured;
@@ -552,9 +553,11 @@ TEST_CASE("A region with too few candidates takes the plain mean (P27 review rou
     const stack::RegionPlan plan = stack::PlanRegions(lay, measured);
     CHECK(plan.detail[0].candidates == 2);
     CHECK(plan.detail[0].noiseOnly);
+    CHECK(plan.detail[0].tooFewFrames);  // the reason: too few frames to rank, not the noise (final review, engine M2)
     CHECK(plan.detail[0].kept == 0);
     for (size_t r = 1; r < plan.RegionCount(); ++r) {
         CHECK_FALSE(plan.detail[r].noiseOnly);
+        CHECK_FALSE(plan.detail[r].tooFewFrames);
         CHECK(plan.detail[r].kept > 0);
     }
 }

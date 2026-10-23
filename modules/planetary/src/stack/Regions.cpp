@@ -936,6 +936,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
             }
         }
     });
+    for (RegionDetail& d : plan.detail) d.tooFewFrames = d.kept == 0 && d.candidates < kMinStackFrames;
     for (size_t r = 0; r < nr; ++r)
         if (plan.detail[r].kept > 0 &&
             (plan.bestRegion < 0 || plan.detail[r].bestQuality > plan.detail[static_cast<size_t>(plan.bestRegion)].bestQuality))

@@ -372,8 +372,13 @@ struct RegionDetail {
     // blur sigma, so it grows with defocus or seeing whatever the target's brightness.
     double detailScale = 0;
     // Ruling P27 (PlanRegions): no detail to rank above the measurement noise (kept 0: the fallback's
-    // plain mean).
+    // plain mean) -- the gate fired, for either of its reasons (tooFewFrames tells which).
     bool noiseOnly = false;
+    // Kept no frame because fewer than kMinStackFrames frames aligned there with detail (candidates; 0
+    // included) -- too few to rank, whatever their detail, e.g. every region of a 1-4 frame capture. Its
+    // stack is the fallback's plain mean, as a noise-only region's; RegionPhrase words the two apart
+    // (final review, engine M2).
+    bool tooFewFrames = false;
     // Its whole window lies where the layout's blend mask is 0 (sky only): it ranks and keeps frames as any region
     // (they join the fallback's, RegionPlan::stacked), but its own stack never reaches the image, and the summary
     // does not count it as placed on the target's detail (RegionPhrase).
