@@ -24,6 +24,10 @@
 #     NFRAMES the engine's, its centre sample the engine's (within 1e-5): the stack Stack! made,
 #     opened without stacking again (it exists 1.5 s after the click; a stack takes at least 7 s).
 #     The window is then closed.
+#  3b. --stack-unreadable: gui-long.avi made unreadable, Execute -> the error box -> 07b-unreadable.png
+#     Return: the stack kept (its preview still shown)             -> 07c-kept.png
+#     no image window; the file readable again, --stack-execute-again: Execute -> 07d-execute-kept.png
+#     one window gui_long_stack 1.5 s after the click (the kept stack, not stacked again), closed.
 #  4. --stack-cancel: Stack! again -> mid-run                      -> 08-cancel-progress.png
 #     Cancel -> idle                                               -> 09-cancelled.png
 #     no image window, no video file held open, PixInsight's thread count back to its value
@@ -221,6 +225,25 @@ print("Execute: %s %dx%d RGB, NCOMBINE %s, centre sample %s == the engine's" % (
 PY
 expect_no_open_video "after Execute" || exit 1
 
+# Final review, module m4: a finished stack is not dropped by a failure that is not about it. The video
+# unreadable (a share's hiccup), Execute: the error box, the stack kept, nothing opened; readable
+# again, Execute opens that same stack at once (it exists 1.5 s after the click: not stacked again).
+LONG_MODE="$(stat -c %a "$LONG")"
+chmod 000 "$LONG"
+rc=0
+drive --stack-unreadable "$OUT" || rc=$?
+chmod "$LONG_MODE" "$LONG"
+[ "$rc" -eq 0 ] || exit 1
+expect_no_window "after Execute on an unreadable video" windows-unreadable.json || exit 1
+drive --stack-execute-again "$OUT" || exit 1
+ipc '{"mode":"windows","out":"windows-execute-again.json","close":true}' windows-execute-again.json || exit 1
+jq -e --slurpfile e "$LONG_JSON" '
+   .windows | length == 1 and .[0].id == "gui_long_stack" and .[0].keywords.NCOMBINE == ($e[0].used | tostring)' \
+   "$OUT/windows-execute-again.json" >/dev/null \
+   || { echo "FAIL: Execute after the video read again: expected the kept stack gui_long_stack at once, got $(cat "$OUT/windows-execute-again.json")"; exit 1; }
+echo "Execute on an unreadable video: error shown, stack kept; readable again: the kept stack opened at once"
+expect_no_open_video "after Execute on the kept stack" || exit 1
+
 drive --stack-cancel "$OUT" || exit 1
 expect_no_window "after Cancel" windows-cancel.json || exit 1
 expect_no_open_video "after Cancel" || exit 1
@@ -257,6 +280,7 @@ grep -n -E "Segmentation fault|SIGSEGV|SIGABRT|terminate called|core dumped" "$O
    && { echo "FAIL: PixInsight's log reports a crash"; ok=0; }
 
 for png in 01-opened 02-loaded 03-progress 04-fit 05-zoom-100 06-zoom-200 06b-zoom-in 06c-pan 06d-fit-again 07-execute \
+           07b-unreadable 07c-kept 07d-execute-kept \
            08-cancel-progress 09-cancelled 09b-shade-progress 09c-shaded 09c2-expanded 09d-unshaded 10-diagnosis 11-warning-mosaic 12-warning-focus 13-bayer-auto \
            13b-bayer-changed 14-bayer-bggr 15-pattern-rggb 15b-confirm 16-pattern-saved 17-close-progress 18-closed \
            19-quit-progress; do

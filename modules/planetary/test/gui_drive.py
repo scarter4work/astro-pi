@@ -28,6 +28,8 @@ python-xlib), and checks the screenshots. Test-only.
   gui_drive.py --stack-open OUT FILE  01-opened.png (+ preview.json); Open... FILE -> 02-loaded.png
   gui_drive.py --stack-run OUT        Stack! mid-run, the preview at Fit / 100% / 200% / zoomed in /
                                       dragged / Fit again, Execute (03 ... 07)
+  gui_drive.py --stack-unreadable OUT    Execute on an unreadable video: the error box, the stack kept (07b, 07c)
+  gui_drive.py --stack-execute-again OUT Execute again, the video readable (07d)
   gui_drive.py --stack-cancel OUT     Stack! mid-run, Cancel (08, 09)
   gui_drive.py --stack-file OUT FILE NAME   Open... FILE, Stack!, NAME once it ends
   gui_drive.py --stack-bayer OUT AVI  Auto, then BGGR chosen and stacked (13, 13b, 14)
@@ -648,6 +650,27 @@ if MODE == "--stack-run":
     shot("07-execute.png", 1.5)
     sys.exit(0)
 
+if MODE == "--stack-unreadable":
+    # Final review, module m4: Execute while the video cannot be read (gui-smoke-stack.sh made it
+    # unreadable) -> ReadInfo's error box, Return; the stack shown stays (07c), nothing opens.
+    click(*CTL["execute"])
+    park()
+    wait_for(lambda: dialog_open(STACK_CONFIRM), 15, "the '%s' error box" % STACK_CONFIRM)
+    time.sleep(0.8)
+    shot("07b-unreadable.png", 0)
+    key("Return")
+    wait_for(lambda: not dialog_open(STACK_CONFIRM), 15, "the error box to close after Return")
+    park()
+    shot("07c-kept.png", 1.0)
+    sys.exit(0)
+
+if MODE == "--stack-execute-again":
+    # The video readable again: Execute opens the stack kept, without stacking again.
+    click(*CTL["execute"])
+    park()
+    shot("07d-execute-kept.png", 1.5)
+    sys.exit(0)
+
 if MODE == "--stack-cancel":
     stack_mid_run("08-cancel-progress.png")
     click(*CTL["cancel"])
@@ -928,6 +951,9 @@ if MODE == "--check-stack":
     need(0 < lit("13b-bayer-changed.png") < 0.03 and spread("13b-bayer-changed.png") <= 2,
          "13b-bayer-changed.png: the stack is dropped, a grey note says why (%.2f%% lit, channel spread %.0f)"
          % (100 * lit("13b-bayer-changed.png"), spread("13b-bayer-changed.png")))
+    # Final review, module m4: Execute on a video that could not be read (07b) kept the stack shown (07c).
+    need(lit("07c-kept.png") > 0.05, "07c-kept.png: the stack stays after Execute on an unreadable video "
+         "(%.1f%% lit)" % (100 * lit("07c-kept.png")))
     # Collapsing the window mid-run (09c) is not closing it: the run went on to its stack (09d).
     need(lit("09d-unshaded.png") > 0.05, "09d-unshaded.png: the run went on while collapsed; its stack is shown "
          "(%.1f%% lit)" % (100 * lit("09d-unshaded.png")))
@@ -1013,5 +1039,5 @@ if MODE == "--check-stack":
     sys.exit(1 if fails else 0)
 
 raise SystemExit("usage: gui_drive.py --dismiss|--open|--open-avi|--save-pattern|--shot|--close|--quit|--check OUT ...\n"
-                 "       gui_drive.py --stack-open|--stack-run|--stack-cancel|--stack-file|--stack-bayer|--stack-pattern|"
+                 "       gui_drive.py --stack-open|--stack-run|--stack-unreadable|--stack-execute-again|--stack-cancel|--stack-file|--stack-bayer|--stack-pattern|"
                  "--stack-close|--stack-quit|--check-stack OUT ...")
