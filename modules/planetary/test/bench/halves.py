@@ -33,7 +33,7 @@ estimator's read-high (+7 % on a disc) sits in R_cal as it sits in R. D holds th
 only (the synthetics are static: the halves never choose different frames, so the real-data term
 "unshared signal" is absent by construction -- on real data it can only raise R). Per kind it gives
 R_cal(f), the engine's honest ratio per END bin (the mean over every run), and the tolerance over
-0.21-0.30: mean -+ k s (s over every run, ddof 1), k the
+0.21-0.30 (tolerance): exp(mean -+ k s) of log R (s ddof 1; on log R since fix round 4, N3-m1), k the
 two-sided normal tolerance factor at 99 % coverage and 95 % confidence for n_eff = the number of SCENES
 (the scene, not the jitter or the pedestal, dominates the spread: review N2-m2).
 `calibrate --write` freezes it in bench/calibration.json.
@@ -361,6 +361,16 @@ def condition_tag(kind, jitter, seed, pedestal=0.0):
     return f"{kind}-j{jitter}-s{seed}" + (f"-p{pedestal:g}" if pedestal else "")
 
 
+def tolerance(highs, n_eff):
+    """(lo, hi, log mean, log sd, factor): the tolerance interval of the 0.21-0.30 ratio, taken on log R
+    (re-review 3 N3-m1): R is a ratio of powers, positive, and a scene's leak scales it (x1.5 noise
+    uncharged reads x1.5), so its spread is multiplicative. On the linear scale mean - k sd ran below 0
+    for lunar (0.866 - 5.81 x 0.152 in fix round 3), and a band whose lower end is 0 can never block a
+    capture from below (review I-G). exp(mean log R -+ k sd log R) is a real bound at both ends."""
+    lg = np.log(np.asarray(highs, dtype=float))
+    m, sd, kf = float(lg.mean()), float(lg.std(ddof=1)), tolerance_factor(n_eff)
+    return math.exp(m - kf * sd), math.exp(m + kf * sd), m, sd, kf
+
 
 def calibrate(work, stack_probe, region_probe, conditions=None):
     """The engine's measured / model over 0.21-0.30 on synthetic captures (see THE CALIBRATION)."""
@@ -431,17 +441,16 @@ def _main(argv=None):
         hs = np.array([r["high"] for r in rs])
         n, m, sd = len(hs), float(hs.mean()), float(hs.std(ddof=1))
         n_eff = len({r["scene"] for r in rs})      # the scene dominates the spread (review N2-m2)
-        kf = tolerance_factor(n_eff)
-        lo, hi = max(m - kf * sd, 0.0), m + kf * sd
+        lo, hi, lm, lsd, kf = tolerance(hs, n_eff)
         by_ped = {f"{p:g}": float(np.mean([r["high"] for r in rs if r["pedestal"] == p])) for p in CAL_PEDESTALS}
-        kinds[kind] = {"n": n, "n_eff": n_eff, "high_mean": m, "high_sd": sd,
+        kinds[kind] = {"n": n, "n_eff": n_eff, "high_mean": m, "high_sd": sd, "high_log_mean": lm, "high_log_sd": lsd,
                        "high_min": float(hs.min()), "high_max": float(hs.max()), "high_mean_by_pedestal": by_ped,
                        "tolerance_factor": kf, "tolerance": [lo, hi],
                        "r_cal": [float(v) for v in np.mean([r["ratio"] for r in rs], axis=0)],
                        "runs": rs}
         print(f"{kind}: n {n} (scenes {n_eff}), 0.21-0.30 mean {m:.3f} sd {sd:.3f} (ddof 1), runs {hs.min():.3f}-"
               f"{hs.max():.3f}, mean by pedestal " + ", ".join(f"{p} DN {v:.3f}" for p, v in by_ped.items())
-              + f"; k {kf:.2f}: tolerance {lo:.3f}-{hi:.3f}; r_cal per bin "
+              + f"; log mean {lm:.3f} sd {lsd:.3f}, k {kf:.2f}: tolerance {lo:.3f}-{hi:.3f}; r_cal per bin "
               + " ".join(f"{v:.2f}" for v in kinds[kind]["r_cal"]))
     if a.write:
         import datetime

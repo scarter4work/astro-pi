@@ -617,6 +617,22 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
         assert not naive["high"] == pytest.approx(cal["high_mean"], rel=0.30)
 
 
+def test_the_tolerance_has_a_real_lower_bound():
+    """Re-review 3 N3-m1: on fix round 3's 12 lunar runs (calibration.json at ee79ddfd), mean - 5.81 sd
+    on the linear scale is below 0, so the band could never block a capture from below. On log R the
+    interval is multiplicative and both ends are real: here 0.272-2.665. exp(log mean) is the interval's
+    geometric centre."""
+    import halves
+    r3 = [0.868, 0.584, 1.002, 0.874, 1.056, 0.936, 0.808, 0.575, 0.934, 0.821, 0.978, 0.953]
+    lo, hi, m, sd, kf = halves.tolerance(r3, 6)
+    print(f"\nround-3 lunar runs: log-scale tolerance {lo:.3f}-{hi:.3f}; linear mean - k sd "
+          f"{np.mean(r3) - kf * np.std(r3, ddof=1):.3f}")
+    assert np.mean(r3) - kf * np.std(r3, ddof=1) < 0 < 0.25 < lo < min(r3)
+    assert lo * hi == pytest.approx(math.exp(2 * m))
+    assert halves.tolerance([0.5, 2.0, 1.0], 3)[:2] == pytest.approx(
+        (1 / halves.tolerance([0.5, 2.0, 1.0], 3)[1], halves.tolerance([0.5, 2.0, 1.0], 3)[1]))
+
+
 def test_the_calibration_runs_every_scene_and_jitter_with_and_without_a_pedestal():
     """Re-review 3 N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative intercept (a black
     pedestal), so the calibration measures that regime too, on the same scenes and jitters."""
