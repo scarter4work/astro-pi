@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlanetaryStack</title>
+<style>
+body { font-family: sans-serif; max-width: 60em; margin: 1.5em auto; padding: 0 1em; line-height: 1.45; color: #222; background: #fff; }
+h1 { font-size: 1.7em; margin-bottom: 0.2em; }
+h2 { font-size: 1.3em; margin-top: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.15em; }
+h3 { font-size: 1.1em; margin-top: 1.2em; }
+code { font-family: monospace; background: #f3f3f3; padding: 0 0.2em; }
+table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.5em; text-align: left; vertical-align: top; }
+th { background: #f3f3f3; }
+.small { font-size: 0.9em; color: #555; }
+</style>
+</head>
+<body>
+
+<h1>PlanetaryStack</h1>
+<p class="small">Module Planetary. Process &gt; Planetary &gt; PlanetaryStack.
+This document is installed with the module (doc/tools/PlanetaryStack/).</p>
+
+<p>PlanetaryStack turns a planetary or lunar video into one image (lucky imaging). It reads the same videos as
+SERViewer: SER files, and uncompressed 8-bit greyscale or raw Bayer AVI files such as ASIAIR captures. It measures
+every frame, chooses the sharpest frames from the capture's own statistics, aligns them to the target and then region
+by region, and stacks them with outlier rejection. There is nothing to set: no percentage of frames to keep and no
+alignment points to place. When a capture has nothing usable, it makes no image and says why, with the numbers
+behind the verdict.</p>
+
+<h2>The interface</h2>
+<ul>
+  <li><b>Open...</b> chooses a <code>.ser</code> or <code>.avi</code> file with the same dialog and filters as SERViewer
+  (&ldquo;Open planetary video&rdquo;). The info block shows the file name, frame count, size, bit depth and colour
+  layout (for an AVI, the Bayer pattern and where it came from), plus any warnings from the reader. Opening a new file
+  sets the Bayer pattern back to Auto. The file is read for this and closed again at once.</li>
+  <li><b>Bayer pattern</b> (AVI only): Auto, None (mono), RGGB, GRBG, GBRG or BGGR, exactly as in SERViewer (see its
+  documentation, &ldquo;Bayer pattern and the ASIAIR sidecar&rdquo;). This is the <code>bayerPattern</code> parameter.</li>
+  <li><b>Save pattern...</b> (shown only for an AVI with no sidecar) remembers the pattern chosen above in a sidecar
+  next to the video, as SERViewer's button does. It is enabled once you have chosen RGGB, GRBG, GBRG or BGGR and the stack
+  made with it is shown: the stack's colours are how you tell the pattern is right. It asks first (&ldquo;Write
+  &lt;name&gt;.avi.txt with Bayer = RGGB? Auto will use it for this video from now on (SERViewer and
+  PlanetaryStack).&rdquo;) and never replaces an existing sidecar. See SERViewer's &ldquo;Remembering a chosen
+  pattern&rdquo; for the file it writes.</li>
+  <li><b>Stack!</b> stacks the video. The progress bar shows the step and how far it has got: &ldquo;Step 1 of 3:
+  Measuring frames&rdquo; (with a frame count), &ldquo;Step 2 of 3: Aligning&rdquo; (a percentage), &ldquo;Step 3 of 3:
+  Stacking&rdquo; (the frames stacked so far). The window stays usable while it runs.</li>
+  <li><b>Cancel</b> stops a running stack. Nothing is left behind: no image and no file. Closing the window, or quitting
+  PixInsight, cancels a running stack the same way and waits for it to stop.</li>
+  <li>The <b>preview</b> shows the stack, stretched for display only: black at the 0.5th percentile of its samples (the
+  sky's level around a planet) and white at the 99.99th percentile, so one hot pixel or satellite trail cannot dim it. The
+  image Execute opens is not stretched. <b>Fit</b>, <b>100%</b>, <b>200%</b>, <b>&minus;</b> and <b>+</b> set the zoom;
+  drag to move around a zoomed stack.</li>
+  <li>The <b>info block</b> shows the result: &ldquo;Stacked: <i>n</i> of <i>N</i> frames used&rdquo; and the time taken,
+  every warning, then how the frames were chosen (<b>Frames:</b>) and how they were aligned (<b>Alignment:</b>). When no
+  image can be made, the preview stays empty and the info block shows &ldquo;No image:&rdquo; with the diagnosis and the
+  numbers behind it (see <a href="#diagnosis">When no image is made</a>).</li>
+  <li><b>Execute</b> (and Apply Global, the round button) opens the stack shown as a new image window, without stacking
+  again. If nothing has been stacked yet for the file and pattern shown, it stacks first and then opens the result. The file is read
+  again first: if it has been replaced by a different capture (another frame count, size, bit depth or colour layout),
+  the old stack is dropped rather than opened.</li>
+</ul>
+<p>Dragging the interface's instance triangle onto the workspace saves a process icon with the file and Bayer pattern;
+executing that icon stacks the file.</p>
+
+<h2>Parameters</h2>
+<table>
+<tr><th>Parameter</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>filePath</code></td><td>String</td><td>(empty)</td><td>Absolute path of the <code>.ser</code> or <code>.avi</code> video (the format is recognised from the file's content). The process cannot run while it is empty.</td></tr>
+<tr><td><code>bayerPattern</code></td><td>Enum</td><td>Auto</td><td>AVI only, ignored for SER: Auto, None (mono), RGGB, GRBG, GBRG or BGGR, as in SERViewer. A pattern set here wins over the AVI's sidecar.</td></tr>
+</table>
+<p>Executed globally from a script or a process icon, the process stacks <code>filePath</code> and opens the
+stack as an image window, or fails with the diagnosis when the capture gives no image. It cannot run on a view.</p>
+
+<h2>How the frames are chosen</h2>
+<p>Everything below is decided from the capture itself. The video is read from start to end several times (once to
+measure, once to align, once to stack, plus short reads in between); it is never held in memory whole.</p>
+<ol>
+<li><b>Hot pixels.</b> 64 frames spread evenly over the capture (every frame of a shorter one) are examined. A sensor
+site that stands out on its own in at least 80% of them is hot, and is replaced in every frame by the median of its
+same-colour neighbours before anything else looks at the frame.</li>
+<li><b>Noise.</b> The camera's noise at each brightness level is measured from runs of consecutive frames, so that
+noise is never mistaken for detail when frames are compared.</li>
+<li><b>Measuring every frame.</b> For each frame: is the target there, where is it and how large, how sharp is it, and
+how much of it is saturated.</li>
+<li><b>Dropping unusable frames.</b> Frames without the target, stray detections (a box of the wrong size, such as a
+satellite streak), frames where a planet touches the frame edge (a cut limb is never stacked), frames where at least a
+quarter of the target is at full scale, and frames with no detail at all are not used. A target that fills the frame
+(the lunar surface) is recognised as such: its frames are not dropped for touching the edge.</li>
+<li><b>Suspiciously sharp frames.</b> A few frames far sharper than the rest may be glitches (a torn frame, a satellite
+in the target) or genuinely lucky frames. They are held back and decided by alignment: those that align as well as the
+other frames are stacked, the rest are not.</li>
+<li><b>How many to keep.</b> The sharpness measured in one frame is itself noisy, so the frames are ranked by their
+sharpness with that noise allowed for statistically. Then the count is chosen: each extra frame lowers the noise of the
+stack, but is a little less sharp than the ones before it. PlanetaryStack keeps the number of frames at which the
+expected detail of the stack is greatest. A steady night keeps many frames, a poor night few. The <b>Frames:</b> line
+says how many were used, the quality bound they meet (&ldquo;quality &ge; <i>x</i> of the best&rdquo;) and how many were
+left out for each reason above.</li>
+<li><b>Focus and seeing</b> (planets only). The sharpest frames' limb is measured against the size of the disc. A
+disc blurred far beyond what in-focus captures show is refused (Out of focus, or Seeing too poor when the blur changes
+from frame to frame); a disc blurred less, but more than in-focus captures show, is stacked with a focus warning.</li>
+<li><b>Aligning.</b> The 16 sharpest kept frames are averaged into a reference. Every frame is aligned to it with
+sub-pixel accuracy. Frames that match the reference clearly less well than the rest (below 0.85 of the median match,
+and never below a match of 0.5), such as torn or shaken frames, are left out. The <b>Alignment:</b> line gives the
+frames aligned, the median match and the cut.</li>
+<li><b>Regions.</b> Seeing blurs and moves each part of the image differently, so the image is divided into regions,
+placed automatically wherever there is structure to align on: about a quarter of a planet's width across, or an eighth
+of the frame's shorter side on a frame-filling target. Each region ranks the aligned frames by its own sharpness, keeps
+its own best ones by the same rule as step 6, and is aligned with its own small shift. The regions are blended smoothly,
+with no seams. Over the sky, where there is no detail to gain, the stack is the plain mean of all the frames
+stacked.</li>
+<li><b>Stacking.</b> Each frame is debayered with an edge-directed method (Hamilton-Adams), which gives less colour error
+at sharp edges such as the limb than SERViewer's bilinear debayer, shifted onto the reference once, matched in brightness
+to the others (so frames chosen by different regions agree in brightness) and added. Samples that differ from the reference by far more than the frames normally do (a satellite or aircraft trail, a
+bird, a cosmic ray) are rejected. The <b>Alignment:</b> line ends with the share of samples rejected and the hot pixels
+repaired.</li>
+<li><b>Focus check of the stack.</b> The sharpest kept frames are split into two half-stacks; the detail the two have in
+common is free of noise, and is compared with in-focus captures. This check only warns, never refuses.</li>
+</ol>
+
+<h2 id="diagnosis">When no image is made</h2>
+<p>A capture with nothing usable gives no image and no preview. The info block (or, for a script, the Process Console
+and the error message) gives one of these diagnoses, followed by the numbers behind it:</p>
+<table>
+<tr><th>Diagnosis</th><th>Message (numbers vary)</th><th>What to change</th></tr>
+<tr><td>No target</td><td>&ldquo;No target: the frames hold only background (a target in <i>n</i> of <i>N</i> frames).&rdquo;
+A frame-filling target seen too rarely: &ldquo;Too few frames show the target: a frame-filling target is seen in only
+<i>n</i> of <i>N</i> frames (cloud or gaps?); at least 10% of the frames are needed.&rdquo;</td>
+<td>Check the target was in the field and not clouded out.</td></tr>
+<tr><td>Target leaves the frame</td><td>&ldquo;The target leaves the frame: it touches the frame edge in <i>n</i> of
+<i>N</i> frames with a target, so only <i>m</i> show it whole; keep it centred while capturing.&rdquo;</td>
+<td>Keep the planet centred (guiding, a larger capture area).</td></tr>
+<tr><td>Clipped</td><td>&ldquo;The target is saturated: <i>n</i> of <i>N</i> frames have at least 25% of the target at full
+scale (median <i>p</i>%); lower the gain or the exposure.&rdquo;</td>
+<td>Lower the gain or the exposure.</td></tr>
+<tr><td>Out of focus</td><td>&ldquo;Out of focus: only <i>n</i> of <i>N</i> frames show any detail at all (the rest measure
+quality 0).&rdquo;, or &ldquo;Out of focus: even the sharpest frames blur the limb by <i>b</i> px, <i>p</i>% of the target's
+radius (usable: under <i>u</i> px), and the blur is the same in every frame ... -- the optics, not the air.&rdquo;, or
+&ldquo;Too blurred: ... -- focus or seeing, ...&rdquo; when the frames cannot tell the two apart.</td>
+<td>Refocus.</td></tr>
+<tr><td>Seeing too poor</td><td>&ldquo;Seeing too poor: the blur changes from frame to frame ..., and even the sharpest
+frames blur the limb by <i>b</i> px, ...&rdquo;</td>
+<td>Capture on a steadier night or with the target higher.</td></tr>
+<tr><td>Frames do not line up</td><td>&ldquo;The frames do not line up: only <i>n</i> of <i>N</i> selected frames match the
+reference well enough to be aligned (median match <i>m</i>, needed <i>c</i>) -- the view shook or changed from frame to
+frame (wind, a knock, or not one steady target).&rdquo;</td>
+<td>Shield the telescope from wind and knocks; capture one target per video.</td></tr>
+</table>
+
+<h3>Warnings with an image</h3>
+<ul>
+<li><b>Focus.</b> &ldquo;The stack may be out of focus: ...&rdquo; with the limb blur measured and the range in-focus
+captures show. For a frame-filling target the wording is &ldquo;may be out of focus (or the capture is sampled far finer
+than the detail it holds)&rdquo;: on a lunar surface, defocus and heavy oversampling look the same.</li>
+<li><b>No Bayer pattern known.</b> A raw Bayer AVI with no known pattern (no sidecar, Auto) is stacked as a mono image of
+the colour mosaic, with a warning: the result cannot be debayered afterwards, because every frame was resampled onto the
+stack. For colour, choose the pattern under Bayer pattern and Stack! again; Save pattern... then remembers it.</li>
+<li>Warnings from the reader (a damaged file the reader recovered from, a sidecar it could not read) are shown as
+well.</li>
+</ul>
+
+<h2>The image it opens</h2>
+<ul>
+<li>32-bit floating point, linear (not stretched), at the capture's full resolution: RGB for a Bayer or colour capture,
+mono for a mono one (and for a raw Bayer AVI with no known pattern, see above). Samples are normalised like SERViewer's,
+so the camera's full range maps to [0,1].</li>
+<li>Identifier: the file name with every character other than letters, digits and underscores replaced by an underscore
+(an underscore is put in front if it starts with a digit), followed by <code>_stack</code>, for example
+<code>Jupiter_stack</code>. PixInsight adds a suffix if that identifier is already in use.</li>
+<li>FITS keywords:
+  <ul>
+  <li><code>SRCVIDEO</code>: the video's file name (shortened to fit its card, keeping the extension; the full name is in
+  <code>HISTORY</code>).</li>
+  <li><code>NFRAMES</code>: the frames in the video, every one measured. <code>NCOMBINE</code>: the frames stacked.</li>
+  <li><code>DATE-OBS</code> and <code>DATE-END</code> (SER only): the UTC times of the first and last frame stacked when the
+  file has a timestamp trailer; otherwise <code>DATE-OBS</code> is the header's UTC start time. An AVI never gets either:
+  it carries no trustworthy clock.</li>
+  <li><code>INSTRUME</code> (the SER header's camera, or the camera named in an AVI's ASIAIR sidecar),
+  <code>TELESCOP</code>, <code>OBSERVER</code>: left out when empty.</li>
+  <li>No <code>BAYERPAT</code>: the stack is debayered RGB, or mono.</li>
+  <li><code>HISTORY</code>: the PlanetaryStack version and the full file name, an AVI's Bayer pattern and its source, the
+  frame selection and alignment lines, the frame counts with the time each step took and the data read, and every
+  warning. Text longer than one FITS card continues on the next <code>HISTORY</code> card.</li>
+  </ul>
+  Keyword text is plain ASCII: any other character is shown as <code>?</code>.
+</li>
+</ul>
+<p>The Process Console gets the same lines: the capture and the number of threads when the stack starts, then the
+warnings, the selection and alignment lines, and the frame counts with the time each step took and the read rate
+(MB/s). A slow run on a network drive can be put down to the read rate.</p>
+
+<h2>Memory and threads</h2>
+<p>PlanetaryStack uses every processor thread PixInsight allows. Each thread opens its own reader of the video. It
+plans its working memory to stay within 4 GB, using fewer threads where a large frame needs it; it holds about one frame
+per thread plus the stack being built, never the whole video. A frame too large for that budget still stacks, on one
+thread.</p>
+
+<h2>Files, network and external programs</h2>
+<ul>
+<li><b>Files read:</b> only the video file you choose and, for an AVI, its sidecar <code>&lt;name&gt;.avi.txt</code> next
+to it (if present).</li>
+<li><b>Files written:</b> stacking writes no file. The only file PlanetaryStack writes is the sidecar
+<code>&lt;name&gt;.avi.txt</code> next to an AVI, and only when you click Save pattern... and answer Yes. It is written to
+a temporary <code>&lt;name&gt;.avi.txt.partial</code> file beside it first and then moved into place; the partial file is
+removed if the write fails. The stack opens as a new, unsaved image window; saving it is up to you.</li>
+<li><b>Network:</b> PlanetaryStack makes no network connection.</li>
+<li><b>External programs:</b> PlanetaryStack launches no external program.</li>
+<li>It stores no settings or other files of its own, inside or outside the PixInsight installation.</li>
+</ul>
+
+<h2>Acknowledgments</h2>
+<p>This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its
+contributors (https://pixinsight.com/). Licence texts of third-party components are in
+<code>THIRD_PARTY_NOTICES.txt</code>, installed next to this document.</p>
+
+</body>
+</html>
