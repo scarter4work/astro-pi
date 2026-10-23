@@ -39,7 +39,9 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
 2a. Update the bumped product's update-repository description (`<product>/package-description.xml`; EZ:
    `scripts/ez-stretch/package-description/<Name>.xml`; Gaia sidecar: `gaia-depth-grade/sidecar-package-description.xml`).
    release.sh rewrites every package's `<description>` from these on every release and fails when one names a
-   version other than its package's (CPD 6.1: no description outlives its release).
+   version other than its package's (CPD 6.1: no description outlives its release). Every manifest edit
+   (fileName renames, sha1/releaseDate) must hit exactly one entry, and the manifest must list exactly the
+   release's packages; `tools/test-release-manifest.sh` (run by release.sh) tests those edits on a scratch copy.
 3. Run `./release.sh` — it builds, native-signs, packages, writes ONE `repository/updates.xri`,
    signs the manifest LAST, and integrity-checks every declared sha1 vs the on-disk artifact.
 4. Signing order is load-bearing: `.xsgn` embeds a timestamp → hash AFTER packaging, sign manifest LAST.

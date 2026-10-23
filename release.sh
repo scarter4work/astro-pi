@@ -54,6 +54,11 @@ module_doc_check(){ # <doc root> <DocId>... : each <root>/<DocId>/ complete, and
     n="$(basename "$d")"
     printf '%s\n' "$@" | grep -qxF "$n" || die "$d is not one of the doc ids this package ships ($*): it would never be installed"
   done
+  # One module, one set of notices: every doc folder carries the same file, so the copies cannot drift.
+  for n in "${@:2}"; do
+    cmp -s "$root/$1/THIRD_PARTY_NOTICES.txt" "$root/$n/THIRD_PARTY_NOTICES.txt" \
+      || die "$root/$n/THIRD_PARTY_NOTICES.txt differs from $root/$1/THIRD_PARTY_NOTICES.txt: one module ships one set of notices"
+  done
 }
 
 build_module_tgz(){ # <out.tar.gz> <Name> <module .so> <module .xsgn> <doc root> <DocId>...
@@ -286,6 +291,7 @@ fi
 # WAYLAND_DISPLAY, QT_QPA_PLATFORM=xcb -- never the user's desktop.
 . "$ROOT/tools/pi-headless.sh"
 python3 "$ROOT/tools/check-pi-launches.py" "$ROOT" || die "a script launches PixInsight outside pi_headless"
+"$ROOT/tools/test-release-manifest.sh" "$0" || die "release.sh's manifest edits fail their test (tools/test-release-manifest.sh)"
 [ -x "$PI" ]        || die "PixInsight.sh not executable at $PI"
 [ -f "$KEYS" ]      || die "signing keys not found at $KEYS"
 [ -f "$PASS_FILE" ] || die "password file not found at $PASS_FILE (create it 0600, never commit)"
@@ -296,14 +302,47 @@ PASS="$(cat "$PASS_FILE")"
 sha1(){ python3 -c "import hashlib,sys;print(hashlib.sha1(open(sys.argv[1],'rb').read()).hexdigest())" "$1"; }
 
 # write_pkg <manifest> <fileName> <sha1> : set sha1 + releaseDate for the package matching fileName.
+# Exactly one entry must match each: a fileName the manifest does not hold used to change nothing and
+# succeed, so a bumped zip shipped the old one's entry (ruling T10b).
 write_pkg(){
-  python3 - "$1" "$2" "$3" "$DATE" <<'PY'
+  python3 - "$1" "$2" "$3" "$DATE" <<'PY' || die "write_pkg: $2 is not exactly one package entry of $1"
 import re,sys
 mf,fn,h,date=sys.argv[1:5]
 s=open(mf).read()
-s=re.sub(r'(fileName="'+re.escape(fn)+r'"\s+sha1=")[0-9a-fA-F]{40}(")', r'\g<1>'+h+r'\g<2>', s)
-s=re.sub(r'(fileName="'+re.escape(fn)+r'"[^>]*releaseDate=")\d{8}(")', r'\g<1>'+date+r'\g<2>', s)
+s,a=re.subn(r'(fileName="'+re.escape(fn)+r'"\s+sha1=")[0-9a-fA-F]{40}(")', r'\g<1>'+h+r'\g<2>', s)
+s,b=re.subn(r'(fileName="'+re.escape(fn)+r'"[^>]*releaseDate=")\d{8}(")', r'\g<1>'+date+r'\g<2>', s)
+if (a,b)!=(1,1): sys.exit("write_pkg: %s: %d sha1 and %d releaseDate substitutions, expected 1 and 1"%(fn,a,b))
 open(mf,'w').write(s)
+PY
+}
+
+# manifest_rename <manifest> <regex of the old fileName> <new fileName> : point the one entry whose
+# fileName matches at this release's file. No entry, or several, is an error (a first release of a
+# package needs its entry added first).
+manifest_rename(){
+  python3 - "$1" "$2" "$3" <<'PY' || die "manifest_rename: $1 has not exactly one package entry matching $2 (for $3)"
+import re,sys
+mf,pat,fn=sys.argv[1:4]
+s=open(mf).read()
+s,n=re.subn(r'fileName="'+pat+r'"', 'fileName="'+fn+'"', s)
+if n!=1: sys.exit("manifest_rename: %d entries match %s, expected 1"%(n,pat))
+open(mf,'w').write(s)
+PY
+}
+
+# manifest_names_check <manifest> <fileName>... : the manifest's packages are exactly these, each once.
+manifest_names_check(){
+  python3 - "$@" <<'PY' || die "updates.xri does not list exactly this release's packages"
+import re,sys
+mf=sys.argv[1]; want=sys.argv[2:]
+have=re.findall(r'<package fileName="([^"]+)"',open(mf).read())
+errs=[]
+for fn in sorted(set(have)|set(want)):
+    if have.count(fn)!=1 or fn not in want:
+        errs.append("%s: %d manifest entr%s, %s this release"%(fn,have.count(fn),"y" if have.count(fn)==1 else "ies","in" if fn in want else "not in"))
+if len(want)!=len(set(want)): errs.append("a package is named twice in this release's list")
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+print("  OK  updates.xri lists exactly this release's %d packages, each once"%len(want))
 PY
 }
 
@@ -487,7 +526,8 @@ python3 - "$REPO/updates.xri" "$MOD_TGZ" <<'PY'
 import re,sys
 mf,fn=sys.argv[1:3]
 s=open(mf).read()
-s=re.sub(r'fileName="[^"]*-linux-x64-NukeX(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
+s,n=re.subn(r'fileName="[^"]*-linux-x64-NukeX(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
+if n!=1: sys.exit("updates.xri has %d NukeX package entries, expected 1"%n)
 open(mf,'w').write(s)
 PY
 
@@ -504,7 +544,8 @@ if re.search(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', s):
     # Entry already exists from a prior release -- just rename the dated
     # fileName, mirroring the NukeX rename above. Idempotent: re-running
     # with the same date is a no-op substitution.
-    s=re.sub(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
+    s,n=re.subn(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
+    if n!=1: sys.exit("updates.xri has %d PICopilot package entries, expected 1"%n)
 else:
     # First release: insert a new <package> entry into the linux/x64
     # platform block (the same block NukeX lives in). sha1/releaseDate
@@ -536,7 +577,8 @@ s=open(mf).read()
 pat=r'fileName="[^"]*-linux-x64-Planetary(-[0-9.]+)?\.tar\.gz"'
 if re.search(pat, s):
     # Entry exists from a prior release -- rename the fileName, as for PICopilot.
-    s=re.sub(pat, 'fileName="'+fn+'"', s)
+    s,n=re.subn(pat, 'fileName="'+fn+'"', s)
+    if n!=1: sys.exit("updates.xri has %d Planetary package entries, expected 1"%n)
 else:
     # First release: a new <package> in the linux/x64 platform block, with
     # placeholder sha1/releaseDate that step 4 (write_pkg) fills in, and an
@@ -560,7 +602,7 @@ PY
 
 echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
-for name in EZStretch EZDonutRepair EZHazeKill; do
+for name in "${EZ_NAMES[@]}"; do
   ver="${EZVER[$name]}"
   zipname="${name}_v${ver}.zip"
   # Stage into src/scripts/scarter4work/ so the menu and the on-disk folder both
@@ -576,6 +618,7 @@ for name in EZStretch EZDonutRepair EZHazeKill; do
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
   reuse_if_published "$zipname"
+  manifest_rename "$REPO/updates.xri" "${name}_v[0-9.]+\.zip" "$zipname"
 done
 
 echo "== 3c/6 package gaia-depth-grade script zip =="
@@ -598,6 +641,7 @@ rm -f "$REPO/$GAIA_ZIP"
 rm -rf "$GAIA_STAGE"
 [ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
 reuse_if_published "$GAIA_ZIP"
+manifest_rename "$REPO/updates.xri" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP"
 
 echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-grade-sidecar) =="
 # The scripts run the sidecar only from <PixInsight>/bin, where this package puts
@@ -634,8 +678,11 @@ qe_check "$REPO" || die "published QE set in repository/ does not verify"
 
 echo "== 3f/6 write every package description from its source (and the repository's) =="
 # Every fileName is final by now; each entry gets its product's text, so none
-# outlives the release it was written for.
-DESC_LIST="$(desc_args $(manifest_files "$REPO/updates.xri"))" || die "a package in updates.xri has no description source"
+# outlives the release it was written for. The same explicit list as step 0b
+# (with the sidecar's real name), so 0b, 3f and 6a check identical names.
+RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+manifest_names_check "$REPO/updates.xri" "${RELEASE_PKGS[@]}"
+DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions apply "$REPO/updates.xri" "${DESC_ARGS[@]}" || die "could not write the package descriptions"
 
@@ -643,12 +690,13 @@ echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$REPO/updates.xri" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$REPO/updates.xri" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
 write_pkg "$REPO/updates.xri" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
-for name in EZStretch EZDonutRepair EZHazeKill; do
+for name in "${EZ_NAMES[@]}"; do
   zipname="${name}_v${EZVER[$name]}.zip"
   write_pkg "$REPO/updates.xri" "$zipname" "$(sha1 "$REPO/$zipname")"
 done
 write_pkg "$REPO/updates.xri" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
 write_pkg "$REPO/updates.xri" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
+manifest_names_check "$REPO/updates.xri" "${RELEASE_PKGS[@]}"
 
 echo "== 5/6 sign manifest LAST =="
 sed -i '/<Signature developerId=/d' "$REPO/updates.xri"
