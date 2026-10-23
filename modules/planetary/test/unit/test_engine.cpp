@@ -694,6 +694,32 @@ TEST_CASE("RunStack: a small selection whose intact frames align is stacked, not
     CheckFinalLines(o);
 }
 
+TEST_CASE("UnalignedBelow: half of a small selection, need for a large one; never reached with every clean frame over the floor",
+          "[engine]") {
+    CHECK(stack::UnalignedBelow(10, 5) == 3);       // the case above: 3 of 5 align -> stacked
+    CHECK(stack::UnalignedBelow(10, 6) == 3);
+    CHECK(stack::UnalignedBelow(2000, 9) == 5);     // ceil(9 / 2) = 5 = need
+    CHECK(stack::UnalignedBelow(2000, 1500) == 5);  // need = kMinStackFrames
+    CHECK(stack::UnalignedBelow(3, 2) == 1);        // need = 2, ceil(2 / 2) = 1
+    CHECK(stack::UnalignedBelow(1, 1) == 1);
+    CHECK(stack::UnalignedBelow(0, 0) == 1);
+    // Engine.h's claim: with every clean confidence >= kMinAlignConfidence, at least ceil(S / 2) pass AlignmentCut,
+    // so the diagnosis cannot fire (random confidences over the floor, 1-40 frames).
+    std::mt19937 rng(77);
+    std::uniform_real_distribution<double> u(stack::kMinAlignConfidence, 1.0);
+    for (int trial = 0; trial < 2000; ++trial) {
+        const int s = 1 + trial % 40;
+        std::vector<stack::Shift> shifts(static_cast<size_t>(s));
+        for (auto& sh : shifts) sh.confidence = u(rng);
+        const double cut = stack::AlignmentCut(shifts);
+        int64_t pass = 0;
+        for (const auto& sh : shifts) pass += sh.confidence >= cut;
+        INFO("trial " << trial << ": " << pass << " of " << s << " pass cut " << cut);
+        REQUIRE(pass >= (s + 1) / 2);
+        REQUIRE(pass >= stack::UnalignedBelow(2000, s));
+    }
+}
+
 TEST_CASE("PlanMemory caps ResidualScale observers and workers so the engine stays within its budget", "[engine]") {
     auto info = [](int w, int h, ser::ColorId c, int depth) {
         ser::FileInfo i;

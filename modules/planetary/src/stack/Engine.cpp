@@ -663,6 +663,11 @@ std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t aligne
     return out;
 }
 
+int64_t UnalignedBelow(int64_t frames, int64_t selected) {
+    const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (std::max<int64_t>(0, frames) + 1) / 2));
+    return std::max<int64_t>(1, std::min<int64_t>(need, (std::max<int64_t>(0, selected) + 1) / 2));
+}
+
 MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
     threads = std::max(1, threads);
     const int scale = static_cast<int>(LumaScale(info));
@@ -901,10 +906,10 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     measured = {};
     step("Aligning frames", t0);
 
-    const int64_t need = std::max<int64_t>(1, std::min<int64_t>(kMinStackFrames, (n + 1) / 2));
     const int64_t nSelected = static_cast<int64_t>(sel.frames.size());
+    const int64_t mustAlign = UnalignedBelow(n, nSelected);
     const double medianMatch = Median(cleanConfidence);
-    if (static_cast<int64_t>(kept.size()) < need) {
+    if (static_cast<int64_t>(kept.size()) < mustAlign) {
         return finish(Diagnosed(
             std::move(out), DiagnosisKind::Unaligned,
             "The frames do not line up: only " + Count(static_cast<int64_t>(kept.size())) + " of " +
@@ -916,7 +921,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
              {"frames aligned", static_cast<double>(kept.size())},
              {"median match", medianMatch},
              {"alignment cut", cut},
-             {"frames needed", static_cast<double>(need)}}));
+             {"frames needed", static_cast<double>(mustAlign)}}));
     }
 
     t0 = Clock::now();

@@ -157,11 +157,17 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 
 // ---- Diagnoses made after selection ---------------------------------------------------------------
 //
-// Unaligned: fewer frames align to the reference (clean frames over AlignmentCut plus admitted
-// suspects) than SelectFrames' need = max(1, min(kMinStackFrames, ceil(N / 2))) -- the frames do not
-// show one scene (shake, wind, a target that changes from frame to frame). Reachable only when the
-// clean frames' median confidence is under kMinAlignConfidence / kAlignRelative = 0.59 (otherwise
-// at least half of them pass); no image is made from the few that align.
+// Unaligned: most of the selection fails to align -- fewer frames align to the reference (clean frames
+// over AlignmentCut plus admitted suspects) than UnalignedBelow(N, S) = max(1, min(need, ceil(S / 2))),
+// with SelectFrames' need = max(1, min(kMinStackFrames, ceil(N / 2))) and S the clean frames selected.
+// The frames do not show one scene (shake, wind, a target that changes from frame to frame); no image
+// is made from the few that align. Otherwise the frames that align are stacked, however few: a
+// selection of 5 on a poor night (Select keeps as few as need) whose 3 intact frames align is stacked
+// from those 3, not refused (final review I1; Ruling P15: a false refusal leaves the user nothing).
+// Reachable only when clean selected frames score under kMinAlignConfidence (not the reference's
+// scene): AlignmentCut is at most the median of the clean frames over that floor, so at least half of
+// those pass it -- with every clean frame over the floor, at least ceil(S / 2) align.
+int64_t UnalignedBelow(int64_t frames, int64_t selected);
 //
 // Focus from the region stage (Rulings P4, P15). The kFocusFrames sharpest frames the stack keeps
 // (FrameStats::quality; read once more after the alignment pass, with their global shifts) are split
