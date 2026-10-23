@@ -930,3 +930,51 @@ TEST_CASE("MeasurementLuma counts the clipped samples of each luma pixel -- per 
     bad.samplesPerPixel = 0;
     CHECK_THROWS_AS(MeasureFrame(bad, 0, 1), std::invalid_argument);
 }
+
+TEST_CASE("One saturated colour reads the same clipped fraction as RGB and as RGGB (E2 fix round 1)") {
+    // kClippedFrame was calibrated per sensor site, and a Bayer sensor's sites split R 1/4, G 1/2, B 1/4: an
+    // RGB frame's channels must count in that ratio, or a red-saturated disc (Mars) reads 4/3 of its raw
+    // Bayer value and is refused sooner. The same scene -- a disc whose red is saturated over its centre (60 %
+    // of it), green and blue not -- as an RGB frame and as its RGGB mosaic.
+    const int w = 320, h = 240;
+    const double cx = 161.3, cy = 119.6, R = 50, rc = R * std::sqrt(0.6);
+    auto colour = [&](int x, int y, int c) -> uint16_t {
+        const double r = std::hypot(x - cx, y - cy);
+        if (r >= R) return 8;
+        const bool centre = r < rc;
+        const uint16_t v[3] = {static_cast<uint16_t>(centre ? 255 : 200), static_cast<uint16_t>(centre ? 190 : 150),
+                               static_cast<uint16_t>(centre ? 120 : 100)};
+        return v[c];
+    };
+    ser::Frame rgb, cfa;
+    rgb.width = cfa.width = w;
+    rgb.height = cfa.height = h;
+    rgb.channels = 3;
+    cfa.channels = 1;
+    rgb.samples.resize(static_cast<size_t>(w) * h * 3);
+    cfa.samples.resize(static_cast<size_t>(w) * h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            for (int c = 0; c < 3; ++c) rgb.samples[(static_cast<size_t>(y) * w + x) * 3 + c] = colour(x, y, c);
+            const int site = (y % 2 == 0) ? (x % 2 == 0 ? 0 : 1) : (x % 2 == 0 ? 1 : 2);  // RGGB
+            cfa.samples[static_cast<size_t>(y) * w + x] = colour(x, y, site);
+        }
+    ser::FileInfo info;
+    info.header.width = w;
+    info.header.height = h;
+    info.header.depth = 8;
+    info.normDepth = 8;
+    info.colorId = ser::ColorId::RGB;
+    info.planes = 3;
+    const stack::MeasurementImage mr = stack::MeasurementLuma(rgb, info);
+    const FrameStats sr = MeasureFrame(mr, 0, stack::LumaScale(info));
+    info.colorId = ser::ColorId::BayerRGGB;
+    info.planes = 1;
+    const stack::MeasurementImage mb = stack::MeasurementLuma(cfa, info);
+    const FrameStats sb = MeasureFrame(mb, 0, stack::LumaScale(info));
+    REQUIRE(sr.targetFound);
+    REQUIRE(sb.targetFound);
+    INFO("clipped fraction RGB " << sr.clippedFraction << ", RGGB " << sb.clippedFraction);
+    CHECK(sb.clippedFraction == Catch::Approx(0.25 * 0.6).margin(0.02));
+    CHECK(sr.clippedFraction == Catch::Approx(sb.clippedFraction).margin(0.01));
+}
