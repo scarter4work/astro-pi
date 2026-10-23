@@ -45,6 +45,8 @@ All 103 `.avi` files under `/mnt/qnap/astro_data/` (ffprobe + header bytes):
   Jupiter, 0.68 Moon) → effectively **BGGR**, contradicting the sidecar. White balance gains
   are similar in both groups (B/R ≈ 1.3–1.5), so they don't explain the reversal.
   Testing item 3 turns this measurement into a regression check.
+  *Superseded 2026-10-23: the ratios stand, the "BGGR" reading does not; what the ratio does and
+  does not reflect, white balance included, is in Amendment 2026-10-23.*
 - **Full measurement (Task 7, Ruling 10), on the unsaturated disc** (superpixels ≥ 50 % of the
   frame's 99.99th-percentile 2×2 sum, no site ≥ 250, 20 frames): 46 planetary sidecar files
   (39 distinct captures: 6 captures sit in more than one folder, 7 extra files). All 6 `Flip = None`
@@ -58,6 +60,8 @@ All 103 `.avi` files under `/mnt/qnap/astro_data/` (ffprobe + header bytes):
   2022-10-08) match apart from timing values; the sidecars carry the same Flip, Bayer and white
   balance. **Nothing found in those headers or the sidecars tells them apart**, so the Flip=Vert
   pattern is an inference and the reader says so (see the Sidecar rule).
+  *Superseded 2026-10-23: the colour reading of these ratios is withdrawn; a colour-free test shows
+  Flip=Vert(unimplemented) frames are RGGB as the sidecar says (Amendment 2026-10-23, at the end).*
 - **Index entries vs frame data:** 2 files hold fewer frames than their index (and ffprobe's
   `nb_frames`) declares: `2023-02-11-192403-Mars` (13 250 of 13 251: the last entry points into the
   idx1 table, a frame ASIAIR indexed but never wrote) and `2023-08-30-220451-Moon` (500 of 851: the
@@ -139,6 +143,8 @@ index treated as untrusted (same validation discipline as increment 1).
   Any other non-empty `Flip` (unmeasured; Ruling 15) also uses the sidecar value as is, with the
   warning "sidecar Flip=<x> is unmeasured; using <PAT> as the sidecar says -- if colours look
   wrong, choose the pattern under Bayer pattern".
+  *Amended 2026-10-23: `Flip = Vert(unimplemented)` now uses the sidecar value as is, with no
+  warning; a bare `Vert` falls under Ruling 15; an odd StartX/StartY warns (Amendment 2026-10-23).*
   The user can override with the combo.
   The section name gives `INSTRUME`. A
   sidecar that exists but cannot be read (I/O error, no section or key lines, or over 64 KiB)
@@ -205,6 +211,8 @@ Opening dispatches on the file's magic bytes (`LUCAM-RECORDER` vs `RIFF…AVI `)
    pins the NAS itself: 103 AVIs, 53 with a sidecar, 46 planet captures, and only the two known
    short files may hold fewer frames than ffprobe's `nb_frames` (each with its exact count and
    warning). (`test/run-avi-real.sh`)
+   *Amended 2026-10-23: the red-site assertion and the pinned RGGB exceptions are withdrawn; see
+   Amendment 2026-10-23 for the checks that replace them.*
 4. **Headless PixInsight** (`run-probe.sh`, slot 96): `executeGlobal` on AVI fixtures (with
    and without sidecar, each `bayerPattern`), and `saveSerPath` conversion read back by a
    second `executeGlobal` on the written SER.
@@ -303,3 +311,113 @@ and that a dangling link creates nothing. Both writers create the partial 0666 l
 0.2.0.0's ofstream did), and publish through `PublishPartial`: a hard link when the target must
 not be replaced (Save pattern..., Save as SER without allowOverwrite), else a rename; the re-check +
 rename fallback, and its race, only on filesystems without hard links.
+
+## Amendment 2026-10-23 — Flip = Vert(unimplemented) is the sidecar's pattern (supersedes Ruling 10)
+
+Ruling 10 (the Evidence bullets above, the Sidecar Flip rule and Testing item 3) rotated the
+sidecar pattern 180° for `Flip = Vert…` on a colour argument: the s00/s11 site ratio over a
+planet's disc, read as "the red site is the brighter one". That argument is withdrawn. The
+measurements above stand as measurements; their reading as a CFA phase does not.
+
+**Why the colour argument fails here.** The ratio of the two non-green sites follows more than the
+CFA, and nothing in these files separates the parts:
+- White balance: ZWO applies its WB gains to the RAW data in the camera, before the capture software
+  sees it (SharpCap's author: [2020](https://forums.sharpcap.co.uk/viewtopic.php?p=13627), neutral
+  is 50/50; [2022](https://forums.sharpcap.co.uk/viewtopic.php?p=28195), "the colour balance sliders
+  for ZWO cameras do influence the saved RAW data"; not stated by ZWO, and not stated for RAW8 in
+  particular). The Flip=Vert sidecars carry B 82/R 61 (ASI071MC Pro, 1.34× blue over red) and
+  B 95/R 52 (ASI2400MC Pro, ASI462MC, 1.83×).
+- WB alone does not explain the split: four of the six Flip=None ASI585MC Air sidecars carry
+  B 75/R 56, the same 1.34× as the ASI071MC Pro (the others B 75/R 49 and, for the HaO3 capture,
+  B 54/R 6), and those files read s00/s11 = 1.27–1.81. Sensor response (IMX585 vs IMX071/IMX410/
+  IMX462), filter (none, L-Pro, L-QEF, HaO3) and target must carry the rest; how much each does is
+  untested.
+- Inside one group the reading is not even stable: three Flip=Vert files measured "RGGB" beside 35
+  "BGGR" with the same camera, ROI and night, which no physical pattern difference does, and on
+  Mars (a strongly red target) the two non-green sites differed by under 10 % because the disc
+  clips at 255.
+So a colour ratio cannot decide the phase here; the decision below does not use it.
+
+**The colour-free test.** A sensor's fixed-pattern noise sits on its pixels, so a frame read out
+like another shares it at the same array positions. For each Flip=Vert(unimplemented) capture the
+mean of its first 300 frames, minus each site's local same-site median, was correlated with the same
+residual of ASIAIR full-frame FITS of the same camera (BAYERPAT = RGGB, origin 0,0) cropped at the
+sidecar's StartX/StartY, under identity, vertical flip, horizontal flip and 180° rotation, at
+shifts up to ±2 px:
+
+- **ASI071MC Pro, 17 of 17 captures** (four ROIs, 2022-08-03 to 2022-10-08, against the 2022-08-16
+  session's previews): identity at shift (0,0) leads every other transform and shift by at least
+  4x: r = 0.086–0.126 against |r| ≤ 0.020 for every other transform and shift (the two 2022-10-08
+  Moons: r = 0.020 against ≤ 0.005), over 0.07–1.5 M pixels.
+  That includes the three "RGGB" exceptions; 2022-08-03 and 2022-08-17 Saturn share their pattern
+  at identity with r = 0.79 between themselves.
+- **ASI2400MC Pro, 15 of 17** (against 16 averaged gain-0 bias frames: r = 0.012–0.16, by more than
+  3x; five Moon and Polaris captures via a same-ROI capture that is itself placed on the bias,
+  with 2000 frames: r = 0.016–0.034, by 5x or more). Two lunar captures stay unresolved and are
+  pinned: 2022-11-09-195244 (58 frames, sky clipped at 0–4 ADU, a row-correlated residual) and
+  2023-03-05-225242 (the Moon fills the 640x480 ROI; identity leads by 2.5x, under the 3x bar).
+- **ASI462MC, 5 captures:** no full-frame FITS of it is on the NAS (it was the guide camera), so
+  these rest on the same sidecar text, the green phase and the two cameras above.
+
+So the video is the sensor read out from (StartX, StartY) exactly like a still, neither flipped nor
+rotated, and its pattern is the still's. "(unimplemented)" means what it says: ASIAIR recorded the
+setting and did not apply it. Two geometric facts agree: in all 46 measurable planet sidecar files
+(the two saturated 2022-08-17 Jupiters are unmeasurable) the greens are on the
+(0,1)/(1,0) diagonal, which a real vertical flip of an even-height RGGB frame cannot give (it gives
+GBRG); and a vertical flip only reorders rows, so it can never put blue at (0,0) — BGGR needs a
+horizontal operation the sidecar never names. The Moon frames are not mirrored against the real
+Moon (2022-08-17 ASI071MC Pro, 2023-05-26 ASI2400MC Pro, both Flip=Vert; 2026-05-28 ASI585MC Air,
+Flip=None), so no flip shows in the images either, and the 2022-08-17 Moon video matches the same
+night's full-frame preview at identity. These two Moon checks were one-off (by eye against the lunar
+features, and an image correlation); their figures are in the implementer's report, not in a script.
+
+**What fixes the pattern of the still.** ZWO: its [FAQ](https://www.zwoastro.com/product-faqs/)
+gives RGGB for every ASI camera except the ASI1600MC and ASI120MC-S, ASIAIR writes BAYERPAT = RGGB
+in these FITS and `Bayer = RG` in the sidecars (the SDK's own value), and retailers list RGGB for
+the ASI071MC Pro, ASI2400MC Pro and ASI585MC. One check that does not rest on broadband colour: on
+raw M16 lights, the excess of the nebula over the sky (Hα, a 656 nm line that the blue filter
+barely passes) is 2.6× larger at (0,0) than at (1,1) on both the ASI071MC Pro (2022-10-09) and the
+ASI2400MC Pro (2023-04-10), with the greens within 2 %; stars in the same frames give 1.17–1.24.
+That measurement is reproducible with `test/halpha_site_check.py` (one-off evidence, not a gate).
+SDK facts below are from ZWO's `ASICamera2.h`
+([INDI's copy](https://raw.githubusercontent.com/indilib/indi-3rdparty/master/libasi/ASICamera2.h)).
+
+**Decided (my call, from the above):**
+- `Flip = Vert(unimplemented)` uses the sidecar's Bayer value as it stands, with no warning
+  (RG → RGGB). `None` and absent likewise.
+- Any other non-empty Flip, including a bare `Vert`, keeps Ruling 15: the sidecar's value with the
+  "unmeasured" warning.
+- **ROI origin.** ZWO's SDK header documents `width % 8 == 0` and `height % 2 == 0` for the ROI and no
+  rule for `ASISetStartPos`; its Bayer pattern does not depend on the origin. Every sidecar seen has
+  an even StartX/StartY, and the fixed pattern shows the frame starting exactly there. An odd origin
+  has never been seen, so it keeps the sidecar's value with the warning "sidecar ROI origin
+  StartX=<x>[, StartY=<y>] is odd; how an odd origin shifts the Bayer pattern is unmeasured -- using
+  <PAT> as the sidecar says; if colours look wrong, choose the pattern under Bayer pattern". A
+  StartX/StartY that is there but not a sensor coordinate (not 1–9 digits) leaves the parity
+  unknown and says so, never silently: "sidecar ROI origin StartX=<v>[, StartY=<v>] is not a
+  sensor coordinate; the Bayer phase of the ROI is unknown -- using <PAT> as the sidecar says; if
+  colours look wrong, choose the pattern under Bayer pattern". An absent one says nothing.
+- **Files written by the released 0.2.0.0 and 0.2.1.0.** They resolved a Flip=Vert(unimplemented)
+  AVI to the rotated pattern, so what they wrote from one is red/blue-swapped: a SER from Save as
+  SER carries ColorID BAYER_BGGR (for a `Bayer = RG` sidecar), and an image from Apply Global carries
+  BAYERPAT = BGGR (raw CFA) or swapped red and blue (debayered). A SER's ColorID is always used (the
+  bayerPattern parameter is AVI-only), and the SER header records nothing about the source AVI or its
+  Flip (Instrument is the camera, Observer and Telescope empty, no trailer), so the reader cannot
+  recognise such a SER and does not try: any rule from camera name plus BGGR would be a guess. An
+  image's HISTORY line "SERViewer: Bayer BGGR (sidecar RG, Flip=Vert -> BGGR)" does identify it. The
+  SERViewer document tells users to re-save both from the AVI. Planetary has no per-release notes
+  (the repository description is version-free by design), so the shipped document carries this.
+  On Scott's NAS the only SER written since 2026-10-20 is from the 2026-01-30-195830 Jupiter, which
+  has no ASIAIR sidecar (only a SERViewer one, no Flip line) and is not affected; the exposure is
+  other users of the public release.
+- Testing item 3 becomes (`test/avi_real_check.py` check 4): (a) Auto = the sidecar's value, with
+  the Flip warning exactly where the Flip is unmeasured, and no file with the withdrawn inference or
+  an odd-origin warning; (b) the fixed-pattern readout check above (identity at (0,0) must lead, by
+  3x, every alternative scored, the three flips at (0,0) at the least, else it fails; the two
+  unresolved captures and the ASI462MC pinned); (c) the green phase on the 48 planet
+  sidecar files (46 agree, the two pinned 2022-08-17 Jupiters unmeasurable). Which non-green site is
+  brighter is printed, never asserted. The NAS counts move to 55 sidecars / 48 planet captures
+  (two SERViewer Save-pattern sidecars, 2026-10-22).
+- Side finding: the 2022-08-16 preview's DATE-OBS (04:48:14 UTC = 00:48 EDT) matches the video's
+  filename time (00:49:58) two minutes later, and Moonrise that night was 23:49 EDT; the files'
+  mtimes (23:48–23:51) are the clock an hour off on that capture.

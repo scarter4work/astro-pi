@@ -29,7 +29,7 @@ std::vector<std::vector<uint8_t>> Frames() {
     return f;
 }
 
-// Writes the named AVI fixture with a Vert/RG sidecar into `dir`.
+// Writes the named AVI fixture with a Vert(unimplemented)/RG sidecar into `dir` (RGGB: the flip was never applied).
 std::string MakeAvi(const fs::path& dir, const std::string& name) {
     const std::string p = (dir / name).string();
     AviSpec s;
@@ -64,7 +64,7 @@ TEST_CASE("ExportSer round trip from an AVI") {
     fs::create_directories(dir);
     const std::string avi = MakeAvi(dir, "2023-05-26-230053-Moon-x.avi");
     const auto src = OpenVideo(avi);
-    REQUIRE(src->Info().colorId == ColorId::BayerBGGR);
+    REQUIRE(src->Info().colorId == ColorId::BayerRGGB);
 
     const std::string out = (dir / "out.ser").string();
     std::vector<int64_t> seen;
@@ -82,7 +82,7 @@ TEST_CASE("ExportSer round trip from an AVI") {
 
     SerFile ser = SerFile::Open(out);
     const FileInfo& info = ser.Info();
-    CHECK(info.colorId == ColorId::BayerBGGR);
+    CHECK(info.colorId == ColorId::BayerRGGB);
     CHECK(info.header.width == kW);
     CHECK(info.header.height == kH);
     CHECK(info.header.depth == 8);

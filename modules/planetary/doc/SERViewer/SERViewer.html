@@ -112,16 +112,33 @@ so a bad entry between those checks shows as an error when that frame is display
 <li><b>Auto</b> uses the sidecar's <code>Bayer</code> value (RG, GR, GB or BG for RGGB, GRBG, GBRG or BGGR). The sidecar's
 camera name becomes <code>INSTRUME</code>. With no sidecar, a sidecar that could not be read, something at the sidecar path that is not a file, or no Bayer value in it,
 the raw CFA frame opens as mono and a warning says which of these it was and asks you to choose the pattern.</li>
-<li><b>Flip = Vert.</b> When the sidecar says <code>Flip = Vert</code>, Auto uses the pattern rotated by 180&deg; (RGGB becomes
-BGGR, GRBG becomes GBRG), because that is what the frame data of most such captures show (35 of the 38 measurable
-<code>Flip = Vert</code> files checked). This is an inference,
-and some ASIAIR captures differ. It is always reported with the warning &ldquo;Bayer pattern inferred from Flip=Vert
-(BGGR); some ASIAIR captures are RGGB &ndash; if red and blue look swapped, choose RGGB under Bayer pattern&rdquo; (with the
-patterns actually involved). If red and blue look swapped, choose the other pattern yourself. An explicit choice
-carries no such warning.</li>
-<li><b>Other Flip values.</b> Only <code>None</code> and <code>Vert</code> have been checked against frame data. For any other
-<code>Flip</code> value Auto uses the sidecar's pattern as it stands and warns that this Flip value is unmeasured; if the
-colours look wrong, choose the pattern yourself. The image itself is never flipped.</li>
+<li><b>Flip = Vert(unimplemented).</b> ASIAIR records its Flip setting in the sidecar but did not apply it to
+these videos, as the &ldquo;(unimplemented)&rdquo; says: the frames are the sensor as read out, so Auto uses the
+sidecar's pattern as it stands (RG is RGGB), with no warning. This was checked without relying on colour on 32 of the
+39 such captures on file, from the two cameras with full-frame stills (ASI071MC Pro and ASI2400MC Pro): each of those
+is read out exactly like a full-frame still from the same camera. The other 7 (five ASI462MC captures and two
+ASI2400MC Pro Moon captures that the sensor pattern does not place) rest on the same sidecar text and on the green
+sites of the frame data.</li>
+<li><b>Files written by SERViewer 0.2.0.0 and 0.2.1.0.</b> For a
+<code>Flip = Vert(unimplemented)</code> AVI those versions rotated the sidecar's pattern by 180&deg;: the sidecar's RG
+(RGGB) became BGGR, and GR (GRBG) became GBRG. So red and blue are swapped in what they wrote from such an AVI:
+<ul>
+<li>A SER from <b>Save as SER&hellip;</b> carries ColorID <code>BAYER_BGGR</code>. A SER's own ColorID is always used
+(the Bayer pattern control applies to AVI only), and nothing in the SER records which AVI or Flip value it came from,
+so SERViewer cannot recognise one. Save it again from the AVI.</li>
+<li>An image opened with <b>Apply Global</b> carries <code>BAYERPAT = BGGR</code> (raw CFA) or has red and blue swapped
+(debayered). Its <code>HISTORY</code> says <code>SERViewer: Bayer BGGR (sidecar RG, Flip=Vert -&gt; BGGR)</code>, which
+identifies it. Open the frame again from the AVI.</li>
+</ul></li>
+<li><b>Other Flip values.</b> Only <code>None</code> and <code>Vert(unimplemented)</code> have been checked against frame
+data. For any other <code>Flip</code> value (a bare <code>Vert</code>, <code>Horiz</code>, <code>Both</code>) Auto uses the
+sidecar's pattern as it stands and warns that this Flip value is unmeasured; if the colours look wrong, choose the
+pattern yourself. The image itself is never flipped.</li>
+<li><b>Odd ROI origin.</b> Every sidecar seen has an even <code>StartX</code> and <code>StartY</code>. If either is odd,
+Auto still uses the sidecar's pattern but warns that the effect of an odd origin is unmeasured. A
+<code>StartX</code> or <code>StartY</code> that is present but is not 1 to 9 plain digits (a minus or plus sign, any other
+character, or more than 9 digits) gets the same treatment, with a warning that the pattern's phase is unknown. A
+missing <code>StartX</code> or <code>StartY</code> gets no warning.</li>
 <li><b>None (mono)</b> shows the raw CFA frame as one channel.</li>
 <li><b>RGGB, GRBG, GBRG, BGGR</b> use that pattern and override the sidecar.</li>
 </ul>

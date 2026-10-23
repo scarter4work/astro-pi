@@ -96,8 +96,8 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
         if [ -n "$STAGE" ]; then
             src="$STAGE/$(basename "$video")"
             cp -- "$video" "$src" || { echo "FAIL $run: staging copy"; status=1; continue; }
-            # The sidecar travels with the video: the reader honours its flip, so the frame layout
-            # (and the meaning of --bayer) stays the NAS file's.
+            # The sidecar travels with the video: the reader takes the Bayer pattern (and the
+            # camera) from it, so the staged copy opens exactly as the NAS file does.
             [ -f "$video.txt" ] && cp -- "$video.txt" "$src.txt"
             sync -- "$src"
             dd if="$src" iflag=nocache count=0 status=none   # evict: a cold local-disk read

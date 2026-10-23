@@ -14,7 +14,7 @@ namespace pcl
 // The bayerPattern parameter every Planetary process shares (SERViewer,
 // PlanetaryStack): same element ids and values, so a script or icon reads the
 // same in both. AVI only (a SER carries its own ColorID): the CFA pattern.
-// Auto = the ASIAIR sidecar's Bayer value (rotated for Flip=Vert); with no
+// Auto = the ASIAIR sidecar's Bayer value as it stands; with no
 // sidecar, raw mono and a warning. Each process derives its own parameter
 // (its Id) from this.
 class BayerPatternEnumeration : public MetaEnumeration

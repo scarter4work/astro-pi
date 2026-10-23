@@ -110,8 +110,10 @@ BENCHMARK: List[Capture] = [
             why="both tools; named FOV but a lunar limb (checked visually)"),
     Capture("2023-03-05-moon", "lunar", "3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi",
             (1920, 1080), 1705, True, "RGGB",
-            CAMERA_RGGB + " (greens 0.0 % apart); the explicit pattern wins over the ASIAIR sidecar, whose Bayer = RG with "
-            "Flip=Vert the reader resolves to BGGR (Ruling 10); AutoStakkert debayered RGGB",
+            CAMERA_RGGB + " (greens 0.0 % apart); = its ASIAIR sidecar (Bayer = RG, Flip = Vert(unimplemented): never "
+            "applied, so Auto is RGGB too -- spec amendment 2026-10-23, which withdrew Ruling 10's BGGR); the readout "
+            "matches the camera's full-frame bias pixel for pixel (fixed pattern, via the same-ROI 2023-11-02 Jupiter); "
+            "AutoStakkert debayered RGGB",
             ["3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit",
              "3_6_2023/moon/AS_P50/2023-03-05-224808-Moon-Bin1 18.3F_jupiter_lapl5_ap4_Drizzle15.png"],
             why="a second AS P20/P50 pair; sidecar"),

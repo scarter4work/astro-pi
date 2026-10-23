@@ -54,7 +54,7 @@ inline std::string StackWindowWarning( const std::string& warning )
 }
 
 // An AVI's effective Bayer pattern and where it came from, for people:
-// "BGGR (sidecar RG, Flip=Vert → BGGR)", "RGGB (chosen)", "none (chosen)". The
+// "RGGB (sidecar)", "RGGB (chosen)", "none (chosen)". The
 // reader's "none" token (Auto found no pattern) becomes the reason: a sidecar
 // Bayer value it did not recognise, a sidecar that could not be read, or no
 // pattern to go on at all. The reader's "sidecar (SERViewer)" (a sidecar that
