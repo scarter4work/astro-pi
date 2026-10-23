@@ -644,6 +644,21 @@ def test_the_calibration_runs_every_scene_and_jitter_with_and_without_a_pedestal
                 assert {p for k, jj, ss, p in conds if (k, jj, ss) == (kind, j, s)} == {0.0, 3.0}
 
 
+def test_the_frozen_calibration_holds_every_condition_of_the_procedure():
+    """calibration.json was frozen by the procedure in this tree: one run per calibration condition, the
+    tolerance and R_cal as halves.tolerance and the mean over the runs give them (fix round 4)."""
+    import halves
+    cal = halves.load_calibration()["kinds"]
+    for kind in ("disc", "lunar"):
+        runs = cal[kind]["runs"]
+        assert sorted(r["condition"] for r in runs) == sorted(
+            halves.condition_tag(k, j, s, p) for k, j, s, p in halves.calibration_conditions() if k == kind)
+        lo, hi = halves.tolerance([r["high"] for r in runs], cal[kind]["n_eff"])[:2]
+        assert cal[kind]["tolerance"] == pytest.approx([lo, hi])
+        assert cal[kind]["r_cal"] == pytest.approx(list(np.mean([r["ratio"] for r in runs], axis=0)))
+        assert all("tiles" in r and r["tiles"]["n"] > 0 for r in runs)        # measured with the P28d tile shifts
+
+
 def test_a_pedestal_synthetic_fits_the_negative_intercept_real_captures_fit():
     """Re-review 3 N3-m6: with the pedestal the sky rounds to one 8-bit value and the line is
     v = a m + (c + 1/12 - a b) < 0, as the real captures' fits read (-0.03 to -3.17); the measured line
