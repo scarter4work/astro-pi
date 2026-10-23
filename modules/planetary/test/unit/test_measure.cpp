@@ -854,3 +854,79 @@ TEST_CASE("A Bayer disc saturated in three of its four sites is clipped (Task 9:
         CHECK(stack::SelectFrames(stats, info).diagnosis.kind == stack::DiagnosisKind::Clipped);
     }
 }
+
+TEST_CASE("MeasurementLuma counts the clipped samples of each luma pixel -- per site and channel") {
+    // Bayer: each 2 x 2 cell's saturated sites (0-4), whatever the pattern; a site at 254/255 is not
+    // saturated, a 12-bit ADC scaled into 16 bits (65520/65535) is (kClippedLuma).
+    {
+        ser::Frame f;
+        f.width = 4;
+        f.height = 2;
+        f.channels = 1;
+        f.samples = {255, 255, 254, 255, 255, 255, 0, 10};
+        ser::FileInfo info;
+        info.header.width = 4;
+        info.header.height = 2;
+        info.colorId = ser::ColorId::BayerGRBG;
+        info.normDepth = 8;
+        const stack::MeasurementImage m = stack::MeasurementLuma(f, info);
+        REQUIRE(m.width == 2);
+        CHECK(m.samplesPerPixel == 4);
+        CHECK(m.clippedSamples == std::vector<uint8_t>{4, 1});
+        f.samples = {65520, 65519, 65470, 65469, 0, 0, 0, 0};
+        info.normDepth = 16;
+        CHECK(stack::MeasurementLuma(f, info).clippedSamples == std::vector<uint8_t>{2, 1});  // 0.999 x 65535 = 65469.5
+    }
+    // Mono: the counts are the luma's own per-pixel test, so a mono frame measures exactly as before.
+    const int w = 96, h = 80;
+    FloatImage plain = Flat(w, h, 0.02f);
+    ser::Frame mono;
+    mono.width = w;
+    mono.height = h;
+    mono.channels = 1;
+    mono.samples.assign(static_cast<size_t>(w) * h, 5);
+    ser::Frame rgb = mono;
+    rgb.channels = 3;
+    rgb.samples.assign(static_cast<size_t>(w) * h * 3, 5);
+    int64_t centre = 0, disc = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const double r = std::hypot(x - 47.3, y - 39.6);
+            if (r >= 20) continue;
+            const size_t i = static_cast<size_t>(y) * w + x;
+            ++disc;
+            const bool c = r < 12;
+            centre += c;
+            mono.samples[i] = c ? 255 : 160;
+            // RGB: the centre's R channel saturated, G and B not -- a third of its samples.
+            rgb.samples[3 * i] = c ? 255 : 160;
+            rgb.samples[3 * i + 1] = c ? 230 : 150;
+            rgb.samples[3 * i + 2] = c ? 200 : 140;
+        }
+    ser::FileInfo info;
+    info.header.width = w;
+    info.header.height = h;
+    info.colorId = ser::ColorId::Mono;
+    info.normDepth = 8;
+    const stack::MeasurementImage m = stack::MeasurementLuma(mono, info);
+    CHECK(m.samplesPerPixel == 1);
+    const FrameStats counted = MeasureFrame(m, 0, 1), onLuma = MeasureFrame(static_cast<const FloatImage&>(m), 0, 1);
+    REQUIRE(counted.targetFound);
+    CHECK(counted.clippedFraction == onLuma.clippedFraction);
+    CHECK(counted.clippedFraction == Catch::Approx(static_cast<double>(centre) / disc).margin(0.01));
+    info.colorId = ser::ColorId::RGB;
+    const stack::MeasurementImage mr = stack::MeasurementLuma(rgb, info);
+    CHECK(mr.samplesPerPixel == 3);
+    const FrameStats sr = MeasureFrame(mr, 0, 1);
+    REQUIRE(sr.targetFound);
+    INFO("RGB clipped fraction " << sr.clippedFraction << ", centre share " << static_cast<double>(centre) / disc);
+    CHECK(sr.clippedFraction == Catch::Approx(static_cast<double>(centre) / disc / 3).margin(0.01));
+    CHECK(MeasureFrame(static_cast<const FloatImage&>(mr), 0, 1).clippedFraction == 0);  // the luma (mean) never reaches it
+    // Counts that do not match the image are an error, not a silent fallback.
+    stack::MeasurementImage bad = m;
+    bad.clippedSamples.pop_back();
+    CHECK_THROWS_AS(MeasureFrame(bad, 0, 1), std::invalid_argument);
+    bad = m;
+    bad.samplesPerPixel = 0;
+    CHECK_THROWS_AS(MeasureFrame(bad, 0, 1), std::invalid_argument);
+}

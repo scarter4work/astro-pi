@@ -91,8 +91,9 @@ constexpr int kHotPixelFrames = 64;
 //    observers; 1080p Bayer (960 x 540 luma): 10 MB -> as many as workers. Twelve observers keep up
 //    with 32 workers there: per frame the alignment pass spends ~90 ms on reading, luma, global and
 //    region alignment against 26 ms observing, so 32 workers need ~9 observers busy.
-//  - Per worker: the raw frame (2 bytes per sample), its luma (4 per luma pixel) and alignment
-//    scratch (kWorkerScratchBytes: the correlation windows, at most 512 x 512 complex doubles twice);
+//  - Per worker: the raw frame (2 bytes per sample), its luma (4 per luma pixel; measuring, 1 more for its
+//    clipped-sample counts) and alignment scratch (kWorkerScratchBytes: the correlation windows, at most
+//    512 x 512 complex doubles twice);
 //    the regions' and the frame quality's noise variances over their rectangles (4 per luma pixel at
 //    most, and three rows of doubles: Ruling P26); the noise phase's four NoisePlanes (8 bytes per
 //    sampled centre, at most kNoiseResponsesPerTriple of them) and the runs it holds for its in-order

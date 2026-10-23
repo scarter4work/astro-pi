@@ -680,9 +680,11 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads) {
         p.noiseWorkerBytes = 2 * samples + 4 * lumaPx + 37 * sampled + 65536;
     }
     // Hot-pixel pass: the raw frame and the worker's own HotPixelMap (2 + 2 bytes per sample); measuring:
-    // the raw frame, its luma, MeasureFrame's opened-image scratch and its quality's variance over the box
-    // (2 per sample, 4 + 8 + 4 per luma px, plus PixelVariance's rows); the noise phase's when larger.
-    p.measureWorkerBytes = std::max(4 * samples + 16 * lumaPx + varianceRows, p.noiseWorkerBytes);
+    // the raw frame, its luma with its clipped-sample counts (MeasurementImage), MeasureFrame's opened-image
+    // scratch and its quality's variance over the box (2 per sample, 4 + 1 + 8 + 4 per luma px, plus
+    // PixelVariance's rows); the noise phase's when larger. (The other passes slice the counts off as the
+    // luma is made: transient, beside the raw frame and before their own scratch.)
+    p.measureWorkerBytes = std::max(4 * samples + 17 * lumaPx + varianceRows, p.noiseWorkerBytes);
     // Raw, luma, regions (with the regions' variance over their extent, 4 per luma px, and its rows);
     // correlation.
     p.alignWorkerBytes = 2 * samples + 12 * lumaPx + varianceRows + kWorkerScratchBytes;

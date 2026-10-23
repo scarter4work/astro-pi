@@ -76,9 +76,14 @@ constexpr int kMinStackFrames = 5;
 // factor of the capture's median box width and height (a satellite streak's box is a frame-wide
 // line; a disc half cut by the edge still passes).
 constexpr double kBoxTolerance = 2.0;
-// A frame is clipped when this fraction of its target pixels is at full scale: a quarter of a disc
-// is its bright centre, where the detail is. Measured 2026-10-21: Neptune 0.08-0.10 and the 1080p
-// Jupiter 0.12 (both usable), Venus 2023-02-11 0.37 in every frame (saturated).
+// A frame is clipped when this fraction of its target pixels' sensor samples is at full scale
+// (FrameStats::clippedFraction): a quarter of a disc is its bright centre, where the detail is. Set
+// 2026-10-21 (9b2b92da) on per-pixel luma, when every capture here was read as mono: Neptune 0.08-0.10
+// and the 1080p Jupiter 0.12 (both usable), the 2023-02-11 Venus 0.37 in every frame (saturated). Re-measured
+// 2026-10-23 on the samples (E2, focus-survey --dump-stats, every frame), the quantity the 2 x 2 cell means of
+// Ruling P9 had lost (they read Venus 0.109-0.357, 1558 of 6485 frames clipped, and both others 0): the
+// 2026-01-30 Neptune 204515 0.048-0.087 (median 0.068) and Jupiter 195137 (1080p) 0.113-0.123, both
+// usable; the Venus 0.239-0.452 (median 0.352), 6483 of 6485 frames clipped, diagnosed Clipped.
 constexpr double kClippedFrame = 0.25;
 // Full-frame target (Ruling P2a): in at least this share of the target frames, the box touches an
 // edge AND spans at least kFullFrameSpan of the frame's width or height.

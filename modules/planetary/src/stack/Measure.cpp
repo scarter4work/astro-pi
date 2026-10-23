@@ -12,6 +12,7 @@
 #include <thread>
 #include <utility>
 
+#include "BayerPattern.h"
 #include "Demosaic.h"
 #include "Noise.h"
 #include "Parallel.h"
@@ -313,9 +314,41 @@ bool UndeclaredMosaic(const ser::FileInfo& info) {
 
 double LumaScale(const ser::FileInfo& info) { return ser::IsBayer(info.colorId) || UndeclaredMosaic(info) ? 2.0 : 1.0; }
 
-ser::FloatImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& info) {
+MeasurementImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& info) {
     // LumaForMeasure's Bayer luma is the 2 x 2 cell mean whatever the pattern, so any Bayer id bins.
-    return LumaForMeasure(frame, UndeclaredMosaic(info) ? ser::ColorId::BayerRGGB : info.colorId, info.normDepth);
+    const bool binned = UndeclaredMosaic(info) || ser::IsBayer(info.colorId);
+    MeasurementImage out;
+    static_cast<ser::FloatImage&>(out) =
+        LumaForMeasure(frame, UndeclaredMosaic(info) ? ser::ColorId::BayerRGGB : info.colorId, info.normDepth);
+    // A sample counts as clipped exactly as a mono luma pixel of its value would (same float division,
+    // same threshold): the smallest such value, found once. LumaForMeasure has checked the frame.
+    const float maxValue = ser::MaxSampleValue(info.normDepth);
+    auto clipped = [&](uint32_t s) { return static_cast<float>(s) / maxValue >= kClippedLuma; };
+    uint32_t at = static_cast<uint32_t>(std::max(0.0, std::floor(kClippedLuma * maxValue) - 2));
+    while (!clipped(at)) ++at;
+    const int w = out.width, h = out.height, fw = frame.width;
+    out.clippedSamples.assign(static_cast<size_t>(w) * h, 0);
+    const uint16_t* s = frame.samples.data();
+    if (binned) {
+        out.samplesPerPixel = 4;
+        for (int y = 0; y < h; ++y) {
+            const uint16_t* r0 = s + static_cast<size_t>(2 * y) * fw;
+            const uint16_t* r1 = r0 + fw;
+            uint8_t* o = out.clippedSamples.data() + static_cast<size_t>(y) * w;
+            for (int x = 0; x < w; ++x)
+                o[x] = static_cast<uint8_t>((r0[2 * x] >= at) + (r0[2 * x + 1] >= at) + (r1[2 * x] >= at) + (r1[2 * x + 1] >= at));
+        }
+    } else {
+        const int c = frame.channels;
+        out.samplesPerPixel = c;
+        const size_t n = static_cast<size_t>(w) * h;
+        for (size_t i = 0; i < n; ++i) {
+            int k = 0;
+            for (int ch = 0; ch < c; ++ch) k += s[i * c + ch] >= at;
+            out.clippedSamples[i] = static_cast<uint8_t>(k);
+        }
+    }
+    return out;
 }
 
 int DetectionBlock(int width, int height) {
@@ -323,8 +356,9 @@ int DetectionBlock(int width, int height) {
 }
 
 // MeasureFrame, also handing out the noise its quality used (EstimatePixelNoise).
+// clipped: per pixel, its samples at full scale out of spp (MeasurementImage); null: the luma's own test.
 static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel* model,
-                                   NoiseEstimate* qualityNoise) {
+                                   NoiseEstimate* qualityNoise, const uint8_t* clipped = nullptr, int spp = 1) {
     // An unmeasured capture model (Noise.h: 1-3 frames, or frames under 5 x 5) is no model: the frame's own
     // sky, as for one image alone.
     if (model && !model->Measured()) model = nullptr;
@@ -342,6 +376,9 @@ static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, d
         throw std::invalid_argument("MeasureFrame: luma scale " + std::to_string(lumaScale) + " is not >= 1");
     const float* p = luma.data.data();
     auto at = [&](int x, int y) { return static_cast<double>(p[static_cast<size_t>(y) * w + x]); };
+    // Pixel i's clipped samples and the samples per pixel: the counts when given, else the luma's own test.
+    auto clippedAt = [&](size_t i) -> int64_t { return clipped ? clipped[i] : p[i] >= kClippedLuma; };
+    const double perPixel = clipped ? spp : 1;
 
     FrameStats s;
     s.index = index;
@@ -400,13 +437,13 @@ static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, d
 
     if (bestFlux < 0) {
         double sum = 0;
-        int64_t clipped = 0;
+        int64_t clippedSum = 0;
         for (size_t i = 0; i < npix; ++i) {
             sum += p[i];
-            if (p[i] >= kClippedLuma) ++clipped;
+            clippedSum += clippedAt(i);
         }
         s.brightness = sum / static_cast<double>(npix);
-        s.clippedFraction = static_cast<double>(clipped) / static_cast<double>(npix);
+        s.clippedFraction = static_cast<double>(clippedSum) / (perPixel * static_cast<double>(npix));
         if (qualityNoise) *qualityNoise = noiseImage;  // no target: the whole image is sky
         return s;
     }
@@ -432,7 +469,7 @@ static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, d
     // Target pixels, brightness, clipping, centroid, and the half-contrast extent.
     const double cenThr = b + kCentroidFraction * contrast;
     double sum = 0, wsum = 0, wx = 0, wy = 0;
-    int64_t n = 0, clipped = 0;
+    int64_t n = 0, clippedSum = 0;
     int hx0 = w, hy0 = h, hx1 = -1, hy1 = -1;
     for (int y = s.by0; y < s.by1; ++y)
         for (int x = s.bx0; x < s.bx1; ++x) {
@@ -440,7 +477,7 @@ static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, d
             if (v > extThr) {
                 sum += v;
                 ++n;
-                if (v >= kClippedLuma) ++clipped;
+                clippedSum += clippedAt(static_cast<size_t>(y) * w + x);
             }
             if (opened[static_cast<size_t>(y) * w + x] > cenThr) {
                 hx0 = std::min(hx0, x);
@@ -457,7 +494,7 @@ static FrameStats MeasureWithNoise(const ser::FloatImage& luma, int64_t index, d
         }
     if (n > 0) {
         s.brightness = sum / static_cast<double>(n);
-        s.clippedFraction = static_cast<double>(clipped) / static_cast<double>(n);
+        s.clippedFraction = static_cast<double>(clippedSum) / (perPixel * static_cast<double>(n));
     }
     if (wsum > 0) {
         s.cx = wx / wsum;
@@ -490,6 +527,25 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
 
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel& model) {
     return MeasureWithNoise(luma, index, lumaScale, &model, nullptr);
+}
+
+// A MeasurementImage's counts, checked (null when it carries none).
+static const uint8_t* ClippedCounts(const MeasurementImage& luma) {
+    if (luma.clippedSamples.empty()) return nullptr;
+    if (luma.clippedSamples.size() != luma.data.size())
+        throw std::invalid_argument("MeasureFrame: " + std::to_string(luma.clippedSamples.size()) +
+                                    " clipped-sample counts for " + std::to_string(luma.data.size()) + " pixels");
+    if (luma.samplesPerPixel < 1 || luma.samplesPerPixel > 255)
+        throw std::invalid_argument("MeasureFrame: " + std::to_string(luma.samplesPerPixel) + " samples per pixel");
+    return luma.clippedSamples.data();
+}
+
+FrameStats MeasureFrame(const MeasurementImage& luma, int64_t index, double lumaScale) {
+    return MeasureWithNoise(luma, index, lumaScale, nullptr, nullptr, ClippedCounts(luma), luma.samplesPerPixel);
+}
+
+FrameStats MeasureFrame(const MeasurementImage& luma, int64_t index, double lumaScale, const NoiseModel& model) {
+    return MeasureWithNoise(luma, index, lumaScale, &model, nullptr, ClippedCounts(luma), luma.samplesPerPixel);
 }
 
 NoiseEstimate EstimatePixelNoise(const ser::FloatImage& luma) {
@@ -717,7 +773,7 @@ std::vector<FrameStats> MeasureAll(const SourceFactory& factory, const ser::File
             if (first >= total) break;
             const int64_t last = std::min(total, first + kRun);
             for (int64_t i = first; i < last && !stop.load(std::memory_order_relaxed); ++i) {
-                const ser::FloatImage luma = MeasurementLuma(src->ReadFrame(i), info);
+                const MeasurementImage luma = MeasurementLuma(src->ReadFrame(i), info);
                 out[static_cast<size_t>(i)] = MeasureFrame(luma, i, scale, model);
                 done.fetch_add(1);
             }

@@ -713,13 +713,14 @@ TEST_CASE("PlanMemory counts the noise model's scratch: the quality's variance a
         i.bytesPerSample = 2;
         return i;
     };
-    // 4K mono (8 294 400 luma px): measuring holds 4 + 16 per luma px and PixelVariance's rows of doubles
+    // 4K mono (8 294 400 luma px): measuring holds 4 + 17 per luma px (16 until E2 counted the luma's clipped
+    // samples, 1 per px) and PixelVariance's rows of doubles
     // (the quality's variance over the box: 4 per px); aligning 2 + 12 and the rows (the regions'
     // variance over their extent), plus the correlation scratch. 941ab4e7 counted 4 + 12 and 2 + 8, and
     // held a whole-frame variance (4 per px) and a double plane (8 per px) on every worker.
     const size_t px = 3840ull * 2160, rows = 3 * 8 * 3840;
     const stack::MemoryPlan p = stack::PlanMemory(info(3840, 2160), 32);
-    CHECK(p.measureWorkerBytes == 4 * px + 16 * px + rows);
+    CHECK(p.measureWorkerBytes == 4 * px + 17 * px + rows);
     CHECK(p.alignWorkerBytes == 2 * px + 12 * px + rows + stack::kWorkerScratchBytes);
     // The noise phase samples every 3rd centre there: four NoisePlanes of 8 bytes per sampled centre.
     const size_t sampled = 1279ull * 719;

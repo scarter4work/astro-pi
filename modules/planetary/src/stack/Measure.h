@@ -62,7 +62,11 @@ struct FrameStats {
     double quality2Sigma = 0;
     // Mean luma of the target pixels (in the box, above 10% of the contrast), in [0, 1] units.
     double brightness = 0;
-    // Fraction of the target pixels with luma >= kClippedLuma.
+    // Share of the target pixels' sensor samples at full scale (>= kClippedLuma of it): with a frame's
+    // MeasurementLuma, the clipped samples counted over the target pixels' sites (MeasurementImage), so a
+    // 2 x 2 cell with three of its four sites saturated counts 3/4 -- the per-sample quantity kClippedFrame
+    // was calibrated on (Select.h); with any other image (a reference, a stack: no counts), the share of
+    // its pixels with luma >= kClippedLuma.
     double clippedFraction = 0;
 };
 
@@ -84,21 +88,33 @@ bool UndeclaredMosaic(const ser::FileInfo& info);
 // The one place this factor is defined (Ruling P3): consumers never scale by 2 on their own.
 double LumaScale(const ser::FileInfo& info);
 
+// A sample at or above this share of full scale is saturated: 254/255 is not, a 12- or 10-bit ADC
+// scaled into 16 bits (65520/65535, 65472/65535) is. MeasurementLuma counts each luma pixel's samples
+// by it (MeasurementImage); an image without counts is tested on its luma.
+constexpr double kClippedLuma = 0.999;
+
+// A frame's measurement luma with, per luma pixel, how many of the sensor samples it averages are at
+// full scale (>= kClippedLuma of it, after the same normalisation; a sample above the depth's range
+// counts): 0..samplesPerPixel -- 4 per 2 x 2 cell of Bayer input or an undeclared mosaic, 3 for RGB (one
+// per channel), 1 for mono. Counted on the samples, not on the luma: a cell mean reaches kClippedLuma
+// only when all four of its sites are saturated, so the 2023-02-11 Venus (an undeclared mosaic, R and
+// G saturated over its centre, B not) read a median 0.225 of its disc clipped on cells (29099f63, all
+// 6485 frames, focus-survey --dump-stats), where 0.37 had been measured per raw pixel, and the engine
+// stacked 3568 of its frames instead of diagnosing Clipped (Task 9's run, 3ca176de; Select.h, kClippedFrame).
+// Empty clippedSamples (a FloatImage that is not MeasurementLuma's, copied into this type) means not
+// counted. A MeasurementImage passes as a ser::FloatImage wherever only the luma is read.
+struct MeasurementImage : ser::FloatImage {
+    std::vector<uint8_t> clippedSamples;  // width * height, row-major, or empty
+    int samplesPerPixel = 1;
+};
+
 // The measurement luma of a frame of this capture: LumaForMeasure, with an undeclared mosaic binned
-// 2 x 2 like a Bayer frame. Every measuring stage reads frames through this.
-ser::FloatImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& info);
+// 2 x 2 like a Bayer frame, and its clipped-sample counts. Every measuring stage reads frames through this.
+MeasurementImage MeasurementLuma(const ser::Frame& frame, const ser::FileInfo& info);
 
 // Side d of the detection grid's square blocks for a luma image of width x height:
 // d = ceil(longest side / 256), at least 1 (see "Background and noise" below).
 int DetectionBlock(int width, int height);
-
-// Luma at or above this is saturated: 254/255 is not, a 12- or 10-bit ADC scaled into 16 bits
-// (65520/65535, 65472/65535) is. For Bayer input the luma is a 2x2 cell mean, so the test is
-// "cell mean >= 0.999": with in-range samples (each <= 1) the four sites' shortfalls from full
-// scale have to sum to at most 0.004. Every site is therefore at >= 0.996 of full scale, and a site
-// can sit as low as 0.996 only when the other three are exactly full scale; a cell with only its red
-// site clipped does not count, and neither does one whose four sites are all at 254/255.
-constexpr double kClippedLuma = 0.999;
 
 // Measures one luma image (1 channel, normalised to [0, 1] as LumaForMeasure makes it).
 // `lumaScale`: frame (sensor) pixels per luma pixel along each axis -- LumaScale(info) for a frame
@@ -255,6 +271,11 @@ FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaS
 // A frame of a capture: the quality's noise is the capture's model (Noise.h); MeasureAll's form. An unmeasured
 // model (NoiseModel::Measured false: a capture of 1-3 frames) is taken as none: the form above.
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale, const NoiseModel& model);
+// The same for a frame's MeasurementLuma: clippedFraction from its clipped-sample counts (FrameStats).
+// std::invalid_argument, besides the cases above, for counts that are not width * height or
+// samplesPerPixel outside 1..255.
+FrameStats MeasureFrame(const MeasurementImage& luma, int64_t index, double lumaScale);
+FrameStats MeasureFrame(const MeasurementImage& luma, int64_t index, double lumaScale, const NoiseModel& model);
 
 // The pieces of MeasureFrame that other stages reuse on parts of a frame (Task 5's regions).
 // Pixel noise s of a luma image as the three-argument MeasureFrame's quality uses it ("Background and
@@ -302,6 +323,7 @@ using SourceFactory = std::function<std::unique_ptr<ser::FrameSource>()>;
 // thread_local scratch alive for the life of the thread: two opened-luma buffers (4 bytes per luma pixel
 // each) and the quality's variance over the target's box (4 per luma pixel at most, and three rows of
 // doubles) -- ~25 MB at 1080p mono; Engine.h's MemoryPlan counts it (measureWorkerBytes).
+// The frame in flight's luma carries its clipped-sample counts (1 byte per luma pixel).
 // Progress phase "Measuring frames" (done, frameCount); report() and cancelled() are only called
 // from the calling thread. Cancel: workers stop, every thread is joined, StackCancelled is thrown.
 // A worker's exception (a read error, a factory that throws or returns null, a reader whose size,
