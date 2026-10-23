@@ -606,22 +606,36 @@ TEST_CASE("RunStack: a disc is judged by its limb blur against its radius -- cle
         // The region stage never refuses a disc (Ruling P20; a blob's half-level radius grows with its blur, holding
         // its measure at 0.57-0.67 -- real Jupiter blurred by 16 px: 0.566; this synthetic: 0.61). Select does: the
         // blob's half-contrast radius (~15.6 luma px) puts it in the large-disc class, where sigma(q_ref) / R_h reads
-        // 0.54 against kGrossBlurLimit 0.25 (Select.h step 7) -- the one refusal for a disc's gross defocus.
-        // A defocus is steady, and said so: 200 frames of one blur read a spread of 0%, at most 3% (Ruling P26
-        // fix round 1). With qualitySigma the frames' real scatter the confidence takes the frames to earn: 40
-        // frames read at most 6% even of one blur (the 2-SE bound alone, over kSteadySpread: "can't tell"), and
-        // 40 or 200 frames of this fixture's usual 5% per-cell jitter 6-8% -- a spread the data cannot rule out
-        // (the "optics" wording before P26 came from an overstated qualitySigma).
-        const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82, 0.0, 200).Factory(), 8, {});
-        INFO(o.diagnosis.message << " | " << o.summary.selection);
-        CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
-        CHECK(o.diagnosis.message.find("Out of focus") == 0);
-        CHECK(o.diagnosis.message.find("the optics, not the air") != std::string::npos);
-        double blurOverRadius = 0;
-        for (const auto& [name, v] : o.diagnosis.numbers)
-            if (name == "blur / radius") blurOverRadius = v;
-        CHECK(blurOverRadius >= stack::kGrossBlurLimit);
-        CHECK_FALSE(o.image.has_value());
+        // over kGrossBlurLimit (Select.h step 7) -- the one refusal for a disc's gross defocus.
+        auto blurOverRadius = [](const StackOutcome& o) {
+            for (const auto& [name, v] : o.diagnosis.numbers)
+                if (name == "blur / radius") return v;
+            return 0.0;
+        };
+        // The capture as it comes: 40 frames, its blur jittering 5% per 40-px cell. Refused, and worded as the
+        // data allow: with qualitySigma the frames' real scatter (Ruling P26) 40 frames cannot rule out a
+        // spread over kSteadySpread (6-8%), so "focus or seeing" -- the hedged verdict, ruled acceptable
+        // (P26 fix round 2; the "optics" wording before P26 came from an overstated qualitySigma).
+        {
+            const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82).Factory(), 8, {});
+            INFO(o.diagnosis.message << " | " << o.summary.selection);
+            CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+            CHECK(o.diagnosis.message.find("Too blurred: even the sharpest frames blur the limb by") == 0);
+            CHECK(o.diagnosis.message.find("focus or seeing, the measurement noise is too large to tell") != std::string::npos);
+            CHECK(blurOverRadius(o) >= stack::kGrossBlurLimit);
+            CHECK_FALSE(o.image.has_value());
+        }
+        // A steady defocus over enough frames to show it: 200 frames of one blur read a spread of 0%, at most 3%
+        // -- the confident verdict.
+        {
+            const StackOutcome o = stack::RunStack(BayerDisc(320, 288, 8, 32, 82, 0.0, 200).Factory(), 8, {});
+            INFO(o.diagnosis.message << " | " << o.summary.selection);
+            CHECK(o.diagnosis.kind == DiagnosisKind::OutOfFocus);
+            CHECK(o.diagnosis.message.find("Out of focus") == 0);
+            CHECK(o.diagnosis.message.find("the optics, not the air") != std::string::npos);
+            CHECK(blurOverRadius(o) >= stack::kGrossBlurLimit);
+            CHECK_FALSE(o.image.has_value());
+        }
     }
 }
 TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, with no image", "[engine]") {

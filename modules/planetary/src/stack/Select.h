@@ -58,6 +58,10 @@ struct Selection {
     // the only refusal of a disc for gross defocus. Small discs' own rule did not fire on any measured
     // capture (step 7), so in practice a small disc is never refused for focus.
     double targetRadius = 0;
+    // Step 7's reading when focusJudged (0 otherwise): the sharpest frames' limb blur over the radius it
+    // is judged at, and the limit it is judged against, both as a fraction of that radius -- refused
+    // when focusReading >= focusLimit. focusQuality: the quality the blur was read at (step 7).
+    double focusReading = 0, focusLimit = 0, focusQuality = 0;
 };
 
 // Fewest frames worth stacking: outlier rejection (satellite, hot pixel) needs a handful of samples
@@ -133,16 +137,20 @@ constexpr int kPriorGrid = 64;
 constexpr int kPriorIterations = 300;
 // The frequency the selection optimises, as the contrast the best frames keep there: e^-3 = 5%.
 constexpr double kDetailDepth = 3.0;
-// Focus / seeing: blurred when the best frames' limb blur is at least kBlurLimit of the radius.
-constexpr double kBlurLimit = 0.125;
+// Focus / seeing, a small disc: blurred when the best frames' limb blur is at least kBlurLimit of the radius
+// (and kBlurFloorPixels). Twice the highest in-focus small-disc reading of the survey (step 7): 0.119 R,
+// the 2022-08-03 015840 Jupiter's first 30 frames (Ruling P26 fix round 2; R / 8 before, set on readings
+// the noise had lowered).
+constexpr double kBlurLimit = 0.24;
 // Discs with a half-contrast radius (FrameStats::halfRadius) under this (luma px) are judged with
 // the sampling correction and floor below; the region stage judges them too, warn-only (Ruling P20).
 constexpr double kMinJudgedRadius = 15;
 // A disc of at least kMinJudgedRadius is refused only when grossly blurred: sigma(q_ref) >= this times
-// its half-contrast radius (FrameStats::halfRadius), twice the highest in-focus reading measured and
-// reached on real Jupiters only past a true blur of ~0.3 R (step 7). Diagnoses refuse the image, and
-// a false refusal of a good capture is worse than a missed one (Rulings P15 and P20: refuse only on
-// gross failure, and only here -- the region stage never refuses).
+// its half-contrast radius (FrameStats::halfRadius). Set at twice the highest in-focus reading before
+// Ruling P26; with P26's noise-corrected quality that reading is 0.139 (the 2022-09-17 230420 Jupiter),
+// 1.80x under it, while the real defocus series reach it from 6-8 luma px of blur (0.247-0.293, step 7).
+// Diagnoses refuse the image, and a false refusal of a good capture is worse than a missed one (Rulings
+// P15 and P20: refuse only on gross failure, and only here -- the region stage never refuses).
 constexpr double kGrossBlurLimit = 0.25;
 // Limb width the luma sampling itself gives a perfectly sharp edge, removed in quadrature (luma px).
 constexpr double kSamplingBlur = 0.5;
@@ -155,6 +163,11 @@ constexpr double kBlurFloorPixels = 3;
 // than kMinJudgedFrames frames, or a spread the noise leaves undecided, is worded "can't tell".
 constexpr double kSteadySpread = 0.05;
 constexpr int kMinJudgedFrames = 30;
+// Step 7's gross reading narrows q_ref to the spread the data support only at low per-frame SNR (median
+// quality / qualitySigma): fully at kShrinkSnrFull and under, not at all from kShrinkSnrNone, log-linear
+// between (step 7). Measured: the faint blob it is for reads 3.4; every NAS disc 33 and over, short or long.
+constexpr double kShrinkSnrFull = 5;
+constexpr double kShrinkSnrNone = 15;
 
 // Automatic frame selection and diagnosis from the per-frame statistics (spec "The engine" step 2
 // and "Diagnosis"). `stats` holds one entry per frame (MeasureAll's output; any order); `info` is the
@@ -238,25 +251,23 @@ constexpr int kMinJudgedFrames = 30;
 //      R_h >= kMinJudgedRadius: judged at R_h, not at R: blurred when sigma(q_ref; R_h) >=
 //           kGrossBlurLimit R_h.
 //      R_h <  kMinJudgedRadius (Ruling P4): sigma' = sqrt(max(0, sigma^2 - kSamplingBlur^2)); blurred
-//           when sigma'(q_ref) >= max(R / 8, kBlurFloorPixels / LumaScale). Classed by the box, a small
+//           when sigma'(q_ref) >= max(kBlurLimit R, kBlurFloorPixels / LumaScale). Classed by the box, a small
 //           disc blurred far enough turned "large" (its box grows 1.28 sigma) and met the large-disc
 //           rule before the region stage judged it: StackSynth R 8 / 11 / 14 blurred 6 / 4 / 6 px
 //           reached boxes of 16-22 and were refused here (R 11 by 4 px as PoorSeeing): the size
 //           class moved with the blur being judged.
-//           Measured 2026-10-22, the small rule itself did not fire on any measured frames -- its R
-//           is the box's, inflated by the blur as above: S = sigma'(q_ref) / max(R / 8, kBlurFloorPixels /
-//           LumaScale) reads 0.50 / 0.50 / 0.48 / 0.00 on the 2026-01-30 Jupiters 195830 / 202657 /
-//           195438 and Neptune as captured (every NAS disc as captured: 0.00-0.74, the highest the
-//           2022-09-08 001402 Jupiter), at most 0.93 when they are blurred by 1-24 sensor px
-//           (Neptune by 1-3: 0.19-0.54, 0.20-0.70 with the unbiased noise of Ruling P19, which also
-//           finds it in 16 frames of 94 at 3 px where it found 35; by 4 it is not found; 195830's
-//           readings, its noise far under its detail, did not move), and 0.00-0.85 on StackSynth discs of R
-//           3-14 blurred 0.6-6 px (mono, limb and convolved); in the region stage's warn band (those
-//           Jupiters blurred 1-3 sensor px) 0.54-0.77 -- so on measured data a small disc is never
-//           refused for focus: the region stage only warns (Ruling P20), and a disc defocused far
+//           Measured (Ruling P26 fix round 2, the reading as here): S = sigma'(q_ref) / max(kBlurLimit R,
+//           kBlurFloorPixels / LumaScale) reads at most 0.495 on every NAS disc as captured, at full length
+//           and over its first 8 / 30 / 60 / 120 frames (the 2022-08-03 015840 Jupiter's first 30 frames;
+//           0.42 at full length; 0.47 the 2022-09-08 001402 Jupiter, the highest before P26 at R / 8: 0.74,
+//           0.84 with P26's noise-corrected quality), and at most 0.51 blurred by 1-16 sensor px (the
+//           2026-01-30 195137 Jupiter at 16 px); StackSynth's small disc smeared over 5 px is refused on
+//           the floor. So on measured data a small disc is never refused for focus -- 1.95x under the
+//           limit at the most -- the region stage only warns (Ruling P20), and a disc defocused far
 //           enough to grow its half-contrast radius past kMinJudgedRadius meets the large-disc rule.
-//    R / 8: the coarsest planetary structure (belts, period P ~ R/4) then keeps under 1% contrast
-//    (exp(-2 pi^2 sigma^2 / P^2) < 0.01 at sigma > 0.48 P).
+//    kBlurLimit was R / 8 until Ruling P26 fix round 2 -- the coarsest planetary structure (belts, period
+//    P ~ R/4) then keeps under 1% contrast (exp(-2 pi^2 sigma^2 / P^2) < 0.01 at sigma > 0.48 P) -- but in
+//    focus a measured disc read up to 0.95 of R / 8 with the noise corrected, so P15's 2x sets it instead.
 //    Why R_h for large discs (Task 6 found an R 24 disc blurred by 12 px stacked): the box sits at the
 //    blurred limb's 10% contour, R + 1.28 sigma plus up to a block, so sigma(q) / R_box =
 //    1 / (sqrt(pi) (q R_box)^2), and q R_box never falls below ~2.2 however blurred the disc (a blob
@@ -268,23 +279,22 @@ constexpr int kMinJudgedFrames = 30;
 //    growing with the blur. Why kGrossBlurLimit, not R / 8, there: the reading is not the true blur
 //    over R -- texture raises q in focus and limb darkening lowers it once the texture is gone, so a
 //    real Jupiter softened by only 0.5-1 luma px already reads 0.09-0.20 -- and a refusal must be
-//    safe. Measured 2026-10-22 (q_ref as here): the four largest discs on the NAS as captured read
-//    0.053 / 0.053 (2022-09-17 1080p Jupiters, R_h 21.5: the only ones in this class), 0.125
-//    (2022-08-03, R_h 14.5), 0.081 (2026-01-30-195137, R_h 12) -- the limit is twice the highest (43
-//    planetary files surveyed, none refused for focus or seeing; re-surveyed with Ruling P19's
-//    unbiased noise, 46 files: every verdict the same, every reading within 0.002 of its old value
-//    (S within 0.02), those four unchanged -- in focus a disc's detail dwarfs the noise term, so the
-//    limit stays 0.25). The same four, defocused
-//    by a Gaussian of sigma 0.5 / 1 / 1.5 / 2 / 3 / 4 / 6 / 8 luma px (stack-probe --blur, own noise
-//    put back): 2022-09-17 0.093 / 0.139 / 0.150 / 0.159 / 0.184 / 0.202 / 0.249 / 0.288 and
-//    0.094 / 0.142 / 0.161 / 0.170 / 0.187 / 0.215 / 0.251 / 0.288; 2022-08-03 0.160 / 0.196 / 0.206 / 0.217 / 0.238 / 0.262 / 0.318 /
-//    0.343; 195137 0.096 / 0.119 / 0.147 / 0.173 / 0.237 / 0.282 / 0.343 / 0.362 -- refused from a
-//    true blur of 0.28-0.37 R on; at 0.43-0.57 R they read 0.32-0.35, 1.3-1.4x over the limit.
-//    Re-measured with Ruling P19's noise: 0.000-0.006 higher (2022-09-17 0.094 / 0.139 / 0.150 /
-//    0.159 / 0.184 / 0.202 / 0.250 / 0.289 and 0.094 / 0.142 / 0.161 / 0.171 / 0.188 / 0.215 / 0.251 /
-//    0.290; 2022-08-03 0.160 / 0.197 / 0.207 / 0.217 / 0.239 / 0.263 / 0.321 / 0.349; 195137 0.096 /
-//    0.119 / 0.147 / 0.173 / 0.237 / 0.283 / 0.343 / 0.362): a real disc's noise is small against even
-//    its blurred limb; the first 2022-09-17 file at 6 luma px now sits on the limit (0.250, refused).
+//    safe. Surveyed again with Ruling P26 (fix round 2; 851ba41b -> head, reading as here): the same 46
+//    planetary files, none refused for focus or seeing either way. The large class, the two 2022-09-17
+//    1080p Jupiters (R_h 21.5): 225418 0.053 -> 0.118 (606 frames; 0.124-0.131 over its first 8 / 30 / 60 /
+//    120), 230420 0.053 -> 0.139 (761; 0.112-0.134) -- at most 1.80x under kGrossBlurLimit, where they read
+//    4.7x under before. The old readings were low: on 225418 each frame's quality with its sky's noise
+//    alone read a mean 0.147 against 0.093 for a stack of its sharpest 303 frames (near noise-free) and
+//    0.098 with the capture's model -- the disc's own shot noise kept as detail -- and the limb fitted on
+//    that stack is 3.9-4.3 luma px wide, 0.18-0.20 R_h (the reading at q_ref: 0.109 now, 0.053 before).
+//    Defocused (stack-probe --blur, the capture's own noise put back; 2 / 4 / 6 / 8 / 12 / 16 sensor px, 1-8
+//    luma px on these Bayer captures) the readings did not move: 225418 0.143 / 0.162 / 0.188 / 0.203 /
+//    0.252 / 0.294 (0.139 / 0.159 / 0.184 / 0.202 / 0.250 / 0.289 before), 230420 0.151 / 0.172 / 0.199 /
+//    0.216 / 0.247 / 0.279 (0.251 / 0.290 before at 12 / 16), the 2022-08-03 Jupiter at 16 px (R_h 15, large)
+//    0.350 (0.349) -- a blurred limb's noise is small against it. StackSynth: R 24 by 10 px 0.267-0.290
+//    over seeds 7, 107, ..., 907, every other refused case 0.300 and over. So the margin closed from above,
+//    not below: P15's 2x would put the limit at 0.278 or more, over 230420's 0.279 at 8 luma px and R 24
+//    by 10 px's 0.267-0.290; at 0.25 every one of these is refused but 230420 at 6 luma px (0.247).
 //    StackSynth (unit test, 60 frames, noise 0.01 unless said; seed 7, re-measured 2026-10-22 with
 //    Ruling P19's unbiased pixel noise, the earlier reading in brackets): R 24 blurred 0.6 / 2 / 3 px
 //    0.027 / 0.080 / 0.114, R 40 by 4 px 0.084 (stacked); R 24 by 10 px 0.263 (0.245: it was
@@ -308,20 +318,24 @@ constexpr int kMinJudgedFrames = 30;
 //    q_ref up to 28% (R 24 / 24 px over the 0.06 sky, seed 7: 0.0476 against 0.0371 noise-free; reading
 //    0.222, stacked). So the limb blur is read at the narrowest spread the data cannot rule out: q_ref's
 //    excursion above the single quality that best explains every frame (DetailRanking::pointQuality) is
-//    scaled by tauLo / G's sd when G is wider than tauLo (Ruling P26 fix round 1). Over seeds 7, 107, ...,
-//    907: R 24 / 24 px 0.336-0.801 (0.293-0.343 before P26, 0.222-0.511 with P26's q_ref), refused in
-//    all 10; the clipped-sky R 40 / 20 px 0.327-0.380, refused in all 10; the in-focus cases above move by
-//    at most 1% (R 24 by 3 px 0.116 -> 0.117), R 24 by 10 px 0.267 -> 0.292. A centre that dims (blur ~ R
-//    and over) also moves R_h out. Missed, such a capture stacks into a visibly soft image, and the region
-//    stage warns (RunStack on the clipped-sky R 40 / 20 px at its old reading: limb blur 0.47 R against the
-//    warn level 0.40) -- the failure the rule prefers.
+//    scaled by tauLo / G's sd when G is wider than tauLo (Ruling P26 fix round 1) -- only where the frames'
+//    own SNR leaves G's top to EM's early-stopped smoothing: fully at a median quality / qualitySigma of
+//    kShrinkSnrFull and under, not at all from kShrinkSnrNone (fix round 2). The faint blob reads a median
+//    3.4; every NAS disc 33 and over, full length or its first 8-120 frames, where tauLo reaches 0 on a
+//    short capture and the reading at the point quality rose 6-8% (the 2022-09-17 225418 Jupiter's first
+//    60 frames: 0.140 against 0.131 at q_ref); StackSynth's other refused cases 14.5 and over. Over seeds 7,
+//    107, ..., 907: R 24 / 24 px 0.336-0.801 (0.293-0.343 before P26, 0.222-0.511 with P26's q_ref),
+//    refused in all 10; the clipped-sky R 40 / 20 px 0.313-0.372, refused in all 10; the in-focus cases
+//    above as at q_ref. A centre that dims (blur ~ R and over) also moves R_h out. Missed, such a capture
+//    stacks into a visibly soft image, and the region stage warns (RunStack on the clipped-sky R 40 / 20 px
+//    at its old reading: limb blur 0.47 R against the warn level 0.40) -- the failure the rule prefers.
 //    The blur spread is that of the true quality, read in quality^2 when every frame carries
 //    quality2Sigma (measured frames: its noise is linear and its sd rho first-order exact), else in
 //    quality: tau^2 = max(0, var(x) - mean(sd^2)), x = q^2 (sd rho) or q (sd qualitySigma); spread =
 //    (sigma(mu - 1.2816 tau) - sigma(mu + 1.2816 tau)) / sigma(mu), sigma the limb blur at x; its bounds
-//    use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(x). Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE)
-//    gives a spread under kSteadySpread; PoorSeeing when even the lower bound (tau^2 - 2 SE) gives one at or
-//    over it; otherwise -- or under kMinJudgedFrames frames -- OutOfFocus worded "focus or seeing, ... to
+//    use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(x). Blurred -> OutOfFocus ("steady") when even the upper
+//    bound (tau^2 + 2 SE) gives a spread under kSteadySpread; PoorSeeing when even the lower bound
+//    (tau^2 - 2 SE) gives one at or over it; otherwise -- or under kMinJudgedFrames frames -- OutOfFocus worded "focus or seeing, ... to
 //    tell". Measured (200 seeds per cell, N = 100 / 500 / 3000, noise 3-15%), synthetic frame statistics
 //    (quality Gaussian, qualitySigma exact): steady blur is called seeing in at most 3 of 200; 6% seeing
 //    under 3% noise is found in 185 / 200 / 200 of 200. Measured through MeasureFrame (Ruling P26 fix round

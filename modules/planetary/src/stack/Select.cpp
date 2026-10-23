@@ -543,13 +543,24 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
         // its top lifted q_ref by up to 28% (R 24 / 24 px, seed 7: 0.0476 against 0.0371 noise-free): the
         // reading fell from 0.33 to 0.22 and the grossly defocused blob stacked. A spread the data show
         // (tauLo >= G's sd) leaves q_ref as it is.
+        // Only where the frames' own SNR leaves G's top to EM's early-stopped smoothing (Ruling P26 fix round
+        // 2): fully at a median quality / qualitySigma of kShrinkSnrFull and under, not at all from
+        // kShrinkSnrNone, log-linear between. A short in-focus capture's G is no smoothing artefact, and its
+        // sharpest frames are its reading as a long one's are.
+        std::vector<double> snr;
+        for (const FrameStats* s : left)
+            if (Sigma(*s) > 0) snr.push_back(s->quality / Sigma(*s));
+        const double r50 = snr.empty() ? std::numeric_limits<double>::infinity() : Quantile(snr, 0.5);
+        const double shrink = std::clamp(std::log(kShrinkSnrNone / r50) / std::log(kShrinkSnrNone / kShrinkSnrFull), 0.0, 1.0);
         // tauLo in quality (d q = d q^2 / (2 q) when the moments are quality^2's).
         const double tauLoQ = squared ? tauLo / (2 * std::sqrt(std::max(mu, 1e-300))) : tauLo;
-        const double qGross = rank.priorSd > tauLoQ
-                                  ? rank.pointQuality + (qRef - rank.pointQuality) * tauLoQ / rank.priorSd
-                                  : qRef;
+        const double keepShare = rank.priorSd > tauLoQ ? 1 - shrink * (1 - tauLoQ / rank.priorSd) : 1.0;
+        const double qGross = rank.pointQuality + (qRef - rank.pointQuality) * keepShare;
         const double sigmaRef = limbBlur(std::min(qRef, std::max(qGross, 1e-12)));
         const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kGrossBlurLimit * radius;
+        sel.focusQuality = std::min(qRef, std::max(qGross, 1e-12));
+        sel.focusReading = sigmaRef / radius;
+        sel.focusLimit = limit / radius;
         if (sigmaRef >= limit) {
             // The spread of the true blur: q at mu -+ 1.2816 tau (p10 / p90 of a normal), not the
             // posterior means (those are pulled together by the noise); tauHi gives the upper bound.

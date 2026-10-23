@@ -589,6 +589,40 @@ TEST_CASE("An exceptionally sharp frame is kept by the regions, not fenced off (
         CHECK((plan.flags[static_cast<size_t>(pos) * plan.RegionCount() + r] & stack::RegionPlan::kKept) != 0);
 }
 
+TEST_CASE("an unmeasured capture model: each frame's regions take its own noise (Ruling P26 fix round 2, N2)", "[regions][noise]") {
+    // A capture of 1-3 frames has no model (NoiseModel::Unmeasured): RegionMeasurer reads each frame's own
+    // texture-blind noise over the regions' extent, as before Ruling P26, instead of none. Against the true
+    // noise as the model, the qualities agree to a few percent and qualitySigma is there.
+    const int w = 256, h = 192;
+    const Scene s = testing::MakeSurface(11, w, h);
+    const FloatImage ref = Truth(s, w, h, 0.6);
+    const RegionLayout known = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.01));
+    const RegionLayout unmeasured = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel::Unmeasured());
+    const RegionLayout none = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, stack::NoiseModel{});
+    REQUIRE(known.regions.size() == unmeasured.regions.size());
+    FrameSpec f;
+    f.hasLocal = true;
+    f.dx = Constant(0);
+    f.dy = Constant(0);
+    f.sigma = Constant(1.0);
+    f.noise = 0.01;
+    const FloatImage fr = Render(s, w, h, f, 9);
+    const FrameRegions a = RegionMeasurer(ref, known).Measure(fr, 0, Shift{});
+    const FrameRegions b = RegionMeasurer(ref, unmeasured).Measure(fr, 0, Shift{});
+    const FrameRegions z = RegionMeasurer(ref, none).Measure(fr, 0, Shift{});
+    int compared = 0;
+    for (size_t r = 0; r < a.regions.size(); ++r) {
+        if (!(a.regions[r].aligned && b.regions[r].aligned && a.regions[r].quality > 0)) continue;
+        ++compared;
+        INFO("region " << r << ": quality " << b.regions[r].quality << " against " << a.regions[r].quality << " with the true noise");
+        CHECK(b.regions[r].quality == Catch::Approx(a.regions[r].quality).epsilon(0.05));
+        CHECK(b.regions[r].qualitySigma > 0);
+        CHECK(z.regions[r].qualitySigma == 0);  // a measured zero: no noise to propagate
+        CHECK(z.regions[r].quality > a.regions[r].quality);  // and none subtracted
+    }
+    CHECK(compared > 20);
+}
+
 TEST_CASE("a region's qualitySigma tracks its quality's scatter from low to high SNR (Ruling P26)", "[regions][noise]") {
     // A 64 x 64 window of texture (12 sinusoids, contrast A) at white noise 0.01 over 2000 frames, the
     // capture's noise model the truth, the window mean as background (as RegionMeasurer has it). Median
