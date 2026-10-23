@@ -1170,3 +1170,55 @@ TEST_CASE("A raw colour mosaic read as mono is measured binned, stacked raw (Rul
     for (float v : p.ours.data) zeros += v == 0.f;
     CHECK(zeros == 0);
 }
+
+TEST_CASE("The sky under a region keeps the fallback's noise (Task 9: the 2023-09-29 Saturn patch)", "[accumulate]") {
+    // The real case: on the 2023-09-29 Saturn (3686 frames stacked) the region at luma (341, 183) held
+    // the tip of the rings in a mostly-sky window; ranked on it, it kept 64 of 3676 candidates (the
+    // other regions 644-3686), and over the sky of its window the stack's high-pass noise was 1.65x the
+    // sky around it (0.00038 against 0.00023-0.00026): a visible square of speckle with a seam, absent
+    // from the global-only stack of the same frames (stack-region-probe: 2.77 against 2.70-3.00 DN).
+    // A region's own frame choice buys detail only where there is detail; over sky it only buys noise,
+    // sqrt(fallback frames / region frames) of it. Here: a 16 px disc, seeing that varies by cell;
+    // the sky under the central half of a region that keeps under half its candidates must carry the
+    // noise of the sky no region reaches (every stacked frame), not more.
+    const int w = 160, h = 128;
+    const double cx = 62.4, cy = 70.3, R = 16;
+    const Scene s = testing::MakeDisc(11, cx, cy, R);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(91);
+    RenderCapture(cap, s, 300, [&](int) { return Seeing(rng, w, h, 2.0, 28); });
+    const Pipeline p = Run(cap);
+    REQUIRE_FALSE(p.sel.fullFrameTarget);
+    const auto& lay = p.plan.layout;
+    auto sky = [&](int x, int y) { return x >= 8 && y >= 8 && x < w - 8 && y < h - 8 && std::hypot(x - cx, y - cy) > R + 6; };
+    std::vector<double> lucky, fallback;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (!sky(x, y)) continue;
+            bool inLucky = false, inAny = false;
+            for (size_t r = 0; r < lay.regions.size(); ++r) {
+                const auto& g = lay.regions[r];
+                if (x >= g.x0 && x < g.x1 && y >= g.y0 && y < g.y1) inAny = true;
+                const int q = (g.x1 - g.x0) / 4;
+                const auto& d = p.plan.detail[r];
+                if (d.kept > 0 && 2 * d.kept < d.candidates && x >= g.x0 + q && x < g.x1 - q && y >= g.y0 + q && y < g.y1 - q)
+                    inLucky = true;
+            }
+            const double v = p.ours.data[static_cast<size_t>(y) * w + x];
+            if (inLucky) lucky.push_back(v);
+            else if (!inAny) fallback.push_back(v);
+        }
+    REQUIRE(lucky.size() >= 50);     // the case: a region keeping a lucky few covers sky
+    REQUIRE(fallback.size() >= 500);
+    auto sd = [](const std::vector<double>& v) {
+        double m = 0, q = 0;
+        for (double x : v) m += x;
+        m /= static_cast<double>(v.size());
+        for (double x : v) q += (x - m) * (x - m);
+        return std::sqrt(q / static_cast<double>(v.size() - 1));
+    };
+    const double a = sd(lucky), b = sd(fallback);
+    INFO("sky noise under lucky regions " << a << " (" << lucky.size() << " px), sky no region reaches " << b << " ("
+                                          << fallback.size() << " px), ratio " << a / b << "; stacked " << p.plan.stackedCount);
+    CHECK(a < 1.25 * b);
+}
