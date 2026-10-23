@@ -763,6 +763,28 @@ def test_a_local_shift_between_the_halves_is_not_charged_as_noise():
     assert unremoved[0] > 3 * shifted[0]          # a field the global refinement alone leaks
 
 
+def test_a_level_offset_between_the_halves_is_never_charged_less_for_the_tile_shifts():
+    """Ruling P28d removes registration only. A smooth 2 % gain offset between the halves over part of a
+    disc and its limb (Investigation 2's level offsets between kept subsets) is not registration; near
+    a limb a gain change partly resembles a limb shift, so a shift fit could absorb it and under-charge
+    ours. The bench's tile fit must not: per END bin it charges at least what the global refinement
+    alone charges (less 3 % for the fit's degrees of freedom). Measured: it charges more (2.79 -> 5.05
+    in the 0.06-0.09 bin), because the fit leaves tile-shaped steps in D -- an over-charge of ours, the
+    safe direction. (A smoothly interpolated shift field was tried: it under-charges this pair, 1.76.)"""
+    from conftest import planet_scene
+    S = planet_scene(size=(240, 320), radius=90, seed=3, seeing=1.0)
+    yy, xx = np.mgrid[0:240, 0:320]
+    bump = np.exp(-(((yy - 190) / 30.0) ** 2 + ((xx - 160) / 60.0) ** 2))
+    rng = np.random.default_rng(2)
+    A = S + rng.normal(0, P28D_SIGMA, S.shape)
+    B = S * (1 + 0.02 * bump) + rng.normal(0, P28D_SIGMA, S.shape)
+    fitted, bare = _halves_ratio(A, B, P28D_SIGMA), _halves_ratio(A, B, P28D_SIGMA, tile=None)
+    print("\n2 % gain bump: per END bin, tile fit " + " ".join(f"{v:.2f}" for v in fitted) + "; global only "
+          + " ".join(f"{v:.2f}" for v in bare))
+    assert bare[0] > 2                                     # the offset is well above the noise
+    assert all(f >= 0.97 * b for f, b in zip(fitted, bare))
+
+
 def test_noise_between_the_halves_is_still_charged():
     """Ruling P28d: removing the local shift must not remove noise. Noise-only halves read the true
     model per END bin (within -15 / +10 %: the fit's degrees of freedom cost a little in the lowest
