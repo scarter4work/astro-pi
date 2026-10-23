@@ -663,3 +663,26 @@ def test_provenance_reads_the_autostakkert_session_and_marks_asistudio_unknown(t
     fits.writeto(asi / "cap_Planet_40.fit", np.zeros((4, 4), np.float32), h)
     p = refs.provenance(str(asi / "cap_Planet_40.fit"))
     assert p["state"] == "unknown" and "PN 1" in p["text"]
+
+
+@pytest.mark.parametrize("seed", [3, 6])
+def test_synthetic_lunar_frames_carry_no_wrapped_edge(seed):
+    """halves.synthetic_frames moves a static scene by sub-pixel jitter only, so every frame shows the
+    same detail: what changes at the frame's edge must be no more than what changes just inside it.
+    A circular (FFT) shift of the lunar scene wraps its 6 DN sky strip (columns 0-59) onto the far
+    edge: a frame moved left by ~0.5 px or more gains a hard dark edge at its last columns, its
+    whole-frame quality jumps (to 1.44 x the median on scene 6, 2.2 x on scene 3 at jitter 0.7), and
+    the engine's selection -- doing what Select.h step 8 says on frames that really differ -- keeps
+    5-32 of 300 (e3-report.md). Scenes 3 and 6: the brightest right edges (165 / 231 DN on the 6 DN sky)."""
+    import halves
+    frames, _, _ = halves.synthetic_frames("lunar", 40, 0.7, 0.15, 0.6, seed)
+    f = frames.astype(float)
+
+    def spread(cols):
+        m = f[:, :, cols].mean(axis=(1, 2))
+        return m.max() - m.min()
+
+    edge = spread(np.s_[-2:])
+    inside = max(spread(np.s_[-2 - k:-k]) for k in (8, 16, 24))
+    print(f"\nscene {seed}: last 2 columns' mean spread {edge:.1f} DN over 40 frames, 8-24 px inside {inside:.1f} DN")
+    assert edge <= 3 * inside + 2
