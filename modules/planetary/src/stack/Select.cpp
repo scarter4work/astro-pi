@@ -561,6 +561,13 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
         sel.focusQuality = std::min(qRef, std::max(qGross, 1e-12));
         sel.focusReading = sigmaRef / radius;
         sel.focusLimit = limit / radius;
+        // The warn band (Ruling P15b): stacked, with the focus warning.
+        const double warn = small ? std::max(kBlurWarn * radius, kBlurFloorPixels / scale) : kGrossBlurWarn * radius;
+        sel.focusWarn = warn / radius;
+        if (sigmaRef >= warn && sigmaRef < limit)
+            sel.focusWarning = "The stack may be out of focus: even the sharpest frames blur the limb by " + Num(sigmaRef * scale, 1) +
+                               " px, " + Num(sigmaRef / radius, 2) + " of the disc's radius (in-focus captures: under " +
+                               Num(warn / radius, 2) + ") -- check the focus.";
         if (sigmaRef >= limit) {
             // The spread of the true blur: q at mu -+ 1.2816 tau (p10 / p90 of a normal), not the
             // posterior means (those are pulled together by the noise); tauHi gives the upper bound.

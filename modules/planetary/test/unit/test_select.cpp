@@ -1006,31 +1006,38 @@ const RealFrame kJupiter225418First60[] = {
     {59, 1, 469.7129, 237.6286, 440, 208, 500, 268, 22.00, 0.603488, 0.000000, 0.09624899, 0.0025634908, 0.00049347096},
 };
 
+namespace {
+std::vector<FrameStats> ToStats(const RealFrame* rows, size_t n) {
+    std::vector<FrameStats> stats;
+    for (size_t i = 0; i < n; ++i) {
+        const RealFrame& r = rows[i];
+        FrameStats s;
+        s.index = r.index;
+        s.targetFound = r.found != 0;
+        s.cx = r.cx;
+        s.cy = r.cy;
+        s.bx0 = r.bx0;
+        s.by0 = r.by0;
+        s.bx1 = r.bx1;
+        s.by1 = r.by1;
+        s.halfRadius = r.halfRadius;
+        s.brightness = r.brightness;
+        s.clippedFraction = r.clipped;
+        s.quality = r.quality;
+        s.qualitySigma = r.sigma;
+        s.quality2Sigma = r.sigma2;
+        stats.push_back(s);
+    }
+    return stats;
+}
+}  // namespace
+
 TEST_CASE("a short in-focus capture is read at its sharpest frames (Ruling P26 fix round 2, N1)", "[select][diagnosis][focus]") {
     // A short capture's spread is not significant (tauLo 0 at 8-60 frames), yet its frames carry ~41
     // qualitySigma each: no smoothing artefact to remove, and its reading is its sharpest frames' -- q_ref --
     // as a long capture's is: 0.1314 of R_h at 60 frames (fix round 1 read it at the point quality, 0.1398).
     for (const size_t n : {size_t{30}, size_t{60}}) {
-        std::vector<FrameStats> stats;
-        for (size_t i = 0; i < n; ++i) {
-            const RealFrame& r = kJupiter225418First60[i];
-            FrameStats s;
-            s.index = r.index;
-            s.targetFound = r.found != 0;
-            s.cx = r.cx;
-            s.cy = r.cy;
-            s.bx0 = r.bx0;
-            s.by0 = r.by0;
-            s.bx1 = r.bx1;
-            s.by1 = r.by1;
-            s.halfRadius = r.halfRadius;
-            s.brightness = r.brightness;
-            s.clippedFraction = r.clipped;
-            s.quality = r.quality;
-            s.qualitySigma = r.sigma;
-            s.quality2Sigma = r.sigma2;
-            stats.push_back(s);
-        }
+        const std::vector<FrameStats> stats = ToStats(kJupiter225418First60, n);
         const Selection sel = SelectFrames(stats, Info(1920, 1080, ser::ColorId::BayerBGGR));
         INFO(n << " frames: reading " << sel.focusReading << " against " << sel.focusLimit << ", " << sel.explanation);
         REQUIRE(sel.diagnosis.kind == DiagnosisKind::None);
@@ -1047,6 +1054,81 @@ TEST_CASE("a short in-focus capture is read at its sharpest frames (Ruling P26 f
         // Ruling P15 binds as written (P15a): an in-focus capture reads at least 2x under the limit.
         CHECK(sel.focusLimit == Catch::Approx(stack::kGrossBlurLimit));
         CHECK(2 * sel.focusReading <= sel.focusLimit);
+        CHECK(sel.focusWarning.empty());  // and under the warn band (Ruling P15b)
+    }
+}
+
+namespace {
+// The FrameStats of a whole real capture, as focus-survey --dump-stats (test/focus-survey.cpp) prints them:
+// the 2022-09-17 1080p BGGR Jupiters (R_h 21.5 luma px), in focus as captured, their first 60 frames (the
+// truncated capture's own noise model), and blurred by 12 / 16 sensor px (6 / 8 luma; ProbeSource.h's --blur,
+// the capture's own noise put back by level).
+const RealFrame kJupiter225418[] = {
+#include "real/jupiter-2022-09-17-225418.inc"
+};
+const RealFrame kJupiter230420[] = {
+#include "real/jupiter-2022-09-17-230420.inc"
+};
+const RealFrame kJupiter230420First60[] = {
+#include "real/jupiter-2022-09-17-230420-first60.inc"
+};
+const RealFrame kJupiter225418Blur12[] = {
+#include "real/jupiter-2022-09-17-225418-blur12.inc"
+};
+const RealFrame kJupiter230420Blur12[] = {
+#include "real/jupiter-2022-09-17-230420-blur12.inc"
+};
+const RealFrame kJupiter230420Blur16[] = {
+#include "real/jupiter-2022-09-17-230420-blur16.inc"
+};
+}  // namespace
+
+TEST_CASE("the large-disc warn band: real defocus is warned or refused, in focus is silent (Ruling P15b)", "[select][diagnosis][focus]") {
+    struct Case {
+        const char* name;
+        const RealFrame* rows;
+        size_t n;
+        double reading;  // focus-survey's, to 4 decimals
+        enum { Silent, Warned, WarnedOrRefused } expect;
+    };
+    const Case cases[] = {
+        {"225418 in focus", kJupiter225418, std::size(kJupiter225418), 0.1182, Case::Silent},
+        {"230420 in focus", kJupiter230420, std::size(kJupiter230420), 0.1388, Case::Silent},
+        {"225418 first 30", kJupiter225418First60, 30, 0, Case::Silent},
+        {"225418 first 60", kJupiter225418First60, 60, 0.1314, Case::Silent},
+        {"230420 first 30", kJupiter230420First60, 30, 0, Case::Silent},
+        {"230420 first 60", kJupiter230420First60, 60, 0.1301, Case::Silent},
+        {"225418 at 6 luma px", kJupiter225418Blur12, std::size(kJupiter225418Blur12), 0.2520, Case::Warned},
+        {"230420 at 6 luma px", kJupiter230420Blur12, std::size(kJupiter230420Blur12), 0.2472, Case::Warned},
+        // 0.2793 against the limit 0.28: either verdict is right, silence is not.
+        {"230420 at 8 luma px", kJupiter230420Blur16, std::size(kJupiter230420Blur16), 0.2793, Case::WarnedOrRefused},
+    };
+    for (const Case& c : cases) {
+        const Selection sel = SelectFrames(ToStats(c.rows, c.n), Info(1920, 1080, ser::ColorId::BayerBGGR));
+        INFO(c.name << ": reading " << sel.focusReading << " (warn " << sel.focusWarn << ", limit " << sel.focusLimit << ") | "
+                    << sel.explanation << " | " << sel.focusWarning);
+        REQUIRE(sel.focusJudged);
+        REQUIRE(sel.targetRadius >= stack::kMinJudgedRadius);
+        CHECK(sel.focusWarn == Catch::Approx(stack::kGrossBlurWarn));
+        if (c.reading > 0) CHECK(sel.focusReading == Catch::Approx(c.reading).margin(5e-5));  // the fixture reads as measured
+        const bool refused = sel.diagnosis.kind == DiagnosisKind::OutOfFocus || sel.diagnosis.kind == DiagnosisKind::PoorSeeing;
+        const bool warned = !sel.focusWarning.empty();
+        CHECK_FALSE((refused && warned));
+        switch (c.expect) {
+            case Case::Silent:
+                CHECK(sel.diagnosis.kind == DiagnosisKind::None);
+                CHECK_FALSE(warned);
+                break;
+            case Case::Warned:
+                CHECK(sel.diagnosis.kind == DiagnosisKind::None);
+                CHECK(warned);
+                CHECK(sel.focusWarning.find("may be out of focus") != std::string::npos);
+                CHECK(sel.focusWarning.find("check the focus") != std::string::npos);
+                break;
+            case Case::WarnedOrRefused:
+                CHECK((warned || refused));
+                break;
+        }
     }
 }
 
@@ -1762,10 +1844,10 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
 TEST_CASE("a moderate defocus under kGrossBlurLimit is stacked with the focus warning, not refused (Ruling P15a)", "[select][engine][focus]") {
     // R 24 blurred 10 px (0.42 R) reads 0.267-0.290 over seeds 7, 107, ..., 907 (Select.h step 7), across the
     // limit: 0.2669 / 0.2852 / 0.2881 / 0.2820 / 0.2805 / 0.2768 / 0.2899 / 0.2783 / 0.2780 / 0.2710. Seeds 107-407
-    // and 607 are refused; 7, 507, 707, 807 and 907 are stacked -- never refused under the limit (Ruling P15a). The
-    // region stage reads their limb at 0.420 / 0.423 / 0.418 / 0.399 / 0.394 of the radius against its warn level
-    // kDiscWarnAbove 0.40: seeds 7, 507 and 707 carry the focus warning, 807 and 907 sit 0.001-0.006 under it and
-    // stack without one (reported with P15a; the limit is not lowered for it).
+    // and 607 are refused; 7, 507, 707, 807 and 907 are stacked -- never refused under the limit (Ruling P15a) --
+    // and each is over step 7's warn level kGrossBlurWarn 0.21, so each carries the focus warning (Ruling P15b).
+    // The region stage reads their limb at 0.420 / 0.423 / 0.418 / 0.399 / 0.394 of the radius against its own
+    // warn level kDiscWarnAbove 0.40: it would have warned only seeds 7, 507 and 707.
     int stacked = 0, refused = 0, warned = 0;
     for (unsigned seed = 7; seed < 1000; seed += 100) {
         const testing::Capture cap = MeasuredDiscCapture(24, 10, false, 0.01, seed);
@@ -1786,16 +1868,18 @@ TEST_CASE("a moderate defocus under kGrossBlurLimit is stacked with the focus wa
         CHECK(o.diagnosis.kind == DiagnosisKind::None);
         CHECK(o.image.has_value());
         CHECK(f.disc);
-        CHECK(f.measure > stack::kDiscWarnAbove - 0.01);  // at the warn level, if not over it
-        int warnings = 0;
-        for (const auto& wtext : o.summary.warnings) warnings += wtext == stack::FocusWarning(f);
-        if (f.measure > stack::kDiscWarnAbove) {
-            CHECK(f.outcome == stack::FocusOutcome::Warned);
-            CHECK(warnings == 1);
-            ++warned;
-        }
+        // Step 7's warn band (Ruling P15b) warns every one; the region stage too on 7 / 507 / 707 -- one warning
+        // either way: the region stage's when it warns, else step 7's.
+        CHECK(sel.focusReading >= stack::kGrossBlurWarn);
+        CHECK_FALSE(sel.focusWarning.empty());
+        int focusWarnings = 0;
+        for (const auto& wtext : o.summary.warnings) focusWarnings += wtext.find("may be out of focus") != std::string::npos;
+        CHECK(focusWarnings == 1);
+        const std::string expected = f.outcome == stack::FocusOutcome::Warned ? stack::FocusWarning(f) : sel.focusWarning;
+        CHECK(std::count(o.summary.warnings.begin(), o.summary.warnings.end(), expected) == 1);
+        warned += f.outcome == stack::FocusOutcome::Warned;
     }
-    INFO(stacked << " stacked (" << warned << " with the focus warning), " << refused << " refused");
+    INFO(stacked << " stacked (" << warned << " also warned by the region stage), " << refused << " refused");
     CHECK(stacked == 5);
     CHECK(warned == 3);
 }

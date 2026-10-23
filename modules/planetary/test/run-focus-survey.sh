@@ -4,15 +4,17 @@
 #
 #   bash modules/planetary/test/run-focus-survey.sh [survey|defocus|stack|limb] -> one line per run; exit 0
 #                                                                                  when every run finished
-#                                                                                  (and stack's checks held)
+#                                                                                  and every check held
 #
 #   survey  (default) every planetary capture as captured, then over its first 8 / 30 / 60 / 120 frames: the
-#           in-focus readings (class, reading over the judged radius, limit, S = reading / limit, verdict).
+#           in-focus readings (class, reading over the judged radius, warn level, limit, S = reading / limit,
+#           verdict). FAIL when any is warned or refused for focus or seeing (Rulings P15, P15b).
 #   defocus the same captures blurred by PLANETARY_SURVEY_BLURS sensor px (default 1 2 3 4 6 8 12 16; the
 #           capture's own noise put back by level, test/ProbeSource.h): the defocus series.
-#   stack   RunStack (stack-probe --json) on the large in-focus discs blurred by 4 / 8 / 12 / 16 sensor px:
-#           Select's verdict and the region stage's focus check (outcome, measure, warn level) -- the
-#           defocus under kGrossBlurLimit that is stacked with a focus warning instead of refused (Ruling P15a).
+#   stack   RunStack (stack-probe --json) on the large in-focus discs blurred by 4 / 8 / 12 / 16 sensor px,
+#           and on the in-focus Neptune 204515: each case's verdict -- refuse / warn / silent -- with the
+#           region stage's focus check. FAIL when a large Jupiter from 12 px (6 luma, the known defocus) is
+#           silent, Neptune is not, or a stack carries two focus warnings (Rulings P15a, P15b).
 #   limb    limb-probe on the large in-focus discs: the limb fitted on a stack of the sharpest half, and each
 #           frame's quality with and without the capture's noise model (why the reading doubled with P26).
 #
@@ -92,12 +94,41 @@ fail=0
 run() {
     "$@" || { echo "FAIL: exit $? -- $*"; fail=1; }
 }
+# An in-focus capture is never warned or refused for focus or seeing by step 7 (Rulings P15, P15b).
+survey_line() {
+    local line
+    line="$("$SURVEY" "$@")" || { echo "FAIL: exit $? -- $*"; fail=1; return; }
+    echo "$line"
+    if [[ "$line" == *"| warned |"* || "$line" == *"| OutOfFocus |"* || "$line" == *"| PoorSeeing |"* ]]; then
+        echo "FAIL: an in-focus capture is warned or refused for focus -- $*"
+        fail=1
+    fi
+}
+# RunStack on one case; prints its focus verdict -- refuse (diagnosed OutOfFocus / PoorSeeing), warn (stacked
+# with a focus warning, step 7's or the region stage's) or silent -- and checks it against `expect`: loud
+# (warn or refuse), silent, or any.
+stack_case() {
+    local f="$1" b="$2" expect="$3" json code verdict
+    if [ "$b" = 0 ]; then json="$("$PROBE" "$f" --json 2> /dev/null)"; else json="$("$PROBE" "$f" --blur "$b" --json 2> /dev/null)"; fi
+    code=$?
+    [ "$code" -le 2 ] || { echo "FAIL: exit $code -- $f --blur $b"; fail=1; return; }
+    verdict="$(jq -r 'if (.diagnosis.kind == "OutOfFocus" or .diagnosis.kind == "PoorSeeing") then "refuse"
+                      elif ([.warnings[] | select(test("out of focus"))] | length) > 0 then "warn" else "silent" end' <<< "$json")"
+    printf '%s | blur %s | %s | ' "$f" "$b" "$verdict"
+    jq -r '"\(.diagnosis.kind) | region focus \(.focus.outcome) \(.focus.measure) (warn above \(.focus.warnAbove)) | limb \(.focus.limbBlur) px | radius \(.focus.radius) | focus warnings \([.warnings[] | select(test("out of focus"))] | length)"' <<< "$json"
+    jq -e '[.warnings[] | select(test("out of focus"))] | length <= 1' <<< "$json" > /dev/null \
+        || { echo "FAIL: more than one focus warning -- $f --blur $b"; fail=1; }
+    case "$expect" in
+        loud) [ "$verdict" != silent ] || { echo "FAIL: a known defocus is neither warned nor refused -- $f --blur $b"; fail=1; } ;;
+        silent) [ "$verdict" = silent ] || { echo "FAIL: an in-focus capture is $verdict -- $f"; fail=1; } ;;
+    esac
+}
 case "$MODE" in
     survey)
         [ -x "$SURVEY" ] || { echo "FAIL: focus-survey not built at $SURVEY (cmake --build modules/planetary/build)"; exit 1; }
         for f in "${CAPTURES[@]}"; do
-            run "$SURVEY" "$f"
-            for n in 8 30 60 120; do run "$SURVEY" "$f" --frames "$n"; done
+            survey_line "$f"
+            for n in 8 30 60 120; do survey_line "$f" --frames "$n"; done
         done
         ;;
     defocus)
@@ -109,21 +140,13 @@ case "$MODE" in
     stack)
         [ -x "$PROBE" ] || { echo "FAIL: stack-probe not built at $PROBE (cmake --build modules/planetary/build)"; exit 1; }
         command -v jq > /dev/null || { echo "FAIL: stack mode needs jq"; exit 1; }
+        # The known defocus (Rulings P15a / P15b): the large Jupiters from 12 sensor px (6 luma) are warned or
+        # refused, never silent; 4 and 8 px are printed only. In-focus Neptune is silent.
         for f in "${LARGE[@]}"; do
-            for b in 4 8 12 16; do
-                json="$("$PROBE" "$f" --blur "$b" --json 2> /dev/null)"
-                code=$?
-                [ "$code" -le 2 ] || { echo "FAIL: exit $code -- $f --blur $b"; fail=1; continue; }
-                printf '%s | blur %s | ' "$f" "$b"
-                jq -r '"\(.diagnosis.kind) | focus \(.focus.outcome) | measure \(.focus.measure) (warn above \(.focus.warnAbove)) | limb \(.focus.limbBlur) px | radius \(.focus.radius) | focus warning \([.warnings[] | select(test("out of focus"))] | length)"' <<< "$json"
-                # Ruling P15a's named cases: the 230420 Jupiter at 6 and 8 luma px (12 / 16 sensor px) reads under
-                # kGrossBlurLimit (0.247 / 0.279) and must be stacked with the focus warning.
-                if [[ "$f" == *230420* && ( "$b" == 12 || "$b" == 16 ) ]]; then
-                    jq -e '.diagnosis.kind == "None" and ([.warnings[] | select(test("out of focus"))] | length) == 1' <<< "$json" > /dev/null \
-                        || { echo "FAIL: 230420 blurred $b px is not stacked with the focus warning"; fail=1; }
-                fi
-            done
+            for b in 4 8; do stack_case "$f" "$b" any; done
+            for b in 12 16; do stack_case "$f" "$b" loud; done
         done
+        [ -n "${PLANETARY_SURVEY_CAPTURES:-}" ] || stack_case "$V/2026-01-30-204515-Neptune-Bin1 Lqef -4.0F.avi" 0 silent
         ;;
     limb)
         [ -x "$LIMB" ] || { echo "FAIL: limb-probe not built at $LIMB (cmake --build modules/planetary/build)"; exit 1; }

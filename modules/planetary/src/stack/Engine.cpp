@@ -1022,7 +1022,10 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
 
     // Only with an image: a diagnosed capture stacked nothing (Ruling P9's warning is about the result).
     if (UndeclaredMosaic(info)) sum.warnings.push_back(kUndeclaredMosaicWarning);
+    // One focus warning: the region stage's when it warns (it reads the stack made), else step 7's warn band
+    // (Ruling P15b: for a large disc the gross reading separates a moderate defocus the region stage cannot).
     if (sum.focus.outcome == FocusOutcome::Warned) sum.warnings.push_back(FocusWarning(sum.focus));
+    else if (!sel.focusWarning.empty()) sum.warnings.push_back(sel.focusWarning);
     out.image = std::move(image);
     return finish(std::move(out));
 }

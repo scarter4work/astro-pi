@@ -7,8 +7,9 @@
 //
 // MeasureAll + SelectFrames on the capture (--frames / --blur: test/ProbeSource.h, as stack-probe), then
 // one line: path | blur | frames | r50 (median quality / qualitySigma) | R_h | class (large / small / -) |
-// reading (blur over the judged radius) | limit (the same) | S = reading / limit | the quality read at |
-// verdict | the selection's explanation. --dump-stats prints instead the FrameStats SelectFrames reads, as C++
+// reading (blur over the judged radius) | warn and limit (the same) | S = reading / limit | the quality read
+// at | verdict (stacked, warned -- step 7's warn band, Ruling P15b -- or the diagnosis) | the selection's
+// explanation. --dump-stats prints instead the FrameStats SelectFrames reads, as C++
 // initialisers for a test fixture (test_select's real-capture cases). Exit 0, or 1 on error.
 #include <algorithm>
 #include <cstdio>
@@ -67,15 +68,15 @@ int main(int argc, char** argv) try {
     for (const auto& s : stats)
         if (s.targetFound && s.quality > 0 && s.qualitySigma > 0) r.push_back(s.quality / s.qualitySigma);
     std::sort(r.begin(), r.end());
-    const char* kind = sel.diagnosis.kind == stack::DiagnosisKind::None         ? "stacked"
+    const char* kind = sel.diagnosis.kind == stack::DiagnosisKind::None         ? (sel.focusWarning.empty() ? "stacked" : "warned")
                        : sel.diagnosis.kind == stack::DiagnosisKind::OutOfFocus ? "OutOfFocus"
                        : sel.diagnosis.kind == stack::DiagnosisKind::PoorSeeing ? "PoorSeeing"
                        : sel.diagnosis.kind == stack::DiagnosisKind::NoTarget   ? "NoTarget"
                                                                                 : "other";
-    std::printf("%s | blur %.1f | frames %lld | r50 %.1f | R_h %.1f | %s | reading %.4f | limit %.4f | S %.3f | q %.5f | %s | %s\n",
+    std::printf("%s | blur %.1f | frames %lld | r50 %.1f | R_h %.1f | %s | reading %.4f | warn %.4f | limit %.4f | S %.3f | q %.5f | %s | %s\n",
                 path.c_str(), blur, static_cast<long long>(stats.size()), r.empty() ? 0.0 : r[r.size() / 2], sel.targetRadius,
                 !sel.focusJudged ? "-" : sel.targetRadius < stack::kMinJudgedRadius ? "small" : "large", sel.focusReading,
-                sel.focusLimit, sel.focusLimit > 0 ? sel.focusReading / sel.focusLimit : 0.0, sel.focusQuality, kind,
+                sel.focusWarn, sel.focusLimit, sel.focusLimit > 0 ? sel.focusReading / sel.focusLimit : 0.0, sel.focusQuality, kind,
                 sel.explanation.substr(0, 120).c_str());
     return 0;
 } catch (const std::exception& e) {

@@ -207,7 +207,9 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 // kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px. A large
 // one later, in sensor px: the 2022-09-17 1080p Jupiters (R 20.2-20.7 luma px, all frames) blurred 4 / 8 / 12 /
 // 16 read 230420 0.241 / 0.310 / 0.409 / 0.473 (warned from 12) and 225418 0.228 / 0.305 / 0.385 (at 16 Select
-// refuses it) -- so 225418 at 12 px, under kGrossBlurLimit, stacks without the warning (Ruling P15a, Select.h).
+// refuses it) -- so 225418 at 12 px, under kGrossBlurLimit, is not warned here; step 7's warn band warns it
+// (Ruling P15b, Select.h kGrossBlurWarn), and RunStack reports one focus warning: this one when it fires, else
+// the selection's.
 //
 // A frame-filling target: the measure is the detail scale D in sensor px, pooled over Hann-tapered
 // windows of kFocusWindow sensor px on the placed regions (FocusWindows, JudgeFocus; the taper's own
@@ -382,7 +384,8 @@ struct StackSummary {
     int64_t rejectedCells = 0;  // Accumulator::RejectedCells
     MemoryPlan memory;       // the plan the passes ran with
     // The region-stage focus verdict and its numbers (Rulings P4, P15). Warned: the image is made and
-    // `warnings` holds FocusWarning(focus).
+    // `warnings` holds FocusWarning(focus); otherwise it holds the selection's focusWarning when step 7's warn
+    // band fired (Ruling P15b) -- one focus warning at most.
     FocusCheck focus;
 };
 
