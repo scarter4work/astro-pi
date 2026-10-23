@@ -88,7 +88,7 @@ void PlanetaryModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 10;
-   day   = 21;
+   day   = 23;
 }
 
 } // namespace pcl
