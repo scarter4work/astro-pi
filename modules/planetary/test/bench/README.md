@@ -135,18 +135,11 @@ back blur.
   honest stack with kernel G K. END must rank that honest stack higher whenever G K <= 1.
 * Noise added to a smoothed stack cannot be told from the stack's own noise kernel, which is unknown.
 
-Tried and measured: a guard that raises the noise to the box's own fitted white level (a joint fit of
-a smooth signal roll-off plus white noise). It catches every case on an unsmoothed stack. A stack's
-smoothing leaves headroom below its budget, though, and the guard is blind inside it:
-
-| Stack | Fitted white level / budget | What still raises END |
-|---|---|---|
-| Ours-like synthetic | 0.67 | Unsharp mask: x1.12-1.18 |
-| Drizzled synthetic | 0.10 | Uniform noise x1: x1.12; unsharp mask: x1.32-2.53 |
-| Real ASIStudio stacks | 0.00-0.29 | blind |
-| Real ours | 0.03-0.29 | blind, except the 2026-01-30 Jupiter's fixed pattern (25.8) and a failed fit on Mars's 48 px box (907) |
-
-The first P28 design's sky guard read 0 on all 22 real images. Neither ships.
+Tried during Ruling P28 and not shipped: a guard that raised the noise to the box's own fitted white
+level (a joint fit of a smooth signal roll-off plus white noise), and a sky guard. The first caught
+every case on an unsmoothed stack, but a stack's own smoothing leaves headroom below its budget, and
+the guard was blind inside it. Neither guard's code is in the tree, so its measurements are not kept
+here (final review, bench M3).
 
 **How the bench judges despite it (Ruling P28b).** Ours is not a single image: the split halves
 measure its noise. So ours is charged its measured noise per END bin, budget x max(1, R/R_cal) (below),
@@ -156,6 +149,12 @@ identical; only the noise charge differs, and only ever against ours.
 C1 can then only inflate a reference's END, which lowers ours' ratio:
 * a numeric **pass** is sound (Scott's side-by-side is still the spec's final word);
 * a numeric **fail** is sound only against a reference whose own files record no processing.
+  The bench applies that to the reference that sets the bar -- the best END, full or interior
+  (`bench._setters`): a fail stands only when every such reference is unprocessed. So when ours is
+  below 0.97 x an unprocessed AutoStakkert stack but an ASIStudio stack of unknown processing scores
+  higher still, the capture is review, although the fail would be sound against AutoStakkert alone
+  (the 2024-02-01 and 2023-08-22 Moons, with both tools, are where it can happen). That errs the
+  safe way -- no fail is claimed from a comparison C1 may have decided -- and stays (Ruling F3).
 
 The references' provenance (`refs.provenance`):
 * **AutoStakkert:** raw (non-`_conv`) stacks whose `.as3` session files record no row/column
@@ -197,8 +196,11 @@ not an assertion:
 
 | 2_12_2023 Moon | k | END | DAN |
 |---|---|---|---|
-| AS_P20 | 471 | 13.28 | 0.06876 |
-| AS_P50 | 1177 | 16.89 | 0.05266 |
+| AS_P20 | 471 | 13.20 | 0.06876 |
+| AS_P50 | 1177 | 16.80 | 0.05266 |
+
+(`test_metric.py::test_real_2_12_2023_moon_p20_p50_pair_is_a_reported_figure`, which prints them;
+measured at 067bd83d. The 13.28 / 16.89 printed here before did not reproduce.)
 
 The assertion moved to a synthetic (`test_end.py`): one 200-frame capture, its sharpest 20 % and
 sharpest 50 % stacked. END must rank them as the exact matched restoration does, and the set holds a
@@ -220,10 +222,9 @@ stand in for it.
 | Added noise or sharpening never raises it | **fails, C1** (table above; strict xfail) |
 | More frames, same blur (2 x / 4 x) | x1.191 / x1.481. DAN moves x1.003 and fails the test. |
 | Sharper but noisier, against the exact matched restoration | 4 of 4 agree, with a win each way. DAN gets at least one wrong (asserted). |
-| Random scan: 157 clear pairs, object spectra f^-1.4..f^-4.4 | 157 / 157 agree with the restoration (log-capacity: 96 %; END's restoration form was chosen on this) |
 | 20 % vs 50 % of one capture (4 cases, both outcomes) | 4 of 4. DAN fails the 2 log-normal ones (asserted). |
 | Smoothing counts as blur: drizzle x3 + area resample / Gaussian 0.7 / B-spline half-pixel shift | x0.809 / x0.746 / x0.978. Taking the box's own 0.40-0.50 floor as the noise instead raises it x2.12 / x3.21 / x1.84: the reference-side bias the photon budget removes. |
-| Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact | 19.99 / 15.13 / 5.49 / 3.11 and 13.28 / 10.14 / 4.37 / 2.39 |
+| Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact (`test_real_blur_and_smoothing_rank_lower`, at 067bd83d) | 20.80 / 15.74 / 5.71 / 3.16 and 13.20 / 10.08 / 4.36 / 2.39 |
 | Interior: an interior blur of sigma 1 behind a crisp limb | 19.75 -> 15.62 (2 x noise raises it to 21.34: C1) |
 | `noise.photon_transfer` (fix round 3: free intercept, Theil-Sen start): textured disc drifting 0.5 px per frame / a 3 px disc in 640x480 / lunar texture under 0-1.5 px jitter / a sky on a 3 DN black pedestal | a +7 % / +60 % / within 0.5 % / a +4 %, zero at 3.00 DN (with c clamped to 0, a reads x0.26) |
 | The calibration's pedestal synthetics (3 DN, c 0.05; fix round 4) | disc (12 runs, from calibration.json): a 0.1469-0.1752 m (j0.3 0.1469-0.1499; j0.7 0.1606-0.1752, 7-17 % high: the jitter read-high that sits in R_cal), c -0.468 to -0.317; lunar (12 runs): a 0.1487-0.1497, c -0.322 to -0.313; true 0.15 m - 0.317 |
@@ -538,7 +539,7 @@ AutoStakkert's own selection (fewer, sharper frames -> more detail), same captur
 
 | Capture | Fewer frames | More frames | Ratio | Status |
 |---|---|---|---|---|
-| 2_12_2023 Moon 024708 | AS_P20 0.06876 | AS_P50 0.05266 (both native) | 1.31 | reported (asserted until Ruling P28: the pair is confounded, ap1 vs ap2; END ranks P50 first, 16.89 vs 13.27) |
+| 2_12_2023 Moon 024708 | AS_P20 0.06876 | AS_P50 0.05266 (both native) | 1.31 | reported (asserted until Ruling P28: the pair is confounded, ap1 vs ap2; END ranks P50 first, 16.80 vs 13.20, as tabled above) |
 | 2_12_2023 Moon 024708 | AS_P20 0.06876 | AS_P25 (x3, resampled) 0.05585 | 1.23 | recorded, confounded by the resample |
 | 2_12_2023 Jupiter 191831 | AS_P20 0.32571 | AS_P25 (x3, resampled) 0.31714 | 1.027 | recorded, confounded by the resample |
 | 3_6_2023 Moon 224808 | AS_P20 (x3) 0.02665 | AS_P50 (x1.5) 0.02637 | 1.011 | recorded (within noise) |
@@ -694,8 +695,9 @@ over all runs:
     count, a region-probe plan that differs from RunStack's). No verdict is drawn and the reason is
     printed.
   * **fail**: END_full, or END_interior where judged, is below 0.97 x the best reference under both
-    readings of our k, against references whose provenance is "none". The two readings are the box's
-    noise-power k, which is judged, and the unweighted mean kept fraction, the flip check.
+    readings of our k, and that best reference -- every one setting the bar -- has provenance "none"
+    (Ruling F3, above). The two readings are the box's noise-power k, which is judged, and the
+    unweighted mean kept fraction, the flip check.
   * **review**: everything else, with its reasons:
     * a verdict that flips between the two readings (rule 5);
     * a numeric fail against a reference whose provenance is not "none" (C1);

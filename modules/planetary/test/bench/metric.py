@@ -29,11 +29,9 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     Validation (test_end.py; numbers in README.md): blur at equal noise ranks strictly lower; more
     frames at the same blur rank higher (x1.19 for 2x, x1.48 for 4x; DAN moves 0.3 %); sharper-but-
     noisier pairs and a capture's 20 % / 50 % stacks rank as the exact oracle Wiener restoration does
-    (both outcomes occur in each set); a random scan of 157 clear pairs over object spectra
-    f^-1.4..f^-4.4 agreed 157/157 (log-capacity: 96 %, so the restoration form was chosen); a tool's
-    smoothing never raises it (drizzle x3 + area resample x0.81, Gaussian 0.7 x0.75, B-spline
-    half-pixel shift x0.98, where reading the box's own white floor as its noise RAISES it -- the bias
-    the photon budget removes).
+    (both outcomes occur in each set); a tool's smoothing never raises it (drizzle x3 + area resample
+    x0.81, Gaussian 0.7 x0.75, B-spline half-pixel shift x0.98, where reading the box's own white floor
+    as its noise RAISES it -- the bias the photon budget removes).
     KNOWN LIMIT -- NOISE AND SHARPENING THE BUDGET DOES NOT HOLD (C1; pinned in test_end.py as strict
     xfails): END counts any power the photon budget does not explain as detail. Noise beyond the
     budget (uniform, shot-like, target-only) and an unsharp mask RAISE it (measured x1.18-1.88 on
@@ -41,9 +39,9 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     single-image estimator can charge it without also charging genuine sharpness: a linear sharpening
     G of a stack whose own kernel is K is the same image, spectrum for spectrum, as an honest stack with
     kernel G K, which END must rank higher whenever G K <= 1; and noise added to a smoothed stack
-    cannot be told from the stack's own (unknown) noise kernel. Measured headroom (the box's fitted
-    white level over the budget): a B-spline-interpolated synthetic 0.67, a drizzled one 0.10; the
-    real stacks 0.00-0.29 for ASIStudio and 0.03-0.29 for ours.
+    cannot be told from the stack's own (unknown) noise kernel; a stack's smoothing leaves headroom
+    below its budget that a fitted-white-level guard cannot see into (README; its measurements are not
+    kept, the guard's code not being in the tree).
     HOW THE BENCH JUDGES DESPITE IT (Ruling P28b): ours is not a single image -- the split halves
     measure its noise -- so ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin
     (noise_factor; halves.charge), the references stay on the budget. C1 then only inflates a
