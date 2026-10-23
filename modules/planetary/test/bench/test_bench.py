@@ -1,4 +1,4 @@
-"""bench.py: the run plan, Ruling 2's status, the display stretch and the side-by-side layout.
+"""bench.py: the run plan, Ruling 2 / P28's status, the display stretch and the side-by-side layout.
 Synthetic only (no NAS)."""
 import os
 
@@ -10,25 +10,30 @@ import benchset
 from metric import Box
 
 
-def _ours(full, inner, judged=True, review=()):
-    return {"ratio_to_best_reference": full, "interior_ratio_to_best_reference": inner,
-            "interior_judged": judged, "review": list(review)}
+def _row(label, end=1.0, end_int=1.0, judged=True, note=None):
+    return {"label": label, "end": end, "end_interior": end_int if judged else None, "end_note": note,
+            "interior_judged": judged}
 
 
-def test_plan_covers_every_capture_once_plus_the_variant():
+def _rows(full, inner, judged=True, review=(), alt=None, ref_end=1.0, ref_note=None):
+    """ours (with END ratios full / inner, and alt ratios) and one reference."""
+    alt_full, alt_inner = alt if alt is not None else (full, inner)
+    ours = _row("ours", end=full, end_int=inner, judged=judged)
+    ours.update({"end_ratio": full, "end_interior_ratio": inner if judged else None,
+                 "end_alt_ratio": alt_full, "end_interior_alt_ratio": alt_inner if judged else None,
+                 "end_frames": 100.0, "end_alt_frames": 60.0, "review": list(review)})
+    return [ours, _row("AS_P20", end=ref_end, judged=judged, note=ref_note)]
+
+
+def test_plan_covers_every_capture_once_all_rggb():
     runs = bench.plan()
     ids = [r.id for r in runs]
-    assert len(ids) == len(set(ids))
-    assert [r.capture for r in runs[:len(benchset.BENCHMARK)]] == [c.id for c in benchset.BENCHMARK]
-    assert "2026-01-30-jupiter-rggb" in ids
-
-
-def test_lqef_captures_stack_bggr_with_the_reason_and_the_variant_keeps_the_record():
-    by = {r.id: r for r in bench.plan()}
-    for cid in ("2026-01-30-jupiter", "2024-02-01-moon"):
-        assert benchset.by_id(cid).bayer == "RGGB"          # the record is untouched
-        assert by[cid].bayer == "BGGR" and "BGGR" in by[cid].note and "not confirmed" in by[cid].note
-    assert by["2026-01-30-jupiter-rggb"].bayer == "RGGB"
+    assert len(ids) == len(set(ids)) == len(benchset.BENCHMARK)
+    assert [r.capture for r in runs] == [c.id for c in benchset.BENCHMARK]
+    by = {r.id: r for r in runs}
+    for c in benchset.BENCHMARK:
+        if c.expect == "stack":
+            assert by[c.id].bayer == "RGGB" and "camera spec" in c.bayer_source
     assert by["2026-01-30-saturn-empty"].bayer == "auto" and by["2026-01-30-saturn-empty"].expect == "NoTarget"
     assert by["2023-02-11-venus-clipped"].expect == "Clipped"
 
@@ -40,16 +45,25 @@ def test_lqef_captures_stack_bggr_with_the_reason_and_the_variant_keeps_the_reco
     (1.10, 0.969, True, "fail"),
     (1.10, 0.50, False, "pass"),        # an interior not judged does not count
 ])
-def test_status_applies_the_bar_to_both_scores(full, inner, judged, want):
-    assert bench.status_of(_ours(full, inner, judged), "2023-02-12-moon")[0] == want
+def test_status_applies_the_bar_to_both_end_scores(full, inner, judged, want):
+    assert bench.status_of(_rows(full, inner, judged))[0] == want
 
 
-def test_review_notes_and_always_review_turn_a_pass_into_review_never_a_fail_into_one():
-    assert bench.status_of(_ours(1.2, None, False, ["limb-only: human review decides"]), "x") == \
+def test_review_notes_turn_a_pass_into_review_never_a_fail_into_one():
+    assert bench.status_of(_rows(1.2, None, False, ["limb-only: human review decides"])) == \
         ("review", ["limb-only: human review decides"])
-    st, why = bench.status_of(_ours(1.2, 1.1), "2026-01-30-jupiter")
-    assert st == "review" and "always human review" in why[0]
-    assert bench.status_of(_ours(0.9, 1.1, True, ["limb-only"]), "2026-01-30-jupiter")[0] == "fail"
+    assert bench.status_of(_rows(0.9, 0.9, True, ["limb-only"]))[0] == "fail"
+
+
+def test_a_verdict_that_flips_with_our_frame_count_goes_to_review():
+    st, why = bench.status_of(_rows(1.02, 1.05, True, alt=(0.95, 1.0)))
+    assert st == "review" and "flips" in why[0] and "pass at k 100" in why[0] and "fail at k 60" in why[0]
+    assert bench.status_of(_rows(0.9, 0.9, True, alt=(0.8, 0.8)))[0] == "fail"     # fails both: fail
+
+
+def test_a_missing_end_is_unmeasured_never_a_verdict():
+    st, why = bench.status_of(_rows(1.5, 1.5, ref_end=None, ref_note="END not computed: no usable sky"))
+    assert st == "unmeasured" and "NO VERDICT" in why[0] and "AS_P20: END not computed: no usable sky" in why[0]
 
 
 def test_stretch_removes_each_channels_pedestal_and_keeps_the_colour_ratio():
@@ -100,24 +114,29 @@ def test_compose_lays_out_columns_with_headers(tmp_path):
 
 
 def test_summary_counts_and_lists_diagnosis_rows():
-    rec_stack = {"run": "r1", "capture": "c", "bayer": "BGGR", "expect": "stack", "note": "", "status": "fail",
-                 "reasons": ["DAN_full 0.9"], "wall_seconds": 2.0, "video_bytes": 2e9, "source": "NAS",
+    end_keys = {"end": None, "end_ratio": None, "end_interior": None, "end_interior_ratio": None,
+                "end_pure": None, "end_alt_ratio": None, "end_interior_alt_ratio": None, "end_frames": None,
+                "end_alt_frames": None, "end_noise_budget": None, "end_excess": None, "end_sky_tiles": 0,
+                "end_note": None}
+    ours = dict(end_keys, label="ours", dan=0.1, dan_interior=None, ratio_to_best_reference=0.9,
+                interior_ratio_to_best_reference=None, factor=1.0, band_snr=10.0, orientation=None, shift=None,
+                scale=None, ncc=None, end=2.0, end_ratio=0.8, end_frames=9.0, end_alt_frames=7.0, end_alt_ratio=0.7)
+    ref = dict(end_keys, label="AS_P20", dan=0.111, dan_interior=None, ratio_to_best_reference=1.0,
+               interior_ratio_to_best_reference=None, factor=1.0, band_snr=10.0, orientation="identity",
+               shift=[0.0, 0.0], scale=1.0, ncc=0.99, end=2.5, end_ratio=1.0, end_frames=2.0)
+    rec_stack = {"run": "r1", "capture": "c", "bayer": "RGGB", "expect": "stack", "note": "", "status": "fail",
+                 "reasons": ["END_full 0.8"], "wall_seconds": 2.0, "video_bytes": 2e9, "source": "NAS",
                  "probe": {"used": 9, "measured": 10, "seconds": 1.5, "peakRssMB": 100.0, "frames": 10,
                            "phaseSeconds": {"Stacking": 1.0}, "bytesRead": 3e9, "readMBps": 500.0},
-                 "rows": [{"label": "ours", "dan": 0.1, "dan_interior": None, "ratio_to_best_reference": 0.9,
-                           "interior_ratio_to_best_reference": None, "factor": 1.0, "band_snr": 10.0,
-                           "orientation": None, "shift": None, "scale": None, "ncc": None},
-                          {"label": "AS_P20", "dan": 0.111, "dan_interior": None, "ratio_to_best_reference": 1.0,
-                           "interior_ratio_to_best_reference": None, "factor": 1.0, "band_snr": 10.0,
-                           "orientation": "identity", "shift": [0.0, 0.0], "scale": 1.0, "ncc": 0.99}]}
+                 "rows": [ours, ref], "photon_transfer": "v(m) = 0.1 m + 0 DN^2"}
     rec_diag = {"run": "d1", "capture": "d", "bayer": "auto", "expect": "NoTarget", "note": "", "status": "pass",
                 "image_written": False, "wall_seconds": 0.5, "video_bytes": 1e6, "source": "NAS",
                 "probe": {"diagnosis": {"kind": "NoTarget", "message": "nothing", "numbers": {"n": 1}},
                           "seconds": 0.4, "frames": 21, "phaseSeconds": {}, "bytesRead": 1e6, "readMBps": 50.0,
                           "peakRssMB": 50.0}}
     md = bench.summary_md([rec_stack, rec_diag])
-    assert "0 pass, 0 review, 1 fail" in md
-    assert "| r1 | BGGR | 9 / 10 |" in md and "0.1000 / 0.1110 / -" in md
+    assert "0 pass, 0 review, 1 fail" in md and "RGGB" in md.split("\n")[2]
+    assert "| r1 | RGGB | 9 / 10 | 9 (7) |" in md and "2.00 / 2.50 / -" in md and "0.800 / -" in md
     assert "| d1 | NoTarget | NoTarget | no | **pass** |" in md
 
 

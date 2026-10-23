@@ -8,6 +8,11 @@ per-site means over the unsaturated bright disc (2x2 sums >= 50 % of their 99.99
 no site >= 250), pooled over the first frames; the two green sites are the more equal diagonal,
 and red is the brighter of the other two (a warm target -- Jupiter, Mars, Saturn, the Moon --
 through a CMOS CFA).
+
+Only the GREEN PHASE is evidence. The red/blue call (the warm-target rule) is not a valid source
+of the pattern (Scott, 2026-10-22), and through a narrowband filter such as the Lqef it does not
+apply at all: the benchmark takes red/blue from the camera spec (benchset.CAMERA_RGGB: every
+colour capture in the set is a ZWO ASI585MC or ASI2400MC, both RGGB).
 """
 import subprocess
 from dataclasses import dataclass

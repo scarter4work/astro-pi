@@ -522,18 +522,32 @@ class Row:
     factor: float
     registration: Optional[Registration]    # None for the anchor
     result: metric.Result
+    # The anchor measured with its ALTERNATIVE frame count (compare's anchor_frames_alt): the flip
+    # check between the two readings of our effective count (bench.status_of).
+    alt: Optional[metric.Result] = None
 
 
 RefSpec = Union[str, Tuple[str, Optional[float]]]
 
 
 def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
-            anchor_label: Optional[str] = None, frame_size=None) -> List[Row]:
+            anchor_label: Optional[str] = None, frame_size=None, frame_noise=None,
+            anchor_frames: Optional[float] = None, capture_frames: Optional[int] = None,
+            anchor_frames_alt: Optional[float] = None) -> List[Row]:
     """Measure the anchor (normally OUR stack: a path, (path, factor) or an array) and each
     reference (path, or (path, measured_factor)) with metric.measure on one common box, with
     DAN_interior on the anchor's interior window. Row 0 is the anchor. `frame_size` (w, h) of
     the capture makes every reference's resampling factor size-derived (load_reference).
     mosaic=True is a fallback that rows_to_dicts marks as not a pass/fail.
+
+    END (Ruling P28) needs `frame_noise` -- (noise.PhotonTransfer, mean raw frame) of the capture
+    (noise.measure_video) -- and every image's effective frame count: `anchor_frames` for the
+    anchor, and for a reference its stacking percentage (RefInfo.percent: AutoStakkert's global
+    percentage, approximate per alignment point; ASIStudio's) x `capture_frames`. One per-frame
+    noise sigma_frame^2 on the common box (noise.box_noise of the frames under it) then gives every
+    image its budget sigma_frame^2 / k. Without these, or for an image whose count is unknown, END
+    is None and Row.result.end_note says why (`frame_noise` may also be a str: why the capture's
+    per-frame noise could not be measured).
 
     Refuses processed references (sharpened/stretched: ASIStudio .jpg, AutoStakkert _conv)."""
     if isinstance(anchor, (str, tuple)):
@@ -569,12 +583,67 @@ def compare(anchor, references: Sequence[RefSpec], *, mosaic: bool = False,
     limbs += [metric.limb_sigma(metric.luminance(crop_registered(ref.image, reg, box))) for ref, reg in loaded]
     window = metric.interior_window(a_lum, box, limb=min(limbs))
 
-    rows = [Row(a_label, a_path, a_used, None, metric.measure(a_lum, box, mosaic=mosaic, interior=window))]
+    budget = _noise_budget(frame_noise, a_lum, box, window, mosaic)   # (box, interior, sky) or a reason
+    a_kw = _end_kwargs(budget, anchor_frames, "our stack's effective frame count")
+    a_res = metric.measure(a_lum, box, mosaic=mosaic, interior=window, **a_kw.pop("measure"))
+    alt = None
+    if anchor_frames_alt is not None:
+        alt_kw = _end_kwargs(budget, anchor_frames_alt, "our stack's alternative effective frame count")
+        alt = _with_note(metric.measure(a_lum, box, mosaic=mosaic, interior=window, **alt_kw.pop("measure")), alt_kw)
+    rows = [Row(a_label, a_path, a_used, None, _with_note(a_res, a_kw), alt)]
     for ref, reg in loaded:
         crop = metric.luminance(crop_registered(ref.image, reg, box))
-        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window)
-        rows.append(Row(ref.info.label, ref.path, ref.factor, reg, replace(r, box=box)))
+        k = (ref.info.percent / 100.0 * capture_frames) if (ref.info.percent and capture_frames) else None
+        kw = _end_kwargs(budget, k, f"{ref.info.label}'s stacking percentage x the capture's frames")
+        m = kw.pop("measure")
+        if "noise_power" in m and not mosaic:
+            # The reference's own sky, for the excess-noise check: its WHOLE image (the crop is mostly
+            # target). An unmeasurable sky leaves the judged END None (no fallback to the crop).
+            try:
+                m["sky_floor"] = metric.sky_noise_floor(ref.image)
+            except metric.SkyUnmeasurable as e:
+                m["sky_floor"] = f"{e}"
+        r = metric.measure(crop, Box(0, crop.shape[0], 0, crop.shape[1]), mosaic=mosaic, interior=window, **m)
+        rows.append(Row(ref.info.label, ref.path, ref.factor, reg, replace(_with_note(r, kw), box=box)))
     return rows
+
+
+def _noise_budget(frame_noise, a_lum, box, window, mosaic):
+    """(sigma_frame^2 on the box, on the interior window or None, at the sky's level), or the reason
+    there is none (a str)."""
+    if mosaic:
+        return "mosaic fallback"
+    if frame_noise is None:
+        return "no per-frame noise for the capture (noise.measure_video not run)"
+    if isinstance(frame_noise, str):
+        return f"per-frame noise: {frame_noise}"
+    import noise   # local: noise imports this module
+    ptc, raw_mean = frame_noise
+    try:
+        raw = noise.raw_under(raw_mean, a_lum, box)
+        s2 = noise.box_noise(ptc, raw)
+        s2_int = noise.box_noise(ptc, raw, window.window) if window.judged else None
+        return s2, s2_int, noise.sky_noise(ptc, raw)
+    except noise.NoiseUnmeasurable as e:
+        return f"per-frame noise unmeasurable on the box: {e}"
+
+
+def _end_kwargs(budget, frames, what):
+    """metric.measure keyword arguments for END, plus 'k' and a 'note' when END cannot be had."""
+    if isinstance(budget, str):
+        return {"measure": {}, "k": frames, "note": f"END not computed: {budget}"}
+    if not frames or not frames > 0:
+        return {"measure": {}, "k": frames, "note": f"END not computed: {what} is unknown"}
+    s2, s2_int, s2_sky = budget
+    m = {"noise_power": s2 / frames, "sky_noise_power": s2_sky / frames}
+    if s2_int is not None:
+        m["noise_power_interior"] = s2_int / frames
+    return {"measure": m, "k": frames, "note": None}
+
+
+def _with_note(res: metric.Result, kw) -> metric.Result:
+    res = replace(res, end_frames=kw["k"])
+    return replace(res, end_note=kw["note"]) if kw["note"] else res
 
 
 def review_notes(rows: Sequence[Row]) -> List[str]:
@@ -595,29 +664,64 @@ def review_notes(rows: Sequence[Row]) -> List[str]:
     return notes
 
 
+def _ratios(rows: Sequence[Row], key: str):
+    """Each row's `key` over the best REFERENCE's (rows 1..), or None; and whether every reference
+    had a value (a reference without one makes the best unknowable -- the caller says so)."""
+    vals = [getattr(r.result, key) for r in rows[1:]]
+    known = [v for v in vals if v is not None]
+    best = max(known) if known else None
+    out = [(getattr(r.result, key) / best) if (best and getattr(r.result, key) is not None) else None for r in rows]
+    return out, (len(known) == len(vals))
+
+
+def _over(value, rows: Sequence[Row], key: str):
+    known = [getattr(r.result, key) for r in rows[1:] if getattr(r.result, key) is not None]
+    return (value / max(known)) if (value is not None and known) else None
+
+
 def rows_to_dicts(rows: Sequence[Row]) -> List[dict]:
-    """One dict per row (row 0 = the anchor). Ratios are to the best REFERENCE (rows 1..);
-    `bar` applies Ruling 2's 0.97 to DAN_full and, when judged, to DAN_interior; `review` lists
-    what needs a human (the same list on every row)."""
+    """One dict per row (row 0 = the anchor). Ratios are to the best REFERENCE (rows 1..).
+    `bar` applies Ruling 2's 0.97 to END (Ruling P28: END_full and, when judged, END_interior);
+    `dan_bar` the same to DAN, now a secondary figure. `end_complete` is False when some
+    reference has no END (then no END ratio is a verdict: bench.status_of says so loudly).
+    `review` lists what needs a human (the same list on every row)."""
     best = max((r.result.value for r in rows[1:]), default=None)
     ints = [r.result.interior for r in rows[1:] if r.result.interior is not None]
     best_int = max(ints) if ints else None
     notes = review_notes(rows)
+    e_full, ok_full = _ratios(rows, "end")
+    e_int, ok_int = _ratios(rows, "end_interior")
+    p_full, _ = _ratios(rows, "end_pure")
+    p_int, _ = _ratios(rows, "end_interior_pure")
     out = []
-    for r in rows:
+    for i, r in enumerate(rows):
         g, res = r.registration, r.result
         full = (res.value / best) if best else None
         interior = (res.interior / best_int) if (best_int and res.interior is not None) else None
         out.append({
             "label": r.label, "path": r.path, "factor": r.factor,
+            "end": res.end, "end_ratio": e_full[i],
+            "end_interior": res.end_interior, "end_interior_ratio": e_int[i],
+            "end_pure": res.end_pure, "end_pure_ratio": p_full[i],
+            "end_interior_pure": res.end_interior_pure, "end_interior_pure_ratio": p_int[i],
+            "end_frames": res.end_frames, "end_noise": res.end_noise, "end_noise_budget": res.end_noise_budget,
+            "end_excess": res.end_excess, "end_sky_tiles": res.end_sky_tiles,
+            "end_snr": list(res.end_snr) if res.end_snr else None, "end_note": res.end_note,
+            "end_complete": ok_full and (ok_int or not res.interior_judged),
+            "end_alt": r.alt.end if r.alt else None, "end_alt_frames": r.alt.end_frames if r.alt else None,
+            "end_alt_ratio": _over(r.alt.end if r.alt else None, rows, "end"),
+            "end_interior_alt": r.alt.end_interior if r.alt else None,
+            "end_interior_alt_ratio": _over(r.alt.end_interior if r.alt else None, rows, "end_interior"),
             "dan": res.value, "band_snr": res.band_snr,
             "noise_floor": res.noise_floor, "box": list(res.box), "mosaic": res.mosaic,
             "ratio_to_best_reference": full,
             "dan_interior": res.interior, "interior_judged": res.interior_judged,
             "interior_diameter": res.interior_diameter,
             "interior_ratio_to_best_reference": interior,
-            "bar": {"full": None if full is None else full >= PASS_BAR,
-                    "interior": None if interior is None else interior >= PASS_BAR},
+            "bar": {"full": None if e_full[i] is None else e_full[i] >= PASS_BAR,
+                    "interior": None if e_int[i] is None else e_int[i] >= PASS_BAR},
+            "dan_bar": {"full": None if full is None else full >= PASS_BAR,
+                        "interior": None if interior is None else interior >= PASS_BAR},
             "review": list(notes),
             "orientation": g.orientation if g else None,
             "shift": list(g.shift) if g else None, "scale": g.scale if g else None,
@@ -634,7 +738,11 @@ def print_rows(d: Sequence[dict]) -> None:
         inner = (f"  interior {r['dan_interior']:.5f} ({r['interior_ratio_to_best_reference']:.3f})"
                  if r["interior_ratio_to_best_reference"] is not None else
                  (f"  interior {r['dan_interior']:.5f}" if r["dan_interior"] is not None else "  interior -"))
-        print(f"{r['label']:<48} DAN {r['dan']:.6f}{full}{inner}  SNR {r['band_snr']:9.1f}{reg}")
+        end = (f"END {r['end']:.3f}" + (f" ({r['end_ratio']:.3f})" if r["end_ratio"] is not None else "")
+               if r["end"] is not None else "END -")
+        print(f"{r['label']:<48} {end}  DAN {r['dan']:.6f}{full}{inner}  SNR {r['band_snr']:9.1f}{reg}")
+        if r["end_note"]:
+            print(f"    {r['end_note']}")
     for note in (d[0]["review"] if d else []):
         print(f"REVIEW: {note}")
 

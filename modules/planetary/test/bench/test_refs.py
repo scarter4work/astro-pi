@@ -334,7 +334,7 @@ def test_a_softer_ours_cannot_escape_the_interior_bar(tmp_path):
     d = refs.rows_to_dicts(refs.compare(soft, [str(p / "cap_lapl5_ap1.tif")]))
     print(f"\nown window {own.diameter:.1f} px (limb {own.limb_sigma:.2f}); capture window "
           f"{d[0]['interior_diameter']:.1f} px; interior ratio {d[0]['interior_ratio_to_best_reference']}")
-    assert d[0]["interior_judged"] and d[0]["bar"]["interior"] is False
+    assert d[0]["interior_judged"] and d[0]["dan_bar"]["interior"] is False   # the window rule, on DAN (no frame noise here)
 
 
 def test_compare_marks_a_small_disc_limb_only(tmp_path):

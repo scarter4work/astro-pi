@@ -7,10 +7,12 @@ captures. Nothing here ships; the NAS (`/mnt/qnap/astro_data`) is only ever read
 
 | File | What it does |
 |---|---|
-| `metric.py` | The sharpness-at-equal-noise measure: DAN ("detail above noise") over the target box, and DAN_interior over the disc's interior; the target box and interior window |
+| `metric.py` | END, the judged sharpness-at-equal-noise measure (Ruling P28), and END_interior; DAN and DAN_interior (secondary); the target box, interior window and sky excess-noise check |
+| `noise.py` | The capture's per-frame noise: a photon-transfer fit to its raw frames, and sigma_frame^2 on a stack's box (END's noise model) |
+| `halves.py` | The split-half validation of END's noise model: even/odd SER split, and the check of the halves' difference against the model |
 | `refs.py` | Loads AS/ASI/our images, area-resamples drizzled AS output to native (Ruling 1; the factor from the reference's size), registers each reference to an anchor (orientation, sub-pixel shift, measured scale), measures all on one box, and lists what needs human review |
 | `bayer.py` | The CFA pattern of a capture, measured on its raw frames in the reader's layout |
-| `bench.py` | run-stack-bench.sh's run plan (Bayer overrides, the colour variant), Ruling 2 status, side-by-side PNGs and summary.md |
+| `bench.py` | run-stack-bench.sh's run plan, the Ruling 2 / P28 status (END judged, flip check, unmeasured), side-by-side PNGs and summary.md |
 | `benchset.py` | The benchmark set below (as data, with each capture's Bayer pattern and its source), `compare_capture` for run-stack-bench.sh, and a survey that checks every reference against its own video |
 | `test_*.py`, `conftest.py` | pytest. Markers: `nas` (reads the NAS; `-m "not nas"` deselects them), `ffmpeg` (skipped when ffmpeg/ffprobe are not on PATH) |
 
@@ -22,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 139 tests, 1-3 min with the NAS
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 88 synthetic tests, ~1 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 175 tests, 2-4 min with the NAS
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 116 synthetic tests, ~1.5 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -48,24 +50,137 @@ P9). The benchmark measures the debayered path because that is what a user who s
 
 The pattern is given in the reader's frame layout, because an explicit pattern is applied as it
 stands (`ser::ResolveBayer`: "An explicit choice wins"), and `avi_real_check.py` proves the reader's
-frames equal ffmpeg's bytes. `bayer.py` measures it with `avi_real_check.py`'s Bayer-phase method:
-per-site means over the unsaturated disc; the greens are the more equal diagonal; red is the
-brighter of the other two on a warm target. The green phase (which decides whether the demosaic is
-right at all) is unambiguous on every capture: greens 0.0-1.7 % apart, against 4.5-56 % for
-red/blue. Red against blue is a weaker call:
+frames equal ffmpeg's bytes.
 
-* Through the Lqef (L-Quad Enhance) filter only the H-beta/OIII and H-alpha/SII bands pass, so the
-  warm-target rule does not apply. For the two Lqef captures it says BGGR. Scott's own choice (the
-  2026-01-30 Jupiter's Save pattern, RG) and both tools' debayer (the 2024-02-01 Moon) say RGGB;
-  the record uses those and marks red/blue unverified.
-* The engine's Hamilton-Adams demosaic applies the same rule at red and blue sites, so an R/B swap
-  only swaps the R and B planes: the luminance metric is unchanged. This follows from the algorithm
-  (Demosaic.h) and was not run. Colour is Scott's side-by-side call.
-* The references' own colour balance shows which pattern each tool used (reference R/B equals the
-  raw site ratio of the sites it took as red): AutoStakkert's Mars (R/B 0.93) and 2023-03-05 Moon
-  (R/B 0.62, a blue Moon) were debayered with red and blue swapped.
+**Every colour capture is RGGB** (Scott, 2026-10-22). Each one came from a ZWO ASI585MC (Pro/Air) or
+an ASI2400MC Pro, and ZWO's specs give RGGB for both sensors (IMX585, IMX410). A physical check on two
+2026-09-07 Saturn AVIs from the same camera agrees: RGGB, top-down, even ROI origin.
 
-## The metric: DAN and DAN_interior
+`bayer.py` measures each capture's green phase with `avi_real_check.py`'s method: per-site means over
+the unsaturated disc, the greens being the more equal diagonal. The green phase is unambiguous on
+every capture (greens 0.0-1.7 % apart) and is the RGGB one everywhere. Red against blue comes from
+the camera spec. The warm-target rule that `bayer.py` also applies (red is the brighter non-green
+site) is not a valid source, and through the Lqef filter it does not apply at all.
+
+* An R/B swap leaves the luminance metrics unchanged. The engine's Hamilton-Adams demosaic applies
+  the same rule at red and blue sites, so a swap only exchanges the R and B planes; Task 9 measured
+  DAN equal to four digits on BGGR and RGGB stacks of the 2026-01-30 Jupiter. The side-by-side
+  colours do change.
+* The references' own colour balance shows which pattern each tool used (a reference's R/B equals the
+  raw site ratio of the sites it took as red):
+  * AutoStakkert debayered the 2023-02-11 Jupiter, the 2023-02-12 Moon and Mars BGGR, so their red
+    and blue are swapped against ours.
+  * Every ASIStudio file is RG (`VSBAYER = 0`).
+* The 2023-03-05 Moon's ASIAIR sidecar says Bayer = RG with Flip=Vert, which the reader resolves to
+  BGGR (Ruling 10). The bench's explicit RGGB wins over it.
+* The 2026-01-30 Jupiter and the 2024-02-01 Moon carry SERViewer Save-pattern sidecars (Bayer = RG).
+
+## The judged metric: END (Ruling P28)
+
+The spec asks for "one documented sharpness-at-equal-noise metric". DAN (below) measured detail with
+each image's noise removed, so it gave no credit for SNR: in Task 9 a stack with 6.7-9.7 x the
+reference's per-band SNR "failed" on DAN. Ruling P28 made the judged metric literally sharpness at
+equal noise. **END** ("equal-noise detail") asks: once each image is sharpened as far as its noise
+allows, how much of the target's detail comes back? Full definition and reasoning: the `metric.py`
+docstring. In short:
+
+1. Same box, normalisation and Hann periodogram as DAN.
+2. **One noise model for every image**: white noise of power sigma_frame^2 / k.
+   * sigma_frame^2 is the capture's per-frame noise on the box, from a photon-transfer fit to its raw
+     frames (`noise.py`; independent of any stacker).
+   * k is the image's effective frame count. For ours, the frames used x the mean kept fraction over
+     regions, from stack-probe's `regionDetail`. For a reference, its stacking percentage x the
+     capture's frames; AutoStakkert's percentage is global, so this is approximate per alignment point.
+   * Any smoothing (interpolation, drizzle, resampling, denoising) therefore counts as blur, on our
+     side and the references' alike, as in DAN and Ruling 1.
+3. **Plus any excess**: the white power of the image's own signal-free sky beyond the photon budget at
+   the sky's level. A stack that is noisier than its frame count implies is charged for it. Detail on
+   the target is never read as noise.
+4. Per bin (0.06-0.30 cycles/px, steps of 0.03): SNR = max(P - N, 0) / N.
+   END = sqrt( sum O(f) / sum O(f) / (1 + SNR) ) with the object prior O(f) = f^-3. That is the band's
+   detail over the error of a matched Wiener restoration, as an amplitude ratio.
+5. **END_interior**: the same on the interior window's high-pass, judged where DAN_interior was
+   (the eroded disc is at least 20 px).
+6. Ruling 2's 0.97 bar applies to END_full and, where judged, END_interior.
+
+### Why not read each image's own noise (measured 2026-10-22)
+
+These figures falsified every single-image noise estimate, and they are why END uses the physics
+instead.
+
+* **The box's own 0.40-0.50 cycles/px power is not noise.** Our engine stacked the even and odd
+  frames separately, on the 2026-01-30 Jupiter and the 2023-02-12 Moon. The box's floor was 55 x and
+  2.7 x the halves' difference: it is structure common to disjoint frames.
+* **Every stack's noise is coloured, ours included.** Sky noise at 0.21-0.24 cycles/px is 1.1-38 x its
+  0.40-0.50 floor. A white floor under-reads the in-band noise by that factor, differently per tool.
+  * Under the white floor, ASIStudio led the 2026-01-30 Jupiter 4.5 x: its target floor is 80 x below
+    ours.
+  * Its sky floor equals the 1-DN quantisation variance exactly.
+* **The sky is not a proxy for the target.**
+  * Sky noise is 600-54 000 x below the target noise: the raw 8-bit sky is a flat ~3 DN.
+  * Its spectral shape is not the target's.
+  * References' sky noise does not scale with their frame counts: ASIStudio's 40 % stack has 0.85 x
+    our sky noise.
+
+The verdicts under each of these models are in the P28 report.
+
+### The plan's AS P20 > P50 check (a departure from the plan's wording)
+
+The plan asked that, on `2_12_2023`, AS_P20 rank above AS_P50 "as AutoStakkert's selection implies".
+That pair is confounded: P20 is `lapl5_ap1` and P50 `lapl5_ap2` (different alignment-point settings),
+so it does not isolate the share of frames. Under Ruling P28, rule 4, it is now a reported figure,
+not an assertion:
+
+| 2_12_2023 Moon | k | END | DAN |
+|---|---|---|---|
+| AS_P20 | 471 | 13.27 | 0.06876 |
+| AS_P50 | 1177 | 16.89 | 0.05266 |
+
+The assertion moved to an unconfounded synthetic (`test_end.py`): one 200-frame capture, its sharpest
+20 % and sharpest 50 % stacked. END must rank them as the exact matched restoration does, and the set
+holds a case each way:
+* where the seeing drifts smoothly (log-normal), P50 wins;
+* where a quarter of the frames are steady moments, P20 wins.
+
+DAN ranks P20 first in all four cases, wrongly in the log-normal ones.
+
+### Validation (test_end.py, measured 2026-10-22)
+
+| Property | Measured |
+|---|---|
+| Blur at equal noise ranks lower (seeing 1.0 / 1.5 / 2.0 / 3.0) | END 5.141 / 2.946 / 2.296 / 1.720 |
+| Added noise never raises it (0.5 / 1 / 2 / 4 x the stack's noise) | 5.141 -> 4.877 / 4.114 / 3.161 / 2.390 (the photon budget alone would have risen to 5.30-9.75) |
+| More frames, same blur (2 x / 4 x) | x1.191 / x1.481 (DAN x1.003) |
+| Sharper but noisier, against the exact matched restoration | 4 of 4 cases rank as the restoration does, including A seeing 2.0 noise 1 vs B 1.2 / 3 (B), and 1.1 / 1 vs 1.0 / 4 (A) |
+| Random scan: 157 clear pairs, object spectra f^-1.4..f^-4.4 | 157 / 157 agree with the restoration (log-capacity: 96 %; END's restoration form was chosen on this) |
+| 20 % vs 50 % of one capture (4 cases, both outcomes) | 4 of 4 |
+| Smoothing counts as blur: drizzle x3 + area resample / Gaussian 0.7 / B-spline half-pixel shift | x0.809 / x0.746 / x0.978. Reading the image's own floor as its noise would have raised it x2.06 / x3.08 / x1.62. That is the reference-side bias the photon budget removes, quantified. |
+| Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact | 19.91 / 15.07 / 5.47 / 3.11 and 13.27 / 10.14 / 4.37 / 2.39 |
+| Real AS_P20, added noise 0.005 / 0.01 / 0.02 of the signal | Jupiter 19.91 -> 14.16 / 9.59 / 6.48; Moon 13.27 -> 7.37 / 4.86 / 3.39 |
+| Interior: an interior blur of sigma 1 behind a crisp limb / 2 x noise | 19.51 -> 15.62 / 10.70 |
+| `noise.photon_transfer` on synthetic CFA frames (known line) | slope within 1 %; v(m) 4-11 % high on a textured disc drifting 0.5 px per frame |
+
+**Split-half check** (Ruling P28, rule 3; validation only). The runner also stacks each capture's even
+and odd frames separately. The summary compares the power of their difference with END's model,
+sigma_frame^2 (1/k_A + 1/k_B) / 4:
+* under 1 toward Nyquist is our interpolation's smoothing;
+* far above 1, highest in the low bins, is signal the halves do not share. Each half's own frame
+  choice and local alignment move fine structure by hundredths of a pixel.
+
+The 2026-10-23 run, measured over model at 0.21-0.30 cycles/px with the judged k:
+* **0.71-1.12 x:** the 2023-02-11 Jupiter and the 2023-02-12, 2023-08-22 and 2023-03-05 Moons. With
+  the harmonic k the same captures read 0.33-0.88 x, so the halves favour the judged reading.
+* **0.31 x:** Saturn, where our smoothing puts the noise under the model.
+* **2.9-73 x:** the 2026-01-30 Jupiter, Mars and the 2024-02-01 Moon. On these, D's disc-to-sky power
+  is 22-1 000 x the photon budget's, so the excess is signal the halves do not share, not noise.
+
+Per-capture ratios are in summary.md.
+
+## The secondary metric: DAN and DAN_interior
+
+DAN was Ruling 2's yardstick until Ruling P28. It stays in every table as a secondary figure and
+decides nothing.
+
 
 Full definitions and reasoning are in the `metric.py` docstring. In short, for each image on the
 same registered target box:
@@ -152,7 +267,7 @@ AutoStakkert's own selection (fewer, sharper frames -> more detail), same captur
 
 | Capture | Fewer frames | More frames | Ratio | Status |
 |---|---|---|---|---|
-| 2_12_2023 Moon 024708 | AS_P20 0.06876 | AS_P50 0.05266 (both native) | 1.31 | **asserted** (clean pair; measured through `compare_capture`, the bench path) |
+| 2_12_2023 Moon 024708 | AS_P20 0.06876 | AS_P50 0.05266 (both native) | 1.31 | reported (asserted until Ruling P28: the pair is confounded, ap1 vs ap2; END ranks P50 first, 16.89 vs 13.27) |
 | 2_12_2023 Moon 024708 | AS_P20 0.06876 | AS_P25 (x3, resampled) 0.05585 | 1.23 | recorded, confounded by the resample |
 | 2_12_2023 Jupiter 191831 | AS_P20 0.32571 | AS_P25 (x3, resampled) 0.31714 | 1.027 | recorded, confounded by the resample |
 | 3_6_2023 Moon 224808 | AS_P20 (x3) 0.02665 | AS_P50 (x1.5) 0.02637 | 1.011 | recorded (within noise) |
@@ -220,10 +335,10 @@ reference against reference on the capture's common box; our stack joins in Task
 
 | ID | Video | Frames, size, file | Bayer (source) | Eroded | References | DAN (interior) | Why |
 |---|---|---|---|---|---|---|---|
-| 2023-02-11-jupiter | `2_12_2023/2023-02-11-191831-Jupiter-Bin1 13.3F.avi` | 6516, 640x480, 2.0 GB | BGGR (measured; AS same) | 18.8 px: limb-only | `2_12_2023/AS_P20/2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap1_Drizzle30.png` (x3) | 0.3257; 0.3171 | AS native and drizzled |
-| 2026-01-30-jupiter | `processing-archive-2026-10-03/videos/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F.avi` | 4088, 480x360, 0.7 GB | RGGB (Scott's Save pattern; ASI same; Lqef: R/B unverified) | 28.5 px | `.../ASIVideoStack_Output/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F_Planet_40.fit`; `..._Planet_50.fit` | 0.1893 (0.2291); 0.1887 (0.2283) | Larger Jupiter: interior judged |
-| 2023-09-29-saturn | `9_30_2023/2023-09-29-204604-Saturn-Bin1 LPro 14.9F.avi` | 3973, 1280x960, 4.9 GB | BGGR (measured, weakest split 4.5 %; ASI used RGGB) | 23.5 px | `9_30_2023/ASIVideoStack_Output/2023-09-29-204604-Saturn-Bin1 LPro 14.9F_Planet_74.fit` | 0.5828 (0.6038) | Rings; small target in a large frame |
-| 2023-02-11-mars | `2_12_2023/2023-02-11-192403-Mars-Bin1 16.5F.avi` | 13 251, 320x240, 1.0 GB | RGGB (measured; AS used BGGR) | 7.4 px: limb-only | `2_12_2023/AS_P25/2023-02-11-192403-Mars-Bin1 16.5F_lapl5_ap1_Drizzle30.png` (x3; bright edge strip, cols 305-317) | 5.870 | Smallest disc; longest capture. **Limb-only: human review decides** |
+| 2023-02-11-jupiter | `2_12_2023/2023-02-11-191831-Jupiter-Bin1 13.3F.avi` | 6516, 640x480, 2.0 GB | RGGB (camera spec; AS used BGGR) | 18.8 px: limb-only | `2_12_2023/AS_P20/2023-02-11-191831-Jupiter-Bin1 13.3F_lapl5_ap1.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap1_Drizzle30.png` (x3) | 0.3257; 0.3171 | AS native and drizzled |
+| 2026-01-30-jupiter | `processing-archive-2026-10-03/videos/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F.avi` | 4088, 480x360, 0.7 GB | RGGB (camera spec = Scott's Save pattern; ASI same) | 28.5 px | `.../ASIVideoStack_Output/2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F_Planet_40.fit`; `..._Planet_50.fit` | 0.1893 (0.2291); 0.1887 (0.2283) | Larger Jupiter: interior judged |
+| 2023-09-29-saturn | `9_30_2023/2023-09-29-204604-Saturn-Bin1 LPro 14.9F.avi` | 3973, 1280x960, 4.9 GB | RGGB (camera spec; ASI same) | 23.5 px | `9_30_2023/ASIVideoStack_Output/2023-09-29-204604-Saturn-Bin1 LPro 14.9F_Planet_74.fit` | 0.5828 (0.6038) | Rings; small target in a large frame |
+| 2023-02-11-mars | `2_12_2023/2023-02-11-192403-Mars-Bin1 16.5F.avi` | 13 251, 320x240, 1.0 GB | RGGB (camera spec; AS used BGGR) | 7.4 px: limb-only | `2_12_2023/AS_P25/2023-02-11-192403-Mars-Bin1 16.5F_lapl5_ap1_Drizzle30.png` (x3; bright edge strip, cols 305-317) | 5.870 | Smallest disc; longest capture. **Limb-only: human review decides** |
 
 ### Lunar
 
@@ -231,10 +346,10 @@ All four are lunar discs or limbs with sky in the frame, not frame-filling surfa
 
 | ID | Video | Frames, size, file | Bayer (source) | References | DAN (interior) | Why |
 |---|---|---|---|---|---|---|
-| 2023-02-12-moon | `2_12_2023/2023-02-12-024708-Moon-Bin1 14.9F.avi` | 2354, 1920x1080, 4.9 GB | BGGR (measured; AS same) | `2_12_2023/AS_P20/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap1.png` (x1); `2_12_2023/AS_P50/..._lapl5_ap2.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap2_Drizzle30.png` (x3) | 0.0688 (0.0732); 0.0527 (0.0587); 0.0559 (0.0603) | Metric validation: P20 and P50 both native |
-| 2024-02-01-moon | `2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef 14.9F.avi` | 1310, 1920x1080, 2.7 GB | RGGB (as AS and ASI debayered it; Lqef: R/B unverified) | `2_1_2024/ASIVideoStack_Output/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit`; `2_1_2024/AS_P60/..._lapl5_ap16_Drizzle15.fit` (named x1.5, size x3) | 0.1320 (0.1465); 0.1415 (0.1556) | Both tools on one capture |
-| 2023-08-22-moon | `8_23_2023/2023-08-22-213239-FOV-Bin1 LPro 15.8F.avi` | 1352, 1920x1080, 2.8 GB | RGGB (measured; AS and ASI same) | `8_23_2023/ASIVideoStack_Output/2023-08-22-213239-FOV-Bin1 LPro 15.8F_Surface_35.fit`; `8_23_2023/AS_P20/..._lapl5_ap4_Drizzle30.fit` (x3) | 0.0300 (0.0248); 0.0352 (0.0288; band SNR 149) | Both tools; named "FOV" but a lunar limb (checked visually) |
-| 2023-03-05-moon | `3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi` | 1705, 1920x1080, 3.5 GB | BGGR (measured = the reader's sidecar resolution RG + Flip=Vert; AS used RGGB) | `3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit` (named x1.5, size x3); `3_6_2023/moon/AS_P50/..._jupiter_lapl5_ap4_Drizzle15.png` (x1.5) | 0.0267 (0.0271); 0.0264 (0.0269) | Sidecar; a second AS P20/P50 pair |
+| 2023-02-12-moon | `2_12_2023/2023-02-12-024708-Moon-Bin1 14.9F.avi` | 2354, 1920x1080, 4.9 GB | RGGB (camera spec; AS used BGGR) | `2_12_2023/AS_P20/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap1.png` (x1); `2_12_2023/AS_P50/..._lapl5_ap2.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap2_Drizzle30.png` (x3) | 0.0688 (0.0732); 0.0527 (0.0587); 0.0559 (0.0603) | Metric validation: P20 and P50 both native |
+| 2024-02-01-moon | `2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef 14.9F.avi` | 1310, 1920x1080, 2.7 GB | RGGB (camera spec = its Save-pattern sidecar; AS and ASI same) | `2_1_2024/ASIVideoStack_Output/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit`; `2_1_2024/AS_P60/..._lapl5_ap16_Drizzle15.fit` (named x1.5, size x3) | 0.1320 (0.1465); 0.1415 (0.1556) | Both tools on one capture |
+| 2023-08-22-moon | `8_23_2023/2023-08-22-213239-FOV-Bin1 LPro 15.8F.avi` | 1352, 1920x1080, 2.8 GB | RGGB (camera spec; AS and ASI same) | `8_23_2023/ASIVideoStack_Output/2023-08-22-213239-FOV-Bin1 LPro 15.8F_Surface_35.fit`; `8_23_2023/AS_P20/..._lapl5_ap4_Drizzle30.fit` (x3) | 0.0300 (0.0248); 0.0352 (0.0288; band SNR 149) | Both tools; named "FOV" but a lunar limb (checked visually) |
+| 2023-03-05-moon | `3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi` | 1705, 1920x1080, 3.5 GB | RGGB (camera spec; explicit, over the sidecar's RG + Flip=Vert; AS same) | `3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit` (named x1.5, size x3); `3_6_2023/moon/AS_P50/..._jupiter_lapl5_ap4_Drizzle15.png` (x1.5) | 0.0267 (0.0271); 0.0264 (0.0269) | Sidecar; a second AS P20/P50 pair |
 
 ### Diagnosis cases (no image expected; stack-probe runs with Auto)
 
@@ -243,9 +358,10 @@ All four are lunar discs or limbs with sky in the frame, not frame-filling surfa
 | 2026-01-30-saturn-empty | `processing-archive-2026-10-03/videos/2026-01-30-203627-Saturn-Bin1 Lqef -3.8F.avi` | 21, 1920x1080, 44 MB | NoTarget | `.../ASIVideoStack_Output/2026-01-30-203627-Saturn-Bin1 Lqef -3.8F_Planet_40.fit` | Frames hold only background (measured 2026-10-21); ASIStudio still wrote an image |
 | 2023-02-11-venus-clipped | `2_12_2023/2023-02-11-190452-Venus-Bin1 15.8F.avi` | 6485, 640x480, 2.0 GB | Clipped | `2_12_2023/AS_P25/..._Drizzle30.png`, `2_12_2023/AS_P50/..._Drizzle30.png` | Every frame >= 25 % saturated (Task 3); the Bayer pattern is unmeasurable (91 % of the disc saturated); its DAN is the edge of a saturated disc and is not used |
 
-Bayer sidecars: the 2023 Moon AVIs and the 2026-01-30 captures have none. The exceptions are
-`2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F.avi.txt`, which SERViewer's Save pattern wrote
-(Bayer = RG), and `3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi.txt`, which is the ASIAIR's own.
+Bayer sidecars: the 2023 Moon AVIs and the other 2026-01-30 captures have none. The exceptions are
+`2026-01-30-195830-Jupiter-Bin1 Lqef -4.2F.avi.txt` and `2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef
+14.9F.avi.txt`, which SERViewer's Save pattern wrote (Bayer = RG; the second on 2026-10-22 23:11), and
+`3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi.txt`, which is the ASIAIR's own.
 
 ### Considered, not in the set
 
@@ -259,15 +375,15 @@ Bayer sidecars: the 2023 Moon AVIs and the 2026-01-30 captures have none. The ex
 * The other 2026-01-30 Jupiters (ASI only, no sidecar): 195830 is the one with Scott's pattern.
 * `3_31_2023/Moon`: no usable reference (spec Ruling 5).
 
-## Expectation for Task 9's run: the first real comparison
+## Task 9's run and the change of yardstick
 
-The reviewer stacked the full 4088-frame 2026-01-30 Jupiter with our engine (debayered RGGB). It
-scored **1.23 x ASIStudio on DAN_full and 1.16 x on DAN_interior**, and the noise-regime note fired:
-floor/band 1.05e-4 against ASIStudio's 2.24e-6, 46 x apart. The likely cause (untested) is that
-ASIStudio's `.fit` has suppressed power near Nyquist, which makes its noise floor look small. That
-is the white-noise LIMITS case. It biases toward ASIStudio, so the ratio understates ours rather
-than inflating it. This capture therefore always goes to Scott's side-by-side review, whatever the
-numbers say.
+Task 9's run judged on DAN and sent the 2026-01-30 Jupiter to review whatever the numbers said. The
+reason given was that ASIStudio's suppressed Nyquist power makes its white noise floor read small.
+Two captures failed on DAN although ours carried 2.1-9.7 x the reference's per-band SNR (the 2023-02-11
+Jupiter at 0.915, the 2023-08-22 Moon at 0.945 / 0.968). Ruling P28 replaced the judged metric with
+END, whose noise model does not read any image's own floor, and dropped the always-review rule: its
+stated cause no longer bears on the verdict. The noise-regime review note (floor/band unlike every
+reference) still fires on its own terms.
 
 ## The real-data run: run-stack-bench.sh
 
@@ -276,23 +392,38 @@ PLANETARY_BENCH_PYTHON=<venv>/bin/python PLANETARY_BENCH_STAGE=~/.cache/planetar
     bash modules/planetary/test/run-stack-bench.sh [--report-only] [run-id ...]
 ```
 
-`bench.py plan` lists the runs: every capture above plus `2026-01-30-jupiter-rggb`. The two Lqef
-captures (2026-01-30 Jupiter, 2024-02-01 Moon) stack **BGGR**, not the recorded RGGB. The physical
-evidence, a blue seeing halo and the warm-target rule, points to BGGR, while Scott's sidecar says RG.
-Scott has not confirmed either, and no sidecar is written. The RGGB variant of the Jupiter is there
-for the colour comparison. Its DAN equals the BGGR run's to four digits (0.2257 both, measured), which
-confirms that an R/B swap leaves the luminance metric alone.
+`bench.py plan` lists one run per capture above, every colour capture stacked RGGB (the camera spec).
+No sidecar is written.
 
 For each run, stack-probe writes `test/output/bench/<run>/` (gitignored): `ours.fits`, `probe.json`
-(selection, phase times, peak RSS, warnings), `probe.log`, `wall.txt` and `source.txt`. `bench.py
-report` then writes `compare.json` (every row of `compare --json` plus the status) and
-`side-by-side.png`, and builds one `summary.md` over all runs: the main table, every reference, the
-timing with phases, and the diagnosis cases.
+(selection, phase times, peak RSS, warnings, per-region kept counts), `probe.log`, `wall.txt` and
+`source.txt`.
 
-* **Status (Ruling 2).** A run fails when ours' DAN_full, or its DAN_interior where judged, is below
-  0.97 x the best reference. It goes to review when the numbers pass but a review note applies
-  (limb-only, noise regime, mosaic fallback), or when the README says so (the 2026-01-30 Jupiter). It
-  passes otherwise. Every capture still needs Scott's look at its side-by-side.
+Unless `--no-split` is given, the runner then stacks the capture's even and odd frames separately,
+for the split-half check. `halves.py split` writes two SER files to the stage directory (or the run
+directory), and they are deleted afterwards; `halfA` and `halfB` (`.fits`, `.json`, `.log`) are kept.
+
+`bench.py report` then writes `compare.json` (every row of `compare --json`, plus the status, the
+photon-transfer fit and the split-half record) and `side-by-side.png`. It builds one `summary.md`
+over all runs:
+* the main table;
+* every image;
+* the per-frame noise and the split-half check;
+* the timing with phases;
+* the diagnosis cases.
+
+* **Status (Ruling 2 with Ruling P28's yardstick).**
+  * **unmeasured**: END is missing for ours or for any reference (no per-frame noise, an unknown frame
+    count, no usable sky). No verdict is drawn and the reason is printed.
+  * **review**: the END verdict flips between our frame count read two ways (rule 5). The two readings
+    are the mean kept fraction, which is judged, and the harmonic mean of the regions' kept counts.
+    A capture also goes to review when the numbers pass but a review note applies (limb-only, noise
+    regime, mosaic fallback).
+  * **fail**: END_full, or END_interior where judged, is below 0.97 x the best reference under both
+    readings.
+  * **pass**: none of the above.
+
+  DAN is shown and decides nothing. Every capture still needs Scott's look at its side-by-side.
 * **Side-by-side.** Ours is shown, then each reference, all cropped from the same region of ours'
   grid at the registered integer offset, at one scale and with one stretch per row. Each channel's
   black is its own 1st percentile, so a sky pedestal does not tint the sky. One white, the 99.5th
@@ -331,22 +462,31 @@ stack-probe "<video>" --bayer <bayer> --out ours.fits --json    # a diagnosis ca
 python3 -I $B/benchset.py compare <id> ours.fits --json
 ```
 
-`compare --json` prints one object per image, ours first: `label, path, factor, dan, band_snr,
-noise_floor, box, mosaic, ratio_to_best_reference, dan_interior, interior_judged,
-interior_diameter, interior_ratio_to_best_reference, bar {full, interior}, review [...], orientation,
-shift, scale, ncc`. Ruling 2's pass bar is `bar.full` and, when `interior_judged`, `bar.interior`
-(both ratios >= 0.97). A non-empty `review` (limb-only, noise regime, mosaic fallback) sends the
+`compare --json` (with `--probe probe.json` for END) prints one object per image, ours first:
+* END: `end, end_ratio, end_interior, end_interior_ratio, end_pure(_ratio), end_alt(_ratio),
+  end_interior_alt(_ratio), end_frames, end_alt_frames, end_noise, end_noise_budget, end_excess,
+  end_sky_tiles, end_snr [per bin], end_note, end_complete`;
+* DAN: `dan, ratio_to_best_reference, dan_interior, interior_ratio_to_best_reference, dan_bar`;
+* `band_snr, noise_floor, box, mosaic, interior_judged, interior_diameter, bar {full, interior},
+  review [...], orientation, shift, scale, ncc`.
+
+The pass bar is `bar` (END, both ratios >= 0.97; the interior only when judged). `dan_bar` is the same
+test on DAN, for the record. A non-empty `review` (limb-only, noise regime, mosaic fallback) sends the
 capture to Scott's side-by-side however the numbers fall. `compare` refuses diagnosis captures;
 for those the script checks stack-probe's diagnosis kind against `expect` from `show`.
 
 The Python functions behind it, for the side-by-side and summary code:
 
-* `benchset.compare_capture(id, ours) -> list[refs.Row]` -- `ours` is a path or an array; rows carry
+* `benchset.compare_capture(id, ours, probe=None, frame_noise=None) -> list[refs.Row]` -- `ours` is a
+  path or an array; with stack-probe's JSON as `probe`, END is measured (the capture's photon transfer
+  from its first frames, `benchset.ours_frames` / `ours_frames_alt` for our k); rows carry
   `label, path, factor, registration (orientation, shift, scale, ncc), result (metric.Result:
   value, interior, interior_judged, the common box, ...)`. `refs.rows_to_dicts(rows)` gives the JSON
   form; `refs.review_notes(rows)` the review list.
-* `refs.compare(anchor, [path | (path, factor)], mosaic=False, anchor_label=None, frame_size=None)` --
-  the general form.
+* `refs.compare(anchor, [path | (path, factor)], mosaic=False, anchor_label=None, frame_size=None,
+  frame_noise=None, anchor_frames=None, capture_frames=None, anchor_frames_alt=None)` -- the general form.
+* `noise.measure_video(path, (w, h)) -> (PhotonTransfer, raw mean)`, `noise.raw_under(raw_mean,
+  stack_lum, box)`, `noise.box_noise(ptc, raw, window=None)`, `noise.sky_noise(ptc, raw)`.
 * `refs.load_reference(path, factor=None, frame_size=None) -> Reference(image at native scale, factor, info)`,
   `refs.crop_registered(image, registration, box)` -- a reference's pixels under ours' box at the
   registered integer offset: the same crop the metric used, ready for a side-by-side at one scale.
@@ -357,10 +497,17 @@ The Python functions behind it, for the side-by-side and summary code:
 ## Limits
 
 * Sharpened images: see "Known limit: sharpening" above.
-* The noise floor assumes roughly white noise. Interpolated or resampled stacks have less noise
-  near Nyquist than mid-band, so some of their mid-band noise can count as detail. `band_snr` is
-  reported so a low-SNR comparison is visible (lowest among the benchmark references: the
-  8_23_2023 AS_P20, 149).
+* END's noise model:
+  * Our k is the frames used x the mean kept fraction over regions. The exact (sum w)^2 / sum w^2 of
+    the accumulator's weights needs per-frame region membership, which RunStack does not return. The
+    harmonic reading is scored too, and a verdict that depends on the choice goes to review.
+  * AutoStakkert's percentage is global, so it is approximate per alignment point.
+  * sigma_frame comes from the first 128 frames.
+  * Detail and fixed-pattern structure in the band count as signal for every image alike.
+  * A tool that denoises non-linearly gains no budget (it is modelled from its frame count), but any
+    real structure its processing adds in the band counts as detail.
+* DAN's white floor (secondary): interpolated or resampled stacks have less noise near Nyquist than
+  mid-band, so some of their mid-band noise counts as detail (measured above: 1.1-38 x).
 * Small discs: below a 20 px eroded interior (Mars, and the 2_12_2023 Jupiter at 18.8 px) only the
   limb is measured, and an interior softened by sigma 0.7 behind a crisp limb passes DAN_full (numbers
   above). Those captures are marked limb-only, and Scott's review decides.

@@ -5,14 +5,18 @@
 #
 #   bash modules/planetary/test/run-stack-bench.sh [--report-only] [run-id ...]
 #
-# For each run of `bench.py plan` (every benchmark capture, plus the colour variant) it stacks the
-# video with stack-probe at the run's Bayer pattern into test/output/bench/<run>/ (ours.fits,
-# probe.json, probe.log, wall.txt, source.txt), then `bench.py report` measures ours, AS and ASI
-# (DAN_full, DAN_interior), writes <run>/compare.json and <run>/side-by-side.png, and one
-# test/output/bench/summary.md. Diagnosis runs (empty Saturn, clipped Venus) stack with --bayer auto
-# and are checked against the expected diagnosis. test/output/ is gitignored.
+# For each run of `bench.py plan` (every benchmark capture, stacked RGGB) it stacks the video with
+# stack-probe at the run's Bayer pattern into test/output/bench/<run>/ (ours.fits, probe.json,
+# probe.log, wall.txt, source.txt), then -- the split-half check of END's noise model (Ruling P28,
+# validation only) -- the capture's even and odd frames separately (halves.py split -> two SER files
+# in PLANETARY_BENCH_STAGE, or the run's directory, deleted afterwards; halfA/halfB .fits/.json/.log
+# kept). Then `bench.py report` measures ours, AS and ASI (END, the judged metric; DAN, secondary),
+# writes <run>/compare.json and <run>/side-by-side.png, and one test/output/bench/summary.md.
+# Diagnosis runs (empty Saturn, clipped Venus) stack with --bayer auto and are checked against the
+# expected diagnosis. test/output/ is gitignored.
 #
 # --report-only    skip stacking; re-measure the runs already in the output directory
+# --no-split       skip the split-half stacks (the summary then says so per run)
 # run-id ...       only these runs (the summary keeps the others' earlier results)
 #
 # Environment:
@@ -38,11 +42,13 @@ OUT="${PLANETARY_BENCH_OUT:-$HERE/output/bench}"
 STAGE="${PLANETARY_BENCH_STAGE:-}"
 
 REPORT_ONLY=0
+SPLIT=1
 ONLY=()
 for a in "$@"; do
     case "$a" in
         --report-only) REPORT_ONLY=1 ;;
-        -h|--help) sed -n 2,30p "$0"; exit 0 ;;
+        --no-split) SPLIT=0 ;;
+        -h|--help) sed -n "2,/^set -uo/p" "$0" | sed "$ d"; exit 0 ;;
         *) ONLY+=("$a") ;;
     esac
 done
@@ -76,7 +82,7 @@ fi
 if [ "$REPORT_ONLY" -eq 0 ]; then
     THREADS=()
     [ -n "${PLANETARY_BENCH_THREADS:-}" ] && THREADS=(--threads "$PLANETARY_BENCH_THREADS")
-    while IFS=$'\t' read -r run capture bayer expect video; do
+    while IFS=$'\t' read -r run capture bayer expect video size; do
         selected "$run" || continue
         dir="$OUT/$run"
         rm -rf "$dir"
@@ -101,6 +107,22 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
         rc=$?
         t1=$(date +%s.%N)
         echo "$t0 $t1" | awk '{printf "%.3f\n", $2 - $1}' >"$dir/wall.txt"
+        if [ "$SPLIT" -eq 1 ] && [ "$expect" = stack ] && [ "$rc" -eq 0 ]; then
+            hdir="${STAGE:-$dir}"
+            even="$hdir/$run.even.ser"
+            odd="$hdir/$run.odd.ser"
+            if "$PY" -I "$BENCH/halves.py" split "$src" "$size" "$even" "$odd" >"$dir/halves.log" 2>&1; then
+                for h in A B; do
+                    f="$even"; [ "$h" = B ] && f="$odd"
+                    "$PROBE" "$f" --bayer "$bayer" "${THREADS[@]}" --out "$dir/half$h.fits" --json \
+                        >"$dir/half$h.json" 2>"$dir/half$h.log" \
+                        || { echo "FAIL $run: half $h stack-probe: $(tail -2 "$dir/half$h.log")"; rm -f "$dir/half$h.json"; status=1; }
+                done
+            else
+                echo "FAIL $run: split: $(tail -2 "$dir/halves.log")"; status=1
+            fi
+            rm -f -- "$even" "$odd"
+        fi
         if [ -n "$STAGE" ]; then rm -f -- "$src" "$src.txt"; fi
         case "$rc" in
             0) [ "$expect" = stack ] || { echo "FAIL $run: stacked an image, expected diagnosis $expect"; } ;;

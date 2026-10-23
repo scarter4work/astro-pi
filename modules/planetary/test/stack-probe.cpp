@@ -409,6 +409,15 @@ int main(int argc, char** argv) try {
              std::to_string(o.frames.admittedSuspects.size()) + ",\"rejectedSuspects\":" +
              std::to_string(o.frames.rejectedSuspects.size()) + ",\"alignmentExcluded\":" +
              std::to_string(o.frames.alignmentExcluded.size());
+        // Per region (RegionPlan::detail): the bench's END models our stack's noise with these counts
+        // (test/bench/metric.py, Ruling P28).
+        j += ",\"regionDetail\":[";
+        for (size_t r = 0; r < o.frames.regionDetail.size(); ++r) {
+            const stack::RegionDetail& d = o.frames.regionDetail[r];
+            j += std::string(r ? "," : "") + "{\"kept\":" + std::to_string(d.kept) + ",\"candidates\":" +
+                 std::to_string(d.candidates) + ",\"noiseOnly\":" + (d.noiseOnly ? "true" : "false") + "}";
+        }
+        j += "]";
         j += ",\"memory\":{\"measureWorkers\":" + std::to_string(s.memory.measureWorkers) + ",\"alignWorkers\":" +
              std::to_string(s.memory.alignWorkers) + ",\"stackWorkers\":" + std::to_string(s.memory.stackWorkers) +
              ",\"observers\":" + std::to_string(s.memory.observers) + ",\"plannedPeakMB\":" + Fmt(s.memory.peakBytes / 1e6, 1) + "}";

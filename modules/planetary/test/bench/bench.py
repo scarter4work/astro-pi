@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bench.py -- the run plan, side-by-side PNGs and summary table for run-stack-bench.sh.
 
-    python3 -I bench.py plan                       # TSV: run, capture, bayer, expect, video
+    python3 -I bench.py plan                       # TSV: run, capture, bayer, expect, video, WxH
     python3 -I bench.py report <out-dir> [run ...] # per run: compare.json + side-by-side.png;
                                                    # then <out-dir>/summary.md over every run present
 
@@ -10,18 +10,25 @@ probe.log, wall.txt) and then calls `report`. This module never stacks and never
 <out-dir>; the NAS is only read.
 
 RUNS. One run per benchmark capture (benchset.BENCHMARK), stacked with the capture's recorded
-pattern, except where BAYER_OVERRIDE says otherwise, plus the VARIANTS. The override exists for
-the two Lqef captures: the record says RGGB (Scott's Save pattern; both tools' debayer), the
-physical evidence (a blue seeing halo; the warm-target rule) says BGGR, and Scott has not
-confirmed either. Their side-by-sides use BGGR; the 2026-01-30 Jupiter also runs RGGB as a
-colour-comparison variant. The DAN numbers are the same either way to within measurement noise
-(an R/B swap only swaps two planes of a Hamilton-Adams demosaic); the variant shows it.
+pattern: RGGB for every colour capture (ZWO ASI585MC / ASI2400MC, camera spec; Scott 2026-10-22),
+Auto for the diagnosis cases.
 
-STATUS (Ruling 2). fail: ours' DAN_full, or DAN_interior where judged, is below 0.97 x the best
-reference. review: the numbers pass but something sends the capture to Scott regardless -- a
-review note from refs.review_notes (limb-only, noise regime unlike every reference, mosaic
-fallback) or ALWAYS_REVIEW. pass: neither. Every capture still gets Scott's look at the
-side-by-side (Ruling 2's human); "pass" means only that the numbers alone raise nothing.
+STATUS (Ruling 2 with Ruling P28's yardstick). The judged numbers are END_full and, where the
+interior is judged, END_interior (metric.py), each as ours over the best reference, against 0.97.
+  unmeasured: END is missing for ours or for some reference (no per-frame noise, an unknown
+              frame count, no usable sky) -- no verdict is drawn from the rest, loudly;
+  review:     the verdict flips between END with our frame count read two ways (benchset.ours_frames,
+              the judged one, and ours_frames_alt) -- Ruling P28 rule 5 -- or the numbers pass but
+              a review note applies (refs.review_notes: limb-only, noise regime, mosaic);
+  fail:       END below the bar under both readings;
+  pass:       none of the above.
+DAN_full / DAN_interior stay in every table as secondary figures; they decide nothing. Every
+capture still gets Scott's look at the side-by-side (Ruling 2's human).
+
+SPLIT HALVES (Ruling P28 rule 3, validation only). When run-stack-bench.sh stacked the capture's
+even and odd frames separately (halfA/halfB.fits + .json in the run's directory), report compares
+their difference -- noise only, where the halves agree on the signal -- with END's model for it,
+sigma_frame^2 (1/k_A + 1/k_B) / 4, per END bin (split_half_check).
 
 SIDE-BY-SIDE. One panel per image -- ours, then each reference in benchset order -- all cropped
 from the SAME region of ours' grid at each reference's registered integer offset (the crop the
@@ -42,7 +49,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy import ndimage
@@ -56,24 +63,6 @@ import metric    # noqa: E402
 import refs      # noqa: E402
 from metric import Box  # noqa: E402
 
-LQEF_NOTE = ("stacked BGGR, not the recorded RGGB: the physical evidence (blue seeing halo, warm-target "
-             "rule) points to BGGR while Scott's sidecar says RG; Scott has not confirmed the pattern. "
-             "DAN is unchanged by an R/B swap; the colour is Scott's call")
-BAYER_OVERRIDE: Dict[str, Tuple[str, str]] = {
-    "2026-01-30-jupiter": ("BGGR", LQEF_NOTE),
-    "2024-02-01-moon": ("BGGR", LQEF_NOTE + "; both references were debayered RGGB, so their red/blue "
-                        "are swapped against ours"),
-}
-# (run id, capture id, bayer, note)
-VARIANTS: List[Tuple[str, str, str, str]] = [
-    ("2026-01-30-jupiter-rggb", "2026-01-30-jupiter", "RGGB",
-     "colour-comparison variant: the recorded RGGB (Scott's Save pattern, as ASIStudio debayered it)"),
-]
-ALWAYS_REVIEW = {
-    "2026-01-30-jupiter": "always human review (README): ASIStudio's .fit has suppressed power near Nyquist, "
-                          "so its noise floor reads small; the ratio understates ours",
-    "2026-01-30-jupiter-rggb": "always human review (README), as the BGGR run",
-}
 DISPLAY_GAMMA = 1 / 2.2
 BLACK_PCT, WHITE_PCT = 1.0, 99.5
 PLANET_ZOOM_TARGET = 320       # px, the zoom row's panel side
@@ -96,14 +85,7 @@ class Run:
 
 
 def plan() -> List[Run]:
-    runs = []
-    for c in benchset.BENCHMARK:
-        bayer, note = BAYER_OVERRIDE.get(c.id, (c.bayer or "auto", ""))
-        runs.append(Run(c.id, c.id, bayer, c.expect, benchset.nas(c.video), note))
-    for rid, cid, bayer, note in VARIANTS:
-        c = benchset.by_id(cid)
-        runs.append(Run(rid, cid, bayer, c.expect, benchset.nas(c.video), note))
-    return runs
+    return [Run(c.id, c.id, c.bayer or "auto", c.expect, benchset.nas(c.video)) for c in benchset.BENCHMARK]
 
 
 def run_by_id(rid: str) -> Run:
@@ -115,19 +97,36 @@ def run_by_id(rid: str) -> Run:
 
 # --- status ----------------------------------------------------------------------------------
 
-def status_of(ours: dict, run_id: str) -> Tuple[str, List[str]]:
-    """Ruling 2 from ours' compare row (refs.rows_to_dicts()[0]): (status, reasons)."""
+def _verdict(full, inner, judged):
+    """'fail' (with reasons) or 'pass' of one pair of ratios against the bar."""
     reasons = []
-    full, inner = ours["ratio_to_best_reference"], ours["interior_ratio_to_best_reference"]
     if full is not None and full < refs.PASS_BAR:
-        reasons.append(f"DAN_full {full:.3f} x best < {refs.PASS_BAR}")
-    if ours["interior_judged"] and inner is not None and inner < refs.PASS_BAR:
-        reasons.append(f"DAN_interior {inner:.3f} x best < {refs.PASS_BAR}")
-    if reasons:
+        reasons.append(f"END_full {full:.3f} x best < {refs.PASS_BAR}")
+    if judged and inner is not None and inner < refs.PASS_BAR:
+        reasons.append(f"END_interior {inner:.3f} x best < {refs.PASS_BAR}")
+    return ("fail" if reasons else "pass"), reasons
+
+
+def status_of(rows: List[dict], run_id: str = "") -> Tuple[str, List[str]]:
+    """Ruling 2 / P28 from the compare rows (refs.rows_to_dicts(), ours first): (status, reasons)."""
+    ours = rows[0]
+    missing = [f"{r['label']}: {r['end_note'] or 'END missing'}" for r in rows
+               if r["end"] is None or (ours["interior_judged"] and r["end_interior"] is None)]
+    if missing or ours["end_ratio"] is None:
+        return "unmeasured", ["NO VERDICT -- END unmeasurable for " + "; ".join(missing or ["the references"])]
+    judged = ours["interior_judged"]
+    v, reasons = _verdict(ours["end_ratio"], ours["end_interior_ratio"], judged)
+    v_alt, _ = _verdict(ours["end_alt_ratio"], ours["end_interior_alt_ratio"], judged)
+    if ours["end_alt_ratio"] is None:
+        return "unmeasured", ["NO VERDICT -- END with the alternative frame count is missing"]
+    if v != v_alt:
+        alt = f"{ours['end_alt_ratio']:.3f}" + (f" / {ours['end_interior_alt_ratio']:.3f}" if judged else "")
+        own = f"{ours['end_ratio']:.3f}" + (f" / {ours['end_interior_ratio']:.3f}" if judged else "")
+        return "review", [f"verdict flips with our frame count: {v} at k {ours['end_frames']:.0f} (END {own}), "
+                          f"{v_alt} at k {ours['end_alt_frames']:.0f} (END {alt})"] + list(ours["review"])
+    if v == "fail":
         return "fail", reasons
     review = list(ours["review"])
-    if run_id in ALWAYS_REVIEW:
-        review.append(ALWAYS_REVIEW[run_id])
     return ("review", review) if review else ("pass", [])
 
 
@@ -310,17 +309,18 @@ def side_by_side(run: Run, rows: List["refs.Row"], dicts: List[dict], probe: dic
 
     headers = []
     for i, dct in enumerate(dicts):
-        full = dct["ratio_to_best_reference"]
-        inner = dct["interior_ratio_to_best_reference"]
-        score = f"DAN {dct['dan']:.4f} ({full:.3f}x best)"
-        score += (f"  int {dct['dan_interior']:.4f} ({inner:.3f}x)" if inner is not None else
-                  "  int: not judged (limb-only)")
+        score = (f"END {dct['end']:.2f} ({_f(dct['end_ratio'], '{:.3f}')}x best)" if dct["end"] is not None
+                 else "END: unmeasurable")
+        score += (f"  int {dct['end_interior']:.2f} ({_f(dct['end_interior_ratio'], '{:.3f}')}x)"
+                  if dct["end_interior"] is not None else
+                  ("  int: not judged (limb-only)" if not dct["interior_judged"] else "  int: unmeasurable"))
+        dan = f"DAN {dct['dan']:.4f} ({_f(dct['ratio_to_best_reference'], '{:.3f}')}x), k {_f(dct['end_frames'], '{:.0f}')}"
         if i == 0:
             headers.append([f"OURS ({run.bayer}): {probe['used']}/{probe['measured']} frames, "
-                            f"{probe['seconds']:.1f} s", score])
+                            f"{probe['seconds']:.1f} s", score, dan])
         else:
-            headers.append([dct["label"], score, f"{dct['orientation']} ncc {dct['ncc']:.3f}"])
-    st, _ = status_of(dicts[0], run.id)
+            headers.append([dct["label"], score, dan, f"{dct['orientation']} ncc {dct['ncc']:.3f}"])
+    st, _ = status_of(dicts, run.id)
     title = f"{run.id}: {st.upper()} -- same crop, scale and stretch (black per channel, one white at 99.5th pct, gamma 2.2)"
     compose(panel_rows, headers, row_titles, title, out_path)
     return {"shown": shown, "display_levels": [{"black": b, "white": w} for b, w in levels]}
@@ -361,15 +361,34 @@ def report_run(run: Run, run_dir: str) -> dict:
         rec["status"] = "fail"
         rec["reasons"] = [f"no stack: diagnosis {kind}: {probe['diagnosis']['message']}"]
         return rec
-    rows = benchset.compare_capture(run.capture, ours)
+    c = benchset.by_id(run.capture)
+    import noise
+    try:
+        frame_noise = noise.measure_video(run.video, c.size)
+        rec["photon_transfer"] = str(frame_noise[0])
+    except noise.NoiseUnmeasurable as e:   # loud: every row's end_note carries it, the status is unmeasured
+        frame_noise = rec["photon_transfer"] = f"UNMEASURABLE: {e}"
+    rows = benchset.compare_capture(run.capture, ours, probe=probe, frame_noise=frame_noise)
     dicts = refs.rows_to_dicts(rows)
     rec["rows"] = dicts
-    rec["status"], rec["reasons"] = status_of(dicts[0], run.id)
+    rec["status"], rec["reasons"] = status_of(dicts, run.id)
+    halves = split_half_check(run_dir, frame_noise)
+    if halves is not None:
+        rec["split_half"] = halves
     rec["side_by_side"] = os.path.join(run_dir, "side-by-side.png")
     rec.update(side_by_side(run, rows, dicts, probe, ours, rec["side_by_side"]))
     with open(os.path.join(run_dir, "compare.json"), "w") as fh:
         json.dump(rec, fh, indent=1)
     return rec
+
+
+def split_half_check(run_dir: str, frame_noise):
+    """halves.check for the run (None when run-stack-bench.sh did not stack the halves)."""
+    import halves
+    try:
+        return halves.check(run_dir, frame_noise)
+    except Exception as e:      # validation only: loud in the summary, never a silent gap
+        return {"status": "error", "reason": f"{type(e).__name__}: {e}"}
 
 
 def _tool(label: str) -> str:
@@ -385,49 +404,84 @@ def _f(v, fmt="{:.4f}"):
     return "-" if v is None else fmt.format(v)
 
 
+def _pair(full, inner):
+    return f"{_f(full, '{:.3f}')} / {_f(inner, '{:.3f}')}"
+
+
 def summary_md(records: List[dict]) -> str:
     out = ["# PlanetaryStack benchmark -- ours vs AutoStakkert (AS) and ASIStudio (ASI)", "",
-           "Generated by `test/run-stack-bench.sh` (bench.py report). DAN_full / DAN_interior: metric.py; "
-           "ratio = ours / the best reference (Ruling 2 bar: 0.97 on both, interior only where judged). "
-           "AS/ASI columns show each tool's best reference; every reference is in the per-capture table "
-           "below and in `<run>/compare.json`. Status: fail = a ratio below 0.97; review = numbers pass but "
-           "a note sends it to Scott; pass = the numbers raise nothing. Every capture still needs Scott's "
-           "look at `<run>/side-by-side.png`.", ""]
+           "Generated by `test/run-stack-bench.sh` (bench.py report). Every colour capture is stacked "
+           "**RGGB** (ZWO ASI585MC / ASI2400MC camera spec, Scott 2026-10-22); the side-by-side colours "
+           "follow from that, the luminance metrics do not change with it.", "",
+           "**The judged metric is END** (metric.py, Ruling P28): sharpness at equal noise -- the band "
+           "detail a matched Wiener restoration recovers, every image judged against one noise model, the "
+           "capture's per-frame noise (noise.py, from its raw frames) over the image's effective frame "
+           "count k. Ratio = ours / the best reference; the bar is 0.97 on END_full and, where the interior "
+           "is judged, END_interior. DAN_full / DAN_interior (the previous yardstick) are secondary columns "
+           "and decide nothing.", "",
+           "Status: **unmeasured** = END is missing for some image (no verdict at all; the reason is in the "
+           "notes); **review** = the verdict flips between our frame count read two ways (mean kept "
+           "fraction vs harmonic mean), or the numbers pass but a note sends it to Scott; **fail** = END "
+           "below 0.97 under both readings; **pass** = the numbers raise nothing. Every capture still needs "
+           "Scott's look at `<run>/side-by-side.png`.", ""]
     stacked = [r for r in records if r["expect"] == "stack"]
-    counts = {s: sum(1 for r in stacked if r["status"] == s) for s in ("pass", "review", "fail", "not run", "error")}
-    out.append(f"Stacked runs: {counts['pass']} pass, {counts['review']} review, {counts['fail']} fail"
-               + "".join(f", {counts[k]} {k}" for k in ("not run", "error") if counts[k]) + ".")
+    kinds = ("pass", "review", "fail", "unmeasured", "not run", "error")
+    counts = {s: sum(1 for r in stacked if r["status"] == s) for s in kinds}
+    out.append("Stacked runs: " + ", ".join(f"{counts[k]} {k}" for k in kinds if counts[k] or k in kinds[:3]) + ".")
     out.append("")
-    out.append("| Run | Bayer | Frames used | Time s (wall) | Peak RSS MB | DAN_full ours / AS / ASI | "
-               "DAN_interior ours / AS / ASI | Ratio full / interior | Status | Notes |")
-    out.append("|---|---|---|---|---|---|---|---|---|---|")
+    out.append("| Run | Bayer | Frames used | k ours (alt) | Time s (wall) | Peak RSS MB | END_full ours / AS / ASI | "
+               "END_interior ours / AS / ASI | END ratio full / int | alt k: ratio full / int | DAN ratio full / int "
+               "(secondary) | Status | Notes |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in stacked:
-        if r["status"] == "not run" or "rows" not in r:
-            out.append(f"| {r['run']} | {r['bayer']} | - | - | - | - | - | - | {r['status']} | "
+        if r["status"] in ("not run", "error") or "rows" not in r:
+            out.append(f"| {r['run']} | {r['bayer']} | - | - | - | - | - | - | - | - | - | **{r['status']}** | "
                        f"{'; '.join(r.get('reasons', []))} |")
             continue
         p, rows, o = r["probe"], r["rows"], r["rows"][0]
-        a, s = _best(rows, "AS", "dan"), _best(rows, "ASI", "dan")
-        ai, si = _best(rows, "AS", "dan_interior"), _best(rows, "ASI", "dan_interior")
+        a, s = _best(rows, "AS", "end"), _best(rows, "ASI", "end")
+        ai, si = _best(rows, "AS", "end_interior"), _best(rows, "ASI", "end_interior")
         notes = list(r["reasons"]) + ([r["note"]] if r["note"] else [])
         notes += [f"engine: {w}" for w in p.get("warnings", [])]
         out.append(
-            f"| {r['run']} | {r['bayer']} | {p['used']} / {p['measured']} | {p['seconds']:.1f} "
-            f"({_f(r['wall_seconds'], '{:.1f}')}) | {p['peakRssMB']:.0f} | "
-            f"{o['dan']:.4f} / {_f(a and a['dan'])} / {_f(s and s['dan'])} | "
-            f"{_f(o['dan_interior'])} / {_f(ai and ai['dan_interior'])} / {_f(si and si['dan_interior'])} | "
-            f"{_f(o['ratio_to_best_reference'], '{:.3f}')} / {_f(o['interior_ratio_to_best_reference'], '{:.3f}')} | "
+            f"| {r['run']} | {r['bayer']} | {p['used']} / {p['measured']} | {_f(o['end_frames'], '{:.0f}')} "
+            f"({_f(o['end_alt_frames'], '{:.0f}')}) | {p['seconds']:.1f} ({_f(r['wall_seconds'], '{:.1f}')}) | "
+            f"{p['peakRssMB']:.0f} | {_f(o['end'], '{:.2f}')} / {_f(a and a['end'], '{:.2f}')} / {_f(s and s['end'], '{:.2f}')} | "
+            f"{_f(o['end_interior'], '{:.2f}')} / {_f(ai and ai['end_interior'], '{:.2f}')} / "
+            f"{_f(si and si['end_interior'], '{:.2f}')} | {_pair(o['end_ratio'], o['end_interior_ratio'])} | "
+            f"{_pair(o['end_alt_ratio'], o['end_interior_alt_ratio'])} | "
+            f"{_pair(o['ratio_to_best_reference'], o['interior_ratio_to_best_reference'])} | "
             f"**{r['status']}** | {'; '.join(notes)} |")
-    out += ["", "## Every reference", "",
-            "| Run | Image | Factor | DAN_full (ratio) | DAN_interior (ratio) | band SNR | Registration |",
-            "|---|---|---|---|---|---|---|"]
+    out += ["", "## Every image", "",
+            "Per image: its frame count k (references: stacking percentage x the capture's frames -- "
+            "AutoStakkert's global percentage, approximate per alignment point), END and its ratio, END "
+            "with the budget alone (no sky excess), the noise END used (budget + the sky's excess over its "
+            "own budget), and DAN (secondary).", "",
+            "| Run | Image | Factor | k | END_full (ratio) | END_interior (ratio) | END pure budget | noise: budget + sky excess (tiles) | DAN_full (ratio) | DAN_interior (ratio) | Registration | END note |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in stacked:
         for d in r.get("rows", []):
             reg = (f"{d['orientation']} shift ({d['shift'][0]:+.2f}, {d['shift'][1]:+.2f}) scale {d['scale']:.4f} "
                    f"ncc {d['ncc']:.3f}") if d["orientation"] else "anchor"
-            out.append(f"| {r['run']} | {d['label']} | x{d['factor']:g} | {d['dan']:.4f} "
+            nz = (f"{d['end_noise_budget']:.3g} + {_f(d['end_excess'], '{:.3g}')} ({d['end_sky_tiles']})"
+                  if d["end_noise_budget"] is not None else "-")
+            out.append(f"| {r['run']} | {d['label']} | x{d['factor']:g} | {_f(d['end_frames'], '{:.0f}')} | "
+                       f"{_f(d['end'], '{:.2f}')} ({_f(d['end_ratio'], '{:.3f}')}) | "
+                       f"{_f(d['end_interior'], '{:.2f}')} ({_f(d['end_interior_ratio'], '{:.3f}')}) | "
+                       f"{_f(d['end_pure'], '{:.2f}')} | {nz} | {d['dan']:.4f} "
                        f"({_f(d['ratio_to_best_reference'], '{:.3f}')}) | {_f(d['dan_interior'])} "
-                       f"({_f(d['interior_ratio_to_best_reference'], '{:.3f}')}) | {d['band_snr']:.0f} | {reg} |")
+                       f"({_f(d['interior_ratio_to_best_reference'], '{:.3f}')}) | {reg} | {d['end_note'] or ''} |")
+    out += ["", "## Per-frame noise and the split-half check (Ruling P28 rule 3; validation, not input)", "",
+            "Photon transfer: the raw frames' noise variance v(m) = a m + c (noise.py). Split halves: our "
+            "engine stacked the even and the odd frames separately; their difference D is compared with "
+            "END's model for it, sigma_frame^2 (1/k_A + 1/k_B) / 4, as measured / model (halves.py: under 1 "
+            "toward Nyquist is our interpolation's smoothing; far above 1 is signal the halves do not share).", "",
+            "| Run | Photon transfer | Split halves: measured / model |", "|---|---|---|"]
+    import halves
+    for r in stacked:
+        sh = r.get("split_half")
+        out.append(f"| {r['run']} | {r.get('photon_transfer', '-')} | "
+                   f"{halves.summary_line(sh) if sh else 'not stacked (run-stack-bench.sh --no-split)'} |")
     out += ["", "## Timing (ours; AutoStakkert's time on the same file is not available)", "",
             "| Run | Read from | Video GB | Frames | Engine s | Wall s | s per GB | Read GB | Read MB/s | Peak RSS MB | Phases (s) |",
             "|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -491,7 +545,8 @@ def _main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "plan":
         for run in plan():
-            print("\t".join((run.id, run.capture, run.bayer, run.expect, run.video)))
+            w, h = benchset.by_id(run.capture).size
+            print("\t".join((run.id, run.capture, run.bayer, run.expect, run.video, f"{w}x{h}")))
         return 0
     records = report(a.out_dir, a.runs)
     return 1 if any(r["status"] == "error" for r in records) else 0
