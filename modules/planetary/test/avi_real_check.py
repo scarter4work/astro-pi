@@ -27,7 +27,8 @@ ffmpeg/ffprobe, which are independent of the reader:
       frames is correlated with that of ASIAIR full-frame FITS of the same camera, cropped at
       the sidecar's StartX/StartY, under identity / vflip / hflip / rot180 and shifts up to
       +-FPN_SHIFT. The capture is resolved when identity at shift (0,0) is the strongest by
-      FPN_RATIO over every other transform and shift: the frame is the sensor read out from
+      FPN_RATIO over every other transform and shift scored (the three flips at (0,0) at the
+      least; a capture where they cannot be scored fails, pinned or not): the frame is the sensor read out from
       that origin, as in a still whose BAYERPAT is the sidecar's pattern, neither flipped nor
       rotated. An unresolved capture retries with FPN_RETRY_FRAMES frames against the
       best-resolved capture of the same camera and ROI. Only the pinned FPN_UNRESOLVED captures
@@ -490,10 +491,11 @@ FPN_TRANSFORMS = (("identity", lambda a: a), ("vflip", lambda a: a[::-1]), ("hfl
 
 def fpn_score(r, m, ref, ref_m, y0, x0):
     """|correlation| of pattern r (mask m) under each transform and shift against ref cropped at
-    (y0, x0). Returns (identity(0,0) r, strongest other (|r|, transform, dy, dx), n)."""
+    (y0, x0). Returns (identity(0,0) r, strongest other (r, transform, dy, dx), n, the set of
+    alternatives actually scored). A placement whose mask overlap is under 1000 px is not scored."""
     import numpy as np
     h, w = r.shape
-    ident, other, n0 = float("nan"), (0.0, "", 0, 0), 0
+    ident, other, n0, scored = float("nan"), (0.0, "", 0, 0), 0, set()
     for tname, t in FPN_TRANSFORMS:
         tr, tm = t(r), t(m)
         for dy in range(-FPN_SHIFT, FPN_SHIFT + 1):
@@ -507,13 +509,22 @@ def fpn_score(r, m, ref, ref_m, y0, x0):
                 c = float(np.corrcoef(tr[mm], ref[yy:yy + h, xx:xx + w][mm])[0, 1])
                 if tname == "identity" and dy == 0 and dx == 0:
                     ident, n0 = c, int(mm.sum())
-                elif abs(c) > abs(other[0]):
+                    continue
+                scored.add((tname, dy, dx))
+                if abs(c) > abs(other[0]):
                     other = (c, tname, dy, dx)
-    return ident, other, n0
+    return ident, other, n0, scored
 
 
-def fpn_resolved(ident, other):
-    return ident == ident and abs(ident) >= FPN_RATIO * abs(other[0]) and abs(ident) > 0
+# The competitors a placement must beat, at the least: the three flips of the same crop. Without
+# them scored, a lead over "nothing" would pass (fails closed instead).
+FPN_REQUIRED_COMPETITORS = {("vflip", 0, 0), ("hflip", 0, 0), ("rot180", 0, 0)}
+
+
+def fpn_verdict(ident, other, scored, resolved_as):
+    if ident != ident or not FPN_REQUIRED_COMPETITORS <= scored:
+        return "unscored"
+    return resolved_as if abs(ident) > 0 and abs(ident) >= FPN_RATIO * abs(other[0]) else "unresolved"
 
 
 def fpn_check(vert_files):
@@ -560,8 +571,8 @@ def fpn_check(vert_files):
             fail(base, "fixed-pattern mean: %s" % e)
             continue
         r, m = fpn_resid(mean), fpn_mask(mean)
-        ident, other, n0 = fpn_score(r, m, ref, ref_m, y0, x0)
-        verdict = "resolved (vs FITS)" if fpn_resolved(ident, other) else "unresolved"
+        ident, other, n0, scored = fpn_score(r, m, ref, ref_m, y0, x0)
+        verdict = fpn_verdict(ident, other, scored, "resolved (vs FITS)")
         rows.append([key, cam, path, sc, ident, other, (k, n0, (w, h, x0, y0)), verdict])
     # Retry the unresolved against the best-resolved capture of the same camera and ROI (a video
     # pattern at the same gain range is a stronger match than a still's).
@@ -580,9 +591,9 @@ def fpn_check(vert_files):
         # the partner is the reference here: the capture's interior (a FPN_SHIFT border off) sits at
         # (FPN_SHIFT, FPN_SHIFT) of it when both are read out alike
         e = FPN_SHIFT
-        ident, other, n1 = fpn_score(fpn_resid(a)[e:-e, e:-e], fpn_mask(a)[e:-e, e:-e], rb, mb, e, e)
+        ident, other, n1, scored = fpn_score(fpn_resid(a)[e:-e, e:-e], fpn_mask(a)[e:-e, e:-e], rb, mb, e, e)
         row[4], row[5], row[6] = ident, other, (ka, n1, roi)
-        row[7] = ("resolved (vs %s)" % best[0]) if fpn_resolved(ident, other) else "unresolved"
+        row[7] = fpn_verdict(ident, other, scored, "resolved (vs %s)" % best[0])
     for key, cam, path, sc, ident, other, info, verdict in rows:
         if ident is None:
             print("  %-17s %-18s %s" % (key, cam, verdict))
@@ -596,6 +607,10 @@ def fpn_check(vert_files):
                 fail(key, "pinned FPN-unresolved capture now resolves: re-measure and re-pin")
             continue
         if verdict.startswith("no reference"):
+            continue
+        if verdict == "unscored":   # fails closed, pinned or not
+            fail(key, "readout geometry unscored: identity(0,0) or one of %s had under 1000 px of mask overlap"
+                 % sorted(FPN_REQUIRED_COMPETITORS))
             continue
         if pinned:
             print("  %-17s   pinned unresolved: %s" % ("", pinned))

@@ -150,11 +150,28 @@ TEST_CASE("ResolveBayer: an odd ROI origin is unmeasured and says so") {
     r = Resolve(BayerChoice::Auto, odd("7", "9"));
     CHECK(r.warnings == std::vector<std::string>{"sidecar ROI origin StartX=7, StartY=9 is odd" + tail});
 
-    // Even, absent or not a number: nothing to say. An explicit choice: the choice, no warning.
+    // Present but not a sensor coordinate: the parity is unknown, and it says so (never silently).
+    const std::string badTail = "; the Bayer phase of the ROI is unknown -- using RGGB as the sidecar says; if "
+                                "colours look wrong, choose the pattern under Bayer pattern";
+    r = Resolve(BayerChoice::Auto, odd("abc", "-"));
+    CHECK(r.id == ColorId::BayerRGGB);
+    CHECK(r.warnings ==
+          std::vector<std::string>{"sidecar ROI origin StartX=abc, StartY=- is not a sensor coordinate" + badTail});
+    r = Resolve(BayerChoice::Auto, odd("1512", "-2"));
+    CHECK(r.warnings == std::vector<std::string>{"sidecar ROI origin StartY=-2 is not a sensor coordinate" + badTail});
+    r = Resolve(BayerChoice::Auto, odd("1234567890", "1102"));
+    CHECK(r.warnings ==
+          std::vector<std::string>{"sidecar ROI origin StartX=1234567890 is not a sensor coordinate" + badTail});
+    // Odd on one axis, malformed on the other: both are said.
+    r = Resolve(BayerChoice::Auto, odd("1513", "x"));
+    CHECK(r.warnings == std::vector<std::string>{"sidecar ROI origin StartX=1513 is odd" + tail,
+                                                 "sidecar ROI origin StartY=x is not a sensor coordinate" + badTail});
+
+    // Even or absent: nothing to say. An explicit choice: the choice, no warning.
     CHECK(Resolve(BayerChoice::Auto, odd("1512", "1102")).warnings.empty());
     CHECK(Resolve(BayerChoice::Auto, odd("", "")).warnings.empty());
-    CHECK(Resolve(BayerChoice::Auto, odd("abc", "-")).warnings.empty());
     CHECK(Resolve(BayerChoice::GRBG, odd("1513", "1103")).warnings.empty());
+    CHECK(Resolve(BayerChoice::GRBG, odd("abc", "-")).warnings.empty());
 
     // Parsed from a real-shaped sidecar.
     const auto sc = ParseAsiairSidecar("[ZWO X]\r\nBayer = RG\r\nFlip = None\r\nStartX = 961\r\nStartY = 540\r\n");
@@ -221,7 +238,7 @@ TEST_CASE("ResolveBayer: Flip=Vert(unimplemented) was never applied -- the sidec
     CHECK(Resolve(BayerChoice::BGGR, Sc("RG", "Vert(unimplemented)")).warnings.empty());
 }
 
-TEST_CASE("ResolveBayer: a Flip other than None/Vert keeps the sidecar pattern and says it is unmeasured (Ruling 15)") {
+TEST_CASE("ResolveBayer: a Flip other than None/Vert(unimplemented) keeps the sidecar pattern and says it is unmeasured (Ruling 15)") {
     auto r = Resolve(BayerChoice::Auto, Sc("RG", "Horiz"));
     CHECK(r.id == ColorId::BayerRGGB);
     CHECK(r.source == "sidecar");
