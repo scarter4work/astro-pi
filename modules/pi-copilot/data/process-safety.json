@@ -1,5 +1,5 @@
 {
-  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. reviewedSafe and confirmWhen review runs ON VIEWS only: every process that can run in the global context and is not in deny/confirmAlways must ALSO be in exactly one of globalSafe/globalConfirm (self-tested). globalSafe: a global run is refused by the core, or only creates new images (plus any confirmWhen rule); runs without asking in Copilot. globalConfirm: a global run is possible and not fully understood: ask before every global run (runs on a view are unaffected). A global run of a process in neither globalSafe nor globalConfirm asks. fileTables: path rules for global runs. pinnedParameters: parameters the model may never set; PI Copilot fills them from a trusted source (e.g. the user's own setting of that module); a malformed entry refuses the process. parameterValues: string parameters whose model-chosen value must be one of `values` (exact) or have `format` (\"version\": empty, or 2-4 dot-separated digit groups), e.g. values that reach a command line. retiredProcesses: process ids PixInsight no longer ships (with the build that removed them); their rules above are KEPT for the older builds that still have them, and only these ids may be absent from the running PixInsight (self-tested).",
+  "_doc": "PI Copilot process safety policy. deny: never run from PI Copilot. confirmAlways: ask the user before every run, in every mode. confirmWhen: ask when the effective value of `parameter` (as given, else the process default) equals `equals` (or, with `notEquals`, is anything other than that value). reviewedSafe: flagged by the file/disk/window heuristic but reviewed: no effect beyond the target image or new windows. reviewedSafe and confirmWhen review runs ON VIEWS only: every process that can run in the global context and is not in deny/confirmAlways must ALSO be in exactly one of globalSafe/globalConfirm (self-tested). globalSafe: a global run is refused by the core, or only creates new images (plus any confirmWhen rule); runs without asking in Copilot. globalConfirm: a global run is possible and not fully understood: ask before every global run (runs on a view are unaffected). A global run of a process in neither globalSafe nor globalConfirm asks. fileTables: path rules for global runs. pinnedParameters: parameters the model may never set; PI Copilot fills them from a trusted source (e.g. the user's own setting of that module); a malformed entry refuses the process. parameterValues: string parameters whose model-chosen value must be one of `values` (exact) or have `format` (\"version\": empty, or 2-4 dot-separated digit groups), e.g. values that reach a command line. retiredProcesses: process ids PixInsight no longer ships (with the build that removed them); their rules above are KEPT for the older builds that still have them. optionalProcesses: process ids of third-party modules that may not be installed (with why); their rules apply wherever the module is installed. Only retiredProcesses and optionalProcesses ids may be absent from the running PixInsight (self-tested); an absent one is never reached at runtime (the core does not know the id).",
   "deny": {
     "IndigoCCDFrame": "it controls a camera through an INDIGO server (exposures, uploads, file saving)",
     "IndigoDeviceController": "it sends commands to observatory devices through an INDIGO server",
@@ -84,6 +84,13 @@
         "reason": "it writes calibration text files to its output directory"
       }
     ],
+    "SERViewer": [
+      {
+        "parameter": "saveSerPath",
+        "notEquals": "",
+        "reason": "it converts the AVI at filePath into a new SER file written to disk at saveSerPath (instead of opening a frame)"
+      }
+    ],
     "SpectrophotometricColorCalibration": [
       {
         "parameter": "generateTextFiles",
@@ -121,6 +128,7 @@
     "MorphologicalTransformation": "'structureName' is the name of its structuring element (matched only by the 'rename' pattern)",
     "MultiscaleLinearTransform": "'outputDeringingMaps' opens new image windows",
     "PixelMath": "its caches are in memory, 'generateOutput' concerns the result image, 'outputData' is an in-memory result table",
+    "PlanetaryStack": "'filePath' is the video it reads (never written); the stack opens as a new image window",
     "RestorationFilter": "'outputDeringingMaps' opens new image windows",
     "SCNR": "'colorToRemove' chooses the color channel it neutralizes",
     "TGVDenoise": "'supportRemovedWaveletLayers' is a support-mask option",
@@ -199,12 +207,14 @@
     "NoiseGenerator": "the core refuses a global run (\"NoiseGenerator instances cannot be executed in the global context\")",
     "PhotometricColorCalibration": "the core refuses a global run (\"PhotometricColorCalibration instances cannot be executed in the global context\")",
     "PixelMath": "a global run (only with createNewImage; the core refuses otherwise) creates a NEW image window; open images are only read",
+    "PlanetaryStack": "a global run (its only kind) reads the video at 'filePath' and stacks it into a NEW image window; nothing is written to disk",
     "RangeSelection": "the core refuses a global run (\"RangeSelection instances cannot be executed in the global context\")",
     "Resample": "the core refuses a global run (\"Resample instances cannot be executed in the global context\")",
     "Rescale": "the core refuses a global run (\"Rescale instances cannot be executed in the global context\")",
     "RestorationFilter": "the core refuses a global run (\"RestorationFilter instances cannot be executed in the global context\")",
     "Rotation": "the core refuses a global run (\"Rotation instances cannot be executed in the global context\")",
     "SCNR": "the core refuses a global run (\"SCNR instances cannot be executed in the global context\")",
+    "SERViewer": "a global run (its only kind) reads one frame of the video at 'filePath' into a NEW image window; converting the AVI to a SER file with 'saveSerPath' asks (confirmWhen)",
     "SampleFormatConversion": "the core refuses a global run (\"SampleFormatConversion instances cannot be executed in the global context\")",
     "Sandbox": "the core refuses a global run (\"Sandbox instances cannot be executed in the global context\")",
     "ScreenTransferFunction": "the core refuses a global run (\"ScreenTransferFunction instances cannot be executed in the global context\")",
@@ -309,6 +319,10 @@
         "reason": "an AI model version such as 3.0.2, or empty for GraXpert's default (the value is passed to GraXpert's command line)"
       }
     }
+  },
+  "optionalProcesses": {
+    "PlanetaryStack": "the Planetary module (astro-pi) from its first release with PlanetaryStack; ruled for wherever that module is installed",
+    "SERViewer": "the Planetary module (astro-pi), installed separately; ruled for wherever that module is installed"
   },
   "retiredProcesses": {
     "MARSGen": "removed from PixInsight in 1.9.5 build 1706 (20260927); its confirmAlways rule stays for older builds, which PI Copilot still supports"

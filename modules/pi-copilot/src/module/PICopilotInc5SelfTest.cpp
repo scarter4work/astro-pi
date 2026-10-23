@@ -2031,6 +2031,65 @@ bool RunInc5SelfTest( nlohmann::json& out )
                && (!marsgenAbsent || live.value( "retiredProcesses", nlohmann::json::object() ).contains( "MARSGen" ));
             detail["retired"]["ok"] = retiredOk;
             idsOk = idsOk && retiredOk;
+
+            // optionalProcesses (a third-party module's processes, e.g. Planetary's SERViewer and
+            // PlanetaryStack): the same contract as retiredProcesses -- an absent listed id is accepted,
+            // an entry needs a reason and a rule -- and an absent one is harmless at runtime: its
+            // verdict is Allow (the core does not know the id; the executor names it), never a throw.
+            nlohmann::json oListed = base;
+            oListed["optionalProcesses"][ghost] = "self-test: a module that is not installed";
+            nlohmann::json oNoReason = base;
+            oNoReason["optionalProcesses"][ghost] = "";
+            nlohmann::json oOrphan = oListed;
+            oOrphan["optionalProcesses"]["PCSelfTestOptionalOrphan"] = "self-test: named by no rule";
+            const nlohmann::json roListed = report( oListed ), roNoReason = report( oNoReason ), roOrphan = report( oOrphan );
+            SetProcessSafetyPolicyForSelfTest( &oListed );
+            const SafetyVerdict ghostVerdict = CheckProcessSafety( IsoString( ghost.c_str() ), { { "p", true } },
+                                                                   nlohmann::json(), SafetyRunKind::Global );
+            SetProcessSafetyPolicyForSelfTest( nullptr );
+            const nlohmann::json& opt = live.value( "optionalProcesses", nlohmann::json::object() );
+            auto installedHere = []( const char* id )
+            {
+               try { return Process( IsoString( id ) ).Id() == IsoString( id ); } catch ( ... ) { return false; }
+            };
+            const bool serInstalled = installedHere( "SERViewer" ), stackInstalled = installedHere( "PlanetaryStack" );
+            nlohmann::json planetary = { { "serViewerInstalled", serInstalled }, { "planetaryStackInstalled", stackInstalled } };
+            bool planetaryOk = opt.contains( "SERViewer" ) && opt.contains( "PlanetaryStack" )
+                            && live.value( "/globalSafe"_json_pointer, nlohmann::json::object() ).contains( "SERViewer" )
+                            && live.value( "/globalSafe"_json_pointer, nlohmann::json::object() ).contains( "PlanetaryStack" )
+                            && live.value( "/reviewedSafe"_json_pointer, nlohmann::json::object() ).contains( "PlanetaryStack" );
+            const IsoString planetaryIds[] = { "SERViewer", "PlanetaryStack" };
+            for ( const IsoString& pid : planetaryIds )
+            {
+               const bool here = installedHere( pid.c_str() );
+               const SafetyVerdict open = CheckProcessSafety( pid, { { "filePath", "/nonexistent/capture.ser" } },
+                                                              nlohmann::json(), SafetyRunKind::Global );
+               planetary[pid.c_str()] = { { "openKind", int( open.kind ) }, { "openReason", U8( open.reason ) } };
+               // Installed: reading a video into a new window runs without asking. Absent: Allow (harmless).
+               planetaryOk = planetaryOk && open.kind == SafetyVerdict::Allow;
+               if ( here && pid == "SERViewer" )
+               {
+                  const SafetyVerdict save = CheckProcessSafety( pid, { { "filePath", "/nonexistent/capture.avi" },
+                                                                        { "saveSerPath", "/nonexistent/out.ser" } },
+                                                                 nlohmann::json(), SafetyRunKind::Global );
+                  planetary["SERViewer"]["saveKind"] = int( save.kind );
+                  planetary["SERViewer"]["saveReason"] = U8( save.reason );
+                  planetaryOk = planetaryOk && save.kind == SafetyVerdict::Confirm && save.reason.Contains( "SER file" )
+                                && save.reason.Contains( "saveSerPath" );
+               }
+            }
+            const std::string soNoReason = roNoReason.dump(), soOrphan = roOrphan.dump();
+            const bool optionalOk =
+                  roListed.is_array() && roListed.empty()
+               && soNoReason.find( "optionalProcesses:" + ghost ) != std::string::npos
+               && soOrphan.find( "optionalProcesses:PCSelfTestOptionalOrphan" ) != std::string::npos
+               && soOrphan.find( "optionalProcesses:" + ghost ) == std::string::npos
+               && ghostVerdict.kind == SafetyVerdict::Allow
+               && planetaryOk;
+            detail["optional"] = { { "listed", roListed }, { "noReason", roNoReason }, { "orphan", roOrphan },
+                                   { "ghostVerdictKind", int( ghostVerdict.kind ) }, { "planetary", planetary },
+                                   { "ok", optionalOk } };
+            idsOk = idsOk && optionalOk;
          }
 
          const SafetyVerdict pc = CheckProcessSafety( "ProcessContainer", nlohmann::json::object(), nlohmann::json() );
