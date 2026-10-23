@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
         auto sky1noq2 = sky1;
         for (auto& s : sky1noq2) s.quality2Sigma = 0;
         const Reading r4 = ReadingOf(sky1noq2, cap.info);
-        std::printf(" | q-likelihood X %.3f | sky noise X %.3f, + q-likelihood %.3f", r2.X, r3.X, r4.X);
+        std::printf(" | q-likelihood q_ref %.4f X %.3f | sky noise X %.3f, + q-likelihood %.3f", r2.qRef, r2.X, r3.X, r4.X);
         std::printf("\n");
     }
     std::printf("refused %d of 10\n", refused);

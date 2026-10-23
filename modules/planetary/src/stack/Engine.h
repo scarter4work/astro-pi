@@ -39,8 +39,10 @@ namespace planetary::stack {
 //  3. Stacking: Accumulator over every frame the plan uses (RegionPlan::Uses), each read once more,
 //     DemosaicHQ, Add; Finish is the image.
 // So the noise model's runs are read first, once per pass (35 frames per run of 32 triples, up to
-// kNoiseResponses responses: 850 frames of the 240 x 180-luma Jupiter 195830, 68 of a 1080p Bayer
-// capture; both passes 1.38 s of Jupiter 195830's 4.55 s, 0.63 s of the 1080p Moon 193142's 28.8 s), then
+// kNoiseResponses responses: 807 triples, 885 frames, of the 240 x 180-luma Jupiter 195830, 65 triples, 74
+// frames, of the 1080p Moon 193142, stack-region-probe's "noise" line; both passes 1.41 s of Jupiter
+// 195830's 5.29 s, 0.89 s of the Moon 193142's 30.4 s, stack-probe's phase times on the 32-thread
+// development machine), then
 // the capture in full once (measuring), the selected frames once (aligning) and the stacked ones once
 // more (stacking); BuildReference and the focus measure read up to kReferenceFrames frames each.
 // ResidualScale observes every frame of the alignment pass over kMinAlignConfidence: a superset of
@@ -204,12 +206,13 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 //     195137 (R 11.8) 0.071, Neptune 204515 (R 2.0) 0.378;
 //   195830 blurred 2 / 4 / 8 / 16: 0.26 / 0.38 / 0.53 / 0.57; Neptune blurred 1 / 2 / 3: 0.49 / 0.55 /
 //   0.57 (by 4 it is no longer found: NoTarget).
-// kDiscWarnAbove 0.4 (Neptune's 0.378, rounded up): a Jupiter is warned from a blur of ~5 sensor px. A large
-// one later, in sensor px: the 2022-09-17 1080p Jupiters (R 20.2-20.7 luma px, all frames) blurred 4 / 8 / 12 /
-// 16 read 230420 0.241 / 0.310 / 0.409 / 0.473 (warned from 12) and 225418 0.228 / 0.305 / 0.385 (at 16 Select
-// refuses it) -- so 225418 at 12 px, under kGrossBlurLimit, is not warned here; step 7's warn band warns it
-// (Ruling P15b, Select.h kGrossBlurWarn), and RunStack reports one focus warning: this one when it fires, else
-// the selection's.
+// kDiscWarnAbove 0.4 (Neptune's 0.378 at 851ba41b, rounded up; 0.382 at head, stack-probe): a Jupiter is
+// warned from a blur of ~5 sensor px. A large one later, in sensor px: the 2022-09-17 1080p Jupiters (R
+// 20.2-20.7 luma px, all frames; test/run-focus-survey.sh stack) blurred 4 / 8 / 12 / 16 read 230420 0.241
+// / 0.310 / 0.409 / 0.473 (warned from 12) and 225418 0.228 / 0.305 / 0.385 (at 16 Select refuses it) --
+// so 225418 at 12 px, under kGrossBlurLimit, is not warned here; step 7's warn band warns it (Ruling P15b,
+// Select.h kGrossBlurWarn), and RunStack reports one focus warning: this one when it fires, else the
+// selection's.
 //
 // A frame-filling target: the measure is the detail scale D in sensor px, pooled over Hann-tapered
 // windows of kFocusWindow sensor px on the placed regions (FocusWindows, JudgeFocus; the taper's own

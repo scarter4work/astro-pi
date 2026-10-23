@@ -492,9 +492,10 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
 
     // Moments: mu, and tau^2 = the variance the noise does not explain (step 7's spread). In quality^2
     // when every frame carries quality2Sigma (measured frames): quality^2's noise is linear and its sd
-    // first-order exact, while quality's own sd is calibrated only to ~7% at low SNR, which a 3000-frame
-    // capture's 2-SE bound resolves -- in quality, steady blur at 15% noise read as seeing in 28 of 200
-    // captures (Ruling P26 fix round 1). Otherwise (samples without it) in quality.
+    // first-order exact, while quality's own sd is calibrated only to ~8% at low SNR (Measure.h), which a
+    // 3000-frame capture's 2-SE bound resolves -- in quality, steady blur at 15% noise read as seeing in 28 of
+    // 200 captures (Ruling P26 fix round 1: calib-classrate's grid with the spread in quality, as 941ab4e7
+    // read it). Otherwise (samples without it) in quality.
     bool squared = nLeft > 0;
     for (const FrameStats* s : left) squared = squared && std::isfinite(s->quality2Sigma) && s->quality2Sigma > 0;
     auto value = [&](const FrameStats* s) { return squared ? s->quality * s->quality : s->quality; };
@@ -540,8 +541,9 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
         // (Select.h step 7, Ruling P26 fix round 1): q_ref's excursion above the one quality that best
         // explains every frame, scaled by tauLo / G's sd. With qualitySigma the scatter's own, a 53-frame
         // capture's G at ~3.4 qualitySigma per frame reads a spread its 2-SE bound does not support, and
-        // its top lifted q_ref by up to 28% (R 24 / 24 px, seed 7: 0.0476 against 0.0371 noise-free): the
-        // reading fell from 0.33 to 0.22 and the grossly defocused blob stacked. A spread the data show
+        // its top lifts q_ref by up to 29% (R 24 / 24 px, seed 7: 0.0477 against 0.0371 noise-free;
+        // calibration/seedsel.cpp, mdq.cpp): read there it is 0.221, and 941ab4e7, which did, stacked the
+        // grossly defocused blob. A spread the data show
         // (tauLo >= G's sd) leaves q_ref as it is.
         // Only where the frames' own SNR leaves G's top to EM's early-stopped smoothing (Ruling P26 fix round
         // 2): fully at a median quality / qualitySigma of kShrinkSnrFull and under, not at all from

@@ -204,11 +204,12 @@ constexpr double kClippedLuma = 0.999;
 //    the frequency weight non-monotone near Nyquist;
 //  - noise: the noise adds N_g to the gradient term and N_s to the signal term, removed so a noisy
 //    (dim) frame does not look "detailed" -- at each pixel's own level: a target's shot noise and a
-//    clipped sky's reduced noise included. With one level for all, a still textured disc (R 40) with
-//    read noise 0.005 plus shot noise at gains 300 / 1000 / 3000 measured 1.13-2.82x its noise-free
-//    quality; with the model 0.982-0.986 (test "quality and qualitySigma are unbiased with a target's
-//    own shot noise"). The sensor's fixed pattern is not removed (the model is read in time, and the
-//    pattern is in every frame): ranking within the capture holds.
+//    clipped sky's reduced noise included. A still textured disc (R 40) with read noise 0.005 plus shot
+//    noise at gains 300 / 1000 / 3000, blurred 2 / 4 px, measures 0.980-0.987x its noise-free quality with
+//    the model (test/calibration/shot.cpp; test "quality and qualitySigma are unbiased with a target's own
+//    shot noise"); with one level for all it measured 1.13-2.82x (calib-shot built at 851ba41b, whose
+//    MeasureAll took the sky's level as every pixel's). The sensor's fixed pattern is not removed (the
+//    model is read in time, and the pattern is in every frame): ranking within the capture holds.
 //  - box size: background pixels add ~0 to both sums after the noise terms, so how tight the box
 //    is does not matter.
 //
@@ -217,8 +218,8 @@ constexpr double kClippedLuma = 0.999;
 // pixel i, independent):
 //  - G's part linear in e is 2 sum over the differences of dt de = -2 sum_i e_i lap_i, lap_i the
 //    region's own Laplacian (each in-region neighbour j adds (t_j - t_i) over its direction's count of
-//    differences: at the region's edge only the neighbours inside count -- with the 5-point interior
-//    Laplacian scaled up, a 64-px window of texture under-reported its scatter by 11-15% at high SNR);
+//    differences: at the region's edge only the neighbours inside count -- the 5-point interior
+//    Laplacian scaled up instead under-reports a textured window's scatter at high SNR);
 //    variance 4 sum v_i lap_i^2, lap measured less its noise part (v_i (sum of weights)^2 + the
 //    neighbours' v_j times their weights^2);
 //  - G's quadratic part, variance ~ sum v_i^2 (12 / n_x^2 + 12 / n_y^2 + 16 / (n_x n_y)) (8 v^2 per
@@ -236,18 +237,19 @@ constexpr double kClippedLuma = 0.999;
 //     qualitySigma = rho / (2 (q^8 + (kSigmaFloor rho)^4)^(1/8)).
 // Why: taken at each frame's own noisy quality, 1 / quality blew up on the low draws, so qualitySigma's
 // mean (and rms) overstated quality's real scatter at low SNR -- on a 64-px texture window with the true
-// noise, scatter / rms qualitySigma 0.50 / 0.81 at a median quality / qualitySigma of 4.1 / 6.9 (Ruling
-// P26's "~1.25x at 4-5": the engine's per-frame noise reading added its own error on top: 0.32-0.67
-// throughout). kSigmaFloor = 1.7: for q^2 ~ N(mu, rho^2) observed where positive, the soft floor that
-// keeps the mean, the rms and the median of qualitySigma within 8.6% of quality's real sd from a median
-// ratio of 2.2 up (scalar model, 400 000 draws per mu, floors 0.6-2.0 and exponents 2-6 scanned; the
-// plain first-order form missed by up to 216% in rms). Measured (tests "qualitySigma tracks quality's
-// scatter ..." and "a region's qualitySigma tracks ..."), scatter over qualitySigma's rms / median: a
-// smooth blob in sky, 600 frames, at median ratios 2.9 / 4.1 / 11.2 / 41: 1.04 / 1.07 / 0.99 / 0.99 and
-// 1.01 / 1.07 / 1.01 / 1.00; a 64-px texture window, 2000 frames, at 3.4 / 4.2 / 6.8 / 27 / 153 / 1660:
-// 0.95 / 1.01 / 0.99 / 0.95 / 0.95 / 0.98 and 0.97 / 1.03 / 1.06 / 0.96 / 0.95 / 0.98. Under a median
-// ratio of ~3.1 a region window is noise in both its gradient and its signal energy (pure noise reads
-// 2.9), and Regions.h's noise-only gate takes over.
+// noise, scatter over the plain form's rms 0.47 / 0.85 where the floored form's median ratio is 4.2 / 6.8
+// (test/calibration/qcal2.cpp). kSigmaFloor = 1.7: for q^2 ~ N(mu, rho^2) observed where positive, the
+// soft floor that keeps the mean, the rms and the median of qualitySigma within 8.1% of quality's real sd
+// from a median ratio of 2.2 up (scalar model, 400 000 draws per mu, floors 0.6-2.0 and exponents 2-6
+// scanned: second to p 6 / m 1.8's 7.7%; the plain first-order form misses by up to 406% in rms;
+// test/calibration/sigmafloor.cpp). Measured (tests "qualitySigma tracks quality's
+// scatter ..." and "a region's qualitySigma tracks ...", which print them run with -s), scatter over
+// qualitySigma's rms / median: a smooth blob in sky, 600 frames, at median ratios 2.9 / 4.1 / 11.2 / 41:
+// 1.04 / 1.07 / 0.99 / 0.99 and 1.01 / 1.06 / 1.01 / 1.00; a 64-px texture window, 2000 frames, at 3.4 /
+// 4.2 / 6.8 / 27 / 153 / 1660: 0.95 / 1.01 / 0.99 / 0.95 / 0.95 / 0.98 and 0.97 / 1.03 / 1.06 / 0.96 /
+// 0.95 / 0.98. Under a median ratio of ~3.1 a region window is noise in both its gradient and its signal
+// energy (pure noise reads 2.9-3.2: test/calibration/purer.cpp), and Regions.h's noise-only gate takes
+// over.
 // One image alone: the quality's noise is its sky's (NoiseModel::FromSkyNoise of EstimatePixelNoise).
 FrameStats MeasureFrame(const ser::FloatImage& luma, int64_t index, double lumaScale);
 // A frame of a capture: the quality's noise is the capture's model (Noise.h); MeasureAll's form. An unmeasured

@@ -181,7 +181,8 @@ constexpr double kSteadySpread = 0.05;
 constexpr int kMinJudgedFrames = 30;
 // Step 7's gross reading narrows q_ref to the spread the data support only at low per-frame SNR (median
 // quality / qualitySigma): fully at kShrinkSnrFull and under, not at all from kShrinkSnrNone, log-linear
-// between (step 7). Measured: the faint blob it is for reads 3.4; every NAS disc 33 and over, short or long.
+// between (step 7). Measured: the faint blob it is for reads 3.4 (calibration/mdq.cpp); every NAS disc 26.9 and
+// over, short or long (focus-survey's r50: the 2022-08-03 021039 Saturn's first 60 frames the lowest).
 constexpr double kShrinkSnrFull = 5;
 constexpr double kShrinkSnrNone = 15;
 
@@ -247,8 +248,9 @@ constexpr double kShrinkSnrNone = 15;
 //    ratio, linear in the noise, so its sd does not move with the frame's own noise draw; a Gaussian in q
 //    with sd qualitySigma_i (which is ~1 / q_i) trusted the frames that drew high noise most, and lifted
 //    the top of G: on a faint blob (R 24 convolved by 24 px over an unclipped sky, noise 0.01, ~3.5
-//    qualitySigma per frame) q_ref read 0.0484 / 0.0423 / 0.0447 for seeds 7 / 107 / 207 with the
-//    quality-domain likelihood against 0.0476 / 0.0388 / 0.0361 with this one (noise-free 0.0371).
+//    qualitySigma per frame) q_ref reads 0.0485 / 0.0425 / 0.0450 for seeds 7 / 107 / 207 with the
+//    quality-domain likelihood against 0.0477 / 0.0384 / 0.0367 with this one (noise-free 0.0371;
+//    test/calibration/seedsel.cpp, mdq.cpp).
 //    Samples without quality2Sigma (synthetic ones) keep the Gaussian in q with qualitySigma.
 //    The distribution G of the true quality is estimated by nonparametric maximum likelihood
 //    (Kiefer-Wolfowitz NPMLE, heteroscedastic; EM on kPriorGrid points over the observed range);
@@ -273,15 +275,16 @@ constexpr double kShrinkSnrNone = 15;
 //           rule before the region stage judged it: StackSynth R 8 / 11 / 14 blurred 6 / 4 / 6 px
 //           reached boxes of 16-22 and were refused here (R 11 by 4 px as PoorSeeing): the size
 //           class moved with the blur being judged.
-//           Measured (Ruling P26 fix round 2, the reading as here): S = sigma'(q_ref) / max(kBlurLimit R,
+//           Measured (test/run-focus-survey.sh survey / defocus): S = sigma'(q_ref) / max(kBlurLimit R,
 //           kBlurFloorPixels / LumaScale) reads at most 0.495 on every NAS disc as captured, at full length
 //           and over its first 8 / 30 / 60 / 120 frames (the 2022-08-03 015840 Jupiter's first 30 frames;
-//           0.42 at full length; 0.47 the 2022-09-08 001402 Jupiter, the highest before P26 at R / 8: 0.74,
-//           0.84 with P26's noise-corrected quality), and at most 0.51 blurred by 1-16 sensor px (the
-//           2026-01-30 195137 Jupiter at 16 px); StackSynth's small disc smeared over 5 px is refused on
-//           the floor. So on measured data a small disc is never refused for focus -- 1.95x under the
-//           limit at the most -- the region stage only warns (Ruling P20), and a disc defocused far
-//           enough to grow its half-contrast radius past kMinJudgedRadius meets the large-disc rule.
+//           0.42 at full length; 0.47 the 2022-09-08 001402 Jupiter, which read the highest at 851ba41b --
+//           0.74 at R / 8, step 7's reading off its FrameStats there -- and 0.84 at R / 8 now), and at most
+//           0.51 blurred by 1-16 sensor px (the 2026-01-30 195137 Jupiter at 16 px); StackSynth's small
+//           disc smeared over 5 px is refused on the floor. So on measured data a small disc is never
+//           refused for focus -- 1.95x under the limit at the most -- the region stage only warns
+//           (Ruling P20), and a disc defocused far enough to grow its half-contrast radius past
+//           kMinJudgedRadius meets the large-disc rule.
 //    kBlurLimit was R / 8 until Ruling P26 fix round 2 -- the coarsest planetary structure (belts, period
 //    P ~ R/4) then keeps under 1% contrast (exp(-2 pi^2 sigma^2 / P^2) < 0.01 at sigma > 0.48 P) -- but in
 //    focus a measured disc read up to 0.95 of R / 8 with the noise corrected, so P15's 2x sets it instead.
@@ -297,11 +300,14 @@ constexpr double kShrinkSnrNone = 15;
 //    over R -- texture raises q in focus and limb darkening lowers it once the texture is gone, so a
 //    real Jupiter softened by only 0.5-1 luma px already reads 0.09-0.20 -- and a refusal must be
 //    safe. Surveyed again with Ruling P26 (fix round 2; 851ba41b -> head, reading as here): the same 46
-//    planetary files, none refused for focus or seeing either way. The large class (Ruling P15a widened the
-//    search: every AVI / SER on the NAS, 2026-10-22 -- the rest are small, frame-filling, or hold no disc; the
-//    2026-01-30 195830 Jupiter is R_h 8, the 2023-02-11 191831 Jupiter R_h 5, the largest small disc the
-//    2022-08-03 015840 Jupiter at R_h 14.2-14.5, reading 0.098-0.119) is the two 2022-09-17 1080p Jupiters
-//    (R_h 21.5), as captured and over their first 8 / 30 / 60 / 120 frames (test/run-focus-survey.sh):
+//    planetary files, none refused for focus or seeing either way. ("Before P26" below: at 851ba41b, step
+//    7's reading taken off that build's MeasureAll FrameStats by a scratch port of focus-survey, which needs
+//    Selection::focusReading; limb-probe recomputes its 0.053 at head, from each frame's own-sky quality.)
+//    The large class (Ruling P15a widened the search: every AVI / SER on the NAS, 2026-10-22 -- the rest
+//    are small, frame-filling, or hold no disc; the 2026-01-30 195830 Jupiter is R_h 8, the 2023-02-11
+//    191831 Jupiter R_h 5, the largest small disc the 2022-08-03 015840 Jupiter at R_h 14.2-14.5, reading
+//    0.098-0.119) is the two 2022-09-17 1080p Jupiters (R_h 21.5), as captured and over their first 8 /
+//    30 / 60 / 120 frames (test/run-focus-survey.sh):
 //      225418  606 frames 0.1182 (0.053 before P26);  8 / 30 / 60 / 120: 0.1307 / 0.1235 / 0.1314 / 0.1311
 //      230420  761 frames 0.1388 (0.053 before P26);  8 / 30 / 60 / 120: 0.1115 / 0.1340 / 0.1301 / 0.1318
 //    kGrossBlurLimit = 2 x 0.1388 rounded up = 0.28: the in-focus readings 2.02x under it at the least,
@@ -328,40 +334,41 @@ constexpr double kShrinkSnrNone = 15;
 //    and a small disc's 0.66 too (0.1189 of 0.18 R). Mildly soft, 230420 at 4 luma px (0.216) is warned,
 //    225418 there (0.203) not. Refused still: 225418 at 8 luma px (0.294), the 2022-08-03 Jupiter at 8 (0.350),
 //    R 24 by 10 px on seeds 107-407 and 607 (0.280-0.290), every other StackSynth case above.
-//    StackSynth (unit test, 60 frames, noise 0.01 unless said; seed 7, re-measured 2026-10-22 with
-//    Ruling P19's unbiased pixel noise, the earlier reading in brackets): R 24 blurred 0.6 / 2 / 3 px
-//    0.027 / 0.080 / 0.114, R 40 by 4 px 0.084 (stacked); R 24 by 10 px 0.263 (0.245: it was
-//    stacked; 0.267 with P26, refused at 0.25, stacked at 0.28), by 12 px (Task 6's case) 0.312
-//    (0.274) (refused); convolved (true defocus) at noise 0.005: R 24 by 2 px 0.086, R 40 by 3 px
-//    0.075 (stacked), R 24 by 12 px 0.344 (0.325), R 40 by 20 px 0.344 (0.305) (refused); at noise
-//    0.01 R 24 by 2 px 0.087, R 40 by 3 px 0.073 (stacked), R 24 by 12 px 0.312 (0.267, on the limit) (refused). Noise-free, the convolved R 24 / 12 px reads
-//    0.334, R 40 / 20 px 0.342 and R 24 / 24 px 0.400. With s^2 read 4.3-5.2% low, q kept ~0.18 s^2 per
-//    pixel of noise in its gradient term, which dominates once a spread-out blob's own gradients are
-//    weaker (its gradient energy is a few percent of the noise's 4 s^2), and q stopped falling: the
-//    faint blobs were stacked. Over a sky of 0.06 at noise 0.01 (seeds 7 / 107 / 207): R 40 / 20 px
-//    0.377 / 0.348 / 0.339 (0.225 / 0.212 / 0.188), R 24 / 24 px 0.327 / 0.313 / 0.321 (0.130 / 0.129 /
-//    0.124) -- now refused -- and R 24 / 12 px 0.332-0.362 (0.255-0.287), 1.19-1.29x the limit.
-//    With s measured on the sky and taken as the target's, the reading was low again where they differ:
-//    MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit capture clips 2.3% of
-//    it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a target's own shot
-//    noise above the sky's) -- there the convolved R 40 / 20 px read 0.240 and was stacked. The capture's
-//    noise model (Ruling P26, Noise.h) gives every pixel the noise of its level, and qualitySigma is the
-//    scatter's own -- which exposed q_ref's own noise: a deconvolution of ~55 frames at a median 3.4
-//    qualitySigma reads a spread of the true quality its 2-SE bound does not support, and its top lifted
-//    q_ref up to 28% (R 24 / 24 px over the 0.06 sky, seed 7: 0.0476 against 0.0371 noise-free; reading
-//    0.222, stacked). So the limb blur is read at the narrowest spread the data cannot rule out: q_ref's
-//    excursion above the single quality that best explains every frame (DetailRanking::pointQuality) is
-//    scaled by tauLo / G's sd when G is wider than tauLo (Ruling P26 fix round 1) -- only where the frames'
-//    own SNR leaves G's top to EM's early-stopped smoothing: fully at a median quality / qualitySigma of
-//    kShrinkSnrFull and under, not at all from kShrinkSnrNone (fix round 2). The faint blob reads a median
-//    3.4; every NAS disc 33 and over, full length or its first 8-120 frames, where tauLo reaches 0 on a
-//    short capture and the reading at the point quality rose 6-8% (the 2022-09-17 225418 Jupiter's first
-//    60 frames: 0.140 against 0.131 at q_ref); StackSynth's other refused cases 14.5 and over. Over seeds 7,
-//    107, ..., 907: R 24 / 24 px 0.336-0.801 (0.293-0.343 before P26, 0.222-0.511 with P26's q_ref),
-//    refused in all 10; the clipped-sky R 40 / 20 px 0.313-0.372, refused in all 10; the in-focus cases
-//    above as at q_ref. A centre that dims (blur ~ R and over) also moves R_h out. Missed, such a capture
-//    stacks into a visibly soft image, and the region stage warns (RunStack on the clipped-sky R 40 / 20 px
-//    at its old reading: limb blur 0.47 R against the warn level 0.40) -- the failure the rule prefers.
+//    StackSynth (the unit test's MeasuredDisc, 60 frames, noise 0.01 unless said, seed 7; at head,
+//    test/calibration/mdq.cpp's "reading"): R 24 blurred 0.6 / 2 / 3 px 0.027 / 0.080 / 0.116, R 40 by 4 px
+//    0.089 (stacked); R 24 by 10 px 0.267 (stacked and warned; refused at 0.25), by 12 px (Task 6's case)
+//    0.337 (refused); convolved (true defocus) at noise 0.005: R 24 by 2 px 0.086, R 40 by 3 px 0.075
+//    (stacked), R 24 by 12 px 0.350, R 40 by 20 px 0.341 (refused); at noise 0.01 R 24 by 2 px 0.088, R 40
+//    by 3 px 0.074 (stacked), R 24 by 12 px 0.364 (refused). Noise-free, the convolved R 24 / 12 px reads
+//    0.334, R 40 / 20 px 0.342 and R 24 / 24 px 0.400. Before Ruling P19's unbiased pixel noise, s^2 read
+//    low, q kept part of the noise in its gradient term -- which dominates once a spread-out blob's own
+//    gradients are weaker (a few percent of the noise's 4 s^2) -- and q stopped falling: the faint blobs were
+//    stacked. Over a sky of 0.06 at noise 0.01 (seeds 7 / 107 / 207): R 40 / 20 px 0.323 / 0.339 / 0.335,
+//    R 24 / 24 px 0.520 / 0.419 / 0.434 (refused), and R 24 / 12 px over seeds 7, 107, ..., 907 0.328-0.354,
+//    1.17-1.26x the limit. With s measured on the sky and taken as the target's, the reading was low again
+//    where they differ: MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit
+//    capture clips 2.3% of it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a
+//    target's own shot noise above the sky's) -- there the convolved R 40 / 20 px was stacked (at 851ba41b,
+//    whose MeasureAll took the sky's level as every pixel's: step 7's reading off its FrameStats, 0.240). The
+//    capture's noise model (Ruling P26, Noise.h) gives every pixel the noise of its level, and qualitySigma
+//    is the scatter's own -- which exposed q_ref's own noise: a deconvolution of ~55 frames at a median 3.4
+//    qualitySigma reads a spread of the true quality its 2-SE bound does not support, and its top lifts q_ref
+//    up to 29% (R 24 / 24 px over the 0.06 sky, seed 7: 0.0477 against 0.0371 noise-free; read there, 0.221
+//    -- stacked at 941ab4e7, which did; test/calibration/seedsel.cpp's X). So the limb blur is read at the
+//    narrowest spread the data cannot rule out: q_ref's excursion above the single quality that best
+//    explains every frame (DetailRanking::pointQuality) is scaled by tauLo / G's sd when G is wider than
+//    tauLo (Ruling P26 fix round 1) -- only where the frames' own SNR leaves G's top to EM's early-stopped
+//    smoothing: fully at a median quality / qualitySigma of kShrinkSnrFull and under, not at all from
+//    kShrinkSnrNone (fix round 2). The faint blob reads a median 3.4 (calib-mdq's "median r"); every NAS disc
+//    26.9 and over, full length or its first 8-120 frames (focus-survey's r50), where tauLo reaches 0 on a short
+//    capture (at e6d0f4ca, which read every capture at the point quality, the 2022-09-17 225418 Jupiter's
+//    first 60 frames read 0.140 against 0.131 at q_ref: test N1's fixture); StackSynth's other refused cases
+//    12.9 and over. Over seeds 7, 107, ..., 907 (calib-seedsel): R 24 / 24 px 0.336-0.801 (0.293-0.343 at
+//    851ba41b and 0.222-0.511 at 941ab4e7, step 7's reading off their FrameStats), refused in all 10; the
+//    clipped-sky R 40 / 20 px 0.313-0.372 (calib-mdq), refused in all 10; the in-focus cases above as at
+//    q_ref. A centre that dims (blur ~ R and over) also moves R_h out. Missed by a little, such a capture
+//    stacks into a visibly soft image with a focus warning (the warn band under the limit, kGrossBlurWarn) --
+//    the failure the rule prefers.
 //    The blur spread is that of the true quality, read in quality^2 when every frame carries
 //    quality2Sigma (measured frames: its noise is linear and its sd rho first-order exact), else in
 //    quality: tau^2 = max(0, var(x) - mean(sd^2)), x = q^2 (sd rho) or q (sd qualitySigma); spread =
@@ -373,11 +380,14 @@ constexpr double kShrinkSnrNone = 15;
 //    (quality Gaussian, qualitySigma exact; R 60, limb 24 px; test/calibration/synthrate.cpp): steady blur
 //    is called seeing in at most 3 of 200; 6% seeing under 3% noise is found in 185 / 200 / 200 of 200. (The
 //    protocol's limb was 20 px, 0.33 R, until Ruling P15a: at kGrossBlurLimit 0.28 the sharpest frames of 6%
-//    seeing read under the limit and 13 / 32 / 11 of 200 were stacked, not judged.) Measured through MeasureFrame (Ruling P26 fix round
-//    1: a disc of R 24 by 12 px, white noise for 3.2 / 7 / 15% quality noise, the true noise model): steady
-//    blur called seeing in 0 of 200 in every cell (in quality: 5 / 10 / 28 at 15% noise); 6% seeing under
-//    3.2% noise found in 145 / 200 / 200 -- 180 / 200 / 200 at the blur spread that gives quality the
-//    protocol's 3% spread (the rendered disc's quality moves 0.9x the disc model's with its blur).
+//    seeing read under the limit and 13 / 32 / 11 of 200 were stacked, not judged.) Measured through
+//    MeasureFrame (test/calibration/classrate.cpp with PLAIN: a texture-free disc of R 24 by 12 px, white
+//    noise for 3.2 / 7 / 15% quality noise, the true noise model): steady blur called seeing in 0 of 200 in
+//    every cell (Ruling P26 fix round 1, with the spread read in quality as 941ab4e7 read it: 5 / 10 / 28 at
+//    15% noise); 6% seeing under 3.2% noise found in 145 / 199 / 200 (1 of 200 stacked at N = 500) -- 176 /
+//    191 / 199 at the blur spread that gives quality the protocol's 3% spread, where 4 / 9 / 1 of 200 now
+//    read under kGrossBlurLimit and are stacked (the rendered disc's quality moves 0.9x the disc model's
+//    with its blur: classrate's QSPREAD).
 //    No genuinely defocused or bad-seeing capture is on the NAS: the large-disc limit rests on the
 //    in-focus survey and the synthetic defocus above; the small-disc one on the reasoning above.
 // 8. Selection. A frame of true quality q has, at the frequency where the best frames keep

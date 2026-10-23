@@ -56,7 +56,7 @@ constexpr int kMaxRegionSize = 128;
 // target's box) -- the reading kMaxShiftNoise was set with. The capture's noise model (Noise.h) is not
 // used here: a reference is an average of interpolated frames, whose noise the model does not describe,
 // and with the model's frame noise in its place the synthetic Moon of test "a dark lunar limb ..." placed
-// 16 regions where this reading places 109 (the reference's texture-blind reading, times
+// far fewer regions than this reading does (the reference's texture-blind reading, times
 // sqrt(kReferenceFrames), sits well under a frame's true noise: interpolation smooths the reference's
 // pixel-scale noise). Placing by level would move every layout; the dark-limb windows of the 2026-01-30
 // Moon 193142 are placed either way (Ruling P26 concerns their quality, below).
@@ -65,7 +65,8 @@ constexpr int kMaxRegionSize = 128;
 // (RegionLayout::noise, Ruling P26). Before, it took one level per frame, read texture-blind over all the
 // regions' windows (Ruling P25): on the 2026-01-30 Moon 193142 that level was the bright surface's, and
 // its dark limb regions, whose own noise is a fraction of it, measured quality 0 in nearly every frame and
-// kept none.
+// kept none (at 851ba41b, stack-region-probe: 3 of its 324 regions kept no frame, 3 read as noise only at a
+// median q / qualitySigma of 0.02-1.8).
 constexpr double kMaxShiftNoise = 0.1;
 constexpr double kMinFrameNoise = 1e-3;
 
@@ -111,12 +112,11 @@ struct RegionLayout {
 // in a bin). Each reading misreads one texture as noise: a raw colour mosaic read as mono carries its
 // pattern at Nyquist in every frame, which the pixels see and a bin (one cell of the pattern) cancels;
 // texture at 4-8 px, coarse for the pixels, is fine for the bins. The capture's own data says which applies
-// (RegionNoiseOnBins, on the reference) -- not the smaller of the two, which read s^2 0.923 / 0.961 / 0.981
-// / 0.989 / 0.995 of the truth on white noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2 (measured
-// 2026-10-22), taking whichever fluctuated low. Each reading alone (test "RegionNoise is unbiased ...",
-// white noise, 32^2-512^2): pixels 1.000-1.006 of the truth (1.010 at 32^2 before the trimmed moment's
-// constant was taken at the share actually kept), bins 0.999-1.009 from 48^2 and 1.022 at 32^2 (16 x 16
-// bins, 196 responses: the trimmed moment's small-sample excess).
+// (RegionNoiseOnBins, on the reference) -- not the smaller of the two, which reads s^2 0.921 / 0.958 / 0.978
+// / 0.990 / 0.996 of the truth on white noise over 32^2 / 64^2 / 128^2 / 256^2 / 512^2, taking whichever
+// fluctuated low. Each reading alone (white noise, 32^2-512^2; test "RegionNoise is unbiased ..."): pixels
+// 1.000-1.006 of the truth, bins 0.997-1.012 from 48^2 and 1.024 at 32^2 (16 x 16 bins, 196 responses: the
+// trimmed moment's small-sample excess) (test/calibration/regionnoise.cpp).
 // varSigma2 = kRegionNoiseVariance s^4 / (pixels measured: the rectangle's, a quarter of it for
 // bins): measured Var(s^2) x pixels / s^4 = 8.6-11.6 on pixels and 8.8-12.3 on bins (bins counted),
 // 32^2 to 1024^2: 0.71-1.23 of the formula, 1.23 the 32^2 bins (the 21.8 s^4 / area it replaces was ~2x
@@ -279,26 +279,26 @@ struct RegionDetail {
 };
 
 // A region's detail is real when its median candidate's quality is at least this many of its own
-// qualitySigma (Ruling P27; 3 until Ruling P26). Measured 2026-10-22, median q / qualitySigma over a
-// region's candidates (q > 0):
-//  - pure noise (white 0.01 on a flat level, 32 / 128 px windows, 200 repeats; sim, the true noise as
-//    the model): a median of 2.9 whatever the count, p99 8.6 / 5.1-5.5 / 4.2-4.3 / 3.7-3.8 / 3.3 at
-//    10 / 30 / 64 / 150 / 400 candidates. P26's qualitySigma is the scatter's own (Measure.h); the one
-//    before overstated it at low SNR, and pure noise read a median of ~1.35 against it, so 3 sat well
-//    above noise then and at its median now;
-//  - real regions (Ruling P26's model): the least detailed of the five test captures with regions reads
-//    10.25 (the 2026-01-30 Moon 193142's region at 160, 288: saturated, luma 0.945, its alignment match a
-//    low 0.85, the model 1.30x its own noise; it keeps all 2044 frames), then 17.7 (Neptune 204515, 93
-//    frames) and 66.8 (the 2023-02-02 Moon); the Moon 193142's dark limb, which the one sky level put at
-//    0.02-1.8, reads 23-33;
+// qualitySigma (Ruling P27; 3 until Ruling P26). Measured, median q / qualitySigma over a region's
+// candidates (q > 0):
+//  - pure noise (white 0.01 on a flat level, 32 / 128 px windows, 200 repeats, the true noise as the
+//    model; test/calibration/purer.cpp): a median of 2.9-3.2 whatever the count, p99 7.9-8.6 / 5.1-5.5 /
+//    4.2-4.3 / 3.7-3.8 / 3.3 at 10 / 30 / 64 / 150 / 400 frames (0.42 of them candidates), the 400-frame
+//    maximum 3.4-3.5. P26's qualitySigma is the scatter's own (Measure.h); the one before overstated it at
+//    low SNR, so 3 sat well above noise then and at its median now;
+//  - real regions (Ruling P26's model; stack-region-probe): the least detailed of the five test captures
+//    with regions reads 10.31 (the 2026-01-30 Moon 193142's region at 160, 288: saturated, luma 0.945, its
+//    alignment match a low 0.85, the model 1.30x its own noise (calibration/winnoise.cpp); it keeps all
+//    2044 frames), then 17.6 (Neptune 204515, 93 frames) and 60.8 (the 2023-02-02 Moon) -- the Moon
+//    193142's dark limb among them, whose regions the one sky level put at 0.02-1.8 (851ba41b, above);
 //  - synthetic textured regions under seeing that changes from frame to frame (test "A low-SNR region
-//    with real seeing variation ...": half contrast, noise 0.01, 150 frames): 3.71-11.97, 4 of 165
-//    under 4 (they take the plain mean).
-// 4 is over pure noise's p99 from ~150 candidates and its 400-candidate maximum, and under every real
-// region by 2.5x. A fixed gate, so pure noise passes it more often with fewer candidates (2000 regions
-// each, 32 / 64 px windows, exactly C candidates): 14.9 / 17.2% at C = 10, 1.4 / 2.6% at 30, none at 100 or
-// 300. A noise-only region that passes is ranked, and the deconvolution keeps nearly every frame of a
-// spread that is noise (Neptune 204515: 92-93 of 93); under kMinStackFrames candidates a region takes
+//    with real seeing variation ...": half contrast, noise 0.01, 150 frames; calibration/lowsnr.cpp):
+//    3.71-11.97, 4 of 165 under 4 (they take the plain mean).
+// 4 is over pure noise's p99 from ~150 frames and its 400-frame maximum, and under every real region by
+// 2.5x. A fixed gate, so pure noise passes it more often with fewer candidates (2000 regions each, 32 / 64
+// px windows, exactly C candidates; calibration/purer2.cpp): 14.9 / 17.2% at C = 10, 1.4 / 2.6% at 30, none
+// at 100 or 300. A noise-only region that passes is ranked, and the deconvolution keeps nearly every frame
+// of a spread that is noise (Neptune 204515: 92-93 of 93); under kMinStackFrames candidates a region takes
 // the plain mean anyway. A count-dependent gate would trade that for real low-SNR regions of short
 // captures: no single threshold separates the two there.
 constexpr double kRegionDetailSigmas = 4;
@@ -352,7 +352,7 @@ struct RegionPlan {
 // detail is real but whose spread is noise is left to the ranking: step 6's deconvolution keeps nearly
 // everything there (Neptune 204515: 92-93 of 93 per region). An override that kept every aligned frame
 // when the spread was within qualitySigma discarded real lucky frames at low SNR, where qualitySigma
-// then overstated q's scatter (~1.25x at a median q / qualitySigma of 4-5, before Ruling P26).
+// then overstated q's scatter at low SNR (before Ruling P26; Measure.h "qualitySigma").
 // threads: regions are ranked on that many threads (< 1 counts as 1); the result is the same for any count.
 RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1);
 

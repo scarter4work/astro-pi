@@ -5,7 +5,8 @@
 //
 // qualitySigma calibration (Ruling P26): RegionQuality on a textured 64 x 64 window (sinusoids, contrast A)
 // and MeasureFrame on a faint disc (contrast A) over many white-noise realisations, with the true noise as
-// a capture model (not ownFrame). Empirical sd of q (q > 0) against the mean, rms and median of qualitySigma.
+// a capture model (not ownFrame). Empirical sd of q (q > 0) against the mean, rms and median of qualitySigma,
+// and (regions) against the rms of the plain first-order sd rho / (2 q) that the soft floor replaced.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -49,7 +50,7 @@ int main(int argc, char** argv) {
     const int runs = argc > 1 ? std::atoi(argv[1]) : 2000;
     const double s = 0.01;
     const stack::NoiseModel model = testing::WhiteNoise(s);
-    std::printf("kind    A        n     r50     emp/mean emp/rms emp/med\n");
+    std::printf("kind    A        n     r50     emp/mean emp/rms emp/med   emp/rms of the plain rho / (2 q)\n");
     for (double A : std::vector<double>{0, 0.0005, 0.0008, 0.001, 0.0012, 0.0015, 0.002, 0.003, 0.004, 0.006, 0.01, 0.02, 0.05}) {
         const int n = 64;
         std::vector<float> clean(n * n);
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
                 for (auto& w : ws) v += A * w.a * std::sin(6.2832 * (w.fx * x + w.fy * y) + w.ph);
                 clean[y * n + x] = static_cast<float>(v);
             }
-        std::vector<double> q, sg;
+        std::vector<double> q, sg, plain;  // plain: the unfloored first-order sd, sigma2 / (2 q)
         std::mt19937 rng(77);
         std::normal_distribution<double> g(0, s);
         for (int k = 0; k < runs; ++k) {
@@ -78,10 +79,15 @@ int main(int argc, char** argv) {
             if (e.quality > 0) {
                 q.push_back(e.quality);
                 sg.push_back(e.sigma);
+                plain.push_back(e.sigma2 / (2 * e.quality));
             }
         }
         const Stat st = Summ(q, sg);
-        std::printf("region  %.4f  %5zu  %6.2f  %.3f    %.3f   %.3f\n", A, st.n, st.r50, st.emp / st.mean, st.emp / st.rms, st.emp / st.med);
+        double pr = 0;
+        for (double v : plain) pr += v * v;
+        pr = std::sqrt(pr / static_cast<double>(plain.size()));
+        std::printf("region  %.4f  %5zu  %6.2f  %.3f    %.3f   %.3f     %.3f\n", A, st.n, st.r50, st.emp / st.mean, st.emp / st.rms,
+                    st.emp / st.med, st.emp / pr);
     }
     // A faint blob (Gaussian, sigma 8 px) in sky, MeasureFrame with the capture model.
     for (double A : {0.04, 0.06, 0.08, 0.1, 0.15, 0.3, 0.6}) {
