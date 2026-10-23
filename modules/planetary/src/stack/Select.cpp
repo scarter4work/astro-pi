@@ -238,6 +238,25 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
     const int64_t refRank = std::max<int64_t>(std::min<int64_t>(3, nLeft), (nLeft + 99) / 100);
     double qRef = 0;
     if (prior.k > 0) {
+        double m1 = 0, m2 = 0;
+        for (size_t j = 0; j < prior.k; ++j) {
+            m1 += prior.pi[j] * prior.u[j];
+            m2 += prior.pi[j] * prior.u[j] * prior.u[j];
+        }
+        out.priorMean = m1;
+        out.priorSd = std::sqrt(std::max(0.0, m2 - m1 * m1));
+        // The one quality that best explains every sample (G a point mass): the grid's maximum of the
+        // summed log-likelihood, refined by a parabola through its neighbours.
+        std::vector<double> ll(prior.k, 0.0);
+        for (size_t i = 0; i < qLeft.size(); ++i)
+            for (size_t j = 0; j < prior.k; ++j) ll[j] += std::log(std::max(1e-300, prior.lik[i * prior.k + j]));
+        const size_t jb = static_cast<size_t>(std::max_element(ll.begin(), ll.end()) - ll.begin());
+        double u0 = prior.u[jb];
+        if (jb > 0 && jb + 1 < prior.k) {
+            const double den = ll[jb - 1] - 2 * ll[jb] + ll[jb + 1];
+            if (den < 0) u0 += 0.5 * (ll[jb - 1] - ll[jb + 1]) / den * (prior.u[1] - prior.u[0]);
+        }
+        out.pointQuality = u0;
         // The quality the sharpest refRank / N of the TRUE distribution reach (no winner's curse).
         double mass = 0;
         const double topShare = static_cast<double>(refRank) / static_cast<double>(nLeft);
@@ -471,15 +490,22 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
     const int64_t nLeft = static_cast<int64_t>(left.size());
     const double qRef = rank.qRef;
 
-    // Moments: mu, and tau^2 = the variance the noise does not explain (step 7's spread).
+    // Moments: mu, and tau^2 = the variance the noise does not explain (step 7's spread). In quality^2
+    // when every frame carries quality2Sigma (measured frames): quality^2's noise is linear and its sd
+    // first-order exact, while quality's own sd is calibrated only to ~7% at low SNR, which a 3000-frame
+    // capture's 2-SE bound resolves -- in quality, steady blur at 15% noise read as seeing in 28 of 200
+    // captures (Ruling P26 fix round 1). Otherwise (samples without it) in quality.
+    bool squared = nLeft > 0;
+    for (const FrameStats* s : left) squared = squared && std::isfinite(s->quality2Sigma) && s->quality2Sigma > 0;
+    auto value = [&](const FrameStats* s) { return squared ? s->quality * s->quality : s->quality; };
     double mu = 0, noise2 = 0, var = 0;
     for (const FrameStats* s : left) {
-        mu += s->quality;
-        noise2 += Sigma(*s) * Sigma(*s);
+        mu += value(s);
+        noise2 += squared ? s->quality2Sigma * s->quality2Sigma : Sigma(*s) * Sigma(*s);
     }
     mu /= static_cast<double>(nLeft);
     noise2 /= static_cast<double>(nLeft);
-    for (const FrameStats* s : left) var += (s->quality - mu) * (s->quality - mu);
+    for (const FrameStats* s : left) var += (value(s) - mu) * (value(s) - mu);
     var /= static_cast<double>(nLeft);
     const double tau = std::sqrt(std::max(0.0, var - noise2));
     // tau^2 is an estimate: its standard error ~ sqrt(2 / N) var (sample variance, normal data).
@@ -510,13 +536,28 @@ Selection SelectFrames(const std::vector<FrameStats>& stats, const ser::FileInfo
             const double sigma = 1 / (sqrtPi * q * q * radius);
             return small ? std::sqrt(std::max(0.0, sigma * sigma - kSamplingBlur * kSamplingBlur)) : sigma;
         };
-        const double sigmaRef = limbBlur(qRef);
+        // The sharpest frames' blur, at the narrowest spread of the true quality the data cannot rule out
+        // (Select.h step 7, Ruling P26 fix round 1): q_ref's excursion above the one quality that best
+        // explains every frame, scaled by tauLo / G's sd. With qualitySigma the scatter's own, a 53-frame
+        // capture's G at ~3.4 qualitySigma per frame reads a spread its 2-SE bound does not support, and
+        // its top lifted q_ref by up to 28% (R 24 / 24 px, seed 7: 0.0476 against 0.0371 noise-free): the
+        // reading fell from 0.33 to 0.22 and the grossly defocused blob stacked. A spread the data show
+        // (tauLo >= G's sd) leaves q_ref as it is.
+        // tauLo in quality (d q = d q^2 / (2 q) when the moments are quality^2's).
+        const double tauLoQ = squared ? tauLo / (2 * std::sqrt(std::max(mu, 1e-300))) : tauLo;
+        const double qGross = rank.priorSd > tauLoQ
+                                  ? rank.pointQuality + (qRef - rank.pointQuality) * tauLoQ / rank.priorSd
+                                  : qRef;
+        const double sigmaRef = limbBlur(std::min(qRef, std::max(qGross, 1e-12)));
         const double limit = small ? std::max(kBlurLimit * radius, kBlurFloorPixels / scale) : kGrossBlurLimit * radius;
         if (sigmaRef >= limit) {
             // The spread of the true blur: q at mu -+ 1.2816 tau (p10 / p90 of a normal), not the
             // posterior means (those are pulled together by the noise); tauHi gives the upper bound.
             const double z = 1.2816;
             auto spreadOf = [&](double t) {
+                if (squared)  // quality^2 at mu -+ z tau
+                    return (limbBlur(std::sqrt(std::max(mu - z * t, 1e-4 * mu))) - limbBlur(std::sqrt(mu + z * t))) /
+                           limbBlur(std::sqrt(mu));
                 return (limbBlur(std::max(mu - z * t, 0.01 * mu)) - limbBlur(mu + z * t)) / limbBlur(mu);
             };
             const double spread = spreadOf(tau), spreadHi = spreadOf(tauHi), spreadLo = spreadOf(tauLo);

@@ -302,20 +302,33 @@ constexpr int kMinJudgedFrames = 30;
 //    MakeDisc's own sky of 0.02 is 2 noise sd above black at noise 0.01, the 16-bit capture clips 2.3% of
 //    it at 0, and the clipped sky's noise variance is 0.960 of the target's (as was a target's own shot
 //    noise above the sky's) -- there the convolved R 40 / 20 px read 0.240 and was stacked. The capture's
-//    noise model (Ruling P26, Noise.h) gives every pixel the noise of its level: that R 40 / 20 px reads
-//    0.304-0.375 over seeds 7, 107, ..., 907 and is refused in all 10; over the 0.06 sky, R 40 / 20 px
-//    0.325 (seed 7) and R 24 / 24 px 0.222-0.511, refused in 9 of 10 -- seed 7's 0.222 is the top of a
-//    deconvolution of 53 frames at a median 3.35 qualitySigma, which a few high draws lift. A centre that
-//    dims (blur ~ R and over) also moves R_h out. Missed, such a capture stacks into a visibly soft image,
-//    and the region stage warns (RunStack on the clipped-sky R 40 / 20 px at its old reading: limb blur
-//    0.47 R against the warn level 0.40) -- the failure the rule prefers.
-//    The blur spread is that of the true quality: tau^2 = max(0, var(q) - mean(qualitySigma^2)),
-//    spread = (sigma(mu - 1.2816 tau) - sigma(mu + 1.2816 tau)) / sigma(mu); its bounds use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(q).
-//    Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE) gives a spread under
-//    kSteadySpread; PoorSeeing when even the lower bound (tau^2 - 2 SE) gives one at or over it;
-//    otherwise -- or under kMinJudgedFrames frames -- OutOfFocus worded "focus or seeing, ... to
-//    tell". Measured (200 seeds per cell, N = 100 / 500 / 3000, noise 3-15%): steady blur is called
-//    seeing in at most 3 of 200; 6% seeing under 3% noise is found in 185 / 200 / 200 of 200.
+//    noise model (Ruling P26, Noise.h) gives every pixel the noise of its level, and qualitySigma is the
+//    scatter's own -- which exposed q_ref's own noise: a deconvolution of ~55 frames at a median 3.4
+//    qualitySigma reads a spread of the true quality its 2-SE bound does not support, and its top lifted
+//    q_ref up to 28% (R 24 / 24 px over the 0.06 sky, seed 7: 0.0476 against 0.0371 noise-free; reading
+//    0.222, stacked). So the limb blur is read at the narrowest spread the data cannot rule out: q_ref's
+//    excursion above the single quality that best explains every frame (DetailRanking::pointQuality) is
+//    scaled by tauLo / G's sd when G is wider than tauLo (Ruling P26 fix round 1). Over seeds 7, 107, ...,
+//    907: R 24 / 24 px 0.336-0.801 (0.293-0.343 before P26, 0.222-0.511 with P26's q_ref), refused in
+//    all 10; the clipped-sky R 40 / 20 px 0.327-0.380, refused in all 10; the in-focus cases above move by
+//    at most 1% (R 24 by 3 px 0.116 -> 0.117), R 24 by 10 px 0.267 -> 0.292. A centre that dims (blur ~ R
+//    and over) also moves R_h out. Missed, such a capture stacks into a visibly soft image, and the region
+//    stage warns (RunStack on the clipped-sky R 40 / 20 px at its old reading: limb blur 0.47 R against the
+//    warn level 0.40) -- the failure the rule prefers.
+//    The blur spread is that of the true quality, read in quality^2 when every frame carries
+//    quality2Sigma (measured frames: its noise is linear and its sd rho first-order exact), else in
+//    quality: tau^2 = max(0, var(x) - mean(sd^2)), x = q^2 (sd rho) or q (sd qualitySigma); spread =
+//    (sigma(mu - 1.2816 tau) - sigma(mu + 1.2816 tau)) / sigma(mu), sigma the limb blur at x; its bounds
+//    use tau^2 -+ 2 SE, SE = sqrt(2 / N) var(x). Blurred -> OutOfFocus ("steady") when even the upper bound (tau^2 + 2 SE)
+//    gives a spread under kSteadySpread; PoorSeeing when even the lower bound (tau^2 - 2 SE) gives one at or
+//    over it; otherwise -- or under kMinJudgedFrames frames -- OutOfFocus worded "focus or seeing, ... to
+//    tell". Measured (200 seeds per cell, N = 100 / 500 / 3000, noise 3-15%), synthetic frame statistics
+//    (quality Gaussian, qualitySigma exact): steady blur is called seeing in at most 3 of 200; 6% seeing
+//    under 3% noise is found in 185 / 200 / 200 of 200. Measured through MeasureFrame (Ruling P26 fix round
+//    1: a disc of R 24 by 12 px, white noise for 3.2 / 7 / 15% quality noise, the true noise model): steady
+//    blur called seeing in 0 of 200 in every cell (in quality: 5 / 10 / 28 at 15% noise); 6% seeing under
+//    3.2% noise found in 145 / 200 / 200 -- 180 / 200 / 200 at the blur spread that gives quality the
+//    protocol's 3% spread (the rendered disc's quality moves 0.9x the disc model's with its blur).
 //    No genuinely defocused or bad-seeing capture is on the NAS: the large-disc limit rests on the
 //    in-focus survey and the synthetic defocus above; the small-disc one on the reasoning above.
 // 8. Selection. A frame of true quality q has, at the frequency where the best frames keep
@@ -399,6 +412,10 @@ struct DetailRanking {
     std::vector<double> mtf;     // per ranked entry: expected contrast at the detail frequency
     size_t outliers = 0;         // fenced off (step 5) == fenced.size()
     double qRef = 0;             // "the best" (step 6)
+    // The deconvolved distribution G of the true quality (step 6): its mean and sd (0 without one).
+    double priorMean = 0, priorSd = 0;
+    // The single true quality that best explains every sample (step 6's likelihood, G a point mass).
+    double pointQuality = 0;
     size_t keep = 0;             // keep ranked[0 .. keep): step 8's count, at least min(need, left)
     // Step 5's outcome, for SelectFrames' suspects (regions ignore it):
     std::vector<size_t> fenced;  // positions fenced off, ascending; left and fenced partition the input

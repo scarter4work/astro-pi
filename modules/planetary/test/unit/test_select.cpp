@@ -932,6 +932,34 @@ TEST_CASE("short captures are not fenced: their sharpest frames stay (N4)", "[se
     }
 }
 
+TEST_CASE("steady blur is not called seeing when quality carries its measured noise (Ruling P26 fix round 1, I4)",
+          "[select][diagnosis]") {
+    // A steady grossly blurred disc (R 60 by 20 px) as MeasureFrame reports it at 15% quality noise:
+    // quality^2 = u^2 + N(0, rho^2), rho = 0.3 u^2 (quality2Sigma), qualitySigma Measure.h's soft-floored
+    // form of it. qualitySigma is the scatter's own only to ~7% at such SNR, which a 3000-frame capture's
+    // 2-SE bound resolves: with the spread read in quality, 6 of these 20 seeds were called seeing (941ab4e7;
+    // 19 of 50 in a longer run); read in quality^2, where rho is exact, none.
+    const double u2 = 1 / (std::sqrt(M_PI) * 60 * 20.0), rho = 0.3 * u2;
+    int seeing = 0;
+    for (uint32_t seed = 1; seed <= 20; ++seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n01(0, 1);
+        std::vector<FrameStats> v;
+        for (int64_t i = 0; i < 3000; ++i) {
+            FrameStats s = Disc(i, 640, 480, 320, 240, 60, 20.0);
+            const double q2 = u2 + rho * n01(rng), f = stack::kSigmaFloor * rho;
+            s.quality = q2 > 0 ? std::sqrt(q2) : 0.0;
+            s.qualitySigma = q2 > 0 ? rho / (2 * std::pow(q2 * q2 * q2 * q2 + f * f * f * f, 0.125)) : 0.0;
+            s.quality2Sigma = q2 > 0 ? rho : 0.0;
+            v.push_back(s);
+        }
+        const Selection sel = SelectFrames(v, Info(640, 480));
+        REQUIRE(sel.diagnosis.kind != DiagnosisKind::None);
+        seeing += sel.diagnosis.kind == DiagnosisKind::PoorSeeing;
+    }
+    CHECK(seeing == 0);
+}
+
 TEST_CASE("focus or seeing: a verdict only when the noise allows one (N5)", "[select][diagnosis]") {
     // Blurred disc (limb 20 px on R = 60), 500 frames, true blur spread g, quality noise `noise`.
     auto capture = [](double g, double noise, uint32_t seed) {
@@ -1589,10 +1617,12 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
         CHECK(Number(sel.diagnosis, "limb blur (pixels)") >= Number(sel.diagnosis, "blur limit (pixels)"));
     }
     // The faintest: R 24 convolved by 24 px over the unclipped sky (noise-free 0.400), each frame's quality
-    // at a median 3.35-3.57 qualitySigma (seeds 7 / 107 / 207). Its reading is the top of a deconvolution of
-    // 53-58 noisy frames, which a few high draws can lift: 0.222 / 0.333 / 0.385 / 0.368 / 0.341 / 0.473 /
-    // 0.511 / 0.379 / 0.343 / 0.295 for seeds 7, 107, ..., 907 with Ruling P26's noise. A miss stacks a
-    // soft image, which the region stage warns about -- the failure the rule prefers (Ruling P15).
+    // at a median 3.35-3.57 qualitySigma (seeds 7 / 107 / 207), refused in every seed (Ruling P15: it is
+    // ~4.7x the in-focus 0.086). Before Ruling P26 (851ba41b) it read 0.293-0.343 over seeds 7, 107, ...,
+    // 907; with P26's calibrated qualitySigma the deconvolution's G took a spread its 2-SE bound does not
+    // support, its top lifted seed 7's q_ref 28% and the reading fell to 0.222 (941ab4e7: 9 of 10). Read at
+    // the narrowest spread the data allow (Select.h step 7): 0.520 / 0.419 / 0.434 / 0.418 / 0.385 / 0.594 /
+    // 0.801 / 0.444 / 0.578 / 0.336; the clipped-sky R 40 / 20 px 0.327-0.380 (0.304-0.375 at 941ab4e7).
     int refused = 0, refusedClipped = 0;
     for (unsigned seed = 7; seed < 1000; seed += 100) {
         refused += MeasuredDisc(24, 24, true, 0.01, seed, 0.06).diagnosis.kind == DiagnosisKind::OutOfFocus;
@@ -1600,7 +1630,7 @@ TEST_CASE("a grossly defocused large disc is out of focus; sharp and mildly soft
     }
     INFO("R 24 / 24 px over sky 0.06 refused in " << refused << " of 10 seeds, R 40 / 20 px over the clipped sky in "
                                                   << refusedClipped);
-    CHECK(refused >= 8);
+    CHECK(refused == 10);
     CHECK(refusedClipped == 10);
 }
 
