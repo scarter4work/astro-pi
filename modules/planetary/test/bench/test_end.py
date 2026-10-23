@@ -364,7 +364,7 @@ def test_photon_transfer_fits_a_small_disc_on_its_own_levels():
     """Review I-C / I-E (Mars, Saturn): a 3 px disc in a 640 x 480 frame is under 0.05 % of the samples,
     so a binning cut at the 99.9th percentile (rounds 0-1) leaves the disc out (asserted below on the
     samples themselves) and fitted Mars on sky bins alone (a = 0). The fit must reach the disc's levels.
-    Measured: a +60 % here (a 3 px disc is all limb, whose samples move between frames; +16 % at 6 px):
+    Measured: a +60 % here (a 3 px disc is all limb, whose samples move between frames):
     an over-read, which raises every image's budget alike -- recorded as a limit for tiny discs."""
     rng = np.random.default_rng(3)
     a, c = 0.15, 0.4

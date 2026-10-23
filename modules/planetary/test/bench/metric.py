@@ -55,9 +55,10 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     the bench checks its per-region kept counts against stack-probe's (RunStack's own) and reports END
     unmeasured when they differ. The flip check is our k as the frames used x the unweighted mean kept
     fraction over regions (benchset.ours_frames_mean). AutoStakkert's percentage is global,
-    approximate per alignment point. sigma_frame reads up to +7 % (+16 % on a 6 px disc) on a
+    approximate per alignment point. sigma_frame reads up to +7 % (+60 % on a 3 px disc) on a
     textured target moving between frames (noise.py), a factor common to every image's budget; row or
-    column banding is invisible to it, and only ours is charged that (through the split halves).
+    column banding would be invisible to it (none is measurable on the bench's captures, README), and
+    only ours is charged what the split halves see.
 
 DAN -- SECONDARY SINCE RULING P28: it removes each image's own noise, so it gives no credit for SNR
 (a stack of 4x the frames at the same blur scores the same).

@@ -35,8 +35,8 @@ THE MEASUREMENT (photon_transfer)
     negative, and v is 0 below the line's zero (a sky that rounds to one 8-bit value has no variance). Refused (NoiseUnmeasurable) when fewer than PTC_MIN_KEPT
     (half) of the bins lie on the line, the slope is not > 0, or the line's zero lies more than 1 DN
     above the darkest bin on it.
-    Measured (test_end.py): a textured disc drifting ~0.5 px per frame +7 % on a; a 6 px disc +16 %,
-    a 3 px disc +48 % (all limb); a lunar texture under 0-1.5 px of jitter within 0.5 %. A read-high
+    Measured (test_end.py): a textured disc drifting ~0.5 px per frame +7 % on a; a 3 px disc in a
+    640 x 480 frame +60 % (all limb); a lunar texture under 0-1.5 px of jitter within 0.5 %. A read-high
     raises every image's budget alike, and the split-half calibration measures with this same
     estimator (review I-F), so its bias sits in R_cal as it sits in R.
     Blind spot: noise constant along a row or a column of one frame (sensor banding) passes the
