@@ -21,9 +21,13 @@ HALVES: is the excess the region stage's or the frames'?
   * D of the region stacks decomposed tile by tile (32 px) in the END band (0.06-0.30): the share of
     its power explained by a gain on A (a level or gain offset between kept subsets multiplies the
     texture), a local shift (dA/dy, dA/dx: the halves' regions registered differently) and a local
-    blur (lap A). The decomposition takes D with the global refinement only (refined_difference
-    tile=None), so it still shows what a local shift explains; the R it prints is the bench's, with
-    the tile shifts removed (Ruling P28d, fix round 4)."""
+    blur (lap A). The decomposition takes D after the registration and ONE global gain only
+    (gain_only_difference), not after refined_difference's global gain-and-shift fit: that fit turns a
+    smooth gain field into a global pseudo-shift (a 3 % field read as a (0.10, -0.18) px shift on a
+    synthetic surface; test_triage.py), so the old decomposition read a level offset between kept subsets
+    as a local shift -- 0.13 gain, 0.82 shift for a pure gain field (final review, bench M4). The tiles'
+    own shift terms now explain any shift, global or local. The R it prints is the bench's, with the tile
+    shifts removed (Ruling P28d, fix round 4)."""
 import argparse
 import json
 import os
@@ -150,10 +154,23 @@ def _bandpass(x, lo=0.06, hi=0.30):
     return np.real(np.fft.ifft2(F * ((f >= lo) & (f < hi))))
 
 
+def gain_only_difference(A, B):
+    """(D on A's target box, A there, the box): B registered to A as refined_difference does (refs.register,
+    then an exact Fourier shift), then D = (A - g B) / 2 with g the one least-squares gain of the mean-free
+    box -- no global shift fit, which would absorb a smooth gain field as a pseudo-shift (module doc)."""
+    reg = refs.register(B, A)
+    Bs = np.real(np.fft.ifft2(ndimage.fourier_shift(np.fft.fft2(refs.apply_orientation(B, reg.orientation)), reg.shift)))
+    bx = metric.target_box(A)
+    a, b = A[bx.y0:bx.y1, bx.x0:bx.x1], Bs[bx.y0:bx.y1, bx.x0:bx.x1]
+    am, bm = a - a.mean(), b - b.mean()
+    g = float(am.ravel() @ bm.ravel()) / float(bm.ravel() @ bm.ravel())
+    return (am - g * bm) / 2, a, bx
+
+
 def decompose(A, B, tile=32):
-    """Shares of D's END-band power explained tile by tile by a gain on A, a local shift, a local blur."""
-    D, bx, _, _, _ = halves.refined_difference(A, B, tile=None)   # what a local shift explains before P28d removes it
-    a, dd = A[bx.y0:bx.y1, bx.x0:bx.x1], D[bx.y0:bx.y1, bx.x0:bx.x1]
+    """Shares of D's END-band power explained tile by tile by a gain on A, a local shift, a local blur
+    (D after the registration and one global gain: gain_only_difference)."""
+    dd, a, bx = gain_only_difference(A, B)
     gy, gx = np.gradient(a)
     lap = np.gradient(gy, axis=0) + np.gradient(gx, axis=1)
     Ab, Db, Gy, Gx, L = (_bandpass(v) for v in (a, dd, gy, gx, lap))
