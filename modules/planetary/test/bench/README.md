@@ -269,7 +269,14 @@ x1.5 noise uncharged, on the scene at 0.575).
 * `calibration.json` is committed on its own, before the real-data run that uses it, which git
   history shows (fix round 3: 3ff1167f, re-frozen in ee79ddfd after the photon-transfer fit changed).
 * Not claimed: that the procedure predates real data. Earlier rounds read real split-half ratios, and
-  the refinement above was adopted after reading Mars's real x10.3 (review N2-m7).
+  several procedure changes were made after reading real results:
+  * the global refinement above, after Mars's real x10.3 (review N2-m7);
+  * the photon-transfer fit's free intercept (fix round 3), after a through-origin refit had put
+    Mars's real END ratio at 0.950 (round 2 had 1.188; the final fit gave 1.218; re-review 3 N3-m2).
+    Re-review 3 judged the free intercept physically correct and found no verdict hinging on it, but
+    it was adopted after that real result was read;
+  * fix round 4's tile shifts (Ruling P28d), log-scale tolerance (N3-m1) and pedestal runs (N3-m6)
+    were each decided after fix round 3's real split-half ratios had been read.
 
 **Use:**
 * **The charge (Ruling P28b).** Ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin,

@@ -40,8 +40,10 @@ two-sided normal tolerance factor at 99 % coverage and 95 % confidence for n_eff
 What is guaranteed about real data: calibrate opens no capture (synthetic_frames only), and
 calibration.json is committed on its own, before the real-data run that uses it -- git history shows
 the order. What is NOT claimed: that the procedure predates real data. Earlier rounds read real
-split-half ratios, and the refinement in refined_difference was adopted after Mars's real x10.3
-(review N2-m7).
+split-half ratios, and procedure changes followed real results: the global refinement in
+refined_difference after Mars's real x10.3 (review N2-m7); the photon-transfer fit's free intercept
+after a through-origin refit read Mars's real END ratio as 0.950 (re-review 3 N3-m2); the tile shifts,
+the log-scale tolerance and the pedestal runs (fix round 4) after fix round 3's real ratios (README).
 
 USE. bench.status_of: a capture whose 0.21-0.30 ratio lies outside its kind's tolerance, in either
 direction, cannot pass (review I-G) -- above it the model does not hold what the halves measure, below
