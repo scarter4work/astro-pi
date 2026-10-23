@@ -57,7 +57,8 @@ END: EQUAL-NOISE DETAIL (Ruling P28; the spec's "one documented sharpness-at-equ
     fraction over regions (benchset.ours_frames_mean). AutoStakkert's percentage is global,
     approximate per alignment point. sigma_frame reads up to +7 % (+60 % on a 3 px disc) on a
     textured target moving between frames (noise.py), a factor common to every image's budget; row or
-    column banding would be invisible to it (none is measurable on the bench's captures, README), and
+    column banding would be invisible to it (tested on the 2026-01-30 Jupiter only, where the sky shares
+    no row offset; the other captures were not tested: README), and
     only ours is charged what the split halves see.
 
 DAN -- SECONDARY SINCE RULING P28: it removes each image's own noise, so it gives no credit for SNR

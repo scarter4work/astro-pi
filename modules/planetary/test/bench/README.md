@@ -355,13 +355,15 @@ references, which stacked the same frames.
 frames carry row banding and that it was most of the split-half excess. A discriminating test
 falsifies that. Sensor banding is constant along a sensor row, so the sky left and right of the disc
 in the same rows would share it:
-* raw frames: the covariance of the two sky segments' lag-1 difference row means is -3.7e-6 DN²
-  (29 disc rows x 159 differences), so there is no shared row offset;
+* raw frames: the covariance of the two sky segments' lag-1 difference row means is -3.74e-6 DN²
+  (29 disc rows x 159 differences; re-run in fix round 4, and noise.py's "-4e-7" corrected to it),
+  so there is no shared row offset;
 * D: the same covariance is 8.5e-7 of the disc's own shared row structure (disc left half against
   right half).
 
 Round 2's 0.0063-0.023 DN² was the variance of whole-row means, disc included, so it measured the
-disc's frame-to-frame change, not the sky's. The review's arithmetic (sky-level additive banding one
+disc's frame-to-frame change, not the sky's. The test ran on this capture only; whether the other
+captures' raw frames carry banding is not tested. The review's arithmetic (sky-level additive banding one
 to two orders too small for x28) holds with room to spare.
 
 What D does hold on the disc is row structure that scales with level. Its variance of row means peaks

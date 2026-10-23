@@ -40,10 +40,11 @@ THE MEASUREMENT (photon_transfer)
     raises every image's budget alike, and the split-half calibration measures with this same
     estimator (review I-F), so its bias sits in R_cal as it sits in R.
     Blind spot: noise constant along a row or a column of one frame (sensor banding) passes the
-    separable [1 -2 1] x [1 -2 1] high-pass unseen. None is measurable on the bench's captures: on the
-    2026-01-30 Jupiter the sky left and right of the disc in the same rows share no row offset
-    (covariance of their lag-1 difference row means -4e-7 DN^2; README, fix round 3), which withdraws
-    round 2's banding claim.
+    separable [1 -2 1] x [1 -2 1] high-pass unseen. It was tested on one capture only, the 2026-01-30
+    Jupiter (triage.py rows): the sky left and right of the disc in the same rows share no row offset
+    (covariance of their lag-1 difference row means -3.74e-6 DN^2 over 29 disc rows x 159 differences;
+    README, fix round 3), which withdraws round 2's banding claim there. The other captures were not
+    tested for it.
 
 ON A BOX (raw_under, box_noise)
     The stack's target box is mapped onto the raw frames by registering the frames' mean (the CFA
