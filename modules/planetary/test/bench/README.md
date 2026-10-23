@@ -226,7 +226,7 @@ stand in for it.
 | Real AS_P20 (2_12_2023 Jupiter / Moon), blur 0 / 0.5 / 1 / 2 after the fact | 19.99 / 15.13 / 5.49 / 3.11 and 13.28 / 10.14 / 4.37 / 2.39 |
 | Interior: an interior blur of sigma 1 behind a crisp limb | 19.75 -> 15.62 (2 x noise raises it to 21.34: C1) |
 | `noise.photon_transfer` (fix round 3: free intercept, Theil-Sen start): textured disc drifting 0.5 px per frame / a 3 px disc in 640x480 / lunar texture under 0-1.5 px jitter / a sky on a 3 DN black pedestal | a +7 % / +60 % / within 0.5 % / a +4 %, zero at 3.00 DN (with c clamped to 0, a reads x0.26) |
-| The calibration's pedestal synthetics (3 DN, c 0.05; fix round 4) | disc 0.1469 m - 0.317, lunar 0.1489 m - 0.320 (true 0.15 m - 0.317) |
+| The calibration's pedestal synthetics (3 DN, c 0.05; fix round 4) | disc (12 runs, from calibration.json): a 0.1469-0.1752 m (j0.3 0.1469-0.1499; j0.7 0.1606-0.1752, 7-17 % high: the jitter read-high that sits in R_cal), c -0.468 to -0.317; lunar (12 runs): a 0.1487-0.1497, c -0.322 to -0.313; true 0.15 m - 0.317 |
 | P28d tile shifts: an engine-like local shift between the halves / noise only / B at twice the noise / a 2 % gain bump at a limb | charge at most 1.21 (4.91 without them) / 0.89-1.03 of the true model / charge 2.47-2.64 (2.5) / never less than without them (more: 5.05 against 2.79 in the lowest bin) |
 | `noise.photon_transfer` refuses: fewer than half the bins on the line; a collapsed slope; `box_noise` past 1.5 x the fitted levels | NoiseUnmeasurable (tests) |
 | `stack-region-probe --keff-selftest`: one region keeping 37 of 100 / the fallback / two blended nested regions (weights written from the layout geometry, not AxisWeightAt) | 37 / 100 / 62.83, all exact |
@@ -263,13 +263,23 @@ per tile does not. Measured (`test_end.py`, a synthetic pair with that field: no
 So the local-shift pair charges at most 1.21 against the noise-only pair, and B at twice the noise
 still charges 2.47-2.64 (2.5 expected). The fit costs 6 of each tile's 1024 noise degrees of freedom,
 mostly in the lowest bins; the calibration measures with it, so that cost sits in R_cal as in R.
+The cost depends on the box. The calibration's disc boxes hold 16 tiles each (calibration.json tiles.n); every real disc
+box is one tile (48x48 to 57x48). Measured at c3762719 (noise-only synthetic disc pairs, tile fit
+against global refinement only, mean of 16 noise seeds): one tile (56x58 box) reads 1.001 1.004 0.999
+in the three lowest bins, 16 tiles (130x130 and 145x145 boxes) 0.918 / 0.907, 0.951 / 0.974, 0.980 /
+0.977, and 0.99-1.00 above 0.15. So R_cal's 0.06-0.09 bin is about 9 % lower than a single-tile real
+box would give, and the lowest charges on the real disc boxes are about 10 % high there, 3-5 % in the
+next bin: the safe direction (ours is over-charged, never under-charged). No disc verdict sits near
+that: all four disc captures are review for other reasons.
 
 **Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`, fix round 4):
 * 48 synthetic RGGB captures, 24 per target kind (a banded disc; a lunar field with a limb);
 * 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter, each without and with a 3 DN
   black pedestal (review N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative
   intercept; with the pedestal the synthetic sky rounds to one 8-bit value and the fitted line is
-  0.147-0.149 m - 0.32, true 0.15 m - 0.317);
+  recovered on lunar at a 0.1487-0.1497 m, c -0.322 to -0.313, and on the disc at a 0.1469-0.1752 m,
+  c -0.468 to -0.317 (a 7-17 % high at 0.7 px jitter, the read-high below), true 0.15 m - 0.317;
+  figures from calibration.json at c3762719);
 * 8-bit, noise a s + c, 600 frames; shifted as a mirror extension, so no edge wraps (ruling E3);
 * split, stacked by stack-probe, k from the region probe over A's box (B's in its own grid);
 * D with the tile shifts removed (P28d, above);
@@ -344,14 +354,18 @@ shifts). The 0.21-0.30 ratio of fix round 3 is beside it; what moved it is in th
 
 * Without the tile shifts the ratios are fix round 3's to within 0.03: the E1/E2 engine changes
   moved the halves little. The movement is the tile shifts'.
-* On the disc boxes (48-56 px) the box is a single tile, so the first-order field is one global
+* On the disc boxes (48-57 px) the box is a single tile, so the first-order field is one global
   affine (scale, rotation, shear) difference between the halves; it takes Mars from x2.18 to x1.74 and
   the 2026-01-30 Jupiter's lowest bin from x31.9 to x9.56. Both stay outside.
 * The 2023-03-05 Moon (x0.48) is below every lunar calibration run (0.582) and inside the band.
 * The 2023-02-12 Moon's south limb is clipped in the raw frames (54 % of the samples at 255 in a
   window over it). There the halves differ by about 10 % in level (A 0.92 against B 0.81 at x 1235),
   and on 25 of its 1632 tiles the shift fit returns more than 1 px, which is not a shift; with them
-  the fit raises D's total power by 0.7 %. That difference stays charged (15.8 in the lowest bin).
+  the fit raises D's total power by 0.7 %. Measured at c3762719 (the capture's halves re-measured with
+  those 25 tiles' fields left unremoved, or capped at 1 px, everything else frozen): the 25 fits lower
+  the charge in the 0.06-0.15 bins (19.1 -> 15.8 in the lowest) and raise it in 0.15-0.30 (1.13 -> 1.18
+  in the top bin). Net on END they are neutral for ours: END_interior 1.020 with them against 1.018
+  without (+0.0017), and 1.059 with the field capped at 1 px.
 
 ### What the excess is (fix round 3, review I-E; `triage.py`)
 
@@ -417,8 +431,9 @@ in the same rows would share it:
 * raw frames: the covariance of the two sky segments' lag-1 difference row means is -3.74e-6 DN²
   (29 disc rows x 159 differences; re-run in fix round 4, and noise.py's "-4e-7" corrected to it),
   so there is no shared row offset;
-* D: the same covariance is 8.5e-7 of the disc's own shared row structure (disc left half against
-  right half).
+* D: re-run on the round-4 halves (`triage.py rows`), the sky segments' covariance is -1.98e-14 stack
+  units² against 6.03e-09 for the disc's left and right halves, a ratio of -3.3e-6 (fix round 3's halves
+  read 8.5e-7), so D carries no shared row offset either.
 
 Round 2's 0.0063-0.023 DN² was the variance of whole-row means, disc included, so it measured the
 disc's frame-to-frame change, not the sky's. The test ran on this capture only; whether the other
