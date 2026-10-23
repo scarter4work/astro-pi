@@ -112,7 +112,7 @@ target_link_libraries(limb-probe PRIVATE planetary_stack)
 # Test-only: the calibration probes behind Ruling P26's measured figures (the noise model, qualitySigma, step 7's
 # classifier and reading, the region gate), one calib-<name> each; usage at the top of each source. Not ctest
 # cases: some read NAS captures, the rest render synthetic frames for minutes.
-foreach(probe classrate gapinj inject injtiles lowsnr mdq moon nm2 nm4 nreal p27 passes purer2 q2steady qcal2 regsig
+foreach(probe classrate inject lowsnr mdq nreal passes purer2 qcal2
               modelerror purer regionnoise seedsel shot sigmafloor skynoise snr synthrate temporal winnoise)
     add_executable(calib-${probe} calibration/${probe}.cpp)
     target_include_directories(calib-${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}"
