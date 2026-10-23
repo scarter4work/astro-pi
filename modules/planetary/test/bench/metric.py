@@ -7,7 +7,8 @@ DEFINITION ("detail above noise", DAN)
        image compared -- the planet's disc (largest component above 15 % of the low-passed
        maximum, so moons are left out; thin components on the frame edge are stacking
        artefacts and are skipped) plus a 15 % margin of sky, or for a frame-filling Moon the
-       frame minus a 2 % inset.
+       frame minus a 2 % inset. A box under MIN_BOX_SIDE (48 px; a tiny disc such as Mars) is
+       grown about the target to that side with sky.
     3. Normalisation: x = (crop - b) / s, with b = the 1st percentile of the crop low-passed
        at sigma 4 px (the sky, or the darkest large-scale area of a lunar crop) and
        s = mean(crop) - b, the mean target signal above it. Gain and offset drop out exactly;
@@ -89,6 +90,8 @@ LOWPASS_SIGMA = 4.0          # px, for the background level b
 BG_PERCENTILE = 1.0
 BOX_THRESHOLD = 0.15         # target = low-passed luminance above b + 15 % of the range
 BOX_MARGIN = 0.15            # of the target's larger side, at least 8 px
+MIN_BOX_SIDE = 48            # px: a tiny disc's box grows (sky only) to this, so the reference overlap
+                             # inset (refs.OVERLAP_INSET) still leaves refs.compare's 32 px floor
 BOX_INSET = 0.02             # of each frame side, at least 4 px
 EDGE_ARTEFACT_SHARE = 0.10   # an edge-touching component thinner than this share is no target
 EDGE_NEAR = 0.03             # "touching" = within 3 % of the side (at least 4 px) of the edge
@@ -200,6 +203,19 @@ def _target_component(img):
     return best[1], labels == best[0] + 1
 
 
+def _min_side(a, b, lo, hi):
+    """[a, b) grown about its centre to at least MIN_BOX_SIDE (when the frame allows), then
+    clipped to [lo, hi) and shifted back inside rather than shrunk."""
+    if b - a < MIN_BOX_SIDE:
+        c = (a + b) / 2
+        a, b = int(math.floor(c - MIN_BOX_SIDE / 2)), int(math.floor(c - MIN_BOX_SIDE / 2)) + MIN_BOX_SIDE
+        if a < lo:
+            a, b = lo, lo + MIN_BOX_SIDE
+        if b > hi:
+            a, b = hi - MIN_BOX_SIDE, hi
+    return max(lo, a), min(hi, b)
+
+
 def target_box(img):
     """The target crop on this image's grid (see DEFINITION step 2)."""
     lum = luminance(img)
@@ -207,8 +223,8 @@ def target_box(img):
     ty0, ty1, tx0, tx1 = target_extent(lum)
     margin = max(8, int(round(BOX_MARGIN * max(ty1 - ty0, tx1 - tx0))))
     iy, ix = max(4, int(round(BOX_INSET * h))), max(4, int(round(BOX_INSET * w)))
-    y0, y1 = max(iy, ty0 - margin), min(h - iy, ty1 + margin)
-    x0, x1 = max(ix, tx0 - margin), min(w - ix, tx1 + margin)
+    y0, y1 = _min_side(ty0 - margin, ty1 + margin, iy, h - iy)
+    x0, x1 = _min_side(tx0 - margin, tx1 + margin, ix, w - ix)
     if y1 - y0 < 16 or x1 - x0 < 16:
         raise ValueError(f"target box too small: {(y0, y1, x0, x1)}")
     return Box(int(y0), int(y1), int(x0), int(x1))

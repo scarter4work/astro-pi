@@ -364,3 +364,17 @@ def test_out_of_family_noise_regime_is_flagged(tmp_path):
     tifffile.imwrite(p / "cap_lapl5_ap1.tif", add_noise(base, 0.001, 2).astype(np.float32))
     d = refs.rows_to_dicts(refs.compare(add_noise(base, 0.05, 1), [str(p / "cap_lapl5_ap1.tif")]))
     assert any("noise regime" in w for w in d[0]["review"])
+
+
+def test_compare_runs_on_a_sharp_tiny_disc(tmp_path):
+    """Task 9's Mars: our sharper stack of a 13 px disc gave a box under the 32 px floor and
+    compare raised 'common area too small' (the references cover the whole frame)."""
+    p = tmp_path / "AS_P25"
+    p.mkdir()
+    ref = add_noise(planet_scene(size=(240, 320), radius=6, seeing=1.6), 0.002, 82)
+    tifffile.imwrite(p / "mars_lapl5_ap1.tif", ref.astype(np.float32))
+    ours = add_noise(planet_scene(size=(240, 320), radius=6, seeing=0.8), 0.002, 81)
+    rows = refs.compare(ours, [str(p / "mars_lapl5_ap1.tif")])
+    box = rows[0].result.box
+    assert box.y1 - box.y0 >= metric.MIN_BOX_SIDE and box.x1 - box.x0 >= metric.MIN_BOX_SIDE
+    assert rows[0].result.value > rows[1].result.value      # the sharper disc still ranks first

@@ -10,6 +10,7 @@ captures. Nothing here ships; the NAS (`/mnt/qnap/astro_data`) is only ever read
 | `metric.py` | The sharpness-at-equal-noise measure: DAN ("detail above noise") over the target box, and DAN_interior over the disc's interior; the target box and interior window |
 | `refs.py` | Loads AS/ASI/our images, area-resamples drizzled AS output to native (Ruling 1; the factor from the reference's size), registers each reference to an anchor (orientation, sub-pixel shift, measured scale), measures all on one box, and lists what needs human review |
 | `bayer.py` | The CFA pattern of a capture, measured on its raw frames in the reader's layout |
+| `bench.py` | run-stack-bench.sh's run plan (Bayer overrides, the colour variant), Ruling 2 status, side-by-side PNGs and summary.md |
 | `benchset.py` | The benchmark set below (as data, with each capture's Bayer pattern and its source), `compare_capture` for run-stack-bench.sh, and a survey that checks every reference against its own video |
 | `test_*.py`, `conftest.py` | pytest. Markers: `nas` (reads the NAS; `-m "not nas"` deselects them), `ffmpeg` (skipped when ffmpeg/ffprobe are not on PATH) |
 
@@ -21,8 +22,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 122 tests, 1-3 min with the NAS
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 71 synthetic tests, ~1 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 139 tests, 1-3 min with the NAS
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 88 synthetic tests, ~1 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -267,6 +268,58 @@ ASIStudio's `.fit` has suppressed power near Nyquist, which makes its noise floo
 is the white-noise LIMITS case. It biases toward ASIStudio, so the ratio understates ours rather
 than inflating it. This capture therefore always goes to Scott's side-by-side review, whatever the
 numbers say.
+
+## The real-data run: run-stack-bench.sh
+
+```bash
+PLANETARY_BENCH_PYTHON=<venv>/bin/python PLANETARY_BENCH_STAGE=~/.cache/planetary-bench-stage \
+    bash modules/planetary/test/run-stack-bench.sh [--report-only] [run-id ...]
+```
+
+`bench.py plan` lists the runs: every capture above plus `2026-01-30-jupiter-rggb`. The two Lqef
+captures (2026-01-30 Jupiter, 2024-02-01 Moon) stack **BGGR**, not the recorded RGGB. The physical
+evidence, a blue seeing halo and the warm-target rule, points to BGGR, while Scott's sidecar says RG.
+Scott has not confirmed either, and no sidecar is written. The RGGB variant of the Jupiter is there
+for the colour comparison. Its DAN equals the BGGR run's to four digits (0.2257 both, measured), which
+confirms that an R/B swap leaves the luminance metric alone.
+
+For each run, stack-probe writes `test/output/bench/<run>/` (gitignored): `ours.fits`, `probe.json`
+(selection, phase times, peak RSS, warnings), `probe.log`, `wall.txt` and `source.txt`. `bench.py
+report` then writes `compare.json` (every row of `compare --json` plus the status) and
+`side-by-side.png`, and builds one `summary.md` over all runs: the main table, every reference, the
+timing with phases, and the diagnosis cases.
+
+* **Status (Ruling 2).** A run fails when ours' DAN_full, or its DAN_interior where judged, is below
+  0.97 x the best reference. It goes to review when the numbers pass but a review note applies
+  (limb-only, noise regime, mosaic fallback), or when the README says so (the 2026-01-30 Jupiter). It
+  passes otherwise. Every capture still needs Scott's look at its side-by-side.
+* **Side-by-side.** Ours is shown, then each reference, all cropped from the same region of ours'
+  grid at the registered integer offset, at one scale and with one stretch per row. Each channel's
+  black is its own 1st percentile, so a sky pedestal does not tint the sky. One white, the 99.5th
+  percentile of the brightest channel, is applied to all channels, so each tool keeps its colour
+  balance.
+  * Planets get a context row (gamma 1/2.2: halos, moons, sky artefacts) and a zoom row of the metric
+    box (nearest-neighbour, linear, so the belts are not compressed).
+  * Lunar captures get an overview row and two 1:1 tiles at x2, on the most detailed parts of the
+    surface that stay clear of the limb.
+* **Timing.** With `PLANETARY_BENCH_STAGE`, each video is copied to local disk, synced and evicted
+  from the page cache (`dd iflag=nocache`) before stacking. That makes it a cold local-disk read,
+  the spec's condition. The copy and the sidecar are deleted afterwards. Without it, the runner reads
+  straight from the NAS, and `source.txt` says so. AutoStakkert's time on the same file is not
+  available.
+* **Exit status.** 1 on a harness or engine error, otherwise 0. Pass, fail and review are in the
+  summary.
+
+`metric.target_box` grows a box under 48 px (`MIN_BOX_SIDE`) about the target, with sky. The first
+run's Mars could not be compared at all: our sharper 13 px disc gave a 29 px box, under `compare`'s
+32 px floor (`test_compare_runs_on_a_sharp_tiny_disc`). The extra sky is the same for every image,
+so the ratios hold; absolute DAN values on small discs shift (2023-02-11 Jupiter AS_P20 0.3178 ->
+0.4230 on the 48 px box).
+
+`stack-probe --keep-best F` is an investigation knob, never a product one. It hands the engine only
+the ceil(F N) frames of highest whole-frame quality, ranked by the engine's own MeasureAll. The
+engine then selects among them as usual. Ruling 2's investigation round used it to test whether a
+gap to AutoStakkert's P20 comes from how many frames the selection keeps.
 
 ## API for run-stack-bench.sh
 

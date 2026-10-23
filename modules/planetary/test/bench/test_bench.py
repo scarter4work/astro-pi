@@ -1,0 +1,137 @@
+"""bench.py: the run plan, Ruling 2's status, the display stretch and the side-by-side layout.
+Synthetic only (no NAS)."""
+import os
+
+import numpy as np
+import pytest
+
+import bench
+import benchset
+from metric import Box
+
+
+def _ours(full, inner, judged=True, review=()):
+    return {"ratio_to_best_reference": full, "interior_ratio_to_best_reference": inner,
+            "interior_judged": judged, "review": list(review)}
+
+
+def test_plan_covers_every_capture_once_plus_the_variant():
+    runs = bench.plan()
+    ids = [r.id for r in runs]
+    assert len(ids) == len(set(ids))
+    assert [r.capture for r in runs[:len(benchset.BENCHMARK)]] == [c.id for c in benchset.BENCHMARK]
+    assert "2026-01-30-jupiter-rggb" in ids
+
+
+def test_lqef_captures_stack_bggr_with_the_reason_and_the_variant_keeps_the_record():
+    by = {r.id: r for r in bench.plan()}
+    for cid in ("2026-01-30-jupiter", "2024-02-01-moon"):
+        assert benchset.by_id(cid).bayer == "RGGB"          # the record is untouched
+        assert by[cid].bayer == "BGGR" and "BGGR" in by[cid].note and "not confirmed" in by[cid].note
+    assert by["2026-01-30-jupiter-rggb"].bayer == "RGGB"
+    assert by["2026-01-30-saturn-empty"].bayer == "auto" and by["2026-01-30-saturn-empty"].expect == "NoTarget"
+    assert by["2023-02-11-venus-clipped"].expect == "Clipped"
+
+
+@pytest.mark.parametrize("full, inner, judged, want", [
+    (1.00, 1.00, True, "pass"),
+    (0.97, 0.97, True, "pass"),         # the bar is inclusive
+    (0.969, 1.10, True, "fail"),
+    (1.10, 0.969, True, "fail"),
+    (1.10, 0.50, False, "pass"),        # an interior not judged does not count
+])
+def test_status_applies_the_bar_to_both_scores(full, inner, judged, want):
+    assert bench.status_of(_ours(full, inner, judged), "2023-02-12-moon")[0] == want
+
+
+def test_review_notes_and_always_review_turn_a_pass_into_review_never_a_fail_into_one():
+    assert bench.status_of(_ours(1.2, None, False, ["limb-only: human review decides"]), "x") == \
+        ("review", ["limb-only: human review decides"])
+    st, why = bench.status_of(_ours(1.2, 1.1), "2026-01-30-jupiter")
+    assert st == "review" and "always human review" in why[0]
+    assert bench.status_of(_ours(0.9, 1.1, True, ["limb-only"]), "2026-01-30-jupiter")[0] == "fail"
+
+
+def test_stretch_removes_each_channels_pedestal_and_keeps_the_colour_ratio():
+    rng = np.random.default_rng(1)
+    img = np.zeros((64, 64, 3))
+    img[16:48, 16:48] = [0.6, 0.4, 0.2]                # a warm target
+    img += np.array([0.05, 0.0, 0.10])                 # sky pedestals that differ per channel
+    img += rng.normal(0, 1e-4, img.shape)
+    levels = bench.display_levels(img, Box(0, 64, 0, 64))
+    out = bench.stretch(img, levels).astype(float)
+    # The sky is near black in every channel (noise above the 1st percentile, through gamma 2.2:
+    # a few DN); a pedestal left in would show blue at ~135 DN.
+    assert out[4, 4].max() <= 16
+    lin = (out[32, 32] / 255) ** (1 / bench.DISPLAY_GAMMA)
+    assert lin[0] / lin[2] == pytest.approx(3.0, rel=0.05)   # 0.6 : 0.2 survives
+
+
+def test_two_images_differing_by_gain_and_offset_display_identically():
+    rng = np.random.default_rng(2)
+    a = rng.random((40, 40)) + 1.0
+    b = 7.0 * a + 300.0
+    box = Box(0, 40, 0, 40)
+    pa, pb = bench.stretch(a, bench.display_levels(a, box)), bench.stretch(b, bench.display_levels(b, box))
+    assert np.abs(pa.astype(int) - pb.astype(int)).max() <= 1
+
+
+def test_detail_tiles_find_the_textured_patches_and_keep_them_apart():
+    rng = np.random.default_rng(3)
+    lum = np.full((600, 1200), 0.5)
+    lum[50:250, 50:250] += rng.normal(0, 0.2, (200, 200))
+    lum[300:500, 900:1100] += rng.normal(0, 0.1, (200, 200))
+    tiles = bench.detail_tiles(lum, Box(0, 600, 0, 1200), tile=128, sep=300)
+    assert len(tiles) == 2
+    (a, b) = [((t.y0 + t.y1) / 2, (t.x0 + t.x1) / 2) for t in tiles]
+    assert 50 <= a[0] <= 250 and 50 <= a[1] <= 250       # the stronger texture first
+    assert 300 <= b[0] <= 500 and 900 <= b[1] <= 1100
+    assert all(t.y1 - t.y0 == 128 and t.x1 - t.x0 == 128 for t in tiles)
+
+
+def test_compose_lays_out_columns_with_headers(tmp_path):
+    from PIL import Image
+    p = [np.zeros((50, 80, 3), np.uint8), np.full((50, 80, 3), 128, np.uint8)]
+    out = os.path.join(tmp_path, "sbs.png")
+    bench.compose([p, p], [["ours", "DAN 1"], ["AS_P20", "DAN 0.9"]], ["row 1", "row 2"], "title", out)
+    w, h = Image.open(out).size
+    assert w == bench.PAD + 2 * (200 + bench.PAD)        # panels narrower than 200 px get 200
+    assert h > 2 * 50
+
+
+def test_summary_counts_and_lists_diagnosis_rows():
+    rec_stack = {"run": "r1", "capture": "c", "bayer": "BGGR", "expect": "stack", "note": "", "status": "fail",
+                 "reasons": ["DAN_full 0.9"], "wall_seconds": 2.0, "video_bytes": 2e9, "source": "NAS",
+                 "probe": {"used": 9, "measured": 10, "seconds": 1.5, "peakRssMB": 100.0, "frames": 10,
+                           "phaseSeconds": {"Stacking": 1.0}, "bytesRead": 3e9, "readMBps": 500.0},
+                 "rows": [{"label": "ours", "dan": 0.1, "dan_interior": None, "ratio_to_best_reference": 0.9,
+                           "interior_ratio_to_best_reference": None, "factor": 1.0, "band_snr": 10.0,
+                           "orientation": None, "shift": None, "scale": None, "ncc": None},
+                          {"label": "AS_P20", "dan": 0.111, "dan_interior": None, "ratio_to_best_reference": 1.0,
+                           "interior_ratio_to_best_reference": None, "factor": 1.0, "band_snr": 10.0,
+                           "orientation": "identity", "shift": [0.0, 0.0], "scale": 1.0, "ncc": 0.99}]}
+    rec_diag = {"run": "d1", "capture": "d", "bayer": "auto", "expect": "NoTarget", "note": "", "status": "pass",
+                "image_written": False, "wall_seconds": 0.5, "video_bytes": 1e6, "source": "NAS",
+                "probe": {"diagnosis": {"kind": "NoTarget", "message": "nothing", "numbers": {"n": 1}},
+                          "seconds": 0.4, "frames": 21, "phaseSeconds": {}, "bytesRead": 1e6, "readMBps": 50.0,
+                          "peakRssMB": 50.0}}
+    md = bench.summary_md([rec_stack, rec_diag])
+    assert "0 pass, 0 review, 1 fail" in md
+    assert "| r1 | BGGR | 9 / 10 |" in md and "0.1000 / 0.1110 / -" in md
+    assert "| d1 | NoTarget | NoTarget | no | **pass** |" in md
+
+
+def test_detail_tiles_on_the_target_skip_the_limb():
+    """Task 9's first lunar side-by-sides put both 1:1 crops on the limb, whose step outscores any
+    crater; with the target mask the tiles lie wholly on the surface."""
+    rng = np.random.default_rng(4)
+    lum = np.full((600, 1200), 0.02)
+    lum[:, 400:] = 0.5 + rng.normal(0, 0.02, (600, 800))     # surface right of a sharp limb at x 400
+    lum[200:360, 800:960] += rng.normal(0, 0.08, (160, 160))  # a detailed patch on the surface
+    mask = lum > 0.2
+    free = bench.detail_tiles(lum, Box(0, 600, 0, 1200), tile=128, sep=300)
+    assert any(t.x0 < 400 <= t.x1 for t in free)             # without the mask the limb wins a tile
+    tiles = bench.detail_tiles(lum, Box(0, 600, 0, 1200), tile=128, sep=300, inside=mask)
+    assert tiles and all(mask[t.y0:t.y1, t.x0:t.x1].all() for t in tiles)
+    t = tiles[0]                                                  # the detailed patch first
+    assert 800 - 64 <= (t.x0 + t.x1) / 2 <= 960 + 64 and 200 - 64 <= (t.y0 + t.y1) / 2 <= 360 + 64

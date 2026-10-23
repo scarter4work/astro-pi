@@ -255,3 +255,21 @@ def test_real_2_12_2023_moon_ranks_as_autostakkert_selection_implies():
     p20, p50 = by["AS_P20"], by["AS_P50"]
     assert p20.value > p50.value
     assert p50.noise_floor < p20.noise_floor
+
+
+def test_target_box_of_a_tiny_disc_is_at_least_the_minimum_side():
+    """The 2_12_2023 Mars case (Task 9's run): a sharp 13 px disc plus the 8 px margin gives a
+    29 px box, under refs.compare's 32 px floor, so the comparison could not run at all. The box
+    grows about the disc to MIN_BOX_SIDE (sky only: the same for every image compared)."""
+    img = planet_scene(size=(240, 320), radius=6)
+    y0, y1, x0, x1 = metric.target_box(img)
+    assert y1 - y0 >= metric.MIN_BOX_SIDE and x1 - x0 >= metric.MIN_BOX_SIDE
+    cy, cx = 120 + 3.3, 160 - 7.6
+    assert abs((y0 + y1) / 2 - cy) <= 1.5 and abs((x0 + x1) / 2 - cx) <= 1.5
+
+
+def test_a_tiny_disc_near_the_frame_edge_keeps_a_minimum_box_inside_the_frame():
+    img = np.roll(planet_scene(size=(240, 320), radius=6), (-100, 140), axis=(0, 1))
+    y0, y1, x0, x1 = metric.target_box(img)
+    assert y1 - y0 >= metric.MIN_BOX_SIDE and x1 - x0 >= metric.MIN_BOX_SIDE
+    assert y0 >= 4 and x1 <= 320 - 4
