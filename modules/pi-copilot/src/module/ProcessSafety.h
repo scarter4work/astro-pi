@@ -93,10 +93,9 @@ nlohmann::json UnclassifiedSideEffectCandidates();
 // that are not canonical string parameters with a supported source/kind, and
 // parameterValues entries that are not writable canonical string parameters
 // with a well-formed rule and a default the rule accepts. A process listed in
-// retiredProcesses (removed from PixInsight; its rules stay for older builds)
-// or optionalProcesses (a third-party module's process, ruled for wherever it
-// is installed) that this PixInsight does not have is skipped; each such entry
-// needs a reason and a rule that names it.
+// retiredProcesses that this PixInsight does not have is skipped (its rules
+// stay for older builds); a retiredProcesses entry needs a reason and a rule
+// that names it.
 nlohmann::json UnknownPolicyProcessIds();
 
 // ---- Pinned parameters (policy "pinnedParameters") --------------------------
