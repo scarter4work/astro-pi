@@ -113,9 +113,22 @@ if len(sys.argv) > 2 and sys.argv[1] == "--dismiss":
     sys.exit(0)
 
 if len(sys.argv) > 4 and sys.argv[1] == "--click":
-    # One click at X Y, sent without waiting for PixInsight to handle it (test/quit-mid-tick.sh
-    # queues it while the main thread is busy).
+    # One click at X Y, sent without waiting for PixInsight to handle it.
     click(int(sys.argv[2]), int(sys.argv[3]))
+    sys.exit(0)
+
+if len(sys.argv) > 3 and sys.argv[1] == "--key":
+    # A key chord such as ctrl+q (File > Quit PixInsight's shortcut), sent without waiting for PixInsight
+    # to handle it (test/quit-mid-tick.sh queues it while the main thread is busy). No screen coordinates.
+    names = {"ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L"}
+    parts = [names.get(p.lower(), p) for p in sys.argv[2].split("+")]
+    codes = [d.keysym_to_keycode(XK.string_to_keysym(p)) for p in parts]
+    if any(c == 0 for c in codes):
+        raise SystemExit("unknown key in %r" % sys.argv[2])
+    for c in codes:
+        xtest.fake_input(d, X.KeyPress, c); d.sync(); time.sleep(0.03)
+    for c in reversed(codes):
+        xtest.fake_input(d, X.KeyRelease, c); d.sync(); time.sleep(0.03)
     sys.exit(0)
 
 dump("start")

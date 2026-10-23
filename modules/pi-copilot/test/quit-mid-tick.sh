@@ -8,7 +8,7 @@
 #   PICOPILOT_SO=<other build>/PICopilot-pxm.so ... (e.g. build-portable/)
 #
 # The bug (0.2.0.0-0.2.2.0): the journey tick's busy gate calls
-# Console::AbortEnabled(), which pumps events. A Quit click queued behind the
+# Console::AbortEnabled(), which pumps events. A Quit (click or Ctrl+Q) queued behind the
 # journey timer is handled in that pump, and PixInsight calls every module's
 # OnUnload from the main window's closeEvent -- inside JourneyTracker::Tick.
 # JourneyService::Stop() freed the tracker under the running tick, which then
@@ -18,9 +18,9 @@
 # 1. quit-mid-tick-setup.js (-r): four masters with History steps, recorded.
 # 2. gdb attaches (quit-mid-tick-gdb.py): it records whether each Stop() ran
 #    with the tick on the stack.
-# 3. gui_drive.py opens the File menu; quit-mid-tick-busy.js (-x) closes the
-#    images and keeps the main thread busy for 3 s without pumping; the Quit
-#    item is clicked meanwhile, so the click waits behind the journey timer.
+# 3. quit-mid-tick-busy.js (-x) closes the images and keeps the main thread
+#    busy for 3 s without pumping; Ctrl+Q (File > Quit PixInsight) is pressed
+#    meanwhile, so the key event waits behind the journey timer.
 # PASS needs: Stop() ran with JourneyTracker::Tick (or OnTick) on the stack --
 # without that the run did not exercise the bug and FAILS as inconclusive --
 # the tracker was destroyed, but never with its Tick() on the stack (this fails
@@ -125,13 +125,12 @@ for _ in $(seq 120); do grep -q armed "$QUIT_MID_TICK_STOP_LOG" 2>/dev/null && b
 grep -q armed "$QUIT_MID_TICK_STOP_LOG" 2>/dev/null || { echo "FAIL: gdb did not attach (see $OUT/gdb.log)"; exit 1; }
 sleep 2
 
-python3 "$HERE/gui_drive.py" --click 34 12 "$OUT"      # File menu, handled at top level
-sleep 1.0
 picopilot_require_isolation || exit 1
 pi_require_private_display || exit 1
 "$PI" -x="$SLOT:$HERE/quit-mid-tick-busy.js" >/dev/null 2>&1
 sleep 1.0
-python3 "$HERE/gui_drive.py" --click 104 583 "$OUT"    # Quit PixInsight, queued while the script runs
+# File > Quit PixInsight by its shortcut (no screen coordinates), queued while the script runs.
+python3 "$HERE/gui_drive.py" --key ctrl+q "$OUT"
 QUIT_AT=$(date +%s.%N)
 rc=0
 for _ in $(seq 240); do kill -0 "$PI_PID" 2>/dev/null || break; sleep 0.25; done
