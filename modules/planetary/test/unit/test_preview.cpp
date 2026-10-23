@@ -208,11 +208,11 @@ FileInfo AviInfo() {
     i.normDepth = 8;
     i.bytesPerSample = 1;
     i.frameCount = 1168;
-    i.colorId = ColorId::BayerBGGR;
+    i.colorId = ColorId::BayerRGGB;
     i.container = planetary::ser::Container::Avi;
     planetary::ser::AviDetails d;
     d.frameRate = 29.97;
-    d.bayerSource = "sidecar RG, Flip=Vert \xE2\x86\x92 BGGR";
+    d.bayerSource = "sidecar";
     planetary::ser::AsiairSidecar sc;
     sc.camera = "ZWO ASI585MC";
     sc.colourFormat = "RAW8";
@@ -235,8 +235,8 @@ TEST_CASE("info text for an AVI: container, frame rate, Bayer source, sidecar, f
           "Size: 32 \xc3\x97 24\n"
           "Frames: 1168\n"
           "Frame rate: 29.97 fps\n"
-          "Colour: BAYER_BGGR\n"
-          "Bayer: BGGR (sidecar RG, Flip=Vert \xE2\x86\x92 BGGR)\n"
+          "Colour: BAYER_RGGB\n"
+          "Bayer: RGGB (sidecar)\n"
           "Bit depth: 8\n"
           "Byte order: n/a (8-bit samples)\n"
           "Camera: ZWO ASI585MC\n"
@@ -299,7 +299,7 @@ TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
     i.colorId = ColorId::BayerRGGB;
     i.avi->bayerSource = "sidecar";
     CHECK(BayerText(i) == "RGGB (sidecar)");
-    CHECK(BayerText(AviInfo()) == "BGGR (sidecar RG, Flip=Vert \xE2\x86\x92 BGGR)");
+    CHECK(BayerText(AviInfo()) == "RGGB (sidecar)");
     CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar)\n") != std::string::npos);
     // The sidecar SERViewer wrote when the user saved a chosen pattern (Increment 2.1).
     i.avi->bayerSource = "sidecar (SERViewer)";

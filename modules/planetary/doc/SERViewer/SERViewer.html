@@ -112,16 +112,16 @@ so a bad entry between those checks shows as an error when that frame is display
 <li><b>Auto</b> uses the sidecar's <code>Bayer</code> value (RG, GR, GB or BG for RGGB, GRBG, GBRG or BGGR). The sidecar's
 camera name becomes <code>INSTRUME</code>. With no sidecar, a sidecar that could not be read, something at the sidecar path that is not a file, or no Bayer value in it,
 the raw CFA frame opens as mono and a warning says which of these it was and asks you to choose the pattern.</li>
-<li><b>Flip = Vert.</b> When the sidecar says <code>Flip = Vert</code>, Auto uses the pattern rotated by 180&deg; (RGGB becomes
-BGGR, GRBG becomes GBRG), because that is what the frame data of most such captures show (35 of the 38 measurable
-<code>Flip = Vert</code> files checked). This is an inference,
-and some ASIAIR captures differ. It is always reported with the warning &ldquo;Bayer pattern inferred from Flip=Vert
-(BGGR); some ASIAIR captures are RGGB &ndash; if red and blue look swapped, choose RGGB under Bayer pattern&rdquo; (with the
-patterns actually involved). If red and blue look swapped, choose the other pattern yourself. An explicit choice
-carries no such warning.</li>
-<li><b>Other Flip values.</b> Only <code>None</code> and <code>Vert</code> have been checked against frame data. For any other
-<code>Flip</code> value Auto uses the sidecar's pattern as it stands and warns that this Flip value is unmeasured; if the
-colours look wrong, choose the pattern yourself. The image itself is never flipped.</li>
+<li><b>Flip = Vert(unimplemented).</b> ASIAIR records its Flip setting in the sidecar but did not apply it to
+these videos, as the &ldquo;(unimplemented)&rdquo; says: the frames are the sensor as read out, so Auto uses the
+sidecar's pattern as it stands (RG is RGGB), with no warning. This was checked against the frame data of the ASIAIR
+captures on file, without relying on colour: each one is read out exactly like a full-frame still from the same camera.</li>
+<li><b>Other Flip values.</b> Only <code>None</code> and <code>Vert(unimplemented)</code> have been checked against frame
+data. For any other <code>Flip</code> value (a bare <code>Vert</code>, <code>Horiz</code>, <code>Both</code>) Auto uses the
+sidecar's pattern as it stands and warns that this Flip value is unmeasured; if the colours look wrong, choose the
+pattern yourself. The image itself is never flipped.</li>
+<li><b>Odd ROI origin.</b> Every sidecar seen has an even <code>StartX</code> and <code>StartY</code>. If either is odd,
+Auto still uses the sidecar's pattern but warns that the effect of an odd origin is unmeasured.</li>
 <li><b>None (mono)</b> shows the raw CFA frame as one channel.</li>
 <li><b>RGGB, GRBG, GBRG, BGGR</b> use that pattern and override the sidecar.</li>
 </ul>

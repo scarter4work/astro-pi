@@ -17,20 +17,33 @@ ffmpeg/ffprobe, which are independent of the reader:
 3. Frames 0, N//2, N-1 equal ffmpeg's `-f rawvideo -pix_fmt pal8` output byte for byte
    (the first w*h bytes; ffmpeg's unfiltered palette must be the identity grey ramp). ffmpeg's frame
    k is selected by pts == k (AVI pts counts index entries), after a coarse input seek.
-4. Bayer phase: for sidecar files whose target (5th '-' field of the name) is Mars,
-   Saturn, Jupiter, Moon or Betelgeuse: per-site means of the 2x2 CFA over the planet's
-   disc in each of the first 20 frames (ffmpeg's bytes), averaged. Disc = superpixels whose
-   2x2 sum is >= 50 % of that frame's 99.99th percentile and none of whose four sites is
-   >= 250 (saturated). The pattern the reader resolved (Auto) must put its two green sites
-   on the more equal diagonal and red on the brighter of the two non-green sites. The three
-   captures in RGGB_EXCEPTIONS (Ruling 10: Flip=Vert files that measured RGGB) must still
-   resolve to the Flip=Vert inference AND measure RGGB (red at (0,0)). Every Flip=Vert file
-   must resolve to the sidecar pattern rotated 180 degrees (VERT_ROTATED, written out here)
-   and carry exactly the reader's inference warning; no other file may carry it. Only the
-   pinned UNMEASURABLE captures may be unmeasurable. A file whose disc has fewer than
-   MIN_DISC_SUPERPIXELS (summed over the frames), or whose bright disc is more than
-   MAX_SATURATED_SHARE saturated (what is left is the limb ring), is listed as unmeasurable
-   with its numbers -- reported, never passed silently.
+4. Bayer pattern (spec amendment 2026-10-23, superseding Ruling 10's colour-ratio proof):
+   a. Resolution: every sidecar file resolves (Auto) to the sidecar's own Bayer value with no
+      Flip warning when its Flip is None, Vert(unimplemented) or absent; any other Flip must
+      carry the reader's "unmeasured" warning. No file may carry the withdrawn "inferred from
+      Flip" warning or (every origin on the NAS is even) an odd-ROI-origin warning.
+   b. Readout geometry, colour-free: for every distinct Flip=Vert(unimplemented) capture of a
+      camera in FPN_REFERENCES, the fixed-pattern noise of the mean of its first FPN_FRAMES
+      frames is correlated with that of ASIAIR full-frame FITS of the same camera, cropped at
+      the sidecar's StartX/StartY, under identity / vflip / hflip / rot180 and shifts up to
+      +-FPN_SHIFT. The capture is resolved when identity at shift (0,0) is the strongest by
+      FPN_RATIO over every other transform and shift: the frame is the sensor read out from
+      that origin, as in a still whose BAYERPAT is the sidecar's pattern, neither flipped nor
+      rotated. An unresolved capture retries with FPN_RETRY_FRAMES frames against the
+      best-resolved capture of the same camera and ROI. Only the pinned FPN_UNRESOLVED captures
+      and the FPN_NO_REFERENCE cameras may stay unresolved; they are listed with their numbers.
+   c. Green phase: for sidecar files whose target (5th '-' field of the name) is Mars,
+      Saturn, Jupiter, Moon or Betelgeuse: per-site means of the 2x2 CFA over the planet's
+      disc in each of the first 20 frames (ffmpeg's bytes), averaged. Disc = superpixels whose
+      2x2 sum is >= 50 % of that frame's 99.99th percentile and none of whose four sites is
+      >= 250 (saturated). The pattern the reader resolved must put its two green sites on the
+      more equal diagonal. Which non-green site is the brighter is printed, never asserted: on
+      these captures it follows the in-camera white balance gains (applied to RAW8 before the
+      data leaves the camera), the filter and the target, not the CFA. Only the pinned
+      UNMEASURABLE captures may be unmeasurable. A file whose disc has fewer than
+      MIN_DISC_SUPERPIXELS (summed over the frames), or whose bright disc is more than
+      MAX_SATURATED_SHARE saturated (what is left is the limb ring), is listed as unmeasurable
+      with its numbers -- reported, never passed silently.
    Every file's numbers print.
 5. Round trip: the smallest AVI over 1 GB -> avi-probe --export into <work-dir> (local
    disk) -> SerFile frame count == the AVI's, frames 0, N//2, N-1 read back by SerFile
@@ -59,13 +72,12 @@ MIN_DISC_SUPERPIXELS = 100  # summed over the frames; fewer -> unmeasurable (rep
 # the 2022-08-17 Jupiter captures, 88 % and 91 % saturated; the most saturated clean measurements
 # are 53 % Betelgeuse and 56 % Moon) -> unmeasurable (reported, not passed).
 MAX_SATURATED_SHARE = 0.8
-# Flip=Vert captures measured RGGB (red at (0,0)) on the disc, against the BGGR inference
-# (Ruling 10; disc s00/s11 1.325, 1.264, 1.163 when pinned). Matched by file-name prefix.
-RGGB_EXCEPTIONS = ("2022-08-03-015840-Jupiter", "2022-08-03-021039-Saturn", "2022-08-17-004958-Moon")
 # The whole proof is pinned to Scott's NAS as surveyed on 2026-10-21: a different count fails.
+# 2026-10-22: two SERViewer Save-pattern sidecars were added (2024-02-01-013847 Moon,
+# 2026-01-30-195830 Jupiter): 53 ASIAIR + 2 SERViewer sidecars, 46 + 2 planet captures.
 EXPECTED_FILES = 103
-EXPECTED_SIDECAR_FILES = 53
-EXPECTED_PLANET_SIDECAR_FILES = 46
+EXPECTED_SIDECAR_FILES = 55
+EXPECTED_PLANET_SIDECAR_FILES = 48
 # The only files the reader may read short, each with its exact count and warning: the
 # Mars file's last index entry points into idx1 (a frame never written), the Moon file is
 # truncated at 1.04 GB. Any other count != ffprobe's nb_frames fails.
@@ -75,10 +87,31 @@ SHORT_FILES = {
 }
 # The only planet captures whose disc is unmeasurable (Ruling 11: 88 % / 91 % saturated).
 UNMEASURABLE = ("2022-08-17-010744-Jupiter", "2022-08-17-010921-Jupiter")
-# Flip=Vert rotates the sidecar's pattern 180 degrees -- written out here, not computed from the reader.
-VERT_ROTATED = {"RG": "BGGR", "GR": "GBRG", "GB": "GRBG", "BG": "RGGB"}
-VERT_WARNING = ("Bayer pattern inferred from Flip=Vert (%s); some ASIAIR captures are %s -- if red and blue "
-                "look swapped, choose %s under Bayer pattern")
+# Flip values the reader treats as "the frame is the sensor as read out" (measured; checks 4a/4b).
+MEASURED_FLIPS = ("", "None", "Vert(unimplemented)")
+# Check 4b. ASIAIR full-frame FITS per camera (paths under ROOT; read only; BAYERPAT RGGB): the
+# 2022-08-16 session's previews for the ASI071MC Pro (gain 0 and 200, the night of the 2022-08-17
+# videos) and 16 gain-0 1 ms bias frames for the ASI2400MC Pro.
+FPN_REFERENCES = {
+    "ZWO ASI071MC Pro": ["8_16/Preview/Moon/Preview_Moon_1.0ms_Bin1.fit", "8_16/Preview/Moon/Preview_Moon_10.0ms_Bin1.fit",
+                         "8_16/Preview/DS0/Preview_DS0_500.0ms_Bin1.fit", "8_16/Preview/DS0/Preview_DS0_2.0s_Bin1.fit"],
+    "ZWO ASI2400MC Pro": ["Bias/2400_bias/Bias_1.0ms_Bin1_%04d.fit" % i for i in range(1, 17)],
+}
+FPN_FRAMES = 300
+FPN_RETRY_FRAMES = 2000
+FPN_SHIFT = 2
+FPN_RATIO = 3.0
+# No full-frame FITS of this camera is on the NAS (it was the guide camera on every FITS there).
+FPN_NO_REFERENCE = ("ZWO ASI462MC",)
+# Captures whose fixed pattern does not place them (measured 2026-10-23), by file-name prefix.
+FPN_UNRESOLVED = {
+    # 58 frames, gain 113, a sky clipped at 0-4 ADU: what pattern is left correlates along rows
+    # (identity (0,0) r -0.080, (1,0) r -0.085), so no single shift leads.
+    "2022-11-09-195244-Moon": "58 frames of a sky clipped at the black level; the residual is row-correlated",
+    # Lunar disc over most of a 640x480 ROI: identity (0,0) r +0.013 leads by 2.5x, under FPN_RATIO,
+    # with 2000 frames against the same-ROI 2023-11-02 Jupiter.
+    "2023-03-05-225242-Moon": "the Moon fills the 640x480 ROI; identity leads by 2.5x, under the ratio",
+}
 ROUND_TRIP_MIN = 1 << 30
 SER_HEADER = 178
 # ColorId -> letters of sites (0,0) (0,1) (1,0) (1,1)
@@ -248,6 +281,7 @@ def main():
     results = []
     slowest = (0.0, "")
     bayer_rows = []
+    vert_files = []
     for idx, path in enumerate(avis, 1):
         name = os.path.relpath(path, ROOT)
         try:
@@ -297,14 +331,18 @@ def main():
             elif sc is None and "sidecarBayer" in j:
                 fail(name, "has no sidecar but the reader reported one")
             else:
-                check_vert_warning(name, j, sc)
+                check_resolution(name, j, sc)
+                if sc is not None and sc.get("Flip") == "Vert(unimplemented)":
+                    vert_files.append((path, j, sc))
                 if sc is not None and target_of(path) in BAYER_TARGETS:
                     bayer_rows.append(bayer_check(name, path, j, w, h))
             results.append((path, os.path.getsize(path), j, w, h, tb))
         except Exception as e:  # noqa: BLE001 -- every failure is reported with its file
             fail(name, str(e))
 
-    print("\nBayer phase (2x2 site means over the unsaturated disc: superpixels >= %d %% of the %.2fth percentile"
+    fpn_check(vert_files)
+
+    print("\nGreen phase (2x2 site means over the unsaturated disc: superpixels >= %d %% of the %.2fth percentile"
           " sum, no site >= %d; first %d frames):" % (DISC_FRACTION * 100, DISC_PCT, SATURATED, BAYER_FRAMES))
     print("  %-62s %-22s %-6s %7s %7s %7s %7s %6s %6s %6s %8s %5s  %-9s %s" % (
         "file", "camera", "flip", "s00", "s01", "s10", "s11", "s00/11", "dG", "dRB", "disc", "sat", "resolved",
@@ -312,14 +350,6 @@ def main():
     rows = [r for r in bayer_rows if r]
     for row, _ in rows:
         print("  " + row)
-    seen_exc = {e: 0 for e in RGGB_EXCEPTIONS}
-    for path_name, verdict in bayer_verdicts:
-        for e in RGGB_EXCEPTIONS:
-            if os.path.basename(path_name).startswith(e):
-                seen_exc[e] += 1
-    for e, n in seen_exc.items():
-        if n == 0:
-            fail(e, "pinned RGGB exception not found among the measured captures")
     for u in UNMEASURABLE:
         if not any(os.path.basename(p).startswith(u) for p, _ in bayer_verdicts):
             fail(u, "pinned unmeasurable capture not found among the measured captures")
@@ -327,9 +357,8 @@ def main():
         fail("Bayer phase", "%d planet sidecar files measured, expected %d"
              % (len(bayer_verdicts), EXPECTED_PLANET_SIDECAR_FILES))
     unmeasurable = [(p, v) for p, v in bayer_verdicts if v.startswith("unmeasurable")]
-    print("Bayer verdicts (of %d): %d agree with the resolved pattern, %d pinned RGGB exceptions measured RGGB, %d unmeasurable%s"
+    print("Green-phase verdicts (of %d): %d agree with the resolved pattern, %d unmeasurable%s"
           % (len(bayer_verdicts), sum(1 for _, v in bayer_verdicts if v == "agrees"),
-             sum(1 for _, v in bayer_verdicts if v == "pinned RGGB exception, measures RGGB"),
              len(unmeasurable), "".join("\n  unmeasurable: %s (%s)" % (p, v) for p, v in unmeasurable)))
 
     round_trip(exe, work, results)
@@ -341,7 +370,8 @@ def main():
         for f in failures:
             print("  " + f)
         return 1
-    print("PASS: %d/%d AVIs (frame counts, open < %.1f s, frames 0/N/2/N-1 == ffmpeg), Bayer phase, round trip"
+    print("PASS: %d/%d AVIs (frame counts, open < %.1f s, frames 0/N/2/N-1 == ffmpeg), Bayer resolution, "
+          "readout geometry, green phase, round trip"
           % (len(results), len(avis), OPEN_LIMIT_S))
     return 0
 
@@ -355,20 +385,231 @@ def target_of(path):
     return parts[4] if len(parts) > 4 else ""
 
 
-def check_vert_warning(name, j, sc):
-    """From the checker's own sidecar parse: a Flip=Vert file resolves to the rotated pattern and
-    carries the inference warning (Ruling 10); every other file carries no inference warning."""
-    inferred = [w for w in j["warnings"] if "inferred from Flip" in w]
-    bayer = (sc or {}).get("Bayer")
-    if sc is not None and (sc.get("Flip", "").startswith("Vert")) and bayer in VERT_ROTATED:
-        rotated, own = VERT_ROTATED[bayer], SIDECAR_PATTERNS[bayer]
-        if PATTERNS.get(j["colorId"]) != rotated:
-            fail(name, "Flip=Vert sidecar Bayer %s: reader resolved %s, expected %s" % (bayer, j["colorId"], rotated))
-        want = VERT_WARNING % (rotated, own, own)
-        if inferred != [want]:
-            fail(name, "Flip=Vert file: inference warnings %s, expected exactly [%r]" % (inferred, want))
-    elif inferred:
-        fail(name, "Flip %r file carries an inference warning: %s" % ((sc or {}).get("Flip"), inferred))
+def check_resolution(name, j, sc):
+    """Check 4a, from the checker's own sidecar parse: Auto is the sidecar's Bayer value as it stands; a
+    measured Flip (MEASURED_FLIPS) carries no Flip warning, any other exactly the reader's "unmeasured"
+    one; no file carries the withdrawn Ruling 10 inference or an odd-ROI-origin warning."""
+    if any("inferred from Flip" in w for w in j["warnings"]):
+        fail(name, "carries the withdrawn Flip=Vert inference warning: %s" % j["warnings"])
+    if any("ROI origin" in w for w in j["warnings"]):
+        fail(name, "carries an odd-ROI-origin warning: %s" % j["warnings"])
+    if sc is None or sc.get("Bayer") not in SIDECAR_PATTERNS:
+        return
+    own = SIDECAR_PATTERNS[sc["Bayer"]]
+    if PATTERNS.get(j["colorId"]) != own:
+        fail(name, "sidecar Bayer %s, Flip %r: reader resolved %s, expected %s"
+             % (sc["Bayer"], sc.get("Flip"), j["colorId"], own))
+    flip = sc.get("Flip", "")
+    flip_warn = [w for w in j["warnings"] if w.startswith("sidecar Flip=")]
+    if flip in MEASURED_FLIPS:
+        if flip_warn:
+            fail(name, "measured Flip %r carries a Flip warning: %s" % (flip, flip_warn))
+    else:
+        want = ("sidecar Flip=%s is unmeasured; using %s as the sidecar says -- if colours look wrong, choose the "
+                "pattern under Bayer pattern" % (flip, own))
+        if flip_warn != [want]:
+            fail(name, "unmeasured Flip %r: Flip warnings %s, expected exactly [%r]" % (flip, flip_warn, want))
+
+
+# --- check 4b: readout geometry from the fixed-pattern noise (numpy only) ----------------------------
+
+def read_fits(path):
+    """Primary HDU of an ASIAIR FITS, rows in FILE order (no flip): (cards, float32 array)."""
+    import numpy as np
+    cards = {}
+    with open(path, "rb") as f:
+        done = False
+        while not done:
+            block = f.read(2880)
+            if len(block) < 2880:
+                raise RuntimeError("%s: short FITS header" % path)
+            for i in range(0, 2880, 80):
+                c = block[i:i + 80].decode("ascii", "replace")
+                if c[:8].strip() == "END":
+                    done = True
+                    break
+                if c[8:10] == "= ":
+                    v = c[10:]
+                    cards[c[:8].strip()] = v.split("'")[1].strip() if v.strip().startswith("'") else v.split("/")[0].strip()
+        bitpix, w, h = int(cards["BITPIX"]), int(cards["NAXIS1"]), int(cards["NAXIS2"])
+        if bitpix != 16:
+            raise RuntimeError("%s: BITPIX %d, expected 16" % (path, bitpix))
+        a = np.frombuffer(f.read(w * h * 2), ">i2").reshape(h, w).astype(np.float32)
+    return cards, a * float(cards.get("BSCALE", 1)) + float(cards.get("BZERO", 0))
+
+
+def fpn_resid(a):
+    """Each pixel minus the median of its 3x3 same-CFA-site neighbourhood: the pixel-level pattern."""
+    import numpy as np
+    out = np.zeros(a.shape, np.float32)
+    for oy in (0, 1):
+        for ox in (0, 1):
+            s = a[oy::2, ox::2].astype(np.float32)
+            p = np.pad(s, 1, mode="edge")
+            nb = np.stack([p[1 + dy:1 + dy + s.shape[0], 1 + dx:1 + dx + s.shape[1]]
+                           for dy in (-1, 0, 1) for dx in (-1, 0, 1)])
+            out[oy::2, ox::2] = s - np.median(nb, axis=0)
+    return out
+
+
+def fpn_mask(a, k=6.0, box=15):
+    """Background only: a box-mean of the image below median + k MAD (a target or star is left out).
+    The MAD is floored at 0.5 (an 8-bit ADU): a sky clipped at the black level has MAD 0, and any
+    box holding one non-zero pixel would then count as target."""
+    import numpy as np
+    bg = float(np.median(a))
+    mad = max(float(np.median(np.abs(a - bg))), 0.5)
+    c = np.pad(a.astype(np.float64), box // 2, mode="edge").cumsum(0).cumsum(1)
+    c = np.pad(c, ((1, 0), (1, 0)))
+    h, w = a.shape
+    m = (c[box:box + h, box:box + w] - c[:h, box:box + w] - c[box:box + h, :w] + c[:h, :w]) / (box * box)
+    return m < bg + k * mad
+
+
+def ff_mean(path, n, w, h):
+    """Mean of the first n frames (fewer when the file is shorter), streamed from ffmpeg: (mean, count)."""
+    import numpy as np
+    p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-frames:v", str(n), "-fps_mode",
+                          "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-"], stdout=subprocess.PIPE)
+    acc = np.zeros((h, w), np.float64)
+    k = 0
+    while True:
+        buf = p.stdout.read(w * h)
+        if len(buf) < w * h:
+            break
+        acc += np.frombuffer(buf, np.uint8).reshape(h, w)
+        k += 1
+    if p.wait() != 0 or k == 0:
+        raise RuntimeError("ffmpeg returned %d frames for the fixed-pattern mean" % k)
+    return (acc / k).astype(np.float32), k
+
+
+FPN_TRANSFORMS = (("identity", lambda a: a), ("vflip", lambda a: a[::-1]), ("hflip", lambda a: a[:, ::-1]),
+                  ("rot180", lambda a: a[::-1, ::-1]))
+
+
+def fpn_score(r, m, ref, ref_m, y0, x0):
+    """|correlation| of pattern r (mask m) under each transform and shift against ref cropped at
+    (y0, x0). Returns (identity(0,0) r, strongest other (|r|, transform, dy, dx), n)."""
+    import numpy as np
+    h, w = r.shape
+    ident, other, n0 = float("nan"), (0.0, "", 0, 0), 0
+    for tname, t in FPN_TRANSFORMS:
+        tr, tm = t(r), t(m)
+        for dy in range(-FPN_SHIFT, FPN_SHIFT + 1):
+            for dx in range(-FPN_SHIFT, FPN_SHIFT + 1):
+                yy, xx = y0 + dy, x0 + dx
+                if yy < 0 or xx < 0 or yy + h > ref.shape[0] or xx + w > ref.shape[1]:
+                    continue
+                mm = tm & ref_m[yy:yy + h, xx:xx + w]
+                if mm.sum() < 1000:
+                    continue
+                c = float(np.corrcoef(tr[mm], ref[yy:yy + h, xx:xx + w][mm])[0, 1])
+                if tname == "identity" and dy == 0 and dx == 0:
+                    ident, n0 = c, int(mm.sum())
+                elif abs(c) > abs(other[0]):
+                    other = (c, tname, dy, dx)
+    return ident, other, n0
+
+
+def fpn_resolved(ident, other):
+    return ident == ident and abs(ident) >= FPN_RATIO * abs(other[0]) and abs(ident) > 0
+
+
+def fpn_check(vert_files):
+    """Check 4b (see the module docstring)."""
+    import numpy as np
+    refs = {}
+    print("\nReadout geometry (fixed-pattern noise vs a full-frame FITS of the same camera, cropped at "
+          "StartX/StartY; identity at (0,0) must lead every other transform/shift by %.0fx):" % FPN_RATIO)
+    seen, rows = set(), []
+    for path, j, sc in vert_files:
+        base = os.path.basename(path)
+        if base in seen:            # the same capture in another folder
+            continue
+        seen.add(base)
+        cam = j.get("sidecarCamera", "")
+        key = base[:17]
+        if cam in FPN_NO_REFERENCE:
+            rows.append((key, cam, path, sc, None, None, None, "no reference: no full-frame FITS of this camera"))
+            continue
+        if cam not in FPN_REFERENCES:
+            fail(base, "Flip=Vert(unimplemented) capture of %r: no FPN reference and not in FPN_NO_REFERENCE" % cam)
+            continue
+        if cam not in refs:
+            acc = macc = None
+            for rel_path in FPN_REFERENCES[cam]:
+                cards, a = read_fits(os.path.join(ROOT, rel_path))
+                if cards.get("INSTRUME") != cam or cards.get("BAYERPAT") != "RGGB" or \
+                        cards.get("XORGSUBF", "0") != "0" or cards.get("YORGSUBF", "0") != "0":
+                    fail(rel_path, "reference FITS is %r BAYERPAT %r origin %s,%s; expected a full-frame %s RGGB"
+                         % (cards.get("INSTRUME"), cards.get("BAYERPAT"), cards.get("XORGSUBF"),
+                            cards.get("YORGSUBF"), cam))
+                m = fpn_mask(a)
+                r = fpn_resid(a)
+                r /= float(np.std(r[m])) + 1e-9
+                acc = r if acc is None else acc + r
+                macc = m if macc is None else macc & m
+            refs[cam] = (acc, macc)
+        ref, ref_m = refs[cam]
+        try:
+            x0, y0 = int(sc["StartX"]), int(sc["StartY"])
+            w, h = j["width"], j["height"]
+            mean, k = ff_mean(path, FPN_FRAMES, w, h)
+        except (KeyError, ValueError, RuntimeError) as e:
+            fail(base, "fixed-pattern mean: %s" % e)
+            continue
+        r, m = fpn_resid(mean), fpn_mask(mean)
+        ident, other, n0 = fpn_score(r, m, ref, ref_m, y0, x0)
+        verdict = "resolved (vs FITS)" if fpn_resolved(ident, other) else "unresolved"
+        rows.append([key, cam, path, sc, ident, other, (k, n0, (w, h, x0, y0)), verdict])
+    # Retry the unresolved against the best-resolved capture of the same camera and ROI (a video
+    # pattern at the same gain range is a stronger match than a still's).
+    for row in rows:
+        if row[7] != "unresolved":
+            continue
+        key, cam, path, sc, _, _, (k, n0, roi), _ = row
+        partners = [q for q in rows if q[7] == "resolved (vs FITS)" and q[1] == cam and q[6][2] == roi]
+        if not partners:
+            continue
+        best = max(partners, key=lambda q: abs(q[4]))
+        w, h, x0, y0 = roi
+        a, ka = ff_mean(path, FPN_RETRY_FRAMES, w, h)
+        b, kb = ff_mean(best[2], FPN_RETRY_FRAMES, w, h)
+        rb, mb = fpn_resid(b), fpn_mask(b)
+        # the partner is the reference here: the capture's interior (a FPN_SHIFT border off) sits at
+        # (FPN_SHIFT, FPN_SHIFT) of it when both are read out alike
+        e = FPN_SHIFT
+        ident, other, n1 = fpn_score(fpn_resid(a)[e:-e, e:-e], fpn_mask(a)[e:-e, e:-e], rb, mb, e, e)
+        row[4], row[5], row[6] = ident, other, (ka, n1, roi)
+        row[7] = ("resolved (vs %s)" % best[0]) if fpn_resolved(ident, other) else "unresolved"
+    for key, cam, path, sc, ident, other, info, verdict in rows:
+        if ident is None:
+            print("  %-17s %-18s %s" % (key, cam, verdict))
+        else:
+            k, n0, (w, h, x0, y0) = info
+            print("  %-17s %-18s %4dx%-4d@%4d,%-4d %4d frames  identity(0,0) r=%+.4f  next %s(%+d,%+d) r=%+.4f  n=%d  %s"
+                  % (key, cam, w, h, x0, y0, k, ident, other[1], other[2], other[3], other[0], n0, verdict))
+        pinned = next((why for p, why in FPN_UNRESOLVED.items() if os.path.basename(path).startswith(p)), None)
+        if verdict.startswith("resolved"):
+            if pinned:
+                fail(key, "pinned FPN-unresolved capture now resolves: re-measure and re-pin")
+            continue
+        if verdict.startswith("no reference"):
+            continue
+        if pinned:
+            print("  %-17s   pinned unresolved: %s" % ("", pinned))
+        else:
+            fail(key, "readout geometry not resolved (identity(0,0) r=%+.4f vs %s r=%+.4f) and not pinned"
+                 % (ident, other[1], other[0]))
+    for p in FPN_UNRESOLVED:
+        if not any(os.path.basename(q[2]).startswith(p) for q in rows):
+            fail(p, "pinned FPN-unresolved capture not found")
+    res = sum(1 for q in rows if q[7].startswith("resolved"))
+    print("Readout geometry: %d of %d distinct Flip=Vert(unimplemented) captures read out exactly like the still "
+          "(identity, origin as written); %d pinned unresolved; %d without a reference camera"
+          % (res, len(rows), sum(1 for q in rows if q[7] == "unresolved"),
+             sum(1 for q in rows if q[7].startswith("no reference"))))
 
 
 bayer_verdicts = []  # (name, verdict)
@@ -379,11 +620,7 @@ def bayer_check(name, path, j, w, h):
     if not pat:
         fail(name, "sidecar Bayer %r but the reader resolved %s (%s)" % (j["sidecarBayer"], j["colorId"], j["bayerSource"]))
         return None
-    pinned = any(os.path.basename(path).startswith(e) for e in RGGB_EXCEPTIONS)
-    if pinned and not (j.get("sidecarFlip", "").startswith("Vert") and pat == "BGGR"):
-        fail(name, "pinned RGGB exception no longer resolves to the Flip=Vert inference BGGR (resolved %s, Flip %r)"
-             % (pat, j.get("sidecarFlip")))
-    expect = "RGGB" if pinned else pat   # what the frame data must say
+    expect = pat   # the greens of the resolved pattern must be the equal diagonal
     frames = ff_first_frames(path, min(BAYER_FRAMES, j["frames"]), w, h)
     m, count, sat = site_means(frames, w, h)
     greens = [i for i, c in enumerate(expect) if c == "G"]
@@ -392,15 +629,13 @@ def bayer_check(name, path, j, w, h):
         verdict = "unmeasurable: %d unsaturated disc superpixels over %d frames (min %d), %.0f %% of the disc " \
                   "saturated (max %.0f %%)" % (count, len(frames), MIN_DISC_SUPERPIXELS, 100 * sat,
                                                100 * MAX_SATURATED_SHARE)
-        if pinned:
-            fail(name, "pinned RGGB exception is " + verdict)
-        elif not any(os.path.basename(path).startswith(u) for u in UNMEASURABLE):
+        if not any(os.path.basename(path).startswith(u) for u in UNMEASURABLE):
             fail(name, "not a pinned unmeasurable capture, but " + verdict)
         d_g = d_rb = float("nan")
     else:
         d_g = rel(m[greens[0]], m[greens[1]])
         d_rb = rel(m[red], m[blue])
-        verdict = "pinned RGGB exception, measures RGGB" if pinned else "agrees"
+        verdict = "agrees"
         if any(os.path.basename(path).startswith(u) for u in UNMEASURABLE):
             fail(name, "pinned unmeasurable capture now measures (%d disc superpixels, %.0f %% saturated): "
                  "re-measure and re-pin" % (count, 100 * sat))
@@ -409,10 +644,8 @@ def bayer_check(name, path, j, w, h):
         if not d_g < d_rb:
             bad.append("greens (sites %s) are not the equal diagonal: rel diff %.3f vs non-green %.3f"
                        % (greens, d_g, d_rb))
-        if not m[red] > m[blue]:
-            bad.append("red site %d (%.2f) is not brighter than blue site %d (%.2f)" % (red, m[red], blue, m[blue]))
         if bad:
-            verdict = "DISAGREES with %s: %s" % ("RGGB (pinned exception)" if pinned else pat, "; ".join(bad))
+            verdict = "DISAGREES with %s: %s" % (pat, "; ".join(bad))
     row = "%-62s %-22s %-6s %7.2f %7.2f %7.2f %7.2f %6.3f %6.3f %6.3f %8d %4.0f%%  %-9s %s" % (
         name[-62:], j.get("sidecarCamera", "")[:22], j.get("sidecarFlip", "")[:6],
         m[0], m[1], m[2], m[3], m[0] / m[3] if m[3] else float("inf"), d_g, d_rb, count, 100 * sat, pat, verdict)

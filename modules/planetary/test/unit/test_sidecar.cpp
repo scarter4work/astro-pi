@@ -28,13 +28,13 @@ const char* kSample =
     "Exposure = 0.00045 Sec\n"
     "Flip = Vert(unimplemented)\n"
     "Gain = 273\n"
+    "StartX = 2396\n"
+    "StartY = 1540\n"
     "Temperature = -7.6 C\n"
     "Bayer = RG\n"
     "White Balance (B) = 95\n"
     "White Balance (R) = 52\n"
     "Duration=9 Sec\n";
-
-const std::string kArrowBGGR = "sidecar RG, Flip=Vert \xE2\x86\x92 BGGR";
 
 AsiairSidecar Sc(const std::string& bayer, const std::string& flip,
                  const std::string& colour = "RAW8") {
@@ -124,6 +124,43 @@ TEST_CASE("ParseAsiairSidecar reads the real sample") {
     CHECK(sc->gain == "273");
     CHECK(sc->exposure == "0.00045 Sec");
     CHECK(sc->captureArea == "1280 * 960");
+    CHECK(sc->startX == "2396");
+    CHECK(sc->startY == "1540");
+}
+
+TEST_CASE("ResolveBayer: an odd ROI origin is unmeasured and says so") {
+    // ZWO's SDK documents width % 8 == 0 and height % 2 == 0 for the ROI, and no rule for its start
+    // position; every ASIAIR sidecar seen has even StartX/StartY, where the frame is the sensor read
+    // from that origin exactly. An odd origin would start the frame one site into the CFA, which no
+    // file has shown -- so the sidecar pattern stands, with a warning, never a silent guess.
+    auto odd = [](const std::string& x, const std::string& y) {
+        AsiairSidecar s = Sc("RG", "None");
+        s.startX = x;
+        s.startY = y;
+        return s;
+    };
+    const std::string tail = "; how an odd origin shifts the Bayer pattern is unmeasured -- using RGGB as the "
+                             "sidecar says; if colours look wrong, choose the pattern under Bayer pattern";
+    auto r = Resolve(BayerChoice::Auto, odd("1513", "1102"));
+    CHECK(r.id == ColorId::BayerRGGB);
+    CHECK(r.source == "sidecar");
+    CHECK(r.warnings == std::vector<std::string>{"sidecar ROI origin StartX=1513 is odd" + tail});
+    r = Resolve(BayerChoice::Auto, odd("1512", "1103"));
+    CHECK(r.warnings == std::vector<std::string>{"sidecar ROI origin StartY=1103 is odd" + tail});
+    r = Resolve(BayerChoice::Auto, odd("7", "9"));
+    CHECK(r.warnings == std::vector<std::string>{"sidecar ROI origin StartX=7, StartY=9 is odd" + tail});
+
+    // Even, absent or not a number: nothing to say. An explicit choice: the choice, no warning.
+    CHECK(Resolve(BayerChoice::Auto, odd("1512", "1102")).warnings.empty());
+    CHECK(Resolve(BayerChoice::Auto, odd("", "")).warnings.empty());
+    CHECK(Resolve(BayerChoice::Auto, odd("abc", "-")).warnings.empty());
+    CHECK(Resolve(BayerChoice::GRBG, odd("1513", "1103")).warnings.empty());
+
+    // Parsed from a real-shaped sidecar.
+    const auto sc = ParseAsiairSidecar("[ZWO X]\r\nBayer = RG\r\nFlip = None\r\nStartX = 961\r\nStartY = 540\r\n");
+    REQUIRE(sc.has_value());
+    CHECK(Resolve(BayerChoice::Auto, sc).warnings ==
+          std::vector<std::string>{"sidecar ROI origin StartX=961 is odd" + tail});
 }
 
 TEST_CASE("ParseAsiairSidecar handles CRLF, no spaces, unknown keys") {
@@ -165,25 +202,22 @@ TEST_CASE("ResolveBayer: an unreadable or oversized sidecar is never 'no sidecar
     CHECK(r.warnings.empty());
 }
 
-TEST_CASE("ResolveBayer: Flip=Vert is an inference and says so (Ruling 10)") {
+TEST_CASE("ResolveBayer: Flip=Vert(unimplemented) was never applied -- the sidecar pattern as it stands (2026-10-23)") {
+    // Measured on the NAS captures (spec amendment 2026-10-23): every Flip=Vert(unimplemented) video is
+    // read out pixel for pixel like an ASIAIR full-frame still of the same camera (BAYERPAT RGGB), so
+    // the sidecar's Bayer value is the frame's pattern. No rotation, no inference warning.
     auto r = Resolve(BayerChoice::Auto, Sc("RG", "Vert(unimplemented)"));
-    CHECK(r.id == ColorId::BayerBGGR);
-    CHECK(r.source == kArrowBGGR);
-    REQUIRE(r.warnings.size() == 1);
-    CHECK(r.warnings[0] ==
-          "Bayer pattern inferred from Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue "
-          "look swapped, choose RGGB under Bayer pattern");
+    CHECK(r.id == ColorId::BayerRGGB);
+    CHECK(r.source == "sidecar");
+    CHECK(r.warnings.empty());
 
-    // The inferred and the un-rotated sidecar pattern are substituted, not hardcoded.
-    r = Resolve(BayerChoice::Auto, Sc("GR", "Vert"));
-    REQUIRE(r.warnings.size() == 1);
-    CHECK(r.warnings[0] ==
-          "Bayer pattern inferred from Flip=Vert (GBRG); some ASIAIR captures are GRBG -- if red and blue "
-          "look swapped, choose GRBG under Bayer pattern");
+    r = Resolve(BayerChoice::Auto, Sc("GR", "Vert(unimplemented)"));
+    CHECK(r.id == ColorId::BayerGRBG);
+    CHECK(r.source == "sidecar");
+    CHECK(r.warnings.empty());
 
-    // No inference, no warning: Flip None, and an explicit choice on a Flip=Vert file.
-    CHECK(Resolve(BayerChoice::Auto, Sc("RG", "None")).warnings.empty());
-    CHECK(Resolve(BayerChoice::RGGB, Sc("RG", "Vert(unimplemented)")).warnings.empty());
+    // An explicit choice on such a file is just the choice.
+    CHECK(Resolve(BayerChoice::BGGR, Sc("RG", "Vert(unimplemented)")).id == ColorId::BayerBGGR);
     CHECK(Resolve(BayerChoice::BGGR, Sc("RG", "Vert(unimplemented)")).warnings.empty());
 }
 
@@ -202,6 +236,14 @@ TEST_CASE("ResolveBayer: a Flip other than None/Vert keeps the sidecar pattern a
                             "sidecar Flip=Both is unmeasured; using GBRG as the sidecar says -- if colours look "
                             "wrong, choose the pattern under Bayer pattern"});
 
+    // Only Vert(unimplemented) was measured: a bare Vert (a flip a newer ASIAIR might apply) is not.
+    r = Resolve(BayerChoice::Auto, Sc("GR", "Vert"));
+    CHECK(r.id == ColorId::BayerGRBG);
+    CHECK(r.source == "sidecar");
+    CHECK(r.warnings == std::vector<std::string>{
+                            "sidecar Flip=Vert is unmeasured; using GRBG as the sidecar says -- if colours look "
+                            "wrong, choose the pattern under Bayer pattern"});
+
     // Measured or absent Flip values, and an explicit choice, carry no such warning.
     CHECK(Resolve(BayerChoice::Auto, Sc("RG", "None")).warnings.empty());
     CHECK(Resolve(BayerChoice::Auto, Sc("RG", "")).warnings.empty());
@@ -215,14 +257,12 @@ TEST_CASE("ResolveBayer table") {
     CHECK(r.warnings.empty());
 
     r = Resolve(BayerChoice::Auto, Sc("RG", "Vert(unimplemented)"));
-    CHECK(r.id == ColorId::BayerBGGR);
-    CHECK(r.source == kArrowBGGR);
+    CHECK(r.id == ColorId::BayerRGGB);
+    CHECK(r.source == "sidecar");
 
-    r = Resolve(BayerChoice::Auto, Sc("GR", "Vert"));
-    CHECK(r.id == ColorId::BayerGBRG);
-    CHECK(r.source == "sidecar GR, Flip=Vert \xE2\x86\x92 GBRG");
-    CHECK(Resolve(BayerChoice::Auto, Sc("GB", "Vert")).id == ColorId::BayerGRBG);
-    CHECK(Resolve(BayerChoice::Auto, Sc("BG", "Vert")).id == ColorId::BayerRGGB);
+    CHECK(Resolve(BayerChoice::Auto, Sc("GR", "Vert(unimplemented)")).id == ColorId::BayerGRBG);
+    CHECK(Resolve(BayerChoice::Auto, Sc("GB", "Vert(unimplemented)")).id == ColorId::BayerGBRG);
+    CHECK(Resolve(BayerChoice::Auto, Sc("BG", "Vert(unimplemented)")).id == ColorId::BayerBGGR);
     CHECK(Resolve(BayerChoice::Auto, Sc("BG", "")).id == ColorId::BayerBGGR);
 
     r = Resolve(BayerChoice::RGGB, Sc("BG", "None"));
@@ -275,17 +315,16 @@ TEST_CASE("OpenVideo reads the sidecar next to an AVI") {
 
     const auto src = OpenVideo(p);
     const FileInfo& info = src->Info();
-    CHECK(info.colorId == ColorId::BayerBGGR);
+    // Flip=Vert(unimplemented) was not applied (spec amendment 2026-10-23): RGGB as the sidecar says.
+    CHECK(info.colorId == ColorId::BayerRGGB);
     CHECK(info.header.instrument == "ZWO ASI071MC Pro");
     REQUIRE(info.avi.has_value());
-    CHECK(info.avi->bayerSource == kArrowBGGR);
+    CHECK(info.avi->bayerSource == "sidecar");
     REQUIRE(info.avi->sidecar.has_value());
     CHECK(info.avi->sidecarStatus == SidecarStatus::Parsed);
     CHECK(info.avi->sidecar->gain == "90");
     CHECK_FALSE(info.avi->filenameStart.has_value());
-    // The only warning: the Flip=Vert pattern is an inference (Ruling 10).
-    REQUIRE(info.warnings.size() == 1);
-    CHECK(info.warnings[0].rfind("Bayer pattern inferred from Flip=Vert (BGGR); some ASIAIR captures are RGGB", 0) == 0);
+    CHECK(info.warnings.empty());
 
     const auto chosen = OpenVideo(p, BayerChoice::GRBG);
     CHECK(chosen->Info().colorId == ColorId::BayerGRBG);

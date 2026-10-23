@@ -78,10 +78,9 @@ std::string Num(double v) {
     return buf;
 }
 
-// The warning every Auto-resolved Flip=Vert RG sidecar carries (Ruling 10).
-const char* const kVertWarning =
-    "Bayer pattern inferred from Flip=Vert (BGGR); some ASIAIR captures are RGGB -- if red and blue look swapped, "
-    "choose RGGB under Bayer pattern";
+// Ruling 10's Flip=Vert rotation was withdrawn (spec amendment 2026-10-23): no Auto-resolved
+// sidecar may carry an inference or an unmeasured-flip warning for Flip=Vert(unimplemented).
+const std::vector<std::string> kNoVertWarnings = {"inferred from Flip", "Flip=Vert(unimplemented) is unmeasured"};
 
 struct Point { int x, y, c; double v; };
 struct Kw { std::string name, field, text; };  // field: value | comment | commentContains
@@ -960,7 +959,8 @@ int main(int argc, char** argv) {
                     return 1;
                 }
 
-    // AVI with an ASIAIR sidecar saying Bayer RG, Flip Vert: Auto resolves to BGGR.
+    // AVI with an ASIAIR sidecar saying Bayer RG, Flip Vert(unimplemented): Auto resolves to RGGB, as the
+    // sidecar says (ASIAIR never applied the flip; spec amendment 2026-10-23).
     // 32x24, 3 frames, BI_RGB grey palette, stored bottom-up.
     const std::string aviVert = (dir / "avi-vert.avi").string();
     {
@@ -973,30 +973,29 @@ int main(int argc, char** argv) {
                   "Flip = Vert(unimplemented)\r\nBayer = RG\r\nGain = 200\r\nExposure = 10ms\r\n");
 
         Case c;
-        c.name = "avi sidecar Auto debayered (RG + Flip=Vert -> BGGR)"; c.path = aviVert; c.frame = 2;
+        c.name = "avi sidecar Auto debayered (RG + Flip=Vert(unimplemented) -> RGGB)"; c.path = aviVert; c.frame = 2;
         c.expectId = "avi_vert_f2";
         c.width = w; c.height = h; c.channels = 3;
         for (auto [x, y] : Points(w, h))
-            for (int ch = 0; ch < 3; ++ch) c.samples.push_back({x, y, ch, BayerExpected("BGGR", x, y, ch, 2, d, w, h)});
+            for (int ch = 0; ch < 3; ++ch) c.samples.push_back({x, y, ch, BayerExpected("RGGB", x, y, ch, 2, d, w, h)});
         c.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
                       {"HISTORY", "comment", "SERViewer: avi-vert.avi frame 2"},
-                      {"HISTORY", "commentContains", "SERViewer: Bayer BGGR (sidecar RG, Flip=Vert -> BGGR)"},
-                      // Ruling 10: the Flip=Vert pattern is labelled an inference.
-                      {"HISTORY", "commentContains", std::string("SERViewer warning: ") + kVertWarning}};
+                      {"HISTORY", "comment", "SERViewer: Bayer RGGB (sidecar)"}};
         c.absent = {"DATE-OBS", "BAYERPAT", "OBSERVER", "TELESCOP"};
+        c.absentComments = kNoVertWarnings;
         cases.push_back(c);
 
         Case o;
-        o.name = "avi bayerPattern=BayerRGGB overrides the sidecar"; o.path = aviVert; o.frame = 1;
-        o.bayerPattern = "BayerRGGB";
+        o.name = "avi bayerPattern=BayerGBRG overrides the sidecar"; o.path = aviVert; o.frame = 1;
+        o.bayerPattern = "BayerGBRG";
         o.expectId = "avi_vert_f1";
         o.width = w; o.height = h; o.channels = 3;
         for (auto [x, y] : Points(w, h))
-            for (int ch = 0; ch < 3; ++ch) o.samples.push_back({x, y, ch, BayerExpected("RGGB", x, y, ch, 1, d, w, h)});
+            for (int ch = 0; ch < 3; ++ch) o.samples.push_back({x, y, ch, BayerExpected("GBRG", x, y, ch, 1, d, w, h)});
         o.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
-                      {"HISTORY", "comment", "SERViewer: Bayer RGGB (chosen)"}};
+                      {"HISTORY", "comment", "SERViewer: Bayer GBRG (chosen)"}};
         o.absent = {"DATE-OBS", "BAYERPAT"};
-        o.absentComments = {"inferred from Flip=Vert"};  // a chosen pattern is no inference
+        o.absentComments = kNoVertWarnings;
         cases.push_back(o);
 
         Case r;
@@ -1004,7 +1003,7 @@ int main(int argc, char** argv) {
         r.expectId = "avi_vert_f0";
         r.width = w; r.height = h; r.channels = 1;
         for (auto [x, y] : Points(w, h)) r.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, 0, d), d)});
-        r.keywords = {{"BAYERPAT", "value", "BGGR"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
+        r.keywords = {{"BAYERPAT", "value", "RGGB"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
         r.absent = {"DATE-OBS"};
         cases.push_back(r);
     }
@@ -1168,7 +1167,7 @@ int main(int argc, char** argv) {
         cases.push_back(none);
     }
 
-    // saveSerPath: avi-vert.avi -> SER (BGGR from the sidecar), no window; then the
+    // saveSerPath: avi-vert.avi -> SER (RGGB from the sidecar), no window; then the
     // written SER read back through SERViewer must hold the same frames.
     {
         const int w = 32, h = 24, d = 8;
@@ -1180,10 +1179,10 @@ int main(int argc, char** argv) {
         // starts, and the result line names the layout written.
         Case c;
         c.name = "saveSerPath converts the AVI"; c.path = aviVert; c.saveSerPath = out;
-        c.expectConsole = {"converting avi-vert.avi to SER; Bayer BGGR (sidecar RG, Flip=Vert",
-                           kVertWarning,
+        c.expectConsole = {"converting avi-vert.avi to SER; Bayer RGGB (sidecar)",
                            "SERViewer: writing avi-vert-converted.ser",
-                           "SERViewer: wrote 3 frames (BAYER_BGGR) to " + out};
+                           "SERViewer: wrote 3 frames (BAYER_RGGB) to " + out};
+        c.consoleAbsent = kNoVertWarnings;
         cases.push_back(c);
 
         for (int f = 0; f < 2; ++f) {
@@ -1193,7 +1192,7 @@ int main(int argc, char** argv) {
             raw.expectId = "avi_vert_converted_f" + std::to_string(f);
             raw.width = w; raw.height = h; raw.channels = 1;
             for (auto [x, y] : Points(w, h)) raw.samples.push_back({x, y, 0, Norm(Gen(x, y, 0, f, d), d)});
-            raw.keywords = {{"BAYERPAT", "value", "BGGR"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
+            raw.keywords = {{"BAYERPAT", "value", "RGGB"}, {"INSTRUME", "value", "ZWO ASI585MC"}};
             raw.absent = {"DATE-OBS"};
             cases.push_back(raw);
         }
@@ -1204,7 +1203,7 @@ int main(int argc, char** argv) {
         deb.width = w; deb.height = h; deb.channels = 3;
         for (auto [x, y] : Points(w, h))
             for (int ch = 0; ch < 3; ++ch)
-                deb.samples.push_back({x, y, ch, BayerExpected("BGGR", x, y, ch, 2, d, w, h)});
+                deb.samples.push_back({x, y, ch, BayerExpected("RGGB", x, y, ch, 2, d, w, h)});
         deb.keywords = {{"HISTORY", "comment", "SERViewer: avi-vert-converted.ser frame 2"}};
         deb.absent = {"DATE-OBS", "BAYERPAT"};
         cases.push_back(deb);

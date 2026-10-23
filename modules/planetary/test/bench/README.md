@@ -71,8 +71,9 @@ site) is not a valid source, and through the Lqef filter it does not apply at al
   * AutoStakkert debayered the 2023-02-11 Jupiter, the 2023-02-12 Moon and Mars BGGR, so their red
     and blue are swapped against ours.
   * Every ASIStudio file is RG (`VSBAYER = 0`).
-* The 2023-03-05 Moon's ASIAIR sidecar says Bayer = RG with Flip=Vert, which the reader resolves to
-  BGGR (Ruling 10). The bench's explicit RGGB wins over it.
+* The 2023-03-05 Moon's ASIAIR sidecar says Bayer = RG with Flip = Vert(unimplemented). ASIAIR never
+  applied that flip, so the reader's Auto is RGGB too, the same as the bench's explicit pattern (spec
+  amendment 2026-10-23; Ruling 10's BGGR was withdrawn).
 * The 2026-01-30 Jupiter and the 2024-02-01 Moon carry SERViewer Save-pattern sidecars (Bayer = RG).
 
 ## The judged metric: END (Ruling P28)
@@ -349,7 +350,7 @@ All four are lunar discs or limbs with sky in the frame, not frame-filling surfa
 | 2023-02-12-moon | `2_12_2023/2023-02-12-024708-Moon-Bin1 14.9F.avi` | 2354, 1920x1080, 4.9 GB | RGGB (camera spec; AS used BGGR) | `2_12_2023/AS_P20/2023-02-12-024708-Moon-Bin1 14.9F_lapl5_ap1.png` (x1); `2_12_2023/AS_P50/..._lapl5_ap2.png` (x1); `2_12_2023/AS_P25/..._lapl5_ap2_Drizzle30.png` (x3) | 0.0688 (0.0732); 0.0527 (0.0587); 0.0559 (0.0603) | Metric validation: P20 and P50 both native |
 | 2024-02-01-moon | `2_1_2024/2024-02-01-013847-Moon-Bin1 Lqef 14.9F.avi` | 1310, 1920x1080, 2.7 GB | RGGB (camera spec = its Save-pattern sidecar; AS and ASI same) | `2_1_2024/ASIVideoStack_Output/2024-02-01-013847-Moon-Bin1 Lqef 14.9F_Surface_40.fit`; `2_1_2024/AS_P60/..._lapl5_ap16_Drizzle15.fit` (named x1.5, size x3) | 0.1320 (0.1465); 0.1415 (0.1556) | Both tools on one capture |
 | 2023-08-22-moon | `8_23_2023/2023-08-22-213239-FOV-Bin1 LPro 15.8F.avi` | 1352, 1920x1080, 2.8 GB | RGGB (camera spec; AS and ASI same) | `8_23_2023/ASIVideoStack_Output/2023-08-22-213239-FOV-Bin1 LPro 15.8F_Surface_35.fit`; `8_23_2023/AS_P20/..._lapl5_ap4_Drizzle30.fit` (x3) | 0.0300 (0.0248); 0.0352 (0.0288; band SNR 149) | Both tools; named "FOV" but a lunar limb (checked visually) |
-| 2023-03-05-moon | `3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi` | 1705, 1920x1080, 3.5 GB | RGGB (camera spec; explicit, over the sidecar's RG + Flip=Vert; AS same) | `3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit` (named x1.5, size x3); `3_6_2023/moon/AS_P50/..._jupiter_lapl5_ap4_Drizzle15.png` (x1.5) | 0.0267 (0.0271); 0.0264 (0.0269) | Sidecar; a second AS P20/P50 pair |
+| 2023-03-05-moon | `3_6_2023/moon/2023-03-05-224808-Moon-Bin1 18.3F.avi` | 1705, 1920x1080, 3.5 GB | RGGB (camera spec; explicit, = the sidecar's RG, Flip = Vert(unimplemented) never applied; AS same) | `3_6_2023/moon/AS_P20/2023-03-05-224808-Moon-Bin1 18.3F_lapl5_ap4_Drizzle15.fit` (named x1.5, size x3); `3_6_2023/moon/AS_P50/..._jupiter_lapl5_ap4_Drizzle15.png` (x1.5) | 0.0267 (0.0271); 0.0264 (0.0269) | Sidecar; a second AS P20/P50 pair |
 
 ### Diagnosis cases (no image expected; stack-probe runs with Auto)
 
