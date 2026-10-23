@@ -799,3 +799,58 @@ TEST_CASE("MeasureAll on an empty capture returns nothing") {
     CHECK(MeasureAll(factory, info, 8, {}).empty());
     CHECK(calls == 0);
 }
+
+TEST_CASE("A Bayer disc saturated in three of its four sites is clipped (Task 9: the 2023-02-11 Venus)") {
+    // The real case: the 2023-02-11 Venus AVI (6485 frames, 8-bit, no sidecar: an undeclared mosaic)
+    // has 23-33 % of its disc's raw pixels at 255 in every frame (first 400 frames: median 0.27; per
+    // CFA site 0.25 / 0.26 / 0.26 / 0.32) -- Select.h's kClippedFrame note measured 0.37 in every frame
+    // on per-pixel luma (2026-10-21 20:02), before Ruling P9 (23:44) measured a mosaic on 2 x 2 cells.
+    // A cell counts as clipped only when its mean is >= kClippedLuma, i.e. all four sites saturated,
+    // so the same frames read 0.13-0.25 (median 0.175) and the engine stacked 3568 of them (1558
+    // "clipped", the rest used) instead of diagnosing Clipped. A cell with any site at full scale has
+    // lost that colour's signal there (the debayer, and the mono stack of the mosaic, both carry the
+    // clipped value); here the bright centre (40 % of the disc) has its R and both G sites at full scale
+    // and B at 0.85 -- a saturated disc by the spec's "the target is saturated in most frames".
+    const int w = 320, h = 240;
+    const double cx = 161.3, cy = 119.6, R = 40, rc = R * std::sqrt(0.40);
+    auto render = [&](uint16_t sky) {
+        ser::Frame f;
+        f.width = w;
+        f.height = h;
+        f.channels = 1;
+        f.samples.assign(static_cast<size_t>(w) * h, sky);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const double r = std::hypot(x - cx, y - cy);
+                const bool blue = (x % 2 == 1) && (y % 2 == 1);  // RGGB: B at odd x, odd y
+                uint16_t v = sky;
+                if (r < rc) v = blue ? 217 : 255;
+                else if (r < R) v = static_cast<uint16_t>(150 + 40 * (1 - r / R));
+                f.samples[static_cast<size_t>(y) * w + x] = v;
+            }
+        return f;
+    };
+    for (const ser::ColorId colour : {ser::ColorId::BayerRGGB, ser::ColorId::Mono}) {
+        ser::FileInfo info;
+        info.header.width = w;
+        info.header.height = h;
+        info.header.depth = 8;
+        info.colorId = colour;
+        info.normDepth = 8;
+        if (colour == ser::ColorId::Mono) {  // an AVI with no sidecar: an undeclared mosaic (Ruling P9)
+            info.avi.emplace();
+            info.avi->bayerSource = "none";
+        }
+        INFO((colour == ser::ColorId::Mono ? "undeclared mosaic" : "declared RGGB"));
+        if (colour == ser::ColorId::Mono) REQUIRE(stack::UndeclaredMosaic(info));
+        std::vector<FrameStats> stats;
+        for (int k = 0; k < 20; ++k) {
+            const FrameStats s = MeasureFrame(stack::MeasurementLuma(render(static_cast<uint16_t>(8 + k % 3)), info), k, stack::LumaScale(info));
+            REQUIRE(s.targetFound);
+            stats.push_back(s);
+        }
+        INFO("clipped fraction " << stats[0].clippedFraction << " (limit " << stack::kClippedFrame << ")");
+        CHECK(stats[0].clippedFraction >= stack::kClippedFrame);
+        CHECK(stack::SelectFrames(stats, info).diagnosis.kind == stack::DiagnosisKind::Clipped);
+    }
+}
