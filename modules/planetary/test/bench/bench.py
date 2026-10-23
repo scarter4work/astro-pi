@@ -165,13 +165,15 @@ def status_of(rows: List[dict], run_id: str = "", split_half: Optional[dict] = N
                 bare_alt = f"{_f(ours.get('end_uncharged_alt_ratio'), '{:.3f}')}" + (
                     f" / {_f(ours.get('end_interior_uncharged_alt_ratio'), '{:.3f}')}" if judged else "")
                 return "review", reasons + [f"{CHARGE_NOTE} (on the bare budget ours is {bare}; with the mean-kept "
-                                            f"k {bare_alt})"] + notes
+                                            f"k {bare_alt})"] + notes + list(ours["review"])
         setters = _setters(rows, "end") + (_setters(rows, "end_interior") if judged else [])
         unsound = [r for r in setters if (r.get("provenance") or {}).get("state") != "none"]
         if unsound:
             return "review", reasons + [C1_NOTE + ": " + "; ".join(
-                f"{r['label']}: {(r.get('provenance') or {}).get('text', 'no provenance')}" for r in unsound)] + notes
-        return "fail", reasons + [f"{r['label']}: {r['provenance']['text']}" for r in setters] + notes
+                f"{r['label']}: {(r.get('provenance') or {}).get('text', 'no provenance')}" for r in unsound)] \
+                + notes + list(ours["review"])
+        return "fail", reasons + [f"{r['label']}: {r['provenance']['text']}" for r in setters] + notes \
+            + list(ours["review"])        # a review note never turns a fail into review (Task 9), but it is shown
     if ours.get("end_noise_factor") is None or ours.get("end_alt_noise_factor") is None:
         return "review", [UNCHARGED_NOTE] + notes + list(ours["review"])
     if split_half is not None and split_half.get("status") == "outside":   # either direction (review I-G)

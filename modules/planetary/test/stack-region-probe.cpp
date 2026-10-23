@@ -2,7 +2,7 @@
 // case. Reads the video only.
 //
 //   stack-region-probe <video> [--frames N] [--threads T] [--out DIR] [--bayer auto|none|RGGB|GRBG|GBRG|BGGR]
-//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only]
+//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only] [--fits-out DIR]
 //
 // Runs the engine's flow on the first N frames (default: all) on T threads (default: hardware):
 // FitNoiseModel -> MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
@@ -23,6 +23,10 @@
 // and the outside-frame weight are left out. --json-out writes it with the plan's per-region kept
 // counts (the bench checks them against stack-probe's, the engine's own run). --plan-only stops
 // after the plan (no pass B). --bayer as stack-probe's (default Auto: the sidecar or the header).
+// The JSON also carries keffBoxGlobal, the same over the global-only plan (every planned frame, equal
+// weight). --fits-out DIR writes DIR/ours.fits (the region stack) and DIR/global.fits (the global-only
+// stack of the same frames), 32-bit float as stack-probe's --out: for the bench's split-half triage
+// (P28 fix round 3, review I-E: is a half-to-half excess the region stage's or the frames'?).
 #include <algorithm>
 #include <array>
 #include <map>
@@ -45,6 +49,7 @@
 #include "Measure.h"
 #include "Regions.h"
 #include "Select.h"
+#include "ProbeFits.h"
 
 using namespace planetary;
 
@@ -272,7 +277,7 @@ int main(int argc, char** argv) try {
     const std::string path = argv[1];
     int64_t limit = INT64_MAX;
     int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    std::string out, jsonOut;
+    std::string out, jsonOut, fitsOut;
     ser::BayerChoice bayer = ser::BayerChoice::Auto;
     bool planOnly = false;
     std::optional<std::array<int, 4>> keffBox;
@@ -289,6 +294,7 @@ int main(int argc, char** argv) try {
         } else if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
         else if (a == "--threads" && i + 1 < argc) threads = std::max(1, std::atoi(argv[++i]));
         else if (a == "--out" && i + 1 < argc) out = argv[++i];
+        else if (a == "--fits-out" && i + 1 < argc) fitsOut = argv[++i];
         else throw std::invalid_argument("unknown argument " + a);
     }
     const stack::SourceFactory factory = [&] {
@@ -437,13 +443,14 @@ int main(int argc, char** argv) try {
     if (keffBox) {
         const auto& b = *keffBox;
         const double keff = BoxKeff(plan, b[0], b[1], b[2], b[3], scale);
+        const double keffGlobal = BoxKeff(global, b[0], b[1], b[2], b[3], scale);
         std::printf("keff     %.2f over the box y %d-%d, x %d-%d (stacked %lld)\n", keff, b[0], b[1], b[2], b[3],
                     static_cast<long long>(plan.stackedCount));
         if (!jsonOut.empty()) {
             std::FILE* f = std::fopen(jsonOut.c_str(), "w");
             if (!f) throw std::runtime_error("cannot write " + jsonOut);
-            std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"box\": [%d, %d, %d, %d], \"regionKept\": [",
-                         static_cast<long long>(plan.stackedCount), keff, b[0], b[1], b[2], b[3]);
+            std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"keffBoxGlobal\": %.6f, \"box\": [%d, %d, %d, %d], \"regionKept\": [",
+                         static_cast<long long>(plan.stackedCount), keff, keffGlobal, b[0], b[1], b[2], b[3]);
             for (size_t r = 0; r < plan.detail.size(); ++r)
                 std::fprintf(f, "%s%lld", r ? ", " : "", static_cast<long long>(plan.detail[r].kept));
             std::fprintf(f, "], \"regionSize\": %d, \"nodes\": [%d, %d], \"flatEdges\": %s}\n", layout.size, layout.nx,
@@ -485,6 +492,11 @@ int main(int argc, char** argv) try {
                 "pass B (both stacks) %.2f s\n",
                 tMeasure, tRef, tPassA, regionNs.load() / 1e6 / std::max<int64_t>(1, n), observeNs.load() / 1e6 / std::max<int64_t>(1, n), tPlan, tPassB);
 
+    if (!fitsOut.empty()) {
+        probe::WriteFits(fitsOut + "/ours.fits", ours);
+        probe::WriteFits(fitsOut + "/global.fits", base);
+        std::printf("wrote    %s/{ours,global}.fits\n", fitsOut.c_str());
+    }
     if (!out.empty()) {
         std::vector<float> v(ours.data.begin(), ours.data.end());
         std::sort(v.begin(), v.end());

@@ -216,3 +216,15 @@ def test_our_box_k_is_taken_only_from_a_plan_that_matches_runstack():
     assert k is None and "not computed" in why
     # the flip check: used x the unweighted mean kept fraction, a no-frame region counting 1
     assert benchset.ours_frames_mean(probe) == pytest.approx(100 * (0.8 + 1.0) / 2)
+
+
+def test_a_fail_keeps_its_review_notes_in_the_reasons():
+    """Fix round 3: a limb-only capture failing on the numbers (Mars) lost its limb-only note. A note
+    still never turns a fail into review (Task 9's rule), but it is shown on every path."""
+    rows = _rows(0.9, 0.9, True, ["limb-only: human review decides"])
+    st, why = bench.status_of(rows)
+    assert st == "fail" and "limb-only: human review decides" in why
+    rows[0].update(end_noise_factor=[2.0] * 8, end_alt_noise_factor=[2.0] * 8, end_uncharged_ratio=1.2,
+                   end_interior_uncharged_ratio=1.2, end_uncharged_alt_ratio=1.2, end_interior_uncharged_alt_ratio=1.2)
+    st, why = bench.status_of(rows)
+    assert st == "review" and any(bench.CHARGE_NOTE in w for w in why) and "limb-only: human review decides" in why

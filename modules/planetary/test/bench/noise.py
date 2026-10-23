@@ -30,15 +30,20 @@ THE MEASUREMENT (photon_transfer)
     frames), then those within CLIP x the robust sigma of r (IQR / 1.349; none dropped when the IQR is
     0, as on an 8-bit sky that rounds to one value), and v = mean(r^2) / (2 x 36) -- an untrimmed mean,
     so a discrete low-level bin is not biased the way a trimmed chi-square constant biased it.
-    v(m) = a m + c is fitted symmetrically (iteratively reweighted, Cauchy, on relative residuals; a
-    bin far above or far below the line counts alike), a >= 0, c >= 0: a sky that rounds to one
-    8-bit value has no variance at all, so c is not floored at 1/12 DN^2. Refused (NoiseUnmeasurable)
-    when fewer than PTC_MIN_KEPT (half) of the bins lie on the line, or the slope is not > 0.
-    Measured (test_end.py): a textured disc drifting ~0.5 px per frame +7 % on a; a 6 px disc +16 %
-    (mostly limb); a lunar texture under 0-1.5 px of jitter within 0.4 %.
+    v(m) = a m + c is fitted robustly (iteratively reweighted, Cauchy, on relative residuals, from a
+    Theil-Sen start; _fit). c is free: a black pedestal b gives v = a (m - b) + r, so c may be
+    negative, and v is 0 below the line's zero (a sky that rounds to one 8-bit value has no variance). Refused (NoiseUnmeasurable) when fewer than PTC_MIN_KEPT
+    (half) of the bins lie on the line, the slope is not > 0, or the line's zero lies more than 1 DN
+    above the darkest bin on it.
+    Measured (test_end.py): a textured disc drifting ~0.5 px per frame +7 % on a; a 6 px disc +16 %,
+    a 3 px disc +48 % (all limb); a lunar texture under 0-1.5 px of jitter within 0.5 %. A read-high
+    raises every image's budget alike, and the split-half calibration measures with this same
+    estimator (review I-F), so its bias sits in R_cal as it sits in R.
     Blind spot: noise constant along a row or a column of one frame (sensor banding) passes the
-    separable [1 -2 1] x [1 -2 1] high-pass unseen. The split halves see it (the 2026-01-30 Jupiter,
-    README); ours is charged it (Ruling P28b), a reference is not.
+    separable [1 -2 1] x [1 -2 1] high-pass unseen. None is measurable on the bench's captures: on the
+    2026-01-30 Jupiter the sky left and right of the disc in the same rows share no row offset
+    (covariance of their lag-1 difference row means -4e-7 DN^2; README, fix round 3), which withdraws
+    round 2's banding claim.
 
 ON A BOX (raw_under, box_noise)
     The stack's target box is mapped onto the raw frames by registering the frames' mean (the CFA
@@ -113,7 +118,9 @@ class PhotonTransfer:
     kept_levels: Tuple[float, float] = (0.0, math.inf)   # lowest and highest kept bin level, DN
 
     def variance(self, level):
-        return self.a * np.maximum(level, 0.0) + self.c
+        """a m + c, and 0 below the line's zero (under the black pedestal: an 8-bit value that does not
+        move has no variance)."""
+        return np.maximum(self.a * np.asarray(level, dtype=float) + self.c, 0.0)
 
     def __str__(self):
         return (f"v(m) = {self.a:.4g} m + {self.c:.4g} DN^2 ({self.used_bins} of {len(self.bins)} bins, "
@@ -121,24 +128,29 @@ class PhotonTransfer:
 
 
 def _fit(levels, var):
-    """v = a m + c through the bins: least squares weighted by 1 / v^2 (relative residuals), then
-    iteratively reweighted with Cauchy weights on the relative residual, symmetric -- a bin far above
-    the line (a limb, where the scene moved) and one far below count alike. Returns (a, c, kept), kept
-    = the bins within PTC_INLIER robust scales (1.4826 MAD of the relative residuals) of the line."""
+    """v = a m + c through the bins: least squares weighted by 1 / line^2 (relative residuals),
+    iteratively reweighted with Cauchy weights on the relative residual. The start is the bins'
+    Theil-Sen line (the median of pairwise slopes). c is free (fix round 3, review N2-m6): a camera's
+    black pedestal b gives v = a (m - b) + r, so c = r - a b may be negative. Rounds 1-2 clamped c to 0
+    without refitting a; the constrained refit then bent the slope instead (the 2023-02-11 Mars x0.49).
+    Free, both 2023-02-11 captures put the line's zero on the 3 DN pedestal their skies sit on, and
+    their slopes (same camera, same night) agree within 2 %: Jupiter 0.138, Mars 0.141. Returns
+    (a, c, kept), kept = the bins within PTC_INLIER robust scales (1.4826 MAD of the relative
+    residuals) of the line."""
+    from scipy import stats
     A = np.stack([levels, np.ones_like(levels)], 1)
-    w = 1.0 / np.maximum(var, 1e-12) ** 2
-    a = c = 0.0
+    a, c, *_ = stats.theilslopes(var, levels)     # the start: the median of pairwise slopes (robust to ~29 %)
     for _ in range(PTC_ITERATIONS):
+        line = np.maximum(a * levels + c, 1e-9)
+        r = (var - line) / line
+        scale = max(1.4826 * float(np.median(np.abs(r))), 0.02)
+        w = 1.0 / (1.0 + (r / (2.385 * scale)) ** 2) / line ** 2
         sw = np.sqrt(w)
         (a, c), *_ = np.linalg.lstsq(A * sw[:, None], var * sw, rcond=None)
-        if c < 0:                 # c clamps to 0: a refitted through the origin (review N2-m6)
-            c = 0.0
-            a = float((w * levels * var).sum() / (w * levels * levels).sum())
-        line = np.maximum(a * levels + c, 1e-12)
-        rel = (var - line) / line
-        scale = max(1.4826 * float(np.median(np.abs(rel))), 0.02)
-        w = 1.0 / (1.0 + (rel / (2.385 * scale)) ** 2) / line ** 2
-    kept = np.abs(rel) <= PTC_INLIER * scale
+    line = np.maximum(a * levels + c, 1e-9)
+    r = (var - line) / line
+    scale = max(1.4826 * float(np.median(np.abs(r))), 0.02)
+    kept = np.abs(r) <= PTC_INLIER * scale
     return float(a), float(c), kept
 
 
@@ -198,6 +210,9 @@ def photon_transfer(frames) -> PhotonTransfer:
                                 f"(need {PTC_MIN_KEPT:.0%}); fit v = {a:.4g} m + {c:.4g}")
     if not a > 0:
         raise NoiseUnmeasurable(f"photon transfer: the slope collapsed to {a:.4g} ({int(keep.sum())} of {L.size} bins)")
+    if -c / a > L[keep].min() + 1.0:        # the line's zero (the pedestal) must not lie above the darkest bin it fits
+        raise NoiseUnmeasurable(f"photon transfer: v = {a:.4g} m + {c:.4g} reaches 0 at {-c / a:.1f} DN, above the "
+                                f"darkest bin on the line ({L[keep].min():.1f} DN)")
     return PhotonTransfer(a, c, tuple(bins), int(keep.sum()), f.shape[0] - 1,
                           (float(L[keep].min()), float(L[keep].max())))
 

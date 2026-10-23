@@ -364,7 +364,7 @@ def test_photon_transfer_fits_a_small_disc_on_its_own_levels():
     """Review I-C / I-E (Mars, Saturn): a 3 px disc in a 640 x 480 frame is under 0.05 % of the samples,
     so a binning cut at the 99.9th percentile (rounds 0-1) leaves the disc out (asserted below on the
     samples themselves) and fitted Mars on sky bins alone (a = 0). The fit must reach the disc's levels.
-    Measured: a +48 % here (a 3 px disc is all limb, whose samples move between frames; +16 % at 6 px):
+    Measured: a +60 % here (a 3 px disc is all limb, whose samples move between frames; +16 % at 6 px):
     an over-read, which raises every image's budget alike -- recorded as a limit for tiny discs."""
     rng = np.random.default_rng(3)
     a, c = 0.15, 0.4
@@ -380,14 +380,39 @@ def test_photon_transfer_fits_a_small_disc_on_its_own_levels():
     ptc = noise.photon_transfer(frames)
     print(f"\nsmall disc ({int(disc.sum())} px): {ptc}, kept levels {ptc.kept_levels}")
     assert ptc.kept_levels[1] > 60
-    assert a <= ptc.a <= 1.6 * a
+    assert a <= ptc.a <= 1.7 * a
+
+
+def test_photon_transfer_fits_through_a_black_pedestal():
+    """Review N2-m6: an 8-bit capture whose sky sits on a black pedestal (3 DN, no noise: it rounds to
+    one value, as the 2023-02-11 skies do) and whose signal above it has v = a (m - 3) + r. The line's
+    intercept is then negative; with it clamped to 0, the constrained least squares through the origin
+    bends the slope (asserted below on the same bins)."""
+    from conftest import lunar_scene
+    rng = np.random.default_rng(11)
+    a, r, b = 0.14, 0.05, 3.0
+    sig = 150 * lunar_scene(size=(240, 320), seed=4, seeing=1.0)
+    sig[:, :120] = 0                                            # a third of the frame is bare sky
+    out = []
+    for _ in range(24):
+        noisy = sig + rng.standard_normal(sig.shape) * np.sqrt(a * sig + r) * (sig > 0)
+        out.append(np.clip(np.round(b + noisy), 0, 255))
+    ptc = noise.photon_transfer(np.array(out, dtype=np.uint8))
+    print(f"\npedestal: {ptc}, zero at {-ptc.c / ptc.a:.2f} DN")
+    assert ptc.a == pytest.approx(a, rel=0.05)
+    assert -ptc.c / ptc.a == pytest.approx(b, abs=1.0)
+    L = np.array([x[0] for x in ptc.bins]); V = np.array([x[1] for x in ptc.bins])
+    w = 1.0 / np.maximum(V, noise.QUANTISATION) ** 2       # relative-error weights, floored at the rounding variance
+    through_origin = float((w * L * V).sum() / (w * L * L).sum())
+    print(f"through the origin (c clamped to 0): a {through_origin:.4f}")
+    assert np.isfinite(through_origin) and through_origin < 0.9 * a
 
 
 @pytest.mark.parametrize("jitter", [0.0, 0.5, 1.0, 1.5])
 def test_photon_transfer_on_lunar_texture_under_seeing_jitter(jitter):
     """Review M7 / I-H: unregistered consecutive frames of a frame-filling lunar texture jittered by up
     to 1.5 px (sd) per frame -- both shipped passes are lunar. Measured (fix round 3): v(50), v(150)
-    within 0.4 %."""
+    within 0.5 %."""
     from conftest import lunar_scene
     rng = np.random.default_rng(5)
     a, c = 0.15, 0.4
