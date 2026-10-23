@@ -635,11 +635,16 @@ std::string FocusWarning(const FocusCheck& c) {
 std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames) {
     if (detail.empty()) return "no region holds detail to rank on, so the " + Count(alignedFrames) + " aligned frames are stacked whole";
     std::vector<int64_t> k;
-    int64_t none = 0;
+    int64_t none = 0, sky = 0;
     for (const RegionDetail& d : detail)
-        if (d.kept > 0) k.push_back(d.kept);
+        if (d.skyOnly) ++sky;  // its stack never reaches the image (RegionDetail::skyOnly)
+        else if (d.kept > 0) k.push_back(d.kept);
         else ++none;
-    const int64_t regions = static_cast<int64_t>(detail.size());
+    const int64_t regions = static_cast<int64_t>(detail.size()) - sky;
+    const std::string skyPart = sky > 0 ? Count(sky) + " over the sky only, outside the target's blend mask, where the stack is the mean of the " +
+                                              Count(stackedFrames) + " stacked frames"
+                                        : "";
+    if (regions == 0) return "no region on the target's detail; " + skyPart;
     std::string out = Plural(regions, "region", "regions") + " placed on the target's detail";
     if (!k.empty()) {
         std::sort(k.begin(), k.end());
@@ -654,6 +659,7 @@ std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t aligne
     if (none > 0)
         out += (k.empty() ? ": " : " ") + Count(none) + " with no detail above the measurement noise taking the mean of the " +
                Count(stackedFrames) + " stacked frames";
+    if (sky > 0) out += "; " + skyPart;
     return out;
 }
 

@@ -91,9 +91,10 @@ struct Region {
 // the masked weights: the frames' weights still sum to 1.
 //  - The sky's level: for a disc, the median of the reference outside the target's box; for a frame-filling
 //    target, which has no outside, the kSkyQuantile of the reference's 3 x 3 means -- and there it is sky
-//    only when at least kMinSkyShare of the frame lies under the threshold below; otherwise the darkest end
-//    is surface and there is no mask (every region kept; maria, far above a sky's level, keep theirs
-//    anyway: test "The blend mask is 1 over the target ...").
+//    only when it sits far below the target, at most kMaxSkyLevel of the target's mean level, and at least
+//    kMinSkyShare of the frame lies under the threshold below; otherwise the darkest end is surface (a dark
+//    mare, its own shadow) and there is no mask, every region kept (tests "The blend mask is 1 over the target
+//    ..." and "A frame-filling surface's dark mare keeps its regions ...").
 //  - Seeds: pixels whose 3 x 3 reference mean stands above that level by max(kMaskSigmas x a frame's noise
 //    at the level -- the capture's model (Noise.h); the reference's own reading, EstimatePixelNoise, when
 //    unmeasured, and never below it -- , kMaskContrast x the target's mean level over it (FrameStats::
@@ -125,11 +126,18 @@ struct Region {
 //    tied to a measured limb blur: the seeds are thresholded on the reference, a blurred mean of frames, so
 //    they already reach through its limb spread, and the grow only has to cover how much sharper the kept
 //    frames are -- over 2-8 px nothing measured moved;
-//  - kSkyQuantile 0.01 and kMinSkyShare 0.05: on the frame-filling Moons with sky the mask is under 1 over
-//    31-56% of the frame (2023-03-05 0.41, 2023-08-22 0.56; 2023-02-02 202030 0.31 and 2026-01-30 193142 0.42 on
-//    their first 300 frames; the sky by eye), so their share under the threshold is at least that; a synthetic
-//    surface without sky (MakeSurface, noise 0.0025) puts 0.018 of its pixels (not 3 x 3 means) under it.
-//    No real capture without sky was at hand.
+//  - kMaxSkyLevel 0.09, kMinSkyShare 0.015, kSkyQuantile 0.01 (fix round 2, review N1: the share alone gave a
+//    dark mare's regions to the fallback and missed a sliver of sky). The level over the target's mean level,
+//    measured 2026-10-23 (stack-region-probe's "masksky" line, the fix-round-2 tree): 0.025-0.052 on every
+//    frame-filling Moon with sky (2023-03-05 0.028, 2023-08-22 0.052; 2023-02-02 202030 0.042, 2026-01-30
+//    193142 0.025 and 193554 0.028 on their first 300 frames) and 0.028-0.079 on the discs (Saturn 0.079 the
+//    highest), against 0.173 for the test's dark mare (0.3 of the surface, frame noise 0.02, 20% of the frame;
+//    unguarded it lost 2170 of its 15311 px to m < 1) and 0.011 for its sky sliver. 0.09 is near the geometric
+//    mean of 0.052 and 0.173 (1.7x over the highest real sky, 1.9x under the mare); a mare darker still, or
+//    shadow at a sky's level, is masked -- the fallback there, where shadow has no lucky detail. The share
+//    under the threshold: 0.32-0.57 on those Moons, 0.022 for the 2.3% sliver (masked now; at 0.05 it was not),
+//    0.067 for the mare; 0.015 keeps the dark end a population, not just the quantile's own tail. No real
+//    capture without sky was at hand.
 // The measured residual, accepted (fix round 1 ruling): just outside a Moon's mask the region stacks' glow is
 // darker than the fallback's -- 5.7-6.4e-4 below the sky 40 px out on the 2023-02-12 Moon, ~3% of its sky, over
 // ~10 luma px (the taper and grow), at grow 2-8 / taper 4-8 alike (stack-region-probe, 687fcb09's tree, mean
@@ -137,14 +145,16 @@ struct Region {
 // stacks' darker glow covered their whole windows; removing it at the limb would take the fallback's low
 // frequencies under the regions' detail, a separately accumulated fallback.
 // Regions whose whole window lies where m is 0 (sky only) still rank and keep frames: their kept frames are
-// among the stacked ones the fallback averages (RegionPlan::stacked), and the summary counts them with the
-// rest. Dropping their picks would not quiet the sky -- it would shrink the fallback's frame set.
+// among the stacked ones the fallback averages (RegionPlan::stacked); the summary lists them apart from the
+// regions on the target (RegionDetail::skyOnly, RegionPhrase; none on the eleven captures of the "masksky" runs).
+// Dropping their picks would not quiet the sky -- it would shrink the fallback's frame set.
 constexpr double kMaskSigmas = 2.0;
 constexpr double kMaskContrast = 0.02;
 constexpr double kMaskGrow = 4.0;
 constexpr double kMaskTaper = 6.0;
 constexpr double kSkyQuantile = 0.01;
-constexpr double kMinSkyShare = 0.05;
+constexpr double kMinSkyShare = 0.015;
+constexpr double kMaxSkyLevel = 0.09;
 struct BlendMask {
     int x0 = 0, y0 = 0, width = 0, height = 0;  // the luma rectangle it covers
     // width x height, row-major; null: 1 everywhere. Shared, so the copies of a layout share one mask.
@@ -152,6 +162,9 @@ struct BlendMask {
     bool Empty() const { return !m; }
     // The mask at luma coordinate (u, v) (pixel centres at integers): bilinear; 1 when empty; beyond the rectangle, its nearest edge.
     double At(double u, double v) const;
+    // What it was judged on (RegionBlendMask; 0 when it was not reached): the sky level, the target's mean level
+    // and the share of the frame under the seed threshold.
+    double skyLevel = 0, targetLevel = 0, shareUnder = 0;
 };
 
 // Regions sit on a regular grid of square windows of side `size` with half overlap: node (i, j)'s
@@ -357,6 +370,10 @@ struct RegionDetail {
     // Ruling P27 (PlanRegions): no detail to rank above the measurement noise (kept 0: the fallback's
     // plain mean).
     bool noiseOnly = false;
+    // Its whole window lies where the layout's blend mask is 0 (sky only): it ranks and keeps frames as any region
+    // (they join the fallback's, RegionPlan::stacked), but its own stack never reaches the image, and the summary
+    // does not count it as placed on the target's detail (RegionPhrase).
+    bool skyOnly = false;
 };
 
 // A region's detail is real when its median candidate's quality is at least this many of its own

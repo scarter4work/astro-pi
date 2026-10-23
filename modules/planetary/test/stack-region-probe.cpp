@@ -29,7 +29,8 @@
 // stack of the same frames), 32-bit float as stack-probe's --out: for the bench's split-half triage
 // (P28 fix round 3, review I-E: is a half-to-half excess the region stage's or the frames'?). --mask-out FILE
 // writes the blend mask on the luma grid (1 everywhere when the layout has none) to FILE and the reference
-// to FILE.ref.fits (E1: where the regions blend). The "mask" line prints its extent and how much of it is 1.
+// to FILE.ref.fits (E1: where the regions blend). The "mask" line prints its extent and how much of it is 1; the
+// "masksky" line what it was judged on (BlendMask::skyLevel, targetLevel, shareUnder) and the sky-only regions.
 #include <algorithm>
 #include <array>
 #include <map>
@@ -460,6 +461,20 @@ int main(int argc, char** argv) try {
         const double n = static_cast<double>(mask.m->size());
         std::printf("mask     over luma x %d-%d, y %d-%d: %.1f%% of it 1, %.1f%% tapering, the rest 0 (the fallback alone)\n", mask.x0,
                     mask.x0 + mask.width, mask.y0, mask.y0 + mask.height, 100 * full / n, 100 * part / n);
+    }
+    {
+        // What the mask was judged on, and the regions whose window it leaves at 0 throughout (sky only).
+        int skyOnly = 0;
+        if (!mask.Empty())
+            for (const stack::Region& g : layout.regions) {
+                double mx = 0;
+                for (int y = g.y0; y < g.y1; ++y)
+                    for (int x = g.x0; x < g.x1; ++x) mx = std::max(mx, mask.At(x, y));
+                skyOnly += mx == 0;
+            }
+        std::printf("masksky  sky level %.5f, target level %.5f (sky / target %.4f), share under the seed threshold %.4f; %d of %zu regions sky only\n",
+                    mask.skyLevel, mask.targetLevel, mask.targetLevel > 0 ? mask.skyLevel / mask.targetLevel : 0.0, mask.shareUnder, skyOnly,
+                    layout.regions.size());
     }
     if (!maskOut.empty()) {
         ser::FloatImage mi{ref.width, ref.height, 1, std::vector<float>(ref.data.size(), mask.Empty() ? 1.f : 0.f)};

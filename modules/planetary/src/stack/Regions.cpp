@@ -411,12 +411,16 @@ BlendMask RegionBlendMask(const ser::FloatImage& reference, const FrameStats& re
     const double sigma = std::max(model.Measured() ? std::sqrt(std::max(0.0, model.VarianceAtMean(level))) : own, own);
     // Above the sky by kMaskSigmas of a frame's noise there and by kMaskContrast of the target's mean level over it.
     const double thr = level + std::max(kMaskSigmas * sigma, kMaskContrast * (refStats.brightness - level));
-    // A frame-filling target has sky only where at least kMinSkyShare of the frame lies under the threshold;
-    // otherwise its darkest end is surface, and the mask would be 1 everywhere: none.
-    if (lay.flatEdges) {
+    out.skyLevel = level;
+    out.targetLevel = refStats.brightness;
+    // A frame-filling target has sky only where its darkest end sits far below the target (at most kMaxSkyLevel of
+    // its mean level) and at least kMinSkyShare of the frame lies under the threshold; otherwise that end is
+    // surface -- a dark mare, shadow at its own level -- and there is no mask (every region kept).
+    {
         size_t under = 0;
         for (float v : mean3) under += !(v > thr);
-        if (static_cast<double>(under) < kMinSkyShare * static_cast<double>(mean3.size())) return out;
+        out.shareUnder = static_cast<double>(under) / static_cast<double>(mean3.size());
+        if (lay.flatEdges && (out.shareUnder < kMinSkyShare || !(level <= kMaxSkyLevel * refStats.brightness))) return out;
     }
     const double grow = kMaskGrow, taper = kMaskTaper;
     // The grid's extent (every node window; the whole image for flat edges, whose outer nodes reach the edge),
@@ -434,7 +438,7 @@ BlendMask RegionBlendMask(const ser::FloatImage& reference, const FrameStats& re
     for (int y = ey0; y < ey1; ++y)
         for (int x = ex0; x < ex1; ++x)
             f[static_cast<size_t>(y - ey0) * ew + (x - ex0)] = mean3[static_cast<size_t>(y) * W + x] > thr ? 0.0 : kFar;
-    mean3 = {};
+    std::vector<float>().swap(mean3);  // free it (assigning {} keeps the capacity)
     // Squared distance to the nearest seed: columns, then rows.
     const int longest = std::max(ew, eh);
     std::vector<double> line(static_cast<size_t>(longest)), d(static_cast<size_t>(longest)), z(static_cast<size_t>(longest) + 1);
@@ -860,6 +864,14 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
         }
     }
     plan.detail.resize(nr);
+    if (!layout.mask.Empty())
+        for (size_t r = 0; r < nr; ++r) {
+            const Region& g = layout.regions[r];
+            double top = 0;
+            for (int y = g.y0; y < g.y1 && top == 0; ++y)
+                for (int x = g.x0; x < g.x1 && top == 0; ++x) top = std::max(top, layout.mask.At(x, y));
+            plan.detail[r].skyOnly = top == 0;
+        }
     // Regions are independent: each band of regions writes only its own detail and flag entries.
     ParallelBands(static_cast<int>(nr), threads, [&](int r0, int r1) {
         for (size_t r = static_cast<size_t>(r0); r < static_cast<size_t>(r1); ++r) {
