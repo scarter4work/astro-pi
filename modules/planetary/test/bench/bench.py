@@ -489,10 +489,14 @@ def summary_md(records: List[dict]) -> str:
            "beyond the budget). C1 can only raise a reference's END, so a numeric **pass** is sound; a "
            "numeric fail against a reference whose processing is not known to be none is **review**.", "",
            "Status: **unmeasured** = END is missing for some image (no verdict; the reason is in the notes); "
-           "**pass** = END >= 0.97 under the charge on both readings of our k, no review note; **fail** = "
-           "END below 0.97 under both readings, against references whose files record no processing; "
-           "**review** = the rest, with the reasons. Every capture still needs Scott's look at "
-           "`<run>/side-by-side.png`.", ""]
+           "**pass** = END >= 0.97 under ours' measured-noise charge on both readings of our k, the split "
+           "halves within their kind's tolerance, no review note; **fail** = END below 0.97 under both "
+           "readings, and also with ours on the bare budget on both readings (P28c), against references "
+           "whose files record no processing; **review** = the rest, with the reasons (a verdict that "
+           "flips between the readings, a fail that does not hold on the bare budget, a fail against a "
+           "reference of unknown or processed provenance, a pass with ours uncharged, a pass whose split "
+           "halves lie outside the tolerance in either direction, a review note on a pass). Every capture "
+           "still needs Scott's look at `<run>/side-by-side.png`.", ""]
     stacked = [r for r in records if r["expect"] == "stack"]
     kinds = ("pass", "review", "fail", "unmeasured", "not run", "error")
     counts = {s: sum(1 for r in stacked if r["status"] == s) for s in kinds}

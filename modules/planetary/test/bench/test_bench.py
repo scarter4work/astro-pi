@@ -188,6 +188,9 @@ def test_summary_counts_and_lists_diagnosis_rows():
     assert "| r1 | RGGB | 9 / 10 | 9 (7) |" in md and "2.00 / 2.50 / -" in md and "0.800 / -" in md
     assert "not stacked" in md and "Ruling P28b" in md
     assert "| d1 | NoTarget | NoTarget | no | **pass** |" in md
+    # The header states status_of's rule, split-half tolerance and P28c included (re-review 3 N3-m5)
+    rule = next(line for line in md.split("\n") if line.startswith("Status:"))
+    assert "split halves within" in rule and "bare budget" in rule
 
 
 def test_detail_tiles_on_the_target_skip_the_limb():
