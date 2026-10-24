@@ -22,9 +22,10 @@ HALVES: is the excess the region stage's or the frames'?
     its power explained by a gain on A (a level or gain offset between kept subsets multiplies the
     texture), a local shift (dA/dy, dA/dx: the halves' regions registered differently) and a local
     blur (lap A). The decomposition takes D after the registration and ONE global gain only
-    (gain_only_difference), not after refined_difference's global gain-and-shift fit: that fit turns a
-    smooth gain field into a global pseudo-shift (a 3 % field read as a (0.10, -0.18) px shift on a
-    synthetic surface; test_triage.py), so the old decomposition read a level offset between kept subsets
+    (gain_only_difference), not after refined_difference's global gain-and-shift fit: that fit turned a
+    smooth gain field into a global pseudo-shift until bench6 (a 3 % field read as a (0.10, -0.18) px shift on a
+    synthetic surface; Ruling F5 fixed it there too: its shift is now fitted jointly with a level field), so the
+    old decomposition read a level offset between kept subsets
     as a local shift -- 0.13 gain, 0.82 shift for a pure gain field (final review, bench M4). The tiles'
     own shift terms now explain any shift, global or local. The R it prints is the bench's, with the tile
     shifts removed (Ruling P28d, fix round 4)."""

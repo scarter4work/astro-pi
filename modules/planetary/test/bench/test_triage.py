@@ -31,12 +31,13 @@ def test_decompose_reads_a_local_gain_difference_as_gain():
     print(f"\nlocal gain: {sh}")
     assert sh["gain"] > 0.5 and sh["gain"] > 3 * sh["shift"]
     assert sh["all"] >= sh["gain"] - 1e-9
-    # Why not after refined_difference: its global gain-and-shift fit reads this field as a pseudo-shift
-    # (triage.py module doc), which the tiles' shift terms then took for a local shift.
+    # Why not after refined_difference's old global fit: before bench6 it read this field as a pseudo-shift,
+    # (+0.10, -0.18) px (triage.py module doc), which the tiles' shift terms then took for a local shift. Since
+    # Ruling F5 its shift is fitted jointly with a level field and reads the field as no shift.
     import halves
     _, _, _, coef, _ = halves.refined_difference(A, B, tile=None)
-    print(f"refined_difference's global shift fit for the gain field: ({coef[1]:+.3f}, {coef[2]:+.3f}) px")
-    assert coef[1] == pytest.approx(0.10, abs=0.01) and coef[2] == pytest.approx(-0.18, abs=0.01)
+    print(f"refined_difference's global shift fit for the gain field: ({coef[1]:+.4f}, {coef[2]:+.4f}) px")
+    assert abs(coef[1]) <= 0.005 and abs(coef[2]) <= 0.005
 
 
 def test_decompose_reads_a_local_shift_as_shift():

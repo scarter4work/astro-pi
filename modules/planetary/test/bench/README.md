@@ -228,7 +228,8 @@ stand in for it.
 | Interior: an interior blur of sigma 1 behind a crisp limb | 19.75 -> 15.62 (2 x noise raises it to 21.34: C1) |
 | `noise.photon_transfer` (fix round 3: free intercept, Theil-Sen start): textured disc drifting 0.5 px per frame / a 3 px disc in 640x480 / lunar texture under 0-1.5 px jitter / a sky on a 3 DN black pedestal | a +7 % / +60 % / within 0.5 % / a +4 %, zero at 3.00 DN (with c clamped to 0, a reads x0.26) |
 | The calibration's pedestal synthetics (3 DN, c 0.05; fix round 4) | disc (12 runs, from calibration.json): a 0.1469-0.1752 m (j0.3 0.1469-0.1499; j0.7 0.1606-0.1752, 7-17 % high: the jitter read-high that sits in R_cal), c -0.468 to -0.317; lunar (12 runs): a 0.1487-0.1497, c -0.322 to -0.313; true 0.15 m - 0.317 |
-| P28d tile shifts: an engine-like local shift between the halves / noise only / B at twice the noise / a 2 % gain bump at a limb | charge at most 1.21 (4.91 without them) / 0.89-1.03 of the true model / charge 2.47-2.64 (2.5) / never less than without them (more: 5.05 against 2.79 in the lowest bin) |
+| P28d tile shifts: an engine-like local shift between the halves / noise only / B at twice the noise / a 2 % (5 %) gain bump at a limb | charge at most 1.21 / 0.90-1.04 of the true model / charge 2.47-2.66 (2.5) / never less than the bump itself charges (gain-only): 1.17 against 1.18 (1.92 against 1.82) in the lowest bin (bench6; until then the reference was the global fit, which read the bump partly as a shift: Ruling F5) |
+| Ruling F5: a smooth 3 % gain field between the halves, no shift (seeds 3 / 7) | the 0.21-0.30 band over the noise-only pair x1.006 / x0.998 against gain-only x1.005 / x0.994 (x1.512 / x2.016 before bench6); the global fit reads no shift (within 0.0022 px) |
 | `noise.photon_transfer` refuses: fewer than half the bins on the line; a collapsed slope; `box_noise` past 1.5 x the fitted levels | NoiseUnmeasurable (tests) |
 | `stack-region-probe --keff-selftest`: one region keeping 37 of 100 / the fallback / two blended nested regions (weights written from the layout geometry, not AxisWeightAt) | 37 / 100 / 62.83, all exact |
 | End to end through the engine: synthetic RGGB, known noise, the measured photon-transfer line, the region probe's k; both cases held out of the calibration | disc x0.960 (calibrated 0.862); lunar with per-frame seeing (30 % steady frames, the rest a further sigma 1.5 px; ruling E3), k 83 and 78 = its steady frames per half, x0.785 (0.861). With the half's 300 frames as k it would read x2.93. (Fix round 3 read k 18 and 16 on a static scene, an artefact of the generator's wrapped edge.) |
@@ -242,28 +243,50 @@ by the registration's integer shift; reviews N-m3, N2-m5). B is registered to A,
 Fourier shift, and refined by least squares: A ~ g B + dy dA/dy + dx dA/dx. D is (A - g B') / 2 on the
 box, and its power per END bin is compared with the model, sigma_frame^2 (1/k_A + 1/k_B) / 4. Without
 the refinement, a residual misregistration of hundredths of a pixel leaks signal into D: on the 13 px
-Mars disc, 0.017 px of it read as x10 the model.
+Mars disc, 0.017 px of it read as x10 the model. The shift (dy, dx) is fitted jointly with each 32 px
+tile's level field, a cubic that stays in D (Ruling F5, below).
 
 **Local registration is not charged (Ruling P28d, fix round 4).** After the global refinement, each
-32 px tile of the box has its own shift field removed: D ~ c + dy(u, v) dA/dy + dx(u, v) dA/dx, with dy
-and dx first order in the tile's coordinates. Only the shift terms are removed; the intercept is
-fitted so a level offset is not read as a shift, and stays in D. The engine's region stacks register
-region by region and blend with sin^2 weights between half-overlapping windows, so the halves' shift
-difference varies smoothly node to node; a first-order field per tile follows it, one constant shift
-per tile does not. Measured (`test_end.py`, a synthetic pair with that field: nodes 64 px apart,
-0.1 px sd per node, drawn 4 x finer and area-binned):
+32 px tile of the box has its own shift field removed: D ~ L(u, v) + dy(u, v) dA/dy + dx(u, v) dA/dx,
+with dy and dx first order in the tile's coordinates and L the tile's level field. Only the shift terms
+are removed; L is fitted so a level offset is not read as a shift, and stays in D. The engine's region
+stacks register region by region and blend with sin^2 weights between half-overlapping windows, so the
+halves' shift difference varies smoothly node to node; a first-order field per tile follows it, one
+constant shift per tile does not. Measured (`test_end.py`, a synthetic pair with that field: nodes 64 px
+apart, 0.1 px sd per node, drawn 4 x finer and area-binned; the noise-only and local-shift tests print
+these rows, at bench6 with the cubic level field):
 
 | D per END bin over the noise model | 0.06-0.09 | 0.09-0.12 | 0.12-0.15 | 0.15-0.30 |
 |---|---|---|---|---|
 | Noise only, no tile shifts | 0.97 | 0.91 | 0.93 | 0.93-1.03 |
-| Noise only, tile shifts removed | 0.90 | 0.89 | 0.93 | 0.91-1.03 |
-| Local shift, no tile shifts | 4.75 | 2.70 | 1.75 | 1.03-1.43 |
-| Local shift, one constant shift per tile | 2.77 | 1.69 | 1.31 | 1.04-1.15 |
-| Local shift, first-order field per tile (the bench) | 1.09 | 0.94 | 0.96 | 0.93-1.04 |
+| Noise only, tile shifts removed | 0.99 | 0.90 | 0.94 | 0.92-1.04 |
+| Local shift, no tile shifts | 5.44 | 3.11 | 1.94 | 1.04-1.51 |
+| Local shift, one constant shift per tile (fix round 4, one intercept per tile; a variant not in the tree) | 2.77 | 1.69 | 1.31 | 1.04-1.15 |
+| Local shift, first-order field per tile (the bench) | 1.19 | 0.98 | 0.97 | 0.95-1.05 |
 
 So the local-shift pair charges at most 1.21 against the noise-only pair, and B at twice the noise
-still charges 2.47-2.64 (2.5 expected). The fit costs 6 of each tile's 1024 noise degrees of freedom,
+still charges 2.47-2.66 (2.5 expected). The fit costs 6 of each tile's 1024 noise degrees of freedom,
 mostly in the lowest bins; the calibration measures with it, so that cost sits in R_cal as in R.
+(Fix round 4, with one intercept per tile, read 0.90 / 0.89 / 0.93 for noise only and 4.75 / 1.09 for
+the local shift without / with the tile shifts in the lowest bin.)
+
+**A level or gain difference is charged as itself (Ruling F5, bench6).** The halves' kept subsets
+differ in level and gain the way their shifts differ, smoothly across the frame. A level that slopes or
+bends within a tile correlates with the shift terms wherever A's own brightness has a slope, so with one
+intercept per tile (and none in the global fit) a smooth gain difference was fitted as a shift, and its
+removal wrote A's gradient into D. Each shift fit now carries a cubic level field per tile (the global
+one by Frisch-Waugh: both sides less their tiles' level fit); a cubic holds a field of period >= 128 px
+(nodes 64 px apart) across a 32 px tile to ~2 %. Measured on synthetics with known truth only
+(`test_end.py`; B = A x (1 + a 3 % field), no shift, noise 0.4 % of the mean, the 0.21-0.30 band over the
+noise-only pair, seeds 3 / 7):
+
+| Shift fits' level field | one intercept (until bench6) | first order | second order | cubic (the bench) | gain-only difference (the truth) |
+|---|---|---|---|---|---|
+| 0.21-0.30 band over the noise-only pair | x1.512 / x2.016 | x1.147 / x1.303 | x1.025 / x1.031 | x1.006 / x0.998 | x1.005 / x0.994 |
+
+The global fit read the field as a (+0.0989, -0.1810) px shift (seed 3) before, within 0.0022 px now. A
+2 % gain bump at a limb charges x1.17 in the lowest bin with the tiles against x1.18 for the bump itself
+(gain-only); before bench6 the shift fits read it as x5.05 (tiles) and x2.79 (global only).
 The cost depends on the box. The calibration's disc boxes hold 16 tiles each (calibration.json tiles.n); every real disc
 box is one tile (48x48 to 57x48). Measured at c3762719 (noise-only synthetic disc pairs, tile fit
 against global refinement only, mean of 16 noise seeds): one tile (56x58 box) reads 1.001 1.004 0.999
@@ -326,7 +349,13 @@ lunar runs, an artefact of the generator's wrapped edge, `e3-report.md`).
   * after the round-4 real run (2026-10-23 14:42-14:56; frozen 14:41), the 2023-02-12 Moon's clipped
     south limb showed the tile fit can raise D. Two alternatives were measured then and not adopted
     (a smoothly interpolated shift field under-charges a level offset; keeping each tile's mean leaves
-    more of a local shift), and the procedure is unchanged: the run stands on the frozen calibration.
+    more of a local shift), and the procedure is unchanged: the run stands on the frozen calibration;
+  * bench6 changed `refined_difference` after the final fix round's real run (b35e770c) had been read:
+    every shift fit now carries a cubic level field per tile (Ruling F5, above). The defect was found
+    on synthetics (the final fix round's report, concern 1; measured again by its re-review) and the
+    change was decided and proven on synthetics with known truth only (`test_end.py`: the gain-only
+    pairs, the shift-only and noise-only tests unchanged and passing); no real capture was opened to
+    choose it. `calibration.json` was re-frozen with it before the bench6 real run.
 
 **Use:**
 * **The charge (Ruling P28b).** Ours is charged N(f) = budget x max(1, R(f) / R_cal(f)) per END bin,
@@ -385,7 +414,7 @@ removed, Ruling P28d) and decomposes D of each tile by tile (32 px) in the END b
 level or gain offset between kept subsets multiplies the texture), a shift (the halves registered
 differently, locally or as a whole) and a local blur. D is taken after the registration and one global
 gain only: fix round 3's decomposition took it after `refined_difference`'s global gain-and-shift fit,
-which turns a smooth gain field into a pseudo-shift, so it read a level offset as a local shift (a pure
+which turned a smooth gain field into a pseudo-shift until bench6 (Ruling F5), so it read a level offset as a local shift (a pure
 3 % gain field: 0.13 gain / 0.82 shift; `test_triage.py`, final review M4). Re-measured with the fixed
 decomposition on the final fix round's run (calibration b35e770c; `triage.py halves`, at 047d3c50's
 triage):

@@ -14,7 +14,9 @@ THE RATIO (ratio). Stack A (even) and stack B (odd) are each stacked by the engi
 to A (refs.register) and moved onto A's grid by an exact Fourier shift (it keeps B's power spectrum);
 D = (A - B) / 2, after B's gain, a residual global shift and each 32 px tile's local shift field are
 removed (refined_difference; the tiles: Ruling P28d, fix round 4 -- the halves' region stacks register
-differently region by region, and that is registration, not noise). Where the halves agree on the
+differently region by region, and that is registration, not noise). Every shift is fitted jointly with a
+level field that stays in D (Ruling F5, bench6): a level or gain difference between the halves is charged as
+itself, never read as a shift. Where the halves agree on the
 signal, D is noise only, of power (N_A + N_B) / 4.
 END's model says N = sigma_frame^2 / k, so D's model is sigma_frame^2 (1/k_A + 1/k_B) / 4 on A's
 target box: sigma_frame^2 from the raw frames (noise.box_noise), k_A and k_B each half's own
@@ -47,7 +49,9 @@ stale probes), and bench.py report gives every stacked run NO VERDICT (unmeasure
 split-half ratios, and procedure changes followed real results: the global refinement in
 refined_difference after Mars's real x10.3 (review N2-m7); the photon-transfer fit's free intercept
 after a through-origin refit read Mars's real END ratio as 0.950 (re-review 3 N3-m2); the tile shifts,
-the log-scale tolerance and the pedestal runs (fix round 4) after fix round 3's real ratios (README).
+the log-scale tolerance and the pedestal runs (fix round 4) after fix round 3's real ratios (README); the level field
+the shift fits carry (refined_difference, Ruling F5, bench6) after the final fix round's real run -- decided and
+proven on synthetics with known truth only (test_end.py), no capture opened to choose it.
 
 USE. bench.status_of: a capture whose 0.21-0.30 ratio lies outside its kind's tolerance, in either
 direction, cannot pass (review I-G) -- above it the model does not hold what the halves measure, below
@@ -167,32 +171,69 @@ def _tile_edges(n, tile):
     return [i * tile for i in range(k)] + [n]
 
 
+LEVEL_ORDER = 3   # the level field each TILE-px tile models beside its shift field (remove_tile_shifts)
+
+
+def _tiles(shape, tile):
+    """(slices, u, v) per `tile`-px tile (_tile_edges): u, v the tile's centred coordinates over half a tile."""
+    ys, xs = _tile_edges(shape[0], tile), _tile_edges(shape[1], tile)
+    for y0, y1 in zip(ys[:-1], ys[1:]):
+        for x0, x1 in zip(xs[:-1], xs[1:]):
+            u, v = np.mgrid[y0:y1, x0:x1].astype(float)
+            yield (slice(y0, y1), slice(x0, x1)), (u - u.mean()) / (tile / 2), (v - v.mean()) / (tile / 2)
+
+
+def _level_terms(u, v):
+    """A tile's level field: every monomial u^i v^j with i + j <= LEVEL_ORDER (10 for a cubic), as columns."""
+    return np.stack([(u ** (d - i) * v ** i).ravel() for d in range(LEVEL_ORDER + 1) for i in range(d + 1)], 1)
+
+
+def _without_level(x, tile):
+    """x less, tile by tile, its least-squares fit by the tile's level field (_level_terms)."""
+    out = x.copy()
+    for s, u, v in _tiles(x.shape, tile):
+        Q, _ = np.linalg.qr(_level_terms(u, v))
+        r = x[s].ravel()
+        out[s] = (r - Q @ (Q.T @ r)).reshape(x[s].shape)
+    return out
+
+
 def remove_tile_shifts(e, gy, gx, tile=TILE):
     """(e minus each tile's local shift, the per-tile (dy, dx) at its centre in px). Per `tile`-px tile
     of the box (_tile_edges) the local shift is fitted as a first-order field, dy(u, v) = dy0 + dy_u u +
-    dy_v v and dx likewise (u, v the tile's centred coordinates over half a tile), by least squares:
-    e ~ c + dy(u, v) dA/dy + dx(u, v) dA/dx. Only the shift terms are removed; the intercept c is
-    fitted so a local level offset is not read as a shift, and it stays in e, because a level offset
-    between the halves is not registration (Ruling P28d).
+    dy_v v and dx likewise (u, v the tile's centred coordinates over half a tile), by least squares
+    jointly with a level field L(u, v), a cubic in u, v (LEVEL_ORDER):
+    e ~ L(u, v) + dy(u, v) dA/dy + dx(u, v) dA/dx. Only the shift terms are removed; the level field
+    stays in e, because a level or gain difference between the halves is not registration (Ruling P28d).
     Why first order, not one constant shift per tile (fix round 3's estimate): the engine blends its
     regions with sin^2 weights on a grid of half-overlapping windows (Regions.h), so the halves' shift
     difference varies smoothly from node to node, 64 px apart on a 1080p surface. Measured on a
     synthetic pair with that field (nodes 64 px apart, 0.1 px sd per node; test_end.py's P28d tests):
-    the 0.06-0.09 bin reads x4.75 the noise unremoved, x2.77 with one shift per tile, x1.09 first order.
-    Cost: 6 of each tile's 1024 noise degrees of freedom; on noise alone the 0.06-0.09 bin reads x0.90
-    against x0.97 unremoved, the 0.15-0.30 bins within 1 % (the calibration measures with it)."""
+    the 0.06-0.09 bin read x4.75 the noise unremoved, x2.77 with one shift per tile, x1.09 first order (fix
+    round 4, before the level field below); with it, x5.44 unremoved (the global fit no longer reads part of
+    the field's level as a shift) and x1.19 first order (the test prints both).
+    Why a cubic level field, not one intercept (Ruling F5, bench6): the halves' differences in level and
+    gain vary across the frame the same way, and a level that slopes or bends within a tile correlates
+    with the shift terms wherever A's own brightness has a slope (dA/dy has a local mean), so a smooth gain
+    difference was fitted as a shift and its removal wrote A's gradient into D. A cubic holds a field of
+    period >= 128 px (nodes 64 px apart) across a 32 px tile to ~2 % (a sinusoid's fourth-order Taylor
+    remainder over +-pi/4: (pi/4)^4 / 24); measured on the gain-only pairs of test_end.py's F5 test (a 3 %
+    field, noise 0.4 % of the mean, 0.21-0.30 band over the noise-only pair), with one intercept x1.512 /
+    x2.016 (seeds 3 / 7), a first-order level x1.147 / x1.303, second order x1.025 / x1.031, a cubic
+    x1.006 / x0.998, where the gain-only difference reads x1.005 / x0.994.
+    Cost: 6 of each tile's 1024 noise degrees of freedom removed (the level terms are fitted, not
+    removed); on noise alone the 0.06-0.09 bin reads x0.99 (x0.90 with one intercept) against x0.97
+    unremoved, the 0.15-0.30 bins within 1.1 % (test_end.py's noise-only test prints both; the calibration measures
+    with it)."""
     out, shifts = e.copy(), []
-    ys, xs = _tile_edges(e.shape[0], tile), _tile_edges(e.shape[1], tile)
-    for y0, y1 in zip(ys[:-1], ys[1:]):
-        for x0, x1 in zip(xs[:-1], xs[1:]):
-            s = (slice(y0, y1), slice(x0, x1))
-            u, v = np.mgrid[y0:y1, x0:x1].astype(float)
-            u, v = (u - u.mean()) / (tile / 2), (v - v.mean()) / (tile / 2)
-            terms = [gy[s], u * gy[s], v * gy[s], gx[s], u * gx[s], v * gx[s]]
-            X = np.stack([np.ones(e[s].size)] + [t.ravel() for t in terms], 1)
-            c, *_ = np.linalg.lstsq(X, e[s].ravel(), rcond=None)
-            out[s] = e[s] - (X[:, 1:] @ c[1:]).reshape(e[s].shape)
-            shifts.append((c[1], c[4]))
+    for s, u, v in _tiles(e.shape, tile):
+        L = _level_terms(u, v)
+        terms = [gy[s], u * gy[s], v * gy[s], gx[s], u * gx[s], v * gx[s]]
+        X = np.concatenate([L, np.stack([t.ravel() for t in terms], 1)], 1)
+        c, *_ = np.linalg.lstsq(X, e[s].ravel(), rcond=None)
+        k = L.shape[1]
+        out[s] = e[s] - (X[:, k:] @ c[k:]).reshape(e[s].shape)
+        shifts.append((c[k], c[k + 3]))
     return out, np.array(shifts)
 
 
@@ -202,6 +243,11 @@ def refined_difference(A, B, tile=TILE):
     box -- B's gain and a residual sub-pixel shift (A ~ g B + dy dA/dy + dx dA/dx), removed before
     D = (A - g B') / 2. Without it a residual misregistration of hundredths of a pixel leaks the signal
     into D: on the 13 px Mars disc 0.017 px of it read as x10 the model (fix round 2, review I-E).
+    The gain g is the joint fit's over the box (coef[0]); the shift (coef[1], coef[2]) is fitted jointly
+    with each TILE-px tile's level field (remove_tile_shifts' cubic, by Frisch-Waugh: both sides less
+    their level fit, tile by tile), so a smooth level or gain difference between the halves is not read as
+    a shift (Ruling F5, bench6: a 3 % gain field, no shift, had read as a (+0.099, -0.181) px shift, now
+    within 0.002 px; the level field itself stays in D -- it is not registration).
     Then each `tile`-px tile's own residual shift field is removed (remove_tile_shifts; Ruling P28d;
     tile=None skips it): the halves' region stacks register differently from region to region, and that
     local shift is registration, which the full stack carries as a geometric offset END does not see,
@@ -215,7 +261,10 @@ def refined_difference(A, B, tile=TILE):
     am, bm = a - a.mean(), b - b.mean()
     gy, gx = np.gradient(a)
     X = np.stack([bm.ravel(), gy.ravel(), gx.ravel()], 1)
-    coef, *_ = np.linalg.lstsq(X, am.ravel(), rcond=None)
+    g = float(np.linalg.lstsq(X, am.ravel(), rcond=None)[0][0])
+    S = np.stack([_without_level(z, TILE).ravel() for z in (gy, gx)], 1)
+    shift, *_ = np.linalg.lstsq(S, _without_level(am - g * bm, TILE).ravel(), rcond=None)
+    coef = np.array([g, shift[0], shift[1]])
     e = am - (X @ coef).reshape(a.shape)
     shifts = np.zeros((0, 2))
     if tile:
