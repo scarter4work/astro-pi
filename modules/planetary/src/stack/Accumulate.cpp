@@ -43,6 +43,9 @@ void BSplineWeights(float t, float w[4]) {
     w[3] = t3 / 6;
 }
 
+// A warped, gain-corrected sample held to [0, top] (Accumulate.h, "Range").
+inline float Hold(float v, float top) { return std::min(std::max(v, 0.f), top); }
+
 inline int FloorInt(float v) {
     const int i = static_cast<int>(v);
     return i > v ? i - 1 : i;
@@ -658,6 +661,10 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             throw std::logic_error("Accumulator::Add: frame " + std::to_string(frameIndex) + " added twice");
         addedFlags_[static_cast<size_t>(pos)] = 1;
     }
+    // The range every warped, gain-corrected sample is held to (Accumulate.h, "Range"): [0, the frame's full
+    // scale], or its largest sample where that is above full scale.
+    float top = 1.f;
+    for (float v : frame.data) top = std::max(top, v);
     Prefilter(frame);
 
     // This frame's per-region data: local shift, usable, and its weight in each region's stack.
@@ -777,7 +784,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         const float* p = p0 + j * rowLen;
                         acc += wy[j] * (wx[0] * p[0] + wx[1] * p[1] + wx[2] * p[2] + wx[3] * p[3]);
                     }
-                    o[0] = acc * ig;
+                    o[0] = Hold(acc * ig, top);
                 } else {
                     // 12 lanes (4 taps x 3 channels) a row at a time: the compiler keeps them in
                     // three 4-wide vectors; the taps are summed per channel at the end.
@@ -787,7 +794,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         const float* p = p0 + j * rowLen;
                         for (int q = 0; q < 12; ++q) t[q] += wy[j] * (w12[q] * p[q]);
                     }
-                    for (int c = 0; c < 3; ++c) o[c] = (t[c] + t[3 + c] + t[6 + c] + t[9 + c]) * ig;
+                    for (int c = 0; c < 3; ++c) o[c] = Hold((t[c] + t[3 + c] + t[6 + c] + t[9 + c]) * ig, top);
                 }
             } else {
                 float acc[3] = {0, 0, 0};
@@ -798,7 +805,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         for (int c = 0; c < C; ++c) acc[c] += wx[i] * wy[j] * p[c];
                     }
                 }
-                for (int c = 0; c < C; ++c) o[c] = acc[c] * ig;
+                for (int c = 0; c < C; ++c) o[c] = Hold(acc[c] * ig, top);
             }
         }
     };

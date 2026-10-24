@@ -51,6 +51,17 @@ namespace planetary::stack {
 // whose frames vary 0.7-1.3 in gain, each region keeping its own subset, has no step at any region
 // border above 1.5 noise units).
 //
+// Range: every warped, gain-corrected sample is held to [0, top], top = 1 (full scale) or the frame's largest
+// sample where that is above it (DemosaicHQ's range), so the stack -- a weighted mean of such samples -- stays
+// in the frames' range (PixInsight images are [0, 1]). Two things leave it, both where the capture clipped
+// (field defect D2): the B-spline's interpolation overshoots a clipped plateau -- inherent to an interpolator
+// that keeps fine detail (its negative lobes; one frame of a hard step from full scale to 0.3 reads 1.092 at a
+// fractional shift, a step up from black -0.072, unit test) -- and the gain divides a saturated sample, which
+// holds no measure of how much brighter the scene was, above full scale. The 2026-10-23 Moon at c59e9fd4 read
+// 1.00265 in blue at 17 pixels of its brightest craters: at (105, 549) the warped samples reached 1.0066
+// before the gain (939 of 2315 above 1) and the gain (0.996-1.000) lifted them further (stack-probe, a scratch
+// dump of every frame's sample there). In range, interpolation and gain are untouched.
+//
 // Rejection, per luma cell (the s x s full-resolution pixels of one measurement-luma pixel): the
 // cell's mean luma (Bayer (R + 2G + B) / 4, RGB (R + G + B) / 3, mono the value) of the warped,
 // gain-corrected samples is compared with the reference's luma at that cell -- the same pixel, no
