@@ -709,13 +709,15 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     // Raw, luma, regions (with the regions' variance over their extent, 4 per luma px, and its rows);
     // correlation.
     p.alignWorkerBytes = 2 * samples + 12 * lumaPx + varianceRows + kWorkerScratchBytes;
-    // Raw, demosaic planes, frame + prefilter, and the frame's clipped-sample bits (1 per pixel; a mosaic's sites, 1 more).
-    p.stackWorkerBytes = 2 * samples + (ser::IsBayer(info.colorId) ? 10 : 9) * px + 8 * outSamples;
+    // Raw, demosaic planes, frame + prefilter, and the worker thread's clip flags: a plane of 1 byte per pixel and the
+    // clipped sites, 4 bytes each, at most one per pixel (Accumulate.h, "Memory").
+    p.stackWorkerBytes = 2 * samples + 13 * px + 8 * outSamples;
     // Reference, residual scale, the Accumulator's copies of both; the layout's blend mask (4 per luma px at most,
     // shared by the layout's copies) and the Accumulator's samples of it (4 per kWarpGrid^2 px: at most 1 per luma px).
     const size_t lumaImages = 29 * lumaPx;
-    // The Accumulator's sums: kept and rejected, a value and a weight per output sample (16 bytes), and its reached flags.
-    p.fixedBytes = 16 * outSamples + px + lumaImages;
+    // The Accumulator's sums: per output sample a kept value, a kept per-channel weight, a saturated value and weight
+    // and a rejected value (20 bytes); per pixel a kept and a rejected weight (8) and a flag byte.
+    p.fixedBytes = 20 * outSamples + 9 * px + lumaImages;
     // Frames x regions (Engine.h). The per-frame statistics are held for the whole run.
     const size_t frames = static_cast<size_t>(std::max<int64_t>(0, info.frameCount));
     const size_t statsBytes = frames * sizeof(FrameStats);

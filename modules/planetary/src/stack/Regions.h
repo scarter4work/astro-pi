@@ -293,7 +293,12 @@ struct RegionMeasure {
     // scratch dump of the plan; test_regions, test_engine "drifting off one edge"). So every frame a region keeps
     // covers its window to within kQualityEdgeInset. The price, where a capture drifts: a region at the frame's
     // edge ranks only the frames that show it (that capture, same method: left column 108-230 and top row
-    // 338-355 candidates of 2297), or takes the plain mean under kMinStackFrames.
+    // 338-355 candidates of 2297), or takes the plain mean under kMinStackFrames. They keep nearly all of them
+    // (region 0 107 of 108, the top row 305-341, against the median region's 2113 kept; review I4, 19ed2e15), so
+    // across the edge regions' blend footprint (up to 64 luma px in) the stack averages ~6x fewer frames than inside
+    // and its noise is ~sqrt(2113 / 330) = 2.5x the interior's -- by arithmetic from those counts, not measured. A
+    // design trade (Q1 of that review): ranking on the part of the window every frame shows avoids the artefact;
+    // ranking edge regions on rectangles most frames show is a follow-up of its own.
     float quality = 0, qualitySigma = 0;
     float quality2Sigma = 0;  // sd of quality^2 (FrameStats::quality2Sigma)
     // The search and refinement succeeded (see Method) with the window at least half inside the frame.

@@ -498,10 +498,12 @@ TEST_CASE("Accumulator memory is bounded by one frame, not by the frames added",
     Pipeline p = Run(cap, true);
     const size_t held = p.acc->BytesHeld();
     const size_t frameBytes = static_cast<size_t>(w) * h * sizeof(float);
-    // Float sums of the kept and of the rejected samples ((channels + 1) of each per pixel), the luma
+    // Float sums of the kept samples (a value, the weight, the per-channel weight of samples with another channel
+    // saturated, and the saturated values and weight: 5 per mono pixel since fix round 2 of fix/planetary-edge;
+    // Accumulate.h "Clipping") and of the rejected ones (a value and the weight: 2), a flag byte per pixel, the luma
     // maps and the plan: a few frames' worth.
     const size_t planBytes = p.plan.frames.size() * p.plan.RegionCount() * 9 + p.plan.frames.size() * 40;
-    CHECK(held <= 2 * 2 * frameBytes + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
+    CHECK(held <= (5 + 2) * frameBytes + frameBytes / 4 + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
     // Adding more frames does not grow it (re-adding is refused, so build a second accumulator and
     // compare after a partial run).
     CHECK(p.acc->FramesAdded() == p.plan.stackedCount);

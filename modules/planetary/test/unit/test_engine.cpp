@@ -1027,10 +1027,11 @@ TEST_CASE("PlanMemory counts what grows with frames x regions: the measurements,
     CHECK(p.measureWorkers == before.measureWorkers);
     CHECK(p.alignWorkers < before.alignWorkers);
     // Where the budget binds (32 threads) the counted bytes show as fewer workers (above), and the peak -- the
-    // largest pass, each filled to the budget a worker at a time -- need not rise: since Ruling R2's per-channel
-    // sums (Accumulate.h, "Clipping") the stacking pass with regions fits 21 workers to 3.87 GB and the alignment
-    // pass's 3.90 GB is the peak, under the 3.98 GB of the alignment pass without (its 26 workers). On one thread
-    // nothing is capped and the peak rises by what the regions add.
+    // largest pass, each filled to the budget a worker at a time -- need not rise. PlanMemory at fix round 2 of
+    // fix/planetary-edge (per-channel sums, Accumulate.h "Clipping"): with regions the peak is the alignment pass's
+    // 3.903 GB (21 workers), under its 3.981 GB without (26 workers); at 3123eea8 it passed by
+    // 3.4 MB of the stacking pass's worker rounding (review, Q3). On one thread nothing is capped and the peak rises
+    // by what the regions add (0.773 -> 1.137 GB, same method).
     CHECK(stack::PlanMemory(info, 1, regions).peakBytes > stack::PlanMemory(info, 1).peakBytes);
     CHECK(p.peakBytes <= stack::kMemoryBudget);
     for (int threads : {1, 8, 64, 256}) {

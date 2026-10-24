@@ -44,6 +44,52 @@ void BSplineWeights(float t, float w[4]) {
     w[3] = t3 / 6;
 }
 
+// A warped sample's flags (Accumulator::Add): bit 0 outside the frame; bits 1-3 a channel within reach of a clipped
+// sensor site; bits 4-6 that channel saturated itself (its own interpolated value at kClippedLuma or above).
+constexpr uint8_t kSaturated = 0x70;
+
+// One thread's clip-flag plane for Accumulator::Add, frame-sized and all zero between Adds, and the clipped sites of
+// the frame in flight. An Add sets the flags around those sites only, and Clearing zeroes exactly what was set on the
+// way out, normal or not: the cost follows the clipped sites, not the frame (review I3).
+struct ClipScratch {
+    std::vector<uint8_t> clip;
+    // A clipped site, 4 bytes: its pixel index << 3 | its channel bits (Accumulator's frames hold under 2^29 pixels).
+    std::vector<uint32_t> sites;
+    static uint32_t Site(size_t pixel, unsigned bits) { return static_cast<uint32_t>(pixel << 3 | bits); }
+    int width = 0, height = 0, reach = 0;  // reach: the flags' radius around a site (1 in a mosaic, 0 else)
+    // Calls f(x0, x1, y0, y1, bits) with the flag box of each site (inclusive, inside the frame).
+    template <class F>
+    void ForEachBox(F f) const {
+        for (uint32_t s : sites) {
+            const int p = static_cast<int>(s >> 3), x = p % width, y = p / width;
+            f(std::max(0, x - reach), std::min(width - 1, x + reach), std::max(0, y - reach), std::min(height - 1, y + reach),
+              static_cast<uint8_t>(s & 7u));
+        }
+    }
+    void Clear() {
+        ForEachBox([&](int x0, int x1, int y0, int y1, uint8_t) {
+            for (int j = y0; j <= y1; ++j)
+                std::fill(clip.data() + static_cast<size_t>(j) * width + x0, clip.data() + static_cast<size_t>(j) * width + x1 + 1,
+                          uint8_t{0});
+        });
+        sites.clear();
+    }
+    struct Clearing {
+        ClipScratch& s;
+        ~Clearing() { s.Clear(); }
+    };
+};
+ClipScratch& ThreadClipScratch(int width, int height) {
+    thread_local ClipScratch s;
+    if (s.width != width || s.height != height) {
+        s.clip.assign(static_cast<size_t>(width) * height, 0);
+        s.width = width;
+        s.height = height;
+        s.sites.clear();
+    }
+    return s;
+}
+
 // A warped, gain-corrected sample held to [0, top] (Accumulate.h, "Range").
 inline float Hold(float v, float top) { return std::min(std::max(v, 0.f), top); }
 
@@ -607,6 +653,10 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     lumaW_ = width_ / scale_;
     lumaH_ = height_ / scale_;
     if (lumaW_ < 1 || lumaH_ < 1) throw std::invalid_argument("Accumulator: empty frame");
+    if (static_cast<uint64_t>(width_) * static_cast<uint64_t>(height_) >= (uint64_t{1} << 29))
+        throw std::invalid_argument("Accumulator: a frame of 2^29 pixels or more");  // ClipScratch's site index
+    if (static_cast<uint64_t>(width_) * static_cast<uint64_t>(height_) >= (uint64_t{1} << 29))
+        throw std::invalid_argument("Accumulator: a frame of 2^29 pixels or more");  // ClipScratch's site index
     if (reference.width != lumaW_ || reference.height != lumaH_ || residualSigma.width != lumaW_ ||
         residualSigma.height != lumaH_ || plan_.layout.width != lumaW_ || plan_.layout.height != lumaH_)
         throw std::invalid_argument("Accumulator: the reference, residual scale and plan must be the capture's luma size (" +
@@ -625,10 +675,14 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     sigma_ = residualSigma.data;
     if (bayer) pattern_ = ser::PatternTable(info.colorId);
     sum_.assign(static_cast<size_t>(width_) * height_ * channels_, 0.f);
-    weight_.assign(sum_.size(), 0.f);
+    const size_t px = static_cast<size_t>(width_) * height_;
+    weight_.assign(px, 0.f);
+    weightX_.assign(sum_.size(), 0.f);
+    sumC_.assign(sum_.size(), 0.f);
+    weightC_.assign(sum_.size(), 0.f);
     sumRej_.assign(sum_.size(), 0.f);
-    weightRej_.assign(sum_.size(), 0.f);
-    reached_.assign(static_cast<size_t>(width_) * height_, 0);
+    weightRej_.assign(px, 0.f);
+    reached_.assign(px, 0);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
     const BlendMask& mask = plan_.layout.mask;
@@ -664,48 +718,61 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             throw std::logic_error("Accumulator::Add: frame " + std::to_string(frameIndex) + " added twice");
         addedFlags_[static_cast<size_t>(pos)] = 1;
     }
-    // The range every warped, gain-corrected sample is held to (Accumulate.h, "Range"): [0, the frame's full
-    // scale], or its largest sample where that is above full scale.
+    // One scan for two things, read before the prefilter replaces the samples:
+    //  - the range every warped, gain-corrected sample is held to (Accumulate.h, "Range"): [0, the frame's full
+    //    scale], or its largest sample where that is above full scale. In a mosaic the largest sample is a site's
+    //    (DemosaicHQ keeps each site's raw value as its own channel and holds the others within the sites');
+    //  - the contamination flags (Accumulate.h, "Clipping"): per pixel, bit c set where channel c came from a sensor
+    //    site at or above kClippedLuma -- the sample itself in mono and RGB; in a mosaic, the sites of colour c within
+    //    one pixel (the ones DemosaicHQ reads channel c from there). Null when nothing in the frame is clipped; nonzero
+    //    only inside [cx0, cx1) x [cy0, cy1). The plane is this thread's, all zero between Adds: only the flags around
+    //    the clipped sites are set and cleared again (review I3: the cost follows the clipped sites).
     float top = 1.f;
-    for (float v : frame.data) top = std::max(top, v);
-    // Clipped samples (Accumulate.h, "Clipping"): per pixel, bit c set where channel c came from a sensor site at or
-    // above kClippedLuma -- the sample itself in mono and RGB; in a mosaic, the sites of colour c within one pixel
-    // (the ones DemosaicHQ reads channel c from there), whose raw values DemosaicHQ keeps as the site's own channel.
-    // Read before the prefilter replaces the samples. Empty when nothing in the frame is clipped.
-    std::vector<uint8_t> clipped;
+    ClipScratch& scratch = ThreadClipScratch(width_, height_);
+    const ClipScratch::Clearing clearing{scratch};
+    const uint8_t* clipped = nullptr;
+    int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
     {
         const int W = width_, H = height_, C = channels_;
         const float level = static_cast<float>(kClippedLuma);
         const float* d = frame.data.data();
+        scratch.reach = pattern_ ? 1 : 0;
         if (pattern_) {
-            std::vector<uint8_t> site(static_cast<size_t>(W) * H, 0);  // bit (site colour) where the site is clipped
-            bool any = false;
-            for (int y = 0; y < H; ++y)
+            for (int y = 0; y < H; ++y) {
+                const int* row = pattern_ + (y & 1) * 2;
+                const float* r = d + static_cast<size_t>(y) * W * 3;
                 for (int x = 0; x < W; ++x) {
-                    const int s = pattern_[(y & 1) * 2 + (x & 1)];
-                    const size_t p = static_cast<size_t>(y) * W + x;
-                    if (d[p * 3 + static_cast<size_t>(s)] >= level) {
-                        site[p] = static_cast<uint8_t>(1u << s);
-                        any = true;
-                    }
+                    const int s = row[x & 1];
+                    const float v = r[static_cast<size_t>(x) * 3 + static_cast<size_t>(s)];
+                    top = std::max(top, v);
+                    if (v >= level) scratch.sites.push_back(ClipScratch::Site(static_cast<size_t>(y) * W + x, 1u << s));
                 }
-            if (any) {
-                clipped.assign(site.size(), 0);
-                for (int y = 0; y < H; ++y)
-                    for (int x = 0; x < W; ++x) {
-                        uint8_t b = 0;
-                        for (int j = std::max(0, y - 1); j <= std::min(H - 1, y + 1); ++j)
-                            for (int i = std::max(0, x - 1); i <= std::min(W - 1, x + 1); ++i) b |= site[static_cast<size_t>(j) * W + i];
-                        clipped[static_cast<size_t>(y) * W + x] = b;
-                    }
             }
         } else {
-            for (size_t p = 0, n = static_cast<size_t>(W) * H; p < n; ++p)
-                for (int c = 0; c < C; ++c)
-                    if (d[p * C + static_cast<size_t>(c)] >= level) {
-                        if (clipped.empty()) clipped.assign(n, 0);
-                        clipped[p] = static_cast<uint8_t>(clipped[p] | (1u << c));
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                    const float* p = d + (static_cast<size_t>(y) * W + x) * C;
+                    uint8_t bits = 0;
+                    for (int c = 0; c < C; ++c) {
+                        top = std::max(top, p[c]);
+                        if (p[c] >= level) bits = static_cast<uint8_t>(bits | (1u << c));
                     }
+                    if (bits) scratch.sites.push_back(ClipScratch::Site(static_cast<size_t>(y) * W + x, bits));
+                }
+        }
+        if (!scratch.sites.empty()) {
+            uint8_t* clip = scratch.clip.data();
+            cx0 = W;
+            cy0 = H;
+            scratch.ForEachBox([&](int x0, int x1, int y0, int y1, uint8_t bits) {
+                for (int j = y0; j <= y1; ++j)
+                    for (int i = x0; i <= x1; ++i) clip[static_cast<size_t>(j) * W + i] |= bits;
+                cx0 = std::min(cx0, x0);
+                cy0 = std::min(cy0, y0);
+                cx1 = std::max(cx1, x1 + 1);
+                cy1 = std::max(cy1, y1 + 1);
+            });
+            clipped = clip;
         }
     }
     Prefilter(frame);
@@ -776,8 +843,9 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     std::vector<float> rA(static_cast<size_t>(gw)), rX(rA.size()), rY(rA.size());
     const float* fr = frame.data.data();
     const float ig = static_cast<float>(invGain);
-    // The least a clipped sample's scene can be on the reference's scale, never above full scale.
-    const float clipFloor = static_cast<float>(kClippedLuma) * std::min(ig, 1.f);
+    // A saturated sample proves the scene at full scale on the reference's scale only from a frame no brighter than it.
+    const float clipLevel = static_cast<float>(kClippedLuma);
+    const bool satCounts = gain <= 1;
 
     // Luma rows are processed in order through a ring of 2 kRejectReach + 1 rows (samples, weights,
     // deviations, dilated outlier masks): a row is added once the rows kRejectReach below it are
@@ -812,15 +880,28 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             const float sy = static_cast<float>(y) + rY[gi] + tx * (rY[gi + 1] - rY[gi]);
             // floor without a libm call (the baseline x86-64 target has no rounding instruction).
             const int ix = FloorInt(sx), iy = FloorInt(sy);
-            // Bit 0: outside the frame; bit c + 1: channel c clipped in the pixel cell the sample lies in (its
-            // four corners; Accumulate.h, "Clipping").
+            // Bit 0: outside the frame; bit c + 1: channel c contaminated by a clip in the pixel cell the sample lies
+            // in (its four corners; Accumulate.h, "Clipping"); bit c + 4 (set below): and saturated itself.
             uint8_t flags = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1 ? 1 : 0;
-            if (!clipped.empty()) {
-                const size_t r0 = static_cast<size_t>(Mirror(iy, H)) * W, r1 = static_cast<size_t>(Mirror(iy + 1, H)) * W;
-                const int c0 = Mirror(ix, W), c1 = Mirror(ix + 1, W);
-                flags = static_cast<uint8_t>(flags | (clipped[r0 + c0] | clipped[r0 + c1] | clipped[r1 + c0] | clipped[r1 + c1]) << 1);
+            if (clipped) {
+                const bool inside = ix >= 0 && iy >= 0 && ix + 1 < W && iy + 1 < H;
+                if (!inside || (ix + 1 >= cx0 && ix < cx1 && iy + 1 >= cy0 && iy < cy1)) {  // flags exist only in the box
+                    size_t r0, r1;
+                    int c0, c1;
+                    if (inside) {  // no modulo on the common path (review I3)
+                        r0 = static_cast<size_t>(iy) * W;
+                        r1 = r0 + W;
+                        c0 = ix;
+                        c1 = ix + 1;
+                    } else {
+                        r0 = static_cast<size_t>(Mirror(iy, H)) * W;
+                        r1 = static_cast<size_t>(Mirror(iy + 1, H)) * W;
+                        c0 = Mirror(ix, W);
+                        c1 = Mirror(ix + 1, W);
+                    }
+                    flags = static_cast<uint8_t>(flags | (clipped[r0 + c0] | clipped[r0 + c1] | clipped[r1 + c0] | clipped[r1 + c1]) << 1);
+                }
             }
-            orow[x] = flags;
             // Exact weights: a table at 1/64 px moved the stack by up to 6e-4 (measured), these by none.
             float wxa[4], wya[4];
             BSplineWeights(sx - ix, wxa);
@@ -828,6 +909,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             const float* wx = wxa;
             const float* wy = wya;
             float* o = srow + static_cast<size_t>(x) * C;
+            float r[3] = {0, 0, 0};  // the channels' interpolated values, before the gain
             if (ix >= 1 && iy >= 1 && ix + 2 < W && iy + 2 < H) {
                 const float* p0 = fr + (static_cast<size_t>(iy - 1) * W + (ix - 1)) * C;
                 const size_t rowLen = static_cast<size_t>(W) * C;
@@ -837,7 +919,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         const float* p = p0 + j * rowLen;
                         acc += wy[j] * (wx[0] * p[0] + wx[1] * p[1] + wx[2] * p[2] + wx[3] * p[3]);
                     }
-                    o[0] = Hold(acc * ig, top);
+                    r[0] = acc;
                 } else {
                     // 12 lanes (4 taps x 3 channels) a row at a time: the compiler keeps them in
                     // three 4-wide vectors; the taps are summed per channel at the end.
@@ -847,7 +929,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         const float* p = p0 + j * rowLen;
                         for (int q = 0; q < 12; ++q) t[q] += wy[j] * (w12[q] * p[q]);
                     }
-                    for (int c = 0; c < 3; ++c) o[c] = Hold((t[c] + t[3 + c] + t[6 + c] + t[9 + c]) * ig, top);
+                    for (int c = 0; c < 3; ++c) r[c] = t[c] + t[3 + c] + t[6 + c] + t[9 + c];
                 }
             } else {
                 float acc[3] = {0, 0, 0};
@@ -858,8 +940,15 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         for (int c = 0; c < C; ++c) acc[c] += wx[i] * wy[j] * p[c];
                     }
                 }
-                for (int c = 0; c < C; ++c) o[c] = Hold(acc[c] * ig, top);
+                for (int c = 0; c < C; ++c) r[c] = acc[c];
             }
+            // Held and gain-corrected into the slot; a channel within reach of a clip whose own value reaches it is
+            // saturated (bit c + 4). One branch per sample on the common path.
+            for (int c = 0; c < C; ++c) o[c] = Hold(r[c] * ig, top);
+            if (flags & 0x0E)
+                for (int c = 0; c < C; ++c)
+                    if ((flags & (2u << c)) && r[c] >= clipLevel) flags = static_cast<uint8_t>(flags | (16u << c));
+            orow[x] = flags;
         }
     };
     // Samples luma row lr into its slot and judges its cells: deviation in residual scales, and the
@@ -885,16 +974,14 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                     const size_t k = static_cast<size_t>(y - ya) * W + x;
                     if (!(abase[k] > 0) || obase[k] & 1) continue;
                     float v = 0;
-                    if (obase[k]) {
-                        // A clipped sample: no value, only a floor -- the clip on the reference's scale, never above
-                        // full scale (Accumulate.h, "Clipping").
-                        for (int c = 0; c < C; ++c)
-                            v += static_cast<float>(lumaWeights_[c]) * (obase[k] & (2u << c) ? clipFloor : sbase[k * C + c]);
+                    for (int c = 0; c < C; ++c) v += static_cast<float>(lumaWeights_[c]) * sbase[k * C + c];
+                    if (obase[k] & kSaturated) {
+                        // A saturated sample: a lower bound at its own gain-corrected value, which proves an outlier
+                        // upward only (Accumulate.h, "Clipping").
                         floorSum += v;
                         ++nf;
                         continue;
                     }
-                    for (int c = 0; c < C; ++c) v += static_cast<float>(lumaWeights_[c]) * sbase[k * C + c];
                     luma += v;
                     ++n;
                 }
@@ -945,14 +1032,30 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                 const uint8_t fl = obase[k];
                 const float wgt = abase[k] * (fl & 1 ? static_cast<float>(kOutsideWeight) : 1.0f);
                 const size_t o = orow + x;
-                reached_[o] = 1;
-                // A clipped channel adds nothing, kept or rejected (Accumulate.h, "Clipping").
-                float* s = grown[static_cast<size_t>(cellOfX_[static_cast<size_t>(x)])] ? sumRej_.data() : sum_.data();
-                float* wt = s == sum_.data() ? weight_.data() : weightRej_.data();
+                if (grown[static_cast<size_t>(cellOfX_[static_cast<size_t>(x)])]) {
+                    // Rejected: Finish's stand-in only, saturated or not alike.
+                    weightRej_[o] += wgt;
+                    for (int c = 0; c < C; ++c) sumRej_[o * C + c] += wgt * sbase[k * C + c];
+                    continue;
+                }
+                if (!(fl & kSaturated)) {  // the common case, as before Ruling R2
+                    weight_[o] += wgt;
+                    for (int c = 0; c < C; ++c) sum_[o * C + c] += wgt * sbase[k * C + c];
+                    continue;
+                }
+                // Kept with a saturated channel: that channel is a lower bound, summed apart (Accumulate.h,
+                // "Clipping"); from a frame no brighter than the reference, inside the frame, it marks the pixel's
+                // channel. Its other channels count on their own weights.
                 for (int c = 0; c < C; ++c) {
-                    if (fl & (2u << c)) continue;
-                    wt[o * C + c] += wgt;
-                    s[o * C + c] += wgt * sbase[k * C + c];
+                    const size_t i = o * C + c;
+                    if (fl & (16u << c)) {
+                        weightC_[i] += wgt;
+                        sumC_[i] += wgt * sbase[k * C + c];
+                        if (satCounts && !(fl & 1)) reached_[o] = static_cast<uint8_t>(reached_[o] | (2u << c));
+                    } else {
+                        weightX_[i] += wgt;
+                        sum_[i] += wgt * sbase[k * C + c];
+                    }
                 }
             }
         }
@@ -993,16 +1096,27 @@ ser::FloatImage Accumulator::Finish() const {
                     // nothing was kept. The share, not the absolute weight: a border band that only a few
                     // frames reach in-bounds (drift) holds a small weight however few samples were rejected
                     // there, and an absolute threshold blended a rejected trail back into it.
-                    const double all = static_cast<double>(weight_[i]) + weightRej_[i];
-                    if (!(all > 0)) {
-                        // Reached, and every sample clipped: the clip on the reference's scale (Accumulate.h, "Clipping").
-                        if (reached_[o]) out.data[i] = kClipOutput;
-                        continue;
+                    // Saturated samples count as present (kept) like the others (Accumulate.h, "Clipping").
+                    const double clean = static_cast<double>(weight_[o]) + weightX_[i], cont = weightC_[i], kept = clean + cont;
+                    const double all = kept + weightRej_[o];
+                    if (!(all > 0)) continue;
+                    // The kept samples' sum under the censored estimate: each saturated sample a lower bound at its own
+                    // gain-corrected value, so their mean is raised to the unsaturated samples' where those are
+                    // present; with none (beyond out-of-frame stand-ins), full scale where one saturated in a frame no
+                    // brighter than the reference, else their own mean. Held to [0, 1].
+                    double keptSum = sum_[i];
+                    if (cont > 0) {
+                        const double own = sumC_[i] / cont;
+                        const bool present = clean > kCleanPresence * cont;
+                        const bool saturated = reached_[o] & (2u << c);
+                        double v = present ? std::max(own, sum_[i] / clean) : saturated ? kClipOutput : own;
+                        v = std::clamp(v, 0.0, 1.0);
+                        keptSum = present ? sum_[i] + cont * v : kept * v;
                     }
-                    const double lam = std::max(0.0, 1 - weight_[i] / all / kMinKeptWeight);
-                    const double wt = weight_[i] + lam * weightRej_[i];
+                    const double lam = std::max(0.0, 1 - kept / all / kMinKeptWeight);
+                    const double wt = kept + lam * weightRej_[o];
                     if (!(wt > 0)) continue;
-                    out.data[i] = static_cast<float>((sum_[i] + lam * sumRej_[i]) / wt);
+                    out.data[i] = static_cast<float>((keptSum + lam * sumRej_[i]) / wt);
                 }
             }
     }
@@ -1011,8 +1125,8 @@ ser::FloatImage Accumulator::Finish() const {
 
 size_t Accumulator::BytesHeld() const {
     size_t b = sizeof(*this);
-    b += (sum_.capacity() + weight_.capacity()) * sizeof(float);
-    b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float) + reached_.capacity();
+    b += (sum_.capacity() + weight_.capacity() + weightX_.capacity()) * sizeof(float);
+    b += (sumRej_.capacity() + weightRej_.capacity() + sumC_.capacity() + weightC_.capacity()) * sizeof(float) + reached_.capacity();
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();
     b += gridMask_.capacity() * sizeof(float);  // the layout's mask is shared (RegionLayout::mask), not held here
