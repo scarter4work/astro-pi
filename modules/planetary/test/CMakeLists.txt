@@ -19,12 +19,23 @@ planetary_add_test(test_frame_source unit/test_frame_source.cpp planetary_ser)
 planetary_add_test(test_avi unit/test_avi.cpp planetary_ser)
 planetary_add_test(test_sidecar unit/test_sidecar.cpp planetary_ser)
 planetary_add_test(test_ser_export unit/test_ser_export.cpp planetary_ser)
+planetary_add_test(test_demosaic_hq unit/test_demosaic_hq.cpp planetary_stack)
+planetary_add_test(test_measure unit/test_measure.cpp planetary_stack)
+planetary_add_test(test_select unit/test_select.cpp planetary_stack)
+planetary_add_test(test_align unit/test_align.cpp planetary_stack)
+planetary_add_test(test_regions unit/test_regions.cpp planetary_stack)
+planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
+planetary_add_test(test_engine unit/test_engine.cpp planetary_stack)
+planetary_add_test(test_noise unit/test_noise.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
 # PreviewPixels.h / SerInfoText.h: the preview's PCL-free pixel math and info text (header only).
 planetary_add_test(test_preview unit/test_preview.cpp planetary_ser)
 target_include_directories(test_preview PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
+# StackCards.h: PlanetaryStack's PCL-free keyword plan and result text (header only).
+planetary_add_test(test_stack_cards unit/test_stack_cards.cpp planetary_stack)
+target_include_directories(test_stack_cards PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
 
 # NAS-free check that avi_real_check.py's fixed-pattern readout check (4b) fails closed
 # (synthetic data, numpy only). Without numpy it exits 77 and ctest shows it as Skipped, never
@@ -40,9 +51,22 @@ else()
     message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed is not registered")
 endif()
 
-# Test-only fixture writer for the headless PixInsight probe (test/run-probe.sh).
+# The PixInsight harness refuses to re-sign a shipped module (a PLANETARY_SO inside the PixInsight install
+# or repository/), in its functions and in every script that takes the override -- against a stand-in
+# install in a scratch directory; no PixInsight, no NAS (final review, module m6).
+find_program(PLANETARY_BASH NAMES bash)
+if(PLANETARY_BASH)
+    add_test(NAME harness_so_guard COMMAND "${PLANETARY_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/test-harness-so-guard.sh")
+else()
+    message(STATUS "planetary: bash not found -- harness_so_guard is not registered")
+endif()
+
+# Test-only fixture writer for the headless PixInsight probes (test/run-probe.sh, test/run-probe-stack.sh).
+# planetary_stack: the --stack fixtures are rendered with StackSynth.h (the engine tests' scenes);
+# PlanetaryVersion.h: the version their HISTORY expectations name.
 add_executable(make-fixtures make-fixtures.cpp)
-target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+target_include_directories(make-fixtures PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")
+target_link_libraries(make-fixtures PRIVATE planetary_stack)
 add_test(NAME make_fixtures_runs
          COMMAND make-fixtures "${CMAKE_CURRENT_BINARY_DIR}/fixtures-smoke")
 
@@ -55,3 +79,43 @@ target_link_libraries(check-real-fixtures PRIVATE planetary_ser)
 # not a ctest case, it needs the NAS captures).
 add_executable(avi-probe avi-probe.cpp)
 target_link_libraries(avi-probe PRIVATE planetary_ser)
+
+# Test-only: global alignment on real captures (test/run-align-real.sh runs it; not a ctest case,
+# it needs the NAS captures).
+add_executable(align-probe align-probe.cpp)
+target_link_libraries(align-probe PRIVATE planetary_stack)
+
+# Test-only: the region stage on real captures (lucky regions vs the global-only stack; timings).
+# Not a ctest case, it needs the NAS captures.
+add_executable(stack-region-probe stack-region-probe.cpp)
+target_link_libraries(stack-region-probe PRIVATE planetary_stack)
+
+# Test-only: RunStack on a real capture -- summary (JSON with --json), phase times, read rate, peak RSS,
+# the stack as FITS or TIFF (Task 6's real-data smoke; Task 9's harness). Not a ctest case, it needs the
+# NAS captures.
+add_executable(stack-probe stack-probe.cpp)
+target_link_libraries(stack-probe PRIVATE planetary_stack)
+
+# Test-only: Select's step-7 focus reading on a real capture (the in-focus survey and the defocus series
+# behind kGrossBlurLimit and kBlurLimit; test/run-focus-survey.sh runs it). Not a ctest case, it needs the
+# NAS captures.
+add_executable(focus-survey focus-survey.cpp)
+target_link_libraries(focus-survey PRIVATE planetary_stack)
+
+# Test-only: the in-focus limb read directly off a stack of a real capture's sharpest half, and each frame's
+# quality with and without the capture's noise model (Select.h step 7: why the in-focus reading doubled with
+# Ruling P26). Not a ctest case, it needs the NAS captures.
+add_executable(limb-probe limb-probe.cpp)
+target_include_directories(limb-probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+target_link_libraries(limb-probe PRIVATE planetary_stack)
+
+# Test-only: the calibration probes behind Ruling P26's measured figures (the noise model, qualitySigma, step 7's
+# classifier and reading, the region gate), one calib-<name> each; usage at the top of each source. Not ctest
+# cases: some read NAS captures, the rest render synthetic frames for minutes.
+foreach(probe classrate inject lowsnr mdq nreal passes purer2 qcal2
+              modelerror purer regionnoise seedsel shot sigmafloor skynoise snr synthrate temporal winnoise)
+    add_executable(calib-${probe} calibration/${probe}.cpp)
+    target_include_directories(calib-${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}"
+                                                      "${CMAKE_CURRENT_SOURCE_DIR}/calibration")
+    target_link_libraries(calib-${probe} PRIVATE planetary_stack)
+endforeach()

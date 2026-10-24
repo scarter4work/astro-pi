@@ -21,16 +21,36 @@
 namespace planetary::preview
 {
 
-// A reader warning reworded for Save as SER: ResolveBayer's "<reason>; showing the
-// raw CFA as mono -- choose..." says what is written instead; any other warning
-// is returned as is.
-inline std::string ConversionWarning( const std::string& warning )
+// ResolveBayer's "<reason>; showing the raw CFA as mono -- choose..." with its
+// viewing tail swapped for `replacement`; any other warning is returned as is.
+inline std::string ReplaceRawCfaTail( const std::string& warning, const std::string& replacement )
 {
    const std::string tail = ser::kRawCfaAsMonoTail;
    if ( warning.size() <= tail.size() || warning.compare( warning.size() - tail.size(), tail.size(), tail ) != 0 )
       return warning;
-   return warning.substr( 0, warning.size() - tail.size() ) +
-          "; the SER will be written as MONO (raw CFA) -- set the Bayer pattern to write a Bayer SER";
+   return warning.substr( 0, warning.size() - tail.size() ) + replacement;
+}
+
+// A reader warning reworded for Save as SER: says what is written.
+inline std::string ConversionWarning( const std::string& warning )
+{
+   return ReplaceRawCfaTail( warning,
+                             "; the SER will be written as MONO (raw CFA) -- set the Bayer pattern to write a Bayer SER" );
+}
+
+// A reader warning reworded for PlanetaryStack: says what is stacked.
+inline std::string StackWarning( const std::string& warning )
+{
+   return ReplaceRawCfaTail( warning, "; the raw CFA is stacked as mono -- set bayerPattern (or save the pattern with "
+                                      "Save pattern... in PlanetaryStack or SERViewer) to stack in colour" );
+}
+
+// A reader warning reworded for the PlanetaryStack window, whose Bayer pattern
+// combo and Save pattern... are right there.
+inline std::string StackWindowWarning( const std::string& warning )
+{
+   return ReplaceRawCfaTail( warning, "; the raw CFA is stacked as mono -- choose the pattern under Bayer pattern "
+                                      "(Save pattern... remembers it) to stack in colour" );
 }
 
 // An AVI's effective Bayer pattern and where it came from, for people:
@@ -38,13 +58,14 @@ inline std::string ConversionWarning( const std::string& warning )
 // reader's "none" token (Auto found no pattern) becomes the reason: a sidecar
 // Bayer value it did not recognise, a sidecar that could not be read, or no
 // pattern to go on at all. The reader's "sidecar (SERViewer)" (a sidecar that
-// Save pattern... wrote) becomes "sidecar written by SERViewer". UTF-8.
+// Save pattern... wrote) becomes "sidecar from Save pattern..." (either window
+// writes it). UTF-8.
 inline std::string BayerText( const ser::FileInfo& info )
 {
    const std::string pattern = ser::IsBayer( info.colorId ) ? ser::BayerPatternKeyword( info.colorId ) : "none";
    std::string source = info.avi ? info.avi->bayerSource : std::string();
    if ( source == "sidecar (SERViewer)" )
-      source = "sidecar written by SERViewer";
+      source = "sidecar from Save pattern...";
    else if ( source == "none" )
    {
       const ser::SidecarStatus status = info.avi->sidecarStatus;

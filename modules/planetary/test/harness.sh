@@ -9,7 +9,8 @@
 #   planetary_slot_setup                       # PLANETARY_SLOT/_SETTINGS, wiped now and on exit
 #   planetary_on_exit my_cleanup               # never `trap ... EXIT`: it would drop the helpers' cleanup
 #   planetary_private_tmp                      # PLANETARY_RUN_DIR (0700), private TMPDIR
-#   planetary_sign "$SO"                       # dev build signed with the developer key
+#   planetary_check_so "$PLANETARY_SO"         # refuses a module inside the PI install or repository/
+#   planetary_sign "$SO"                       # dev build signed with the developer key (checked the same way)
 #   planetary_seed_slot_modules                # slot settings WITHOUT any installed Planetary
 #   ... pi_headless timeout N "$PI" -n="$PLANETARY_SLOT" ... -m="$SO" -r=<probe> --force-exit
 #
@@ -22,6 +23,9 @@
 #   its bin/ directory; once Planetary is installed from the repository that
 #   would load the installed Planetary next to the -m= dev build. The slot is
 #   seeded with a Modules list of every installed module except Planetary.
+#   PLANETARY_SLOT_EXCLUDE (space-separated file names, e.g. "PICopilot-pxm.so")
+#   leaves those installed modules out too (a run that must not load them); the
+#   launch then checks that the running PixInsight maps none of them.
 # - Every launch goes through pi_headless (tools/pi-headless.sh): private Xvfb,
 #   no Wayland, throwaway XDG_DATA_HOME (an installed PI Copilot would record
 #   test images into the user's journey library otherwise).
@@ -149,9 +153,35 @@ planetary_private_tmp()
    export TMPDIR="$PLANETARY_RUN_DIR/tmp"
 }
 
+# The module a test loads is signed in place (its .xsgn deleted, then written
+# again), so it must be a build product, never a shipped module: refuse one
+# whose real path is inside the PixInsight install (the directory above
+# PLANETARY_PI_BIN_DIR: /opt/PixInsight is user-owned on the development
+# machine, so PLANETARY_SO=/opt/PixInsight/bin/Planetary-pxm.so would re-sign
+# the installed release) or inside the repository's repository/ (the published
+# packages). Every script that takes PLANETARY_SO runs this before anything
+# else, and planetary_sign again (final review, module m6).
+PLANETARY_ASTROPI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+planetary_check_so()
+{
+   local so="$1" real pi repo
+   real="$(realpath -m -- "$so")"
+   pi="$(realpath -m -- "$(dirname "$PLANETARY_PI_BIN_DIR")")"
+   repo="$(realpath -m -- "$PLANETARY_ASTROPI_ROOT/repository")"
+   case "$real" in
+      "$pi"/*)
+         echo "FAIL: refusing PLANETARY_SO=$so: it is inside the PixInsight install ($pi); the tests delete and re-sign the .xsgn of the module they load"
+         return 1 ;;
+      "$repo"/*)
+         echo "FAIL: refusing PLANETARY_SO=$so: it is inside repository/ ($repo), the published packages"
+         return 1 ;;
+   esac
+}
+
 planetary_sign()
 {
    local so="$1" pass
+   planetary_check_so "$so" || return 1
    pass="$(cat "$PLANETARY_PASS_FILE")"
    rm -f "${so%.so}.xsgn"
    pi_headless "$PI" --sign-module-file="$so" --xssk-file="$PLANETARY_KEYS" --xssk-password="$pass" \
@@ -175,10 +205,11 @@ planetary_seed_slot_modules()
       echo "FAIL: slot $PLANETARY_SLOT settings bootstrap failed (rc=$rc); log: $PLANETARY_RUN_DIR/seed-bootstrap.log"
       return 1
    fi
-   python3 - "$PLANETARY_SLOT_SETTINGS" "$PLANETARY_PI_BIN_DIR" <<'PY' || { echo "FAIL: could not seed the Modules list of $PLANETARY_SLOT_SETTINGS"; return 1; }
+   python3 - "$PLANETARY_SLOT_SETTINGS" "$PLANETARY_PI_BIN_DIR" ${PLANETARY_SLOT_EXCLUDE:-} <<'PY' || { echo "FAIL: could not seed the Modules list of $PLANETARY_SLOT_SETTINGS"; return 1; }
 import glob, os, re, sys
 from xml.sax.saxutils import escape
 path, bindir = sys.argv[1], sys.argv[2]
+exclude = set(sys.argv[3:])
 s = open(path, encoding="utf-8").read()
 if not re.search(r'<v k="LastVersion" t="s">[^<]+</v>', s):
     sys.exit("no LastVersion in the bootstrapped settings: PixInsight would rescan bin/ and load an installed Planetary")
@@ -187,18 +218,28 @@ if 'k="Modules"' in s:
 mods = sorted(os.path.basename(p) for p in glob.glob(os.path.join(bindir, "*-pxm.so")))
 if not mods:
     sys.exit("no *-pxm.so found in %s" % bindir)
-mods = [m for m in mods if m != "Planetary-pxm.so"]
+missing = sorted(exclude - set(mods))
+if missing:
+    sys.exit("PLANETARY_SLOT_EXCLUDE names modules not installed in %s: %s" % (bindir, " ".join(missing)))
+mods = [m for m in mods if m != "Planetary-pxm.so" and m not in exclude]
 vals = "".join('<v k="%08d" t="s">%s</v>' % (i + 1, escape("@pxi_bin_dir/" + m)) for i, m in enumerate(mods))
 end = s.rindex("</xsdt>")
 s = s[:end] + '<i k="Modules">' + vals + "</i>" + s[end:]
 tmp = path + ".seed-tmp"
 open(tmp, "w", encoding="utf-8").write(s)
 os.replace(tmp, path)
-print("slot settings seeded: %d installed modules, any installed Planetary-pxm.so excluded" % len(mods))
+print("slot settings seeded: %d installed modules, any installed Planetary-pxm.so excluded%s"
+      % (len(mods), "".join(", " + m + " excluded" for m in sorted(exclude))))
 PY
    if grep -q 'Planetary-pxm\.so' "$PLANETARY_SLOT_SETTINGS"; then
       echo "FAIL: seeded $PLANETARY_SLOT_SETTINGS still names a Planetary-pxm.so"; return 1
    fi
+   local m
+   for m in ${PLANETARY_SLOT_EXCLUDE:-}; do
+      if grep -qF "/$m<" "$PLANETARY_SLOT_SETTINGS"; then
+         echo "FAIL: seeded $PLANETARY_SLOT_SETTINGS still names the excluded $m"; return 1
+      fi
+   done
 }
 
 # The running PixInsight of this slot maps exactly one Planetary-pxm.so: the
@@ -214,6 +255,13 @@ planetary_assert_only_dev_mapped()
       echo "FAIL: PixInsight (slot $PLANETARY_SLOT, pid $pid) maps [${maps//$'\n'/ }], expected ONLY the dev build $so"; return 1
    fi
    echo "only the dev module is mapped (pid $pid): $maps"
+   local m
+   for m in ${PLANETARY_SLOT_EXCLUDE:-}; do
+      if grep -qF -- "/$m" "/proc/$pid/maps"; then
+         echo "FAIL: PixInsight (slot $PLANETARY_SLOT, pid $pid) maps the excluded $m"; return 1
+      fi
+      echo "excluded module not mapped (pid $pid): $m"
+   done
 }
 
 # The video files (.ser, .avi, an AVI's .avi.txt sidecar, a Save as SER
@@ -226,4 +274,93 @@ planetary_open_video_files()
    [ -n "$pid" ] || { echo "FAIL: no running PixInsight for slot $PLANETARY_SLOT" >&2; return 1; }
    find "/proc/$pid/fd" -maxdepth 1 -type l -printf '%l\n' 2>/dev/null \
       | grep -E '\.(ser|avi|avi\.txt|partial)$' | sort -u || true
+}
+
+# ---- GUI smokes (gui-smoke.sh, gui-smoke-stack.sh) ------------------------
+# A REAL PixInsight GUI on a private Xvfb display (:100 + slot), isolated slot
+# PLANETARY_GUI_SLOT (default 97; 96 is the headless probes'), driven with
+# XTest by gui_drive.py. Call order:
+#   planetary_gui_setup                 # before fixtures: slot, run dir, display
+#   ... fixtures, planetary_sign, planetary_seed_slot_modules, caller's exports ...
+#   planetary_gui_launch OUT SETUP.js   # Xvfb + PixInsight -r=SETUP.js, ready, dev build mapped
+#   ... gui_drive.py modes, -x IPC scripts (after pi_require_private_display) ...
+#   planetary_gui_quit OUT              # File > Quit; PixInsight must exit 0 within 60 s
+planetary_gui_setup()
+{
+   local tool
+   for tool in Xvfb xprop import; do
+      command -v "$tool" >/dev/null || { echo "FAIL: $tool not found"; return 1; }
+   done
+   PLANETARY_TEST_SLOT="${PLANETARY_GUI_SLOT:-97}" planetary_slot_setup || return 1
+   planetary_private_tmp || return 1
+   PLANETARY_DISPLAY_NO=$(( 100 + PLANETARY_SLOT ))
+   if [ -e "/tmp/.X11-unix/X$PLANETARY_DISPLAY_NO" ]; then
+      echo "FAIL: display :$PLANETARY_DISPLAY_NO is already in use (another GUI smoke on slot $PLANETARY_SLOT?)"; return 1
+   fi
+   PLANETARY_GUI_XVFB_PID="" PLANETARY_GUI_PI_PID=""
+   planetary_on_exit planetary_gui_cleanup
+}
+
+planetary_gui_cleanup()
+{
+   [ -n "${PLANETARY_GUI_PI_PID:-}" ] && kill -9 "$PLANETARY_GUI_PI_PID" 2>/dev/null
+   pkill -9 -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " 2>/dev/null
+   [ -n "${PLANETARY_GUI_XVFB_PID:-}" ] && kill "$PLANETARY_GUI_XVFB_PID" 2>/dev/null
+   return 0
+}
+
+# Starts the Xvfb and PixInsight with the dev build $SO and the start-up script
+# $2, which must write "$PLANETARY_GUI_DIR/ready" holding launchInterface=true.
+# Display isolation beyond pi_headless_env: no desktop session variables and a
+# session-bus address that leads nowhere, so Qt cannot hand a file dialog to
+# the desktop portal (it would open on the user's real screen). A fresh slot
+# shows start-up notices (e.g. "Risky Temporary Folders"): each is answered
+# with Return until the script is ready.
+planetary_gui_launch()
+{
+   local out="$1" setup="$2" n=0
+   Xvfb ":$PLANETARY_DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$out/xvfb.log" 2>&1 & PLANETARY_GUI_XVFB_PID=$!
+   export DISPLAY=":$PLANETARY_DISPLAY_NO"
+   for _ in $(seq 50); do xprop -root >/dev/null 2>&1 && break; sleep 0.1; done
+
+   pi_headless_env
+   unset XDG_CURRENT_DESKTOP DESKTOP_SESSION KDE_FULL_SESSION KDE_SESSION_VERSION GNOME_DESKTOP_SESSION_ID \
+         QT_QPA_PLATFORMTHEME XDG_SESSION_TYPE
+   export DBUS_SESSION_BUS_ADDRESS="unix:path=$PLANETARY_RUN_DIR/no-session-bus"
+   export XDG_DATA_HOME="$PLANETARY_RUN_DIR/xdg"; mkdir -m 700 "$XDG_DATA_HOME"
+   export PLANETARY_GUI_DIR="$PLANETARY_RUN_DIR/gui"; mkdir -m 700 "$PLANETARY_GUI_DIR"
+
+   pi_require_private_display || return 1   # this run's own Xvfb, never the desktop
+   timeout 900 "$PI" -n="$PLANETARY_SLOT" --no-startup-scripts -m="$SO" -r="$setup" >"$out/pi.log" 2>&1 & PLANETARY_GUI_PI_PID=$!
+   for _ in $(seq 360); do
+      [ -f "$PLANETARY_GUI_DIR/ready" ] && break
+      kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null || break
+      n=$(( n + 1 ))
+      (( n % 10 == 0 )) && { python3 "$HERE/gui_drive.py" --dismiss "$out" || { echo "FAIL: driver (dismiss)"; return 1; }; }
+      sleep 0.5
+   done
+   if [ ! -f "$PLANETARY_GUI_DIR/ready" ]; then
+      import -window root "$out/not-ready.png" 2>/dev/null || true
+      echo "FAIL: the GUI script never became ready (see $out/pi.log, $out/not-ready.png)"; return 1
+   fi
+   cp "$PLANETARY_GUI_DIR/ready" "$out/ready.txt"
+   grep -q "launchInterface=true" "$out/ready.txt" || { echo "FAIL: setup: $(cat "$out/ready.txt")"; return 1; }
+   planetary_assert_only_dev_mapped "$SO" || return 1
+   sleep 1
+}
+
+# File > Quit PixInsight (gui_drive.py --quit); PixInsight must exit, with
+# status 0, within 60 s.
+planetary_gui_quit()
+{
+   local out="$1" rc=0
+   python3 "$HERE/gui_drive.py" --quit "$out" || { echo "FAIL: driver (quit)"; return 1; }
+   for _ in $(seq 240); do kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null || break; sleep 0.25; done
+   if kill -0 "$PLANETARY_GUI_PI_PID" 2>/dev/null; then
+      import -window root "$out/hang.png" 2>/dev/null || true
+      echo "FAIL: PixInsight still running 60 s after Quit (see $out/hang.png)"; return 1
+   fi
+   wait "$PLANETARY_GUI_PI_PID" || rc=$?
+   PLANETARY_GUI_PI_PID=""
+   [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $out/pi.log)"; return 1; }
 }

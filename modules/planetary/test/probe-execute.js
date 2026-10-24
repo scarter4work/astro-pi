@@ -24,63 +24,11 @@
 //
 // ES5 only: an ES6 `class` anywhere kills a -r= script before line 1 runs.
 
+#include "probe-common.jsh"
+
 var PROBE_IN = getEnvironmentVariable( "PLANETARY_PROBE_IN" );
 var PROBE_OUT = getEnvironmentVariable( "PLANETARY_PROBE_OUT" );
 var TOLERANCE = 1e-6;
-
-function windowIds()
-{
-   var ids = [];
-   var ws = ImageWindow.windows;
-   for ( var i = 0; i < ws.length; ++i )
-      ids.push( ws[i].mainView.id );
-   return ids;
-}
-
-function closeAllWindows()
-{
-   var ws = ImageWindow.windows;
-   for ( var i = 0; i < ws.length; ++i )
-      ws[i].forceClose();
-}
-
-// value / comment are checked card by card; commentContains is checked on each
-// run of consecutive same-name cards joined with single spaces, because long
-// HISTORY text is split across cards at spaces.
-function keywordFound( kws, want )
-{
-   var run = null;
-   for ( var i = 0; i < kws.length; ++i )
-   {
-      var k = kws[i];
-      if ( k.name != want.name )
-      {
-         run = null;
-         continue;
-      }
-      if ( want.value !== undefined && k.strippedValue.trim() == want.value )
-         return true;
-      if ( want.comment !== undefined && k.comment.trim() == want.comment )
-         return true;
-      if ( want.commentContains !== undefined )
-      {
-         run = run === null ? k.comment.trim() : run + " " + k.comment.trim();
-         if ( run.indexOf( want.commentContains ) >= 0 )
-            return true;
-      }
-      if ( want.value === undefined && want.comment === undefined && want.commentContains === undefined )
-         return true;
-   }
-   return false;
-}
-
-function describeKeywords( kws )
-{
-   var s = [];
-   for ( var i = 0; i < kws.length; ++i )
-      s.push( kws[i].name + "=" + kws[i].value + " /" + kws[i].comment );
-   return s.join( " | " );
-}
 
 function runConvertCase( c, P, r )
 {
@@ -200,29 +148,9 @@ function runImageCase( c, P, r )
       }
    }
    var kws = w.keywords;
-   for ( var j = 0; j < c.keywords.length; ++j )
-      if ( !keywordFound( kws, c.keywords[j] ) )
-         r.errors.push( "keyword " + JSON.stringify( c.keywords[j] ) + " not found in: " + describeKeywords( kws ) );
-   // One FITS card holds 72 characters of HISTORY text.
-   for ( var h = 0; h < kws.length; ++h )
-      if ( kws[h].name == "HISTORY" && kws[h].comment.length > 72 )
-         r.errors.push( "HISTORY card longer than 72 characters (" + kws[h].comment.length + "): " + kws[h].comment );
-   for ( var a = 0; a < c.absentKeywords.length; ++a )
-      for ( var m = 0; m < kws.length; ++m )
-         if ( kws[m].name == c.absentKeywords[a] )
-         {
-            r.errors.push( "keyword " + c.absentKeywords[a] + " present (" + kws[m].value + "), expected absent" );
-            break;
-         }
+   checkKeywords( kws, c.keywords, c.absentKeywords, r.errors );
    if ( c.absentComments !== undefined )
-      for ( var t = 0; t < c.absentComments.length; ++t )
-         for ( var q = 0; q < kws.length; ++q )
-            if ( kws[q].comment.indexOf( c.absentComments[t] ) >= 0 )
-            {
-               r.errors.push( "keyword comment contains '" + c.absentComments[t] + "': " + kws[q].name + " /" +
-                              kws[q].comment );
-               break;
-            }
+      checkAbsentComments( kws, c.absentComments, r.errors );
    w.forceClose();
 }
 

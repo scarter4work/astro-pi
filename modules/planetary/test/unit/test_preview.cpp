@@ -303,8 +303,8 @@ TEST_CASE("Bayer source tokens read as text", "[preview][info]") {
     CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar)\n") != std::string::npos);
     // The sidecar SERViewer wrote when the user saved a chosen pattern (Increment 2.1).
     i.avi->bayerSource = "sidecar (SERViewer)";
-    CHECK(BayerText(i) == "RGGB (sidecar written by SERViewer)");
-    CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar written by SERViewer)\n") != std::string::npos);
+    CHECK(BayerText(i) == "RGGB (sidecar from Save pattern...)");
+    CHECK(InfoText("x.avi", i, std::nullopt).find("Bayer: RGGB (sidecar from Save pattern...)\n") != std::string::npos);
 }
 
 TEST_CASE("info text for an AVI: empty sidecar fields get no line", "[preview][info]") {
@@ -352,4 +352,131 @@ TEST_CASE("conversion rewords every 'showing the raw CFA as mono' warning to wha
     CHECK(ConversionWarning("sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway") ==
           "sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway");
     CHECK(ConversionWarning(tail.substr(2)) == tail.substr(2));
+}
+
+TEST_CASE("stacking rewords every 'showing the raw CFA as mono' warning to what it stacks", "[preview][info]") {
+    const std::string tail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
+    const std::string stacks = "; the raw CFA is stacked as mono -- set bayerPattern (or save the pattern with "
+                               "Save pattern... in PlanetaryStack or SERViewer) to stack in colour";
+    for (const std::string& reason : {std::string("no Bayer pattern known (no .avi.txt sidecar)"),
+                                     std::string("sidecar a.avi.txt could not be read; no Bayer pattern known"),
+                                     std::string("sidecar a.avi.txt has no Bayer value"),
+                                     std::string("sidecar Bayer value XY is not recognised")}) {
+        INFO(reason);
+        CHECK(StackWarning(reason + tail) == reason + stacks);
+    }
+    CHECK(StackWarning("sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway") ==
+          "sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway");
+    CHECK(StackWarning(tail.substr(2)) == tail.substr(2));
+}
+
+TEST_CASE("the stack window rewords the raw-CFA warning for its own controls", "[preview][info]") {
+    const std::string tail = "; showing the raw CFA as mono -- choose the pattern under Bayer pattern";
+    CHECK(StackWindowWarning("no Bayer pattern known (no .avi.txt sidecar)" + tail) ==
+          "no Bayer pattern known (no .avi.txt sidecar); the raw CFA is stacked as mono -- choose the pattern "
+          "under Bayer pattern (Save pattern... remembers it) to stack in colour");
+    CHECK(StackWindowWarning("sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway") ==
+          "sidecar Colour Format is RAW16, not RAW8; using its Bayer value anyway");
+}
+
+TEST_CASE("zoom in / out step through the zoom ladder and stop at its ends", "[preview][zoom]") {
+    CHECK(ZoomStep(1.0, true) == 1.5);
+    CHECK(ZoomStep(1.0, false) == 2.0 / 3);
+    CHECK(ZoomStep(2.0, true) == 3.0);
+    // From a zoom between levels (Fit), the next level up or down.
+    CHECK(ZoomStep(0.42, true) == 0.5);
+    CHECK(ZoomStep(0.42, false) == 1.0 / 3);
+    CHECK(ZoomStep(16.0, true) == 16.0);
+    CHECK(ZoomStep(1.0 / 16, false) == 1.0 / 16);
+    CHECK(ZoomStep(100.0, false) == 16.0);
+    CHECK(ZoomStep(0.001, true) == 1.0 / 16);
+}
+
+TEST_CASE("Fit's zoom is the scale FitRect uses", "[preview][zoom]") {
+    CHECK(FitZoom(400, 300, 800, 600) == 0.5);
+    CHECK(FitZoom(400, 300, 100, 100) == 3.0);   // pillarbox: height limits
+    CHECK(FitZoom(400, 300, 1600, 300) == 0.25); // letterbox: width limits
+    CHECK(FitZoom(0, 300, 100, 100) == 0.0);
+}
+
+TEST_CASE("the view centre stays on the image; an axis smaller than the box is centred", "[preview][zoom]") {
+    double cx = 10, cy = 1000;
+    ClampCentre(400, 300, 1024, 768, 1.0, cx, cy);   // half view 200 x 150
+    CHECK(cx == 200);
+    CHECK(cy == 768 - 150);
+    cx = 700, cy = 300;
+    ClampCentre(400, 300, 1024, 768, 2.0, cx, cy);   // half view 100 x 75: inside, unchanged
+    CHECK(cx == 700);
+    CHECK(cy == 300);
+    cx = 0, cy = 0;
+    ClampCentre(400, 300, 192, 160, 1.0, cx, cy);    // the image fits: centred on both axes
+    CHECK(cx == 96);
+    CHECK(cy == 80);
+    cx = 0, cy = 0;
+    ClampCentre(400, 300, 192, 160, 2.0, cx, cy);    // 384 x 320 on screen: x fits, y does not
+    CHECK(cx == 96);
+    CHECK(cy == 75);
+}
+
+TEST_CASE("the zoomed view maps the visible image pixels onto the box", "[preview][zoom]") {
+    // 100 %, centred: a 400 x 300 window of the image, pixel for pixel.
+    ZoomView v = ZoomRect(400, 300, 1024, 768, 1.0, 512, 384);
+    CHECK(v.sx0 == 312);
+    CHECK(v.sx1 == 712);
+    CHECK(v.sy0 == 234);
+    CHECK(v.sy1 == 534);
+    CHECK(v.dx0 == 0);
+    CHECK(v.dx1 == 400);
+    CHECK(v.dy0 == 0);
+    CHECK(v.dy1 == 300);
+    // 200 % at a half-pixel centre: whole source pixels covering the box, the edges past it.
+    v = ZoomRect(400, 300, 1024, 768, 2.0, 512.5, 384.25);
+    CHECK(v.sx0 == 412);
+    CHECK(v.sx1 == 613);
+    CHECK(v.sy0 == 309);
+    CHECK(v.sy1 == 460);
+    CHECK(v.dx0 == -1);
+    CHECK(v.dx1 == 401);
+    CHECK(v.dy0 == -1);   // 150 + (309 - 384.25) * 2 = -0.5, rounded away from the box
+    CHECK(v.dy1 == 302);
+    // The image smaller than the box: all of it, centred.
+    v = ZoomRect(400, 300, 192, 160, 1.0, 96, 80);
+    CHECK(v.sx0 == 0);
+    CHECK(v.sx1 == 192);
+    CHECK(v.sy0 == 0);
+    CHECK(v.sy1 == 160);
+    CHECK(v.dx0 == 104);
+    CHECK(v.dx1 == 296);
+    CHECK(v.dy0 == 70);
+    CHECK(v.dy1 == 230);
+    // Nothing to show.
+    CHECK(ZoomRect(400, 300, 0, 160, 1.0, 0, 0).Empty());
+    CHECK(ZoomRect(400, 300, 192, 160, 0.0, 96, 80).Empty());
+}
+
+TEST_CASE("the stack preview's range: black at the background, white below a lone outlier", "[preview][stretch]") {
+    // A 0.1 pedestal over 90 % of a 100 x 100 image, a 0.2..0.8 disc, one hot pixel at 50.
+    FloatImage img{100, 100, 1, std::vector<float>(10000, 0.1f)};
+    for (int i = 0; i < 1000; ++i) img.data[size_t(i) * 10] = 0.2f + 0.6f * float(i) / 999;
+    img.data[5] = 50.0f;
+    const DisplayRange r = StackDisplayRange(img);
+    CHECK(r.black == 0.1f);
+    CHECK(r.white == Catch::Approx(0.8f).margin(0.001));
+    const std::vector<uint32_t> argb = PreviewArgb(img, r.black, r.white);
+    CHECK(argb[1] == 0xFF000000u);                 // the pedestal is black
+    CHECK((argb[9990] & 0xFF) == 255u);            // the disc's brightest is white, not dimmed by the outlier
+    CHECK((argb[5] & 0xFF) == 255u);               // the outlier clips
+    CHECK((argb[5000] & 0xFF) > 100u);             // a mid-disc sample is mid-grey
+}
+
+TEST_CASE("the stack preview's range ignores non-finite samples and falls back to 0..max when flat", "[preview][stretch]") {
+    FloatImage flat{4, 4, 3, std::vector<float>(48, 0.4f)};
+    flat.data[0] = std::numeric_limits<float>::quiet_NaN();
+    const DisplayRange r = StackDisplayRange(flat);
+    CHECK(r.black == 0.0f);
+    CHECK(r.white == 0.4f);
+    CHECK(PreviewArgb(flat, r.black, r.white)[1] == 0xFFFFFFFFu);
+    // PreviewArgb( img ) is the 0..max range (SERViewer's frames).
+    FloatImage g{2, 1, 1, {0.25f, 0.5f}};
+    CHECK(PreviewArgb(g) == PreviewArgb(g, 0.0f, 0.5f));
 }

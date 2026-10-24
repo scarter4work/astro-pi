@@ -17,8 +17,8 @@ Not inside the module: PCL's link line also names its bundled LZ4, Zstandard,
 zlib, RFC 6234 (SHA), Little CMS and C/C++ Minpack libraries, but the linker
 takes no object from any of them into Planetary-pxm.so. The GCC runtime pieces
 linked in (libstdc++_nonshared, libgcc) are covered by the GCC Runtime Library
-Exception and require no notice. The SER reader and the debayer are this
-module's own code.
+Exception and require no notice. The SER and AVI readers, the debayer and
+the PlanetaryStack engine (including its FFT) are this module's own code.
 
 ===============================================================================
 1. PixInsight Class Library (PCL)

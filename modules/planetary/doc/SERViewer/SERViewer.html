@@ -149,15 +149,15 @@ record the pattern used. The sidecar is read as plain text and is never required
 <p>An AVI with no sidecar opens as the raw CFA in mono. To find its pattern, try RGGB, GRBG, GBRG and BGGR under
 <b>Bayer pattern</b> with <b>Debayer</b> checked and look at the preview. Once the colours look right, click <b>Save pattern...</b>
 (it stays disabled while Debayer is off, because the raw CFA preview shows no colour to judge by). SERViewer asks
-&ldquo;Write &lt;name&gt;.avi.txt with Bayer = RGGB? SERViewer will use it for this file from now on.&rdquo; (with your file
-and pattern). <b>Yes</b> writes a small text file next to the video:</p>
+&ldquo;Write &lt;name&gt;.avi.txt with Bayer = RGGB? Auto will use it for this video from now on (SERViewer and
+PlanetaryStack).&rdquo; (with your file and pattern). <b>Yes</b> writes a small text file next to the video:</p>
 <pre>
 [SERViewer]
 Bayer = RG
 Written By = SERViewer &lt;version&gt; (Bayer pattern chosen by the user)
 </pre>
 <p>Then the AVI is opened again with Auto on the same frame, so the new sidecar is read back. The info block shows
-&ldquo;Bayer: RGGB (sidecar written by SERViewer)&rdquo;, and from then on Auto uses this pattern whenever the file is
+&ldquo;Bayer: RGGB (sidecar from Save pattern...)&rdquo;, and from then on Auto uses this pattern whenever the file is
 opened. The file names no camera, so the image gets no <code>INSTRUME</code> keyword from it, and it has no
 <code>Flip</code> line, so the pattern is used as it stands.</p>
 <ul>

@@ -14,7 +14,7 @@ Then Resources → Updates → Check for Updates. Installs:
 
 - **NukeX** — integration + stretching module (`modules/nukex/`)
 - **PI Copilot** — AI assistant panel, bring your own Anthropic API key (`modules/pi-copilot/`)
-- **Planetary** — SER and AVI video viewer with Save as SER, the first step toward lucky-imaging stacking; process SERViewer (`modules/planetary/`)
+- **Planetary** — SER and AVI video viewer with Save as SER (process SERViewer), and PlanetaryStack, automatic lucky-imaging stacking of those videos (on branch `feat/planetary-stack`, unreleased) (`modules/planetary/`)
 - **Gaia Depth Grade** — PJSR scripts + their linux-x64 sidecar (`gaia-depth-grade/`)
 - **EZ Stretch / EZ Donut Repair / EZ Haze Kill** — PJSR scripts (`scripts/ez-stretch/`)
 
@@ -24,7 +24,7 @@ Then Resources → Updates → Check for Updates. Installs:
 |---|---|
 | `modules/nukex/` | NukeX C++ module (CMake). Builds `NukeX-pxm.so`. |
 | `modules/pi-copilot/` | PI Copilot C++ module (CMake). Builds `PICopilot-pxm.so`. |
-| `modules/planetary/` | Planetary C++ module (CMake): SER reader library + the SERViewer process. Builds `Planetary-pxm.so`. |
+| `modules/planetary/` | Planetary C++ module (CMake): SER/AVI reader library, the stack engine, and the SERViewer and PlanetaryStack processes. Builds `Planetary-pxm.so`. |
 | `gaia-depth-grade/` | Gaia Depth Grade PJSR scripts + the Python sidecar they run. |
 | `scripts/ez-stretch/` | EZ PJSR scripts + native signing tooling. |
 | `tools/` | Dev tooling (PCL/PJSR MCP parsers, astro-stretch-studio). Not shipped. |

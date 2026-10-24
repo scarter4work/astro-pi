@@ -23,6 +23,9 @@ public:
    String      TradeMarks() const override;
    String      OriginalFileName() const override;
    void        GetReleaseDate( int& year, int& month, int& day ) const override;
+   // Before PixInsight exits (or the module is uninstalled): a stack running in
+   // the PlanetaryStack window is cancelled and joined.
+   void        OnUnload() override;
 };
 
 extern PlanetaryModule* ThePlanetaryModule;

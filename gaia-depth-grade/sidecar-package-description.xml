@@ -1,0 +1,5 @@
+<p>
+   <b>Gaia Depth Grade sidecar 1.0.8</b>
+</p>
+<p>The image-processing program used by the Gaia Depth Grade script (install both). It is installed as bin/gaia-depth-grade-sidecar and its licences in doc/scripts/GaiaDepthGrade/. It is a self-contained program (Python with NumPy, SciPy, Astropy, photutils, astroquery and Pillow); no Python installation is needed.</p>
+<p>Delivered by PixInsight&apos;s update system (earlier versions were downloaded by the script). It runs on any Linux that runs PixInsight with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>

@@ -1,0 +1,365 @@
+"""bench.py: the run plan, Ruling 2 / P28's status, the display stretch and the side-by-side layout.
+Synthetic only (no NAS)."""
+import os
+
+import numpy as np
+import pytest
+
+import bench
+import benchset
+from metric import Box
+
+
+def _row(label, end=1.0, end_int=1.0, judged=True, note=None, prov="none"):
+    return {"label": label, "end": end, "end_interior": end_int if judged else None, "end_note": note,
+            "interior_judged": judged, "provenance": {"state": prov, "text": f"{prov} (test)"}}
+
+
+def _rows(full, inner, judged=True, review=(), alt=None, ref_end=1.0, ref_note=None, charged=True, prov="none"):
+    """ours (with END ratios full / inner, and alt ratios) and one reference."""
+    alt_full, alt_inner = alt if alt is not None else (full, inner)
+    ours = _row("ours", end=full, end_int=inner, judged=judged)
+    ours.update({"end_ratio": full, "end_interior_ratio": inner if judged else None,
+                 "end_alt_ratio": alt_full, "end_interior_alt_ratio": alt_inner if judged else None,
+                 "end_frames": 100.0, "end_alt_frames": 60.0, "review": list(review),
+                 "end_noise_factor": [1.0] * 8 if charged else None, "provenance": None,
+                 "end_uncharged_ratio": full, "end_interior_uncharged_ratio": inner if judged else None,
+                 "end_uncharged_alt_ratio": alt_full, "end_interior_uncharged_alt_ratio": alt_inner if judged else None,
+                 "end_alt_noise_factor": [1.0] * 8 if charged else None})
+    return [ours, _row("AS_P20", end=ref_end, judged=judged, note=ref_note, prov=prov)]
+
+
+def test_plan_covers_every_capture_once_all_rggb():
+    runs = bench.plan()
+    ids = [r.id for r in runs]
+    assert len(ids) == len(set(ids)) == len(benchset.BENCHMARK)
+    assert [r.capture for r in runs] == [c.id for c in benchset.BENCHMARK]
+    by = {r.id: r for r in runs}
+    for c in benchset.BENCHMARK:
+        if c.expect == "stack":
+            assert by[c.id].bayer == "RGGB" and "camera spec" in c.bayer_source
+    assert by["2026-01-30-saturn-empty"].bayer == "auto" and by["2026-01-30-saturn-empty"].expect == "NoTarget"
+    assert by["2023-02-11-venus-clipped"].expect == "Clipped"
+
+
+@pytest.mark.parametrize("full, inner, judged, want", [
+    (1.00, 1.00, True, "pass"),         # sound under our measured-noise charge (Ruling P28b)
+    (0.97, 0.97, True, "pass"),         # the bar is inclusive
+    (0.969, 1.10, True, "fail"),        # against an unprocessed reference: a fail stands
+    (1.10, 0.969, True, "fail"),
+    (1.10, 0.50, False, "pass"),        # an interior not judged does not count
+])
+def test_status_applies_the_bar_to_both_end_scores(full, inner, judged, want):
+    assert bench.status_of(_rows(full, inner, judged))[0] == want
+
+
+def test_a_fail_only_under_our_charge_is_review():
+    rows = _rows(0.9, 0.9)
+    rows[0].update(end_uncharged_ratio=1.5, end_interior_uncharged_ratio=1.4)
+    st, why = bench.status_of(rows)
+    assert st == "review" and any(bench.CHARGE_NOTE in w and "1.500 / 1.400" in w for w in why)
+
+
+def test_a_pass_needs_ours_charged_its_measured_noise():
+    st, why = bench.status_of(_rows(2.0, 2.0, charged=False))
+    assert st == "review" and why[0] == bench.UNCHARGED_NOTE
+
+
+@pytest.mark.parametrize("prov", ["unknown", "processed"])
+def test_a_fail_against_a_reference_of_unknown_or_processed_provenance_is_review(prov):
+    st, why = bench.status_of(_rows(0.9, 0.9, prov=prov))
+    assert st == "review" and any(w.startswith(bench.C1_NOTE) for w in why)
+
+
+def test_review_notes_turn_a_pass_into_review_never_a_fail_into_one():
+    st, why = bench.status_of(_rows(1.2, None, False, ["limb-only: human review decides"]))
+    assert st == "review" and why == ["limb-only: human review decides"]
+    assert bench.status_of(_rows(0.9, 0.9, True, ["limb-only"]))[0] == "fail"
+
+
+def test_a_verdict_that_flips_with_our_frame_count_goes_to_review():
+    st, why = bench.status_of(_rows(1.02, 1.05, True, alt=(0.95, 1.0)))
+    assert st == "review" and "flips" in why[0] and "pass at the box's noise-power k 100" in why[0]
+    assert "fail at the mean kept fraction's 60" in why[0]
+    assert bench.status_of(_rows(0.9, 0.9, True, alt=(0.8, 0.8)))[0] == "fail"     # fails both: fail
+
+
+@pytest.mark.parametrize("high", [3.18, 0.30])
+def test_split_halves_outside_the_tolerance_block_a_pass_in_either_direction(high):
+    """Review I-G: above the band the model does not hold what the halves measure; below it ours
+    smooths more than the honest engine, or sigma_frame is over-read and excess noise hides in the
+    headroom. Either way a pass is not confirmed."""
+    sh = {"status": "outside", "kind": "lunar", "tolerance": [0.5, 1.2], "factor": [1.0] * 8,
+          "judged": {"high": high, "k": [500, 505], "ratio": [1.0] * 9}, "mean_k": None}
+    st, why = bench.status_of(_rows(1.9, 1.7), split_half=sh)
+    assert st == "review" and why[0].startswith("split halves outside") and f"x{high:.2f}" in why[0]
+    assert bench.status_of(_rows(1.9, 1.7), split_half=dict(sh, status="agrees"))[0] == "pass"
+
+
+def test_a_fail_whose_bare_budget_flips_between_readings_is_review():
+    """N2-m1: P28c's bare check on both readings of our k."""
+    rows = _rows(0.9, 0.9)
+    rows[0].update(end_uncharged_ratio=0.9, end_interior_uncharged_ratio=0.9,
+                   end_uncharged_alt_ratio=1.2, end_interior_uncharged_alt_ratio=1.1)
+    st, why = bench.status_of(rows)
+    assert st == "review" and any(bench.CHARGE_NOTE in w for w in why)
+
+
+def test_a_pass_with_the_alternative_reading_uncharged_is_review():
+    rows = _rows(1.5, 1.5)
+    rows[0]["end_alt_noise_factor"] = None
+    assert bench.status_of(rows) == ("review", [bench.UNCHARGED_NOTE])
+
+
+def test_a_missing_end_is_unmeasured_never_a_verdict():
+    st, why = bench.status_of(_rows(1.5, 1.5, ref_end=None, ref_note="END not computed: no frame count"))
+    assert st == "unmeasured" and "NO VERDICT" in why[0] and "AS_P20: END not computed: no frame count" in why[0]
+
+
+def test_stretch_removes_each_channels_pedestal_and_keeps_the_colour_ratio():
+    rng = np.random.default_rng(1)
+    img = np.zeros((64, 64, 3))
+    img[16:48, 16:48] = [0.6, 0.4, 0.2]                # a warm target
+    img += np.array([0.05, 0.0, 0.10])                 # sky pedestals that differ per channel
+    img += rng.normal(0, 1e-4, img.shape)
+    levels = bench.display_levels(img, Box(0, 64, 0, 64))
+    out = bench.stretch(img, levels).astype(float)
+    # The sky is near black in every channel (noise above the 1st percentile, through gamma 2.2:
+    # a few DN); a pedestal left in would show blue at ~135 DN.
+    assert out[4, 4].max() <= 16
+    lin = (out[32, 32] / 255) ** (1 / bench.DISPLAY_GAMMA)
+    assert lin[0] / lin[2] == pytest.approx(3.0, rel=0.05)   # 0.6 : 0.2 survives
+
+
+def test_two_images_differing_by_gain_and_offset_display_identically():
+    rng = np.random.default_rng(2)
+    a = rng.random((40, 40)) + 1.0
+    b = 7.0 * a + 300.0
+    box = Box(0, 40, 0, 40)
+    pa, pb = bench.stretch(a, bench.display_levels(a, box)), bench.stretch(b, bench.display_levels(b, box))
+    assert np.abs(pa.astype(int) - pb.astype(int)).max() <= 1
+
+
+def test_detail_tiles_find_the_textured_patches_and_keep_them_apart():
+    rng = np.random.default_rng(3)
+    lum = np.full((600, 1200), 0.5)
+    lum[50:250, 50:250] += rng.normal(0, 0.2, (200, 200))
+    lum[300:500, 900:1100] += rng.normal(0, 0.1, (200, 200))
+    tiles = bench.detail_tiles(lum, Box(0, 600, 0, 1200), tile=128, sep=300)
+    assert len(tiles) == 2
+    (a, b) = [((t.y0 + t.y1) / 2, (t.x0 + t.x1) / 2) for t in tiles]
+    assert 50 <= a[0] <= 250 and 50 <= a[1] <= 250       # the stronger texture first
+    assert 300 <= b[0] <= 500 and 900 <= b[1] <= 1100
+    assert all(t.y1 - t.y0 == 128 and t.x1 - t.x0 == 128 for t in tiles)
+
+
+def test_compose_lays_out_columns_with_headers(tmp_path):
+    from PIL import Image
+    p = [np.zeros((50, 80, 3), np.uint8), np.full((50, 80, 3), 128, np.uint8)]
+    out = os.path.join(tmp_path, "sbs.png")
+    bench.compose([p, p], [["ours", "DAN 1"], ["AS_P20", "DAN 0.9"]], ["row 1", "row 2"], "title", out)
+    w, h = Image.open(out).size
+    assert w == bench.PAD + 2 * (200 + bench.PAD)        # panels narrower than 200 px get 200
+    assert h > 2 * 50
+
+
+def test_summary_counts_and_lists_diagnosis_rows():
+    end_keys = {"end": None, "end_ratio": None, "end_interior": None, "end_interior_ratio": None,
+                "end_alt_ratio": None, "end_interior_alt_ratio": None, "end_frames": None,
+                "end_alt_frames": None, "end_noise_budget": None, "end_note": None}
+    ours = dict(end_keys, label="ours", dan=0.1, dan_interior=None, ratio_to_best_reference=0.9,
+                interior_ratio_to_best_reference=None, factor=1.0, band_snr=10.0, orientation=None, shift=None,
+                scale=None, ncc=None, end=2.0, end_ratio=0.8, end_frames=9.0, end_alt_frames=7.0, end_alt_ratio=0.7)
+    ref = dict(end_keys, label="AS_P20", dan=0.111, dan_interior=None, ratio_to_best_reference=1.0,
+               interior_ratio_to_best_reference=None, factor=1.0, band_snr=10.0, orientation="identity",
+               shift=[0.0, 0.0], scale=1.0, ncc=0.99, end=2.5, end_ratio=1.0, end_frames=2.0)
+    rec_stack = {"run": "r1", "capture": "c", "bayer": "RGGB", "expect": "stack", "note": "", "status": "fail",
+                 "reasons": ["END_full 0.8"], "wall_seconds": 2.0, "video_bytes": 2e9, "source": "NAS",
+                 "probe": {"used": 9, "measured": 10, "seconds": 1.5, "peakRssMB": 100.0, "frames": 10,
+                           "phaseSeconds": {"Stacking": 1.0}, "bytesRead": 3e9, "readMBps": 500.0},
+                 "rows": [ours, ref], "photon_transfer": "v(m) = 0.1 m + 0 DN^2"}
+    rec_diag = {"run": "d1", "capture": "d", "bayer": "auto", "expect": "NoTarget", "note": "", "status": "pass",
+                "image_written": False, "wall_seconds": 0.5, "video_bytes": 1e6, "source": "NAS",
+                "probe": {"diagnosis": {"kind": "NoTarget", "message": "nothing", "numbers": {"n": 1}},
+                          "seconds": 0.4, "frames": 21, "phaseSeconds": {}, "bytesRead": 1e6, "readMBps": 50.0,
+                          "peakRssMB": 50.0}}
+    md = bench.summary_md([rec_stack, rec_diag])
+    assert "0 pass, 0 review, 1 fail" in md and "RGGB" in md.split("\n")[2]
+    assert "| r1 | RGGB | 9 / 10 | 9 (7) |" in md and "2.00 / 2.50 / -" in md and "0.800 / -" in md
+    assert "not stacked" in md and "Ruling P28b" in md
+    assert "| d1 | NoTarget | NoTarget | no | **pass** |" in md
+    # The header states status_of's rule, split-half tolerance and P28c included (re-review 3 N3-m5)
+    rule = next(line for line in md.split("\n") if line.startswith("Status:"))
+    assert "split halves within" in rule and "bare budget" in rule
+
+
+def test_detail_tiles_on_the_target_skip_the_limb():
+    """Task 9's first lunar side-by-sides put both 1:1 crops on the limb, whose step outscores any
+    crater; with the target mask the tiles lie wholly on the surface."""
+    rng = np.random.default_rng(4)
+    lum = np.full((600, 1200), 0.02)
+    lum[:, 400:] = 0.5 + rng.normal(0, 0.02, (600, 800))     # surface right of a sharp limb at x 400
+    lum[200:360, 800:960] += rng.normal(0, 0.08, (160, 160))  # a detailed patch on the surface
+    mask = lum > 0.2
+    free = bench.detail_tiles(lum, Box(0, 600, 0, 1200), tile=128, sep=300)
+    assert any(t.x0 < 400 <= t.x1 for t in free)             # without the mask the limb wins a tile
+    tiles = bench.detail_tiles(lum, Box(0, 600, 0, 1200), tile=128, sep=300, inside=mask)
+    assert tiles and all(mask[t.y0:t.y1, t.x0:t.x1].all() for t in tiles)
+    t = tiles[0]                                                  # the detailed patch first
+    assert 800 - 64 <= (t.x0 + t.x1) / 2 <= 960 + 64 and 200 - 64 <= (t.y0 + t.y1) / 2 <= 360 + 64
+
+
+def test_our_box_k_is_taken_only_from_a_plan_that_matches_runstack():
+    probe = {"used": 100, "regionDetail": [{"kept": 80, "noiseOnly": False}, {"kept": 0, "noiseOnly": True}]}
+    keff = {"stacked": 100, "regionKept": [80, 0], "keffBox": 91.5, "box": [0, 10, 0, 10]}
+    assert benchset.ours_frames_box(probe, keff) == (91.5, "")
+    k, why = benchset.ours_frames_box(probe, dict(keff, regionKept=[79, 0]))
+    assert k is None and "differs from RunStack's" in why
+    k, why = benchset.ours_frames_box(probe, None)
+    assert k is None and "not computed" in why
+    # the flip check: used x the unweighted mean kept fraction, a no-frame region counting 1
+    assert benchset.ours_frames_mean(probe) == pytest.approx(100 * (0.8 + 1.0) / 2)
+
+
+def test_a_fail_keeps_its_review_notes_in_the_reasons():
+    """Fix round 3: a limb-only capture failing on the numbers (Mars) lost its limb-only note. A note
+    still never turns a fail into review (Task 9's rule), but it is shown on every path."""
+    rows = _rows(0.9, 0.9, True, ["limb-only: human review decides"])
+    st, why = bench.status_of(rows)
+    assert st == "fail" and "limb-only: human review decides" in why
+    rows[0].update(end_noise_factor=[2.0] * 8, end_alt_noise_factor=[2.0] * 8, end_uncharged_ratio=1.2,
+                   end_interior_uncharged_ratio=1.2, end_uncharged_alt_ratio=1.2, end_interior_uncharged_alt_ratio=1.2)
+    st, why = bench.status_of(rows)
+    assert st == "review" and any(bench.CHARGE_NOTE in w for w in why) and "limb-only: human review decides" in why
+
+
+# --- Ruling F2 (final review, bench I1): the identity guard; bench I2: no record is lost -------------
+
+def _tree(root):
+    """A stand-in modules/planetary tree holding every file identity.py hashes."""
+    import identity
+    for rel in ["src/stack/Engine.cpp", "src/ser/SerFile.cpp", *identity.PROBE_SOURCES, *identity.PROCEDURE]:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"// {rel}\n")
+    return root
+
+
+def test_identity_tracks_every_part_and_words_each_mismatch(tmp_path):
+    import identity
+    root = _tree(tmp_path)
+    a = identity.source_parts(str(root))
+    assert set(a) == {"engine", "probe_sources", "procedure"}
+    assert identity.source_parts(str(root)) == a                          # deterministic
+    (root / "src/ser/SerFile.cpp").write_text("// changed\n")
+    b = identity.source_parts(str(root))
+    assert b["engine"] != a["engine"] and b["probe_sources"] == a["probe_sources"] and b["procedure"] == a["procedure"]
+    (root / "src/stack/New.h").write_text("")                             # a new engine file counts too
+    assert identity.source_parts(str(root))["engine"] != b["engine"]
+    used = dict(b, probe_binaries={"stack-probe": "1" * 64, "stack-region-probe": "2" * 64})
+    assert identity.mismatches(used, used) == []
+    assert identity.mismatches(None, used) == ["no identity is recorded"]
+    assert [m.split(":")[0] for m in identity.mismatches(dict(used, engine=a["engine"]), used)] == ["engine"]
+    assert [m.split(":")[0] for m in identity.mismatches(dict(used, probe_binaries=None), used)] == ["probe_binaries"]
+    # a probe older than a source it is built from is stale
+    probe = tmp_path / "stack-probe"
+    probe.write_bytes(b"binary")
+    os.utime(probe, (1, 1))
+    assert any("older than src/" in s for s in identity.stale(str(probe), str(root)))
+    os.utime(probe, None)
+    assert identity.stale(str(probe), str(root)) == []
+    assert identity.stale(str(tmp_path / "missing"), str(root)) == [f"{tmp_path / 'missing'} does not exist"]
+
+
+def test_the_identity_at_a_commit_is_the_tree_identity_of_that_commit():
+    """identity.py --at hashes the files git holds at a commit as the working tree is hashed: at HEAD the
+    engine part equals the working tree's whenever src/stack and src/ser are committed as they are."""
+    import subprocess
+    import identity
+    repo = os.path.dirname(os.path.dirname(identity.MODULE))
+    dirty = subprocess.run(["git", "-C", repo, "status", "--porcelain", "--", "modules/planetary/src"],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        pytest.skip("src/ has uncommitted changes: HEAD and the working tree differ by design")
+    assert identity.source_parts_at("HEAD")["engine"] == identity.source_parts()["engine"]
+
+
+def test_a_calibration_with_another_identity_cannot_judge(tmp_path):
+    import halves
+    used = {"engine": "e" * 64, "probe_sources": "p" * 64, "procedure": "q" * 64,
+            "probe_binaries": {"stack-probe": "1" * 64, "stack-region-probe": "2" * 64}, "stale": []}
+    cal = tmp_path / "calibration.json"            # outside git: not a committed freeze either
+    cal.write_text("{}")
+    probs = halves.calibration_problems({"identity": dict(used, engine="f" * 64)}, used, str(cal))
+    assert any(p.startswith("calibration identity: engine") for p in probs)
+    assert any("git has not committed" in p for p in probs)
+    assert any("stale probe" in p for p in halves.calibration_problems({"identity": used}, dict(used, stale=["x is older"]), str(cal)))
+
+
+def _ctx(engine="e"):
+    used = {"engine": engine * 64, "probe_sources": "p" * 64, "procedure": "q" * 64,
+            "probe_binaries": {"stack-probe": "1" * 64, "stack-region-probe": "2" * 64}, "stale": []}
+    cal = {"generated": "2099-01-01T00:00:00", "identity": {k: used[k] for k in bench.identity.PARTS},
+           "kinds": {"disc": {"tolerance": [0.5, 1.5]}, "lunar": {"tolerance": [0.3, 2.4]}}}
+    return bench.Context(used, cal, [])
+
+
+def _diagnosed(out, run_id, kind, ctx, ident=None):
+    import json
+    d = out / run_id
+    d.mkdir(parents=True)
+    (d / "probe.json").write_text(json.dumps({"diagnosis": {"kind": kind, "message": f"{kind} (test)", "numbers": {}},
+                                              "output": None, "seconds": 0.5, "frames": 21, "phaseSeconds": {},
+                                              "bytesRead": 1e6, "readMBps": 50.0, "peakRssMB": 50.0}))
+    (d / "identity.json").write_text(json.dumps(ident if ident is not None else ctx.used))
+
+
+def test_a_partial_report_never_erases_a_fail_and_flags_a_stale_record(tmp_path):
+    """Review I2: a stack run the engine refused (no stack: fail) wrote no compare.json, so reporting
+    another run alone turned it into "not run" and the fail left summary.md."""
+    import json
+    ctx = _ctx()
+    _diagnosed(tmp_path, "2023-02-11-mars", "OutOfFocus", ctx)
+    _diagnosed(tmp_path, "2026-01-30-saturn-empty", "NoTarget", ctx)
+    first = {r["run"]: r for r in bench.report(str(tmp_path), ["2023-02-11-mars"], ctx)}
+    assert first["2023-02-11-mars"]["status"] == "fail"
+    rec = json.loads((tmp_path / "2023-02-11-mars" / "compare.json").read_text())
+    assert rec["status"] == "fail" and rec["identity"]["engine"] == ctx.used["engine"]
+    assert rec["calibration_generated"] == ctx.calibration["generated"]
+    again = {r["run"]: r for r in bench.report(str(tmp_path), ["2026-01-30-saturn-empty"], ctx)}
+    assert again["2023-02-11-mars"]["status"] == "fail" and not again["2023-02-11-mars"]["stale"]
+    assert again["2026-01-30-saturn-empty"]["status"] == "pass"
+    md = (tmp_path / "summary.md").read_text()
+    assert "1 fail" in md and "| 2023-02-11-mars |" in md
+    # The engine changed since: the kept fail stands, flagged stale, until its run is reported again.
+    later = {r["run"]: r for r in bench.report(str(tmp_path), ["2026-01-30-saturn-empty"], _ctx("f"))}
+    assert later["2023-02-11-mars"]["status"] == "fail" and later["2023-02-11-mars"]["stale"]
+    md = (tmp_path / "summary.md").read_text()
+    assert "**fail** (stale)" in md and "judged with another identity or calibration" in md
+
+
+def test_a_run_stacked_with_another_identity_gets_no_verdict(tmp_path):
+    ctx = _ctx()
+    _diagnosed(tmp_path, "2026-01-30-saturn-empty", "NoTarget", ctx, ident=dict(ctx.used, engine="0" * 64))
+    rec = {r["run"]: r for r in bench.report(str(tmp_path), ["2026-01-30-saturn-empty"], ctx)}["2026-01-30-saturn-empty"]
+    assert rec["status"] == "unmeasured"
+    assert rec["reasons"][0].startswith("NO VERDICT -- the run was stacked with another identity: engine")
+    assert "the numbers alone would say pass" in rec["reasons"][0]
+    _diagnosed(tmp_path, "2023-02-11-venus-clipped", "Clipped", ctx, ident={})      # stacked before identities
+    rec = {r["run"]: r for r in bench.report(str(tmp_path), ["2023-02-11-venus-clipped"], ctx)}["2023-02-11-venus-clipped"]
+    assert rec["status"] == "unmeasured" and "no identity is recorded" in rec["reasons"][0]
+
+
+def test_an_error_writes_its_record_and_a_mismatched_calibration_is_announced(tmp_path):
+    import json
+    ctx = _ctx()
+    d = tmp_path / "2023-02-11-mars"
+    d.mkdir()
+    (d / "probe.json").write_text("{not json")              # a harness failure
+    recs = {r["run"]: r for r in bench.report(str(tmp_path), ["2023-02-11-mars"], ctx)}
+    assert recs["2023-02-11-mars"]["status"] == "error"
+    assert json.loads((d / "compare.json").read_text())["status"] == "error"
+    bad = bench.Context(ctx.used, ctx.calibration, ["calibration identity: engine: recorded x, in use y"])
+    md = bench.summary_md([], bad)
+    assert "**NO VERDICT on any stacked run: the calibration does not describe what is in use**" in md
+    assert "Judged with: engine eeeeeeeeeeee" in md

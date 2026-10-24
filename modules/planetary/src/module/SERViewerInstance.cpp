@@ -19,7 +19,9 @@
 #include <optional>
 #include <string>
 
+#include "FitsCards.h"
 #include "FitsText.h"
+#include "NewImageWindow.h"
 #include "PlanetaryVersion.h"
 #include "SerExport.h"
 #include "SerFile.h"
@@ -29,24 +31,10 @@
 namespace ser = planetary::ser;
 namespace fits = planetary::fits;
 namespace preview = planetary::preview;
+using namespace pcl::planetary_fits;
 
 namespace pcl
 {
-
-ser::BayerChoice BayerChoiceFor( pcl_enum bayerPattern )
-{
-   switch ( bayerPattern )
-   {
-   case SVBayerPattern::None: return ser::BayerChoice::None;
-   case SVBayerPattern::RGGB: return ser::BayerChoice::RGGB;
-   case SVBayerPattern::GRBG: return ser::BayerChoice::GRBG;
-   case SVBayerPattern::GBRG: return ser::BayerChoice::GBRG;
-   case SVBayerPattern::BGGR: return ser::BayerChoice::BGGR;
-   case SVBayerPattern::Auto: return ser::BayerChoice::Auto;
-   default:
-      throw Error( "SERViewer: invalid bayerPattern value " + String( int( bayerPattern ) ) );
-   }
-}
 
 DisplayFrame LoadFrameForDisplay( const ser::FrameSource& file, int64_t index, bool debayer )
 {
@@ -72,58 +60,6 @@ String FromUtf8( const std::string& s )
 String Num( int64_t n )
 {
    return String( std::to_string( n ).c_str() );
-}
-
-// A view id from the file stem: [A-Za-z0-9_] only, never starting with a digit.
-IsoString WindowIdFor( const String& path, int64_t frameIndex )
-{
-   const String stem = File::ExtractName( path );
-   IsoString id;
-   for ( size_type i = 0; i < stem.Length(); ++i )
-   {
-      const char16_type c = stem[i];
-      const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
-      id += ok ? char( c ) : '_';
-   }
-   if ( id.IsEmpty() )
-      id = "SER";
-   else if ( id[0] >= '0' && id[0] <= '9' )
-      id.Prepend( '_' );
-   return id + "_f" + IsoString( std::to_string( frameIndex ).c_str() );
-}
-
-// A FITS string value: printable ASCII only (header bytes are not guaranteed
-// to be), embedded quotes doubled, enclosed in quotes.
-IsoString FitsString( const std::string& s )
-{
-   IsoString v = "'";
-   for ( char c : fits::AsciiFromBytes( s ) )
-   {
-      if ( c == '\'' )
-         v += "''";
-      else
-         v += c;
-   }
-   v += '\'';
-   return v;
-}
-
-// HISTORY text (ASCII already) on as many cards as it needs: a FITS card holds
-// 72 characters of it. Pieces break at spaces; readers join them with one space.
-void AddHistory( FITSKeywordArray& keywords, const std::string& text )
-{
-   for ( const std::string& piece : fits::SplitCardText( text ) )
-      keywords << FITSHeaderKeyword( "HISTORY", IsoString(), IsoString( piece.c_str() ) );
-}
-
-// UTF-8 text bound for a FITS card: the reader's arrow becomes "->", any
-// other code point outside printable ASCII one '?'.
-std::string FitsAscii( std::string s )
-{
-   const std::string arrow = "\xE2\x86\x92";
-   for ( size_t at = s.find( arrow ); at != std::string::npos; at = s.find( arrow, at + 2 ) )
-      s.replace( at, arrow.size(), "->" );
-   return fits::AsciiFromUtf8( s );
 }
 
 } // namespace
@@ -257,7 +193,7 @@ bool SERViewerInstance::ExecuteGlobal()
    const String fileName = File::ExtractNameAndExtension( path );
    const String savePath = p_saveSerPath.Trimmed();
    const int64_t index = p_frameIndex;
-   const ser::BayerChoice bayer = BayerChoiceFor( p_bayerPattern );
+   const ser::BayerChoice bayer = BayerChoiceFor( p_bayerPattern, "SERViewer" );
 
    // Every reader failure (bad file, unsupported layout, index out of range,
    // short read) surfaces with the library's own reason. No window exists until
@@ -326,54 +262,33 @@ bool SERViewerInstance::ExecuteGlobal()
    const std::string asciiName = fits::AsciiFromUtf8( fileName.ToUTF8().c_str() );
    AddHistory( keywords, "SERViewer: " + asciiName + " frame " + std::to_string( index ) );
    if ( isAvi && ser::IsBayer( info.colorId ) )
-      AddHistory( keywords, "SERViewer: Bayer " + FitsAscii( preview::BayerText( info ) ) );
+      AddHistory( keywords, "SERViewer: Bayer " + fits::FitsAscii( preview::BayerText( info ) ) );
    // SER header text has no defined encoding; AVI warnings are built from
    // UTF-8 file names and sidecar text.
    for ( const std::string& w : info.warnings )
-      AddHistory( keywords, "SERViewer warning: " + (isAvi ? FitsAscii( w ) : fits::AsciiFromBytes( w )) );
+      AddHistory( keywords, "SERViewer warning: " + (isAvi ? fits::FitsAscii( w ) : fits::AsciiFromBytes( w )) );
    if ( !rangeWarning.empty() )
       AddHistory( keywords, "SERViewer warning: " + rangeWarning );
 
-   ImageWindow window( frame.width, frame.height, channels, 32, true/*float*/, channels == 3, true/*initialProcessing*/,
-                       WindowIdFor( path, index ) );
-   if ( window.IsNull() )
-      throw Error( "SERViewer: " + fileName + ": PixInsight could not create an image window" );
-
-   IsoString viewId;
+   // The frame, normalised (and debayered), is ready before any window exists:
+   // the window only receives a copy of it (ShowNewImageWindow).
+   Image image( frame.width, frame.height, channels == 3 ? ColorSpace::RGB : ColorSpace::Gray );
+   float* planes[3] = {};
+   for ( int c = 0; c < channels; ++c )
+      planes[c] = image.PixelData( c );
    try
    {
-      View view = window.MainView();
-      ImageVariant v = view.Image();
-      if ( !v.IsFloatSample() || v.BitsPerSample() != 32 || v.NumberOfChannels() != channels )
-         throw Error( "SERViewer: internal error - the new window is not a 32-bit float image" );
-      Image& image = static_cast<Image&>( *v );
-      // Normalised (and debayered) straight into the image's planes: no
-      // intermediate float copy of the frame next to the image.
-      float* planes[3] = {};
-      for ( int c = 0; c < channels; ++c )
-         planes[c] = image.PixelData( c );
-      try
-      {
-         if ( debayered )
-            ser::DebayerBilinearInto( frame, info.colorId, info.normDepth, planes, 1 );
-         else
-            ser::NormalizeInto( frame, info.normDepth, planes, 1 );
-      }
-      catch ( const ser::SerError& e )
-      {
-         throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
-      }
-      window.SetKeywords( keywords );
-      viewId = view.Id();
+      if ( debayered )
+         ser::DebayerBilinearInto( frame, info.colorId, info.normDepth, planes, 1 );
+      else
+         ser::NormalizeInto( frame, info.normDepth, planes, 1 );
    }
-   catch ( ... )
+   catch ( const ser::SerError& e )
    {
-      // The window is still hidden: drop it rather than leave a half-made image.
-      window.ForceClose();
-      throw;
+      throw Error( "SERViewer: " + fileName + ": " + FromUtf8( e.what() ) );
    }
-
-   window.Show();
+   const IsoString viewId = ShowNewImageWindow( image, ViewIdStem( path ) + "_f" + IsoString( std::to_string( index ).c_str() ),
+                                                keywords, "SERViewer: " + fileName );
 
    // Console text is parsed for tags, so file names and warnings go in encoded.
    Console console;

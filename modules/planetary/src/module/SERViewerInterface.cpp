@@ -17,6 +17,7 @@
 #include <exception>
 
 #include "SerInfoText.h"
+#include "VideoControls.h"
 
 namespace ser = planetary::ser;
 
@@ -29,16 +30,6 @@ namespace
 {
 
 const char* const kIdleText = "No video loaded.\nClick Open... to choose a .ser or .avi video.";
-
-String FromUtf8( const std::string& s )
-{
-   return String::UTF8ToUTF16( s.c_str() );
-}
-
-std::string ToUtf8( const String& s )
-{
-   return s.ToUTF8().c_str();
-}
 
 } // namespace
 
@@ -83,16 +74,34 @@ void SERViewerInterface::ResetInstance()
 bool SERViewerInterface::Launch( const MetaProcess&, const ProcessImplementation*, bool& dynamic, unsigned& )
 {
    if ( GUI == nullptr )
-   {
-      GUI = new GUIData( *this );
-      SetWindowTitle( "SERViewer" );
-      OnShow( (Control::event_handler)&SERViewerInterface::e_Show, *this );
-      OnHide( (Control::event_handler)&SERViewerInterface::e_Hide, *this );
-      UpdateFrameControls();
-   }
+      // Nothing may cross into the core: a window that cannot be built is said on
+      // the console and not launched. All or nothing: GUI is set only once every
+      // step has run, so a failure leaves no half-made window behind.
+      GuardedCall( [this]()
+      {
+         std::unique_ptr<GUIData> gui = std::make_unique<GUIData>( *this );
+         SetWindowTitle( "SERViewer" );
+         OnShow( (Control::event_handler)&SERViewerInterface::e_Show, *this );
+         OnHide( (Control::event_handler)&SERViewerInterface::e_Hide, *this );
+         GUI = gui.get();
+         try
+         {
+            UpdateFrameControls();
+         }
+         catch ( ... )
+         {
+            GUI = nullptr;
+            throw;
+         }
+         gui.release();
+      },
+      []( const String& message )
+      {
+         Console().CriticalLn( "<end><cbr>*** SERViewer: cannot open the window: " + message.EncodedHTMLSpecialChars() );
+      } );
 
    dynamic = false;
-   return true;
+   return GUI != nullptr;
 }
 
 ProcessImplementation* SERViewerInterface::NewProcess() const
@@ -138,18 +147,7 @@ bool SERViewerInterface::ImportProcess( const ProcessImplementation& p )
 template <class F>
 void SERViewerInterface::Guarded( F&& f, bool interactive )
 {
-   try
-   {
-      f();
-   }
-   catch ( const Exception& e )
-   {
-      Fail( e.Message(), interactive );
-   }
-   catch ( ... )
-   {
-      Fail( FromUtf8( planetary::preview::DescribeException( std::current_exception() ) ), interactive );
-   }
+   GuardedCall( f, [this, interactive]( const String& message ) { Fail( message, interactive ); } );
 }
 
 void SERViewerInterface::Fail( const String& message, bool interactive )
@@ -198,7 +196,7 @@ void SERViewerInterface::LoadFile( const String& path, bool interactive )
    const String fileName = File::ExtractNameAndExtension( trimmed );
    try
    {
-      m_file = ser::OpenVideo( ToUtf8( trimmed ), BayerChoiceFor( instance.p_bayerPattern ) );
+      m_file = ser::OpenVideo( ToUtf8( trimmed ), BayerChoiceFor( instance.p_bayerPattern, "SERViewer" ) );
       const ser::FileInfo& info = m_file->Info();
       if ( info.frameCount > INT_MAX )
          throw ser::SerError( std::to_string( info.frameCount ) + " frames: more than the frame slider can address" );
@@ -302,39 +300,25 @@ bool SERViewerInterface::AviLoaded() const
 
 bool SERViewerInterface::AviWithoutSidecar() const
 {
-   return AviLoaded() && m_file->Info().avi && m_file->Info().avi->sidecarStatus == ser::SidecarStatus::Absent;
+   return m_file && pcl::AviWithoutSidecar( m_file->Info() );
 }
 
 void SERViewerInterface::SaveBayerPattern()
 {
    if ( !AviWithoutSidecar() || !ser::IsBayer( m_file->Info().colorId ) || !instance.p_debayer )
       return;
-   const String path = instance.p_filePath.Trimmed();
-   const ser::ColorId pattern = m_file->Info().colorId;
-   const String sidecarName = File::ExtractNameAndExtension( path ) + ".txt";
-   if ( MessageBox( "Write " + sidecarName + " with Bayer = " + String( ser::BayerPatternKeyword( pattern ) ) +
-                    "? SERViewer will use it for this file from now on.",
-                    "SERViewer", StdIcon::Question, StdButton::Yes, StdButton::No ).Execute() != StdButton::Yes )
-      return;
-
    String failure;
-   try
+   switch ( pcl::SaveBayerPattern( instance.p_filePath, m_file->Info().colorId, "SERViewer", failure ) )
    {
-      ser::WriteAsiairSidecar( ToUtf8( path ), pattern, PLANETARY_VERSION_STRING );
-   }
-   catch ( ... )
-   {
-      failure = "SERViewer: Save pattern: " +
-                FromUtf8( planetary::preview::DescribeException( std::current_exception() ) );
-   }
-   if ( !failure.IsEmpty() )
-   {
+   case SavePatternResult::Declined:
+      return;
+   case SavePatternResult::Failed:
       // The viewer stays on the AVI: the failure is about the sidecar, not the video.
-      Console().CriticalLn( "<end><cbr>*** " + failure.EncodedHTMLSpecialChars() );
       if ( m_file )
          SetInfo( m_frameInfo + "\n\nSave pattern failed: " + ToUtf8( failure ) );
-      MessageBox( failure, "SERViewer", StdIcon::Error, StdButton::Ok ).Execute();
       return;
+   case SavePatternResult::Written:
+      break;
    }
 
    // Reopened with Auto on the same frame: the new sidecar is read back, the
@@ -383,7 +367,7 @@ void SERViewerInterface::SaveAsSer()
       std::unique_ptr<ser::FrameSource> reader;
       try
       {
-         reader = ser::OpenVideo( ToUtf8( source ), BayerChoiceFor( instance.p_bayerPattern ) );
+         reader = ser::OpenVideo( ToUtf8( source ), BayerChoiceFor( instance.p_bayerPattern, "SERViewer" ) );
       }
       catch ( const ser::SerError& e )
       {
@@ -434,21 +418,12 @@ void SERViewerInterface::e_Click( Button& sender, bool checked )
    if ( sender == GUI->Open_PushButton )
       Guarded( [this]()
       {
-         OpenFileDialog d;
-         d.SetCaption( "Open planetary video" );
-         d.SetFilters( OpenFileDialog::filter_list()
-                       << FileFilter( "Planetary video", StringList() << ".ser" << ".avi" )
-                       << FileFilter( "SER video", ".ser" )
-                       << FileFilter( "AVI video", ".avi" ) );
-         d.DisableMultipleSelections();
-         const String current = instance.p_filePath.Trimmed();
-         if ( !current.IsEmpty() )
-            d.SetInitialPath( File::ExtractDrive( current ) + File::ExtractDirectory( current ) );
-         if ( d.Execute() )
+         String path;
+         if ( AskForVideo( instance.p_filePath, path ) )
          {
             // A new file starts on frame 0 with Bayer pattern Auto (its own sidecar
             // decides); an imported instance keeps its bayerPattern (ImportProcess).
-            instance.p_filePath = d.FileName();
+            instance.p_filePath = path;
             instance.p_frameIndex = 0;
             instance.p_bayerPattern = SVBayerPattern::Auto;
             GUI->Bayer_ComboBox.SetCurrentItem( SVBayerPattern::Auto );
@@ -514,17 +489,8 @@ SERViewerInterface::GUIData::GUIData( SERViewerInterface& w )
    Bayer_Label.SetTextAlignment( TextAlign::Left|TextAlign::VertCenter );
 
    // Item index == SVBayerPattern value.
-   Bayer_ComboBox.AddItem( "Auto" );
-   Bayer_ComboBox.AddItem( "None (mono)" );
-   Bayer_ComboBox.AddItem( "RGGB" );
-   Bayer_ComboBox.AddItem( "GRBG" );
-   Bayer_ComboBox.AddItem( "GBRG" );
-   Bayer_ComboBox.AddItem( "BGGR" );
+   SetUpBayerCombo( Bayer_ComboBox );
    Bayer_ComboBox.SetCurrentItem( w.instance.p_bayerPattern );
-   Bayer_ComboBox.SetToolTip( "<p>AVI only (a SER file states its own layout). The CFA pattern of the AVI's raw "
-                              "frames. Auto: the pattern in the ASIAIR sidecar (&lt;name&gt;.avi.txt); with no "
-                              "pattern there, the raw CFA as mono and a warning. None (mono): the raw CFA as mono. "
-                              "RGGB, GRBG, GBRG, BGGR: that pattern, overriding the sidecar.</p>" );
    Bayer_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&SERViewerInterface::e_ItemSelected, w );
 
    SaveSer_PushButton.SetText( "Save as SER..." );

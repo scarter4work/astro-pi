@@ -41,3 +41,34 @@ TEST_CASE("short card text is one piece, a word longer than a card is hard-split
     CHECK(parts[1] == std::string(72, 'x'));
     CHECK(parts[2] == std::string(28, 'x'));
 }
+
+TEST_CASE("UTF-8 text for a card: the reader's arrow becomes ->, other code points '?'", "[fits]") {
+    CHECK(FitsAscii("BGGR (sidecar RG, Flip=Vert \xe2\x86\x92 BGGR)") == "BGGR (sidecar RG, Flip=Vert -> BGGR)");
+    CHECK(FitsAscii("J\xc3\xbcpiter \xe2\x86\x92\xe2\x86\x92") == "J?piter ->->");
+}
+
+TEST_CASE("a string value longer than a card holds is cut, keeping its extension visible", "[fits]") {
+    CHECK(kMaxStringValue == 68);
+    CHECK(FitsStringLength("it's") == 5);  // the quote is doubled on the card
+    CHECK(FitStringValue("2026-01-30-195830-Jupiter.avi") == "2026-01-30-195830-Jupiter.avi");
+    const std::string exact(68, 'a');
+    CHECK(FitStringValue(exact) == exact);
+
+    const std::string name = std::string(80, 'J') + ".avi";
+    const std::string cut = FitStringValue(name);
+    CHECK(FitsStringLength(cut) == 68);
+    CHECK(cut == std::string(61, 'J') + "....avi");
+
+    // Doubled quotes count twice, and a quote is never split from its double.
+    const std::string quoted = std::string(70, '\'') + ".ser";
+    const std::string q = FitStringValue(quoted);
+    CHECK(FitsStringLength(q) <= 68);
+    CHECK(q.size() >= 4);
+    CHECK(q.compare(q.size() - 7, 7, "....ser") == 0);
+
+    // No extension worth keeping (none, or a long one): the start and "...".
+    const std::string plain(90, 'x');
+    CHECK(FitStringValue(plain) == std::string(65, 'x') + "...");
+    const std::string longExt = "a." + std::string(90, 'e');
+    CHECK(FitStringValue(longExt) == "a." + std::string(63, 'e') + "...");
+}

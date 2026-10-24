@@ -12,6 +12,8 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "PlanetaryModule.h"
+#include "PlanetaryStackInterface.h"
+#include "PlanetaryStackProcess.h"
 #include "SERViewerInterface.h"
 #include "SERViewerProcess.h"
 
@@ -42,12 +44,15 @@ IsoString PlanetaryModule::Name() const
 String PlanetaryModule::Description() const
 {
    // Decoded as UTF-8: String( const char* ) would read any non-ASCII text as ISO-8859-1.
-   return String::UTF8ToUTF16( "Planetary imaging for PixInsight. This version provides SERViewer, which opens SER planetary "
+   return String::UTF8ToUTF16( "Planetary imaging for PixInsight. This version provides two processes. SERViewer opens SER planetary "
           "video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures), previews frames, opens a frame as an image "
           "and can save an AVI as a SER file. "
-          "It reads only the video file you choose (and an AVI's .txt sidecar), writes only the SER file you choose and, if you click "
-          "Save pattern..., the .txt sidecar next to the AVI; it "
-          "uses no network and runs no external programs. "
+          "PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest "
+          "frames and aligns them, region by region, with nothing to set, and opens the stack as a new image, or says why "
+          "a capture gives none. "
+          "Both read only the video file you choose (and an AVI's .txt sidecar). SERViewer writes only the SER file you choose; "
+          "either writes, if you click Save pattern..., the .txt sidecar next to the AVI. "
+          "Neither uses the network or runs external programs. "
           "This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/)." );
 }
 
@@ -91,6 +96,12 @@ void PlanetaryModule::GetReleaseDate( int& year, int& month, int& day ) const
    day   = 23;
 }
 
+void PlanetaryModule::OnUnload()
+{
+   if ( ThePlanetaryStackInterface != nullptr )
+      ThePlanetaryStackInterface->JoinStack();
+}
+
 } // namespace pcl
 
 PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
@@ -100,6 +111,8 @@ PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
    {
       new pcl::SERViewerProcess;
       new pcl::SERViewerInterface;
+      new pcl::PlanetaryStackProcess;
+      new pcl::PlanetaryStackInterface;
    }
    return 0;
 }

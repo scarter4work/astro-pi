@@ -30,10 +30,6 @@ struct DisplayFrame
 // planetary::ser::SerError with the real reason.
 DisplayFrame LoadFrameForDisplay( const planetary::ser::FrameSource& file, int64_t index, bool debayer );
 
-// The reader's Bayer choice for a bayerPattern parameter value (SVBayerPattern
-// element index). Throws pcl::Error for a value outside the enumeration.
-planetary::ser::BayerChoice BayerChoiceFor( pcl_enum bayerPattern );
-
 // Where ConvertToSer shows its progress and takes a cancel from.
 enum class SaveProgress
 {
