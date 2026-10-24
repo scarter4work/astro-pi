@@ -144,6 +144,8 @@ if [ "${1:-}" = "--package-test" ]; then
     || echo "  release.sh would STOP: NukeX $NV is published without the current docs -- bump its version"
   published_pkg_reusable "$(module_tgz PICopilot "$PV")" PICopilot "$PICOPILOT_DOC" \
     || echo "  release.sh would STOP: PICopilot $PV is published without the current docs -- bump its version"
+  ! git -C "$ROOT" ls-files --error-unmatch "repository/$(module_tgz PICopilot "$PV")" >/dev/null 2>&1 || "$ROOT/modules/pi-copilot/test/check-tarball-no-selftest-hooks.sh" "$REPO/$(module_tgz PICopilot "$PV")" \
+    || echo "  release.sh would STOP: PICopilot $PV is published with self-test hooks -- bump its version"
   published_pkg_reusable "$(module_tgz Planetary "$LV")" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" \
     || echo "  release.sh would STOP: Planetary $LV is published without the current docs -- bump its version"
   exit 0
@@ -283,6 +285,8 @@ published_pkg_reusable "$MOD_TGZ" NukeX "$NUKEX_DOC" \
   || die "NukeX $NUKEX_VER is already published as $MOD_TGZ without the current doc/tools/NukeX/ -- bump NukeX's version so a new package is built"
 published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" \
   || die "PICopilot $PICOPILOT_VER is already published as $PICOPILOT_TGZ without the current doc/tools/PICopilot/ -- bump PICopilot's version so a new package is built"
+! git -C "$ROOT" ls-files --error-unmatch "repository/$PICOPILOT_TGZ" >/dev/null 2>&1 || "$ROOT/modules/pi-copilot/test/check-tarball-no-selftest-hooks.sh" "$REPO/$PICOPILOT_TGZ" \
+  || die "PICopilot $PICOPILOT_VER is published as $PICOPILOT_TGZ with self-test hooks -- bump PICopilot's version so a clean package is built"
 published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "$PLANETARY_DOC_ID" \
   || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/$PLANETARY_DOC_ID/ -- bump Planetary's version so a new package is built"
 
@@ -351,6 +355,7 @@ PY
 
 echo "== 3a/6 package PICopilot module tarball =="
 package_module "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$PICOPILOT_DOC"
+"$ROOT/modules/pi-copilot/test/check-tarball-no-selftest-hooks.sh" "$REPO/$PICOPILOT_TGZ" || die "$PICOPILOT_TGZ (the package shipped) carries self-test hooks"
 # Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
 # auto-deleted here -- they're pruned manually at commit time (see repository/
 # git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
