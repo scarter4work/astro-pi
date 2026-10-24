@@ -740,6 +740,46 @@ TEST_CASE("B-spline resampling: exact at integer shifts, little softening at hal
     }
 }
 
+TEST_CASE("The stack stays inside the frames' range: no overshoot at a clipped edge, no gain lift of a saturated sample "
+          "(field defect D2)",
+          "[accumulate]") {
+    // The 2026-10-23 Moon (PlanetaryStack 0.3.0.0) read up to 1.00265 in blue at 17 pixels of its brightest craters,
+    // where the sensor saturated: PixInsight images are [0, 1]. One frame here, no regions, as above: a hard edge
+    // from full scale (1) down to 0.3, and one from black (0) up to 0.7, each at whole and fractional shifts, at
+    // the reference's brightness (gain 1) and dimmed by haze (gain 0.98, which the stack divides out).
+    const int w = 64, h = 24;
+    auto edge = [&](float left, float right) {
+        FloatImage im{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) im.data[static_cast<size_t>(y) * w + x] = x < w / 2 ? left : right;
+        return im;
+    };
+    auto stackOne = [&](const FloatImage& im, double shift, double gain) {
+        stack::RegionLayout none;
+        none.width = w;
+        none.height = h;
+        FrameRegions m;
+        m.frameIndex = 0;
+        m.global = Shift{shift, 0, 1};
+        m.gain = gain;
+        const stack::RegionPlan plan = stack::PlanRegions(none, {m});
+        const FloatImage noRejection{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h, 1.f)};
+        stack::Accumulator acc(plan, im, noRejection, testing::NewCapture(w, h).info);
+        acc.Add(0, im);
+        return acc.Finish();
+    };
+    const FloatImage saturated = edge(1.f, 0.3f), black = edge(0.f, 0.7f);
+    double hi = 0, lo = 1;
+    for (double shift : {0.0, 0.25, 0.5})
+        for (double gain : {1.0, 0.98}) {
+            for (float v : stackOne(saturated, shift, gain).data) hi = std::max(hi, static_cast<double>(v));
+            for (float v : stackOne(black, shift, gain).data) lo = std::min(lo, static_cast<double>(v));
+        }
+    INFO("largest sample " << hi << ", smallest " << lo);
+    CHECK(hi <= 1.0);
+    CHECK(lo >= 0.0);
+}
+
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
     ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
