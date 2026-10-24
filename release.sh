@@ -281,10 +281,15 @@ if [ "${1:-}" = "--package-test" ]; then
   published_pkg_reusable "$(module_tgz Planetary "$LV")" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
     || echo "  release.sh would STOP: Planetary $LV is published without the current docs -- bump its version"
   echo "== package descriptions, rewritten into a copy of the manifest: $OUT/updates.xri"
-  # The manifest's own fileNames (they change only at a release), each with its product's source.
-  DESC_LIST="$(desc_args $(manifest_files "$REPO/updates.xri"))" || die "a package in updates.xri has no description source"
-  mapfile -t DESC_ARGS <<< "$DESC_LIST"
+  # The manifest's fileNames, with each module entry renamed to the package this release would ship
+  # (as step 3 does), so a bumped version is checked against its own description, each with its source.
   sed '/<Signature developerId=/d' "$REPO/updates.xri" > "$OUT/updates.xri"
+  for m in "NukeX $NV" "PICopilot $PV" "Planetary $LV"; do
+    set -- $m
+    sed -i -E "s#fileName=\"[^\"]*-linux-x64-$1(-[0-9.]+)?\.tar\.gz\"#fileName=\"$(module_tgz "$1" "$2")\"#" "$OUT/updates.xri"
+  done
+  DESC_LIST="$(desc_args $(manifest_files "$OUT/updates.xri"))" || die "a package in updates.xri has no description source"
+  mapfile -t DESC_ARGS <<< "$DESC_LIST"
   descriptions apply "$OUT/updates.xri" "${DESC_ARGS[@]}" || die "description rewrite failed"
   descriptions verify "$OUT/updates.xri" "${DESC_ARGS[@]}" || die "description check failed"
   exit 0
