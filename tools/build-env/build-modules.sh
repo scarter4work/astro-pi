@@ -33,7 +33,7 @@ podman run --rm --security-opt label=disable --userns=keep-id \
          -DNUKEX_BUILD_MODULE=ON -DNUKEX_BUILD_TESTS=ON -DNUKEX_RELEASE_BUILD=ON >/dev/null
    cmake --build /src/modules/nukex/build-portable -j"$(nproc)" >/dev/null
    cmake -S /src/modules/pi-copilot -B /src/modules/pi-copilot/build-portable "${COMMON[@]}" \
-         -DPICOPILOT_BUILD_MODULE=ON >/dev/null
+         -DPICOPILOT_BUILD_MODULE=ON -DPICOPILOT_SELFTEST_BUILD=OFF >/dev/null
    cmake --build /src/modules/pi-copilot/build-portable -j"$(nproc)" >/dev/null
    if [ "$RUN_TESTS" = 1 ]; then
       # The PI Copilot SELF-TEST build (test hooks compiled in): what test/run-selftest.sh and the GUI
