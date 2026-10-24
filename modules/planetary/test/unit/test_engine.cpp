@@ -850,6 +850,40 @@ TEST_CASE("RunStack: torn frames are excluded even when they are most of the sel
     }
 }
 
+TEST_CASE("RunStack KNOWN LIMIT (Ruling F11): a majority torn alike becomes the reference and the intact frames are "
+          "dropped",
+          "[engine]") {
+    // This pins a limit, not a wanted result. BuildReference keeps the largest group of frames that agree. Torn
+    // frames agree with each other within kMaxTear when they are torn the same way -- the same direction by a
+    // similar amount -- even through different rows, so a majority torn alike outvotes the intact frames: it becomes
+    // the reference, and the intact frames read torn against it and are left out. Which group is "the scene" is a
+    // design choice the spec does not settle; never seen in real data (0 of 37,773 frames, bench6 re-review N1).
+    // If the engine learns to tell the intact group apart, this test must fail and be rewritten as a fix.
+    const std::set<int64_t> torn{1, 2, 3};
+    SECTION("3 of 5 sharp frames torn by +8 px through the same row") {
+        const std::map<int, std::pair<int, double>> tears{{1, {64, 8.0}}, {2, {64, 8.0}}, {3, {64, 8.0}}};
+        const StackOutcome o = stack::RunStack(TornCapture(10, 5, tears, 5151).Factory(), 8, {});
+        INFO(o.diagnosis.message << " | " << o.summary.selection << " | " << o.summary.alignment);
+        REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+        REQUIRE(o.image.has_value());
+        CHECK(o.summary.selection.rfind("selected 5 of 10 frames: ", 0) == 0);
+        CHECK(o.frames.stacked == std::vector<int64_t>{1, 2, 3});
+        CHECK(o.frames.alignmentExcluded == std::vector<int64_t>{0, 4});
+        CHECK(o.summary.used == 3);
+    }
+    SECTION("3 of 5 sharp frames torn by +8 px through different rows") {
+        const std::map<int, std::pair<int, double>> tears{{1, {60, 8.0}}, {2, {64, 8.0}}, {3, {70, 8.0}}};
+        const StackOutcome o = stack::RunStack(TornCapture(10, 5, tears, 5151).Factory(), 8, {});
+        INFO(o.diagnosis.message << " | " << o.summary.selection << " | " << o.summary.alignment);
+        REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+        REQUIRE(o.image.has_value());
+        CHECK(o.summary.selection.rfind("selected 5 of 10 frames: ", 0) == 0);
+        CHECK(o.frames.stacked == std::vector<int64_t>{1, 2, 3});
+        CHECK(o.frames.alignmentExcluded == std::vector<int64_t>{0, 4});
+        CHECK(o.summary.used == 3);
+    }
+}
+
 TEST_CASE("UnalignedBelow: half of a small selection, need for a large one; never reached with every clean frame over the floor",
           "[engine]") {
     CHECK(stack::UnalignedBelow(10, 5) == 3);       // the case above: 3 of 5 align -> stacked
