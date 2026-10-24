@@ -1029,7 +1029,7 @@ struct GainCapture {
     int64_t rejected = 0;
 };
 GainCapture StackGains(const std::function<double(double, double)>& scene, const std::vector<double>& gains, bool mosaic,
-                       float sigma, unsigned seed, int w = 64, int h = 40) {
+                       float sigma, unsigned seed, bool jitter = true, int w = 64, int h = 40) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<double> jit(-0.5, 0.5);
     std::normal_distribution<double> noise(0, 0.01);
@@ -1044,7 +1044,7 @@ GainCapture StackGains(const std::function<double(double, double)>& scene, const
     std::vector<FloatImage> frames;
     std::vector<Shift> shifts;
     for (double g : gains) {
-        const double dx = jit(rng), dy = jit(rng);
+        const double dx = jitter ? jit(rng) : 0.0, dy = jitter ? jit(rng) : 0.0;
         frames.push_back(SceneFrame(area(dx, dy, g), w, h, mosaic));
         shifts.push_back(Shift{dx / (mosaic ? 2 : 1), dy / (mosaic ? 2 : 1), 1});
     }
@@ -1100,6 +1100,122 @@ TEST_CASE("Near-clip samples of frames brighter than the reference are lower bou
         CHECK(fullLo >= 0.98);
         CHECK(off == 0);
     }
+}
+
+TEST_CASE("A saturated sample is lifted to the unsaturated mean: a hill only a bright frame group clips (re-review N-I2)",
+          "[accumulate]") {
+    // The 2023-02-12 case R2 and R3 exist for: frames at gain 1.257 clip a hill that peaks at 0.9 on the reference's
+    // scale (at 1.257 x 0.9 = 1.13), the frames at gain 1 do not; divided by their gain, the bright frames' saturated
+    // samples read 0.796 and only the lift to the unsaturated frames' mean keeps them from dimming the hill.
+    auto hill = [](double x, double y) {
+        const double r2 = (x - 32) * (x - 32) + (y - 20) * (y - 20);
+        return 0.5 + 0.4 * std::exp(-r2 / (2 * 7.0 * 7.0));
+    };
+    auto truth = [&](int x, int y) {
+        double v = 0;
+        for (int j = 0; j < 4; ++j)
+            for (int i = 0; i < 4; ++i) v += hill(x + (i + 0.5) / 4 - 0.5, y + (j + 0.5) / 4 - 0.5);
+        return v / 16;
+    };
+    for (bool mosaic : {false, true}) {
+        INFO((mosaic ? "Bayer" : "mono"));
+        const GainCapture g = StackGains(hill, Groups({1.257, 1.0}, 60), mosaic, 1.f, 29);
+        const int c = mosaic ? 3 : 1;
+        double worst = 0;
+        for (int y = 3; y < 37; ++y)
+            for (int x = 3; x < 61; ++x)
+                for (int k = 0; k < c; ++k)
+                    worst = std::max(worst, std::fabs(g.out.data[(static_cast<size_t>(y) * 64 + x) * c + k] - truth(x, y)));
+        INFO("largest error " << worst);
+        // Measured at the commit that added this test: 0.0044 mono, 0.0059 RGGB; without the lift (the mutant
+        // "present ? own" in Finish) 0.054 both.
+        CHECK(worst < 0.025);
+    }
+}
+
+TEST_CASE("A plateau saturated only in frames brighter than the reference reads their own mean, not full scale, and is "
+          "no outlier (re-review N-I2)",
+          "[accumulate]") {
+    // A saturated sample proves full scale on the reference's scale only from a frame no brighter than it. A plateau at
+    // 1.1 on the reference's scale (the reference clipped at 1), every frame at gain 1.25: each saturated sample says
+    // only "at least 0.8", and the stack reads that bound -- the known limit (Accumulate.h, "Clipping"). Rejection
+    // counts a saturated sample only upward: 0.8 under a reference of 1 is no outlier. Unjittered, so a hard edge's
+    // sub-pixel motion is no outlier against the tight residual scale either.
+    auto scene = [](double x, double y) { return x >= 20 && x < 44 && y >= 12 && y < 28 ? 1.1 : 0.5; };
+    for (bool mosaic : {false, true}) {
+        INFO((mosaic ? "Bayer" : "mono"));
+        const GainCapture g = StackGains(scene, std::vector<double>(20, 1.25), mosaic, 0.03f, 31, false);  // unjittered
+        const int c = mosaic ? 3 : 1;
+        double lo = 1, hi = 0;
+        for (int y = 15; y < 25; ++y)
+            for (int x = 23; x < 41; ++x)
+                for (int k = 0; k < c; ++k) {
+                    const double v = g.out.data[(static_cast<size_t>(y) * 64 + x) * c + k];
+                    lo = std::min(lo, v);
+                    hi = std::max(hi, v);
+                }
+        INFO("plateau " << lo << " - " << hi << "; rejected cells " << g.rejected);
+        CHECK(lo > 0.78);
+        CHECK(hi < 0.82);
+        CHECK(g.rejected == 0);
+    }
+}
+
+TEST_CASE("An out-of-frame stand-in is no unsaturated presence: it does not lift saturated samples (re-review N-I2)",
+          "[accumulate]") {
+    // A plateau at x 0-11, 1.1 on the reference's scale, saturated in every frame at gain 1.25 (each sample: at least
+    // 0.8, none proving full scale); one frame at gain 1, drifted 30 px off it, whose samples there are mirrored from
+    // its own content further in (at kOutsideWeight). The plateau must read its bounds' mean, 0.8, whatever the mirror:
+    //  - an unsaturated mirror at 0.95, counted as an unsaturated presence, would lift it to 0.95 (kCleanPresence);
+    //  - a saturated mirror from that gain-1 frame, taken as proof of full scale, would set it to 1.
+    const int w = 64, h = 40, n = 20;
+    for (double far : {0.95, 1.2}) {
+        INFO("the drifted frame's mirrored content " << far);
+        auto scene = [&](int x, int) { return x < 12 ? 1.1 : x < 42 ? 0.5 : far; };
+        std::vector<FloatImage> frames;
+        std::vector<Shift> shifts(n);
+        std::vector<double> gains(n, 1.25);
+        frames.push_back(SceneFrame([&](int x, int y) { return scene(std::min(x + 30, w - 1), y); }, w, h, false));
+        shifts[0] = Shift{-30, 0, 1};
+        gains[0] = 1.0;
+        for (int k = 1; k < n; ++k) frames.push_back(SceneFrame([&](int x, int y) { return 1.25 * scene(x, y); }, w, h, false));
+        const FloatImage out = StackShifted(frames, shifts, gains,
+                                            SceneLuma([&](int x, int y) { return std::min(1.0, scene(x, y)); }, w, h, false), 1.f,
+                                            ser::ColorId::Mono);
+        double lo = 1, hi = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 1; x < 10; ++x) {
+                lo = std::min(lo, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
+                hi = std::max(hi, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
+            }
+        INFO("plateau " << lo << " - " << hi);
+        CHECK(lo > 0.78);
+        CHECK(hi < 0.82);
+    }
+}
+
+TEST_CASE("A frame's clip flags are its own: those of the frame before do not make bounds of its samples (re-review N-I2)",
+          "[accumulate]") {
+    // The flag plane is the Add thread's, kept between Adds and cleared around each frame's clipped sites. The first
+    // frame (gain 1) saturates a 6 x 6 spot; the next ten (gain 1.25) read 0.95 there, unsaturated, and clip only two
+    // single pixels far from it whose box spans it: the spot's samples are measurements (0.76 on the reference's
+    // scale), not near-clip bounds. One thread, frames in order.
+    const int w = 64, h = 40, n = 11;
+    auto spot = [](int x, int y) { return x >= 29 && x < 35 && y >= 17 && y < 23; };
+    auto dot = [](int x, int y) { return (x == 12 && y == 6) || (x == 52 && y == 34); };
+    std::vector<FloatImage> frames;
+    std::vector<double> gains(n, 1.25);
+    gains[0] = 1.0;
+    frames.push_back(SceneFrame([&](int x, int y) { return spot(x, y) ? 1.2 : 0.5; }, w, h, false));
+    for (int k = 1; k < n; ++k)
+        frames.push_back(SceneFrame([&](int x, int y) { return dot(x, y) ? 1.0 : spot(x, y) ? 0.95 : 0.625; }, w, h, false));
+    const FloatImage out = StackShifted(frames, std::vector<Shift>(n), gains,
+                                        SceneLuma([&](int x, int y) { return spot(x, y) ? 0.8 : 0.5; }, w, h, false), 1.f,
+                                        ser::ColorId::Mono);
+    // The spot: the first frame's bound (1, lifted to nothing above it) and ten measurements of 0.76.
+    const double v = out.data[static_cast<size_t>(20) * w + 32], expect = (1.0 + 10 * 0.95 / 1.25) / 11;
+    INFO("spot " << v << ", expected " << expect);
+    CHECK(v == Catch::Approx(expect).margin(0.005));
 }
 
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {

@@ -53,25 +53,37 @@ constexpr uint8_t kSaturated = 0x70;
 // way out, normal or not: the cost follows the clipped sites, not the frame (review I3).
 struct ClipScratch {
     std::vector<uint8_t> clip;
-    // A clipped site, 4 bytes: its pixel index << 3 | its channel bits (Accumulator's frames hold under 2^29 pixels).
+    // The clipped sites' pixel indices, 4 bytes each (the readers' frames hold at most 65536 x 65536 pixels).
     std::vector<uint32_t> sites;
-    static uint32_t Site(size_t pixel, unsigned bits) { return static_cast<uint32_t>(pixel << 3 | bits); }
     int width = 0, height = 0, reach = 0;  // reach: the flags' radius around a site (1 in a mosaic, 0 else)
-    // Calls f(x0, x1, y0, y1, bits) with the flag box of each site (inclusive, inside the frame).
-    template <class F>
-    void ForEachBox(F f) const {
-        for (uint32_t s : sites) {
-            const int p = static_cast<int>(s >> 3), x = p % width, y = p / width;
-            f(std::max(0, x - reach), std::min(width - 1, x + reach), std::max(0, y - reach), std::min(height - 1, y + reach),
-              static_cast<uint8_t>(s & 7u));
-        }
+    // Sets `bits` in the flag box of the site at (x, y) (its reach, inside the frame) and records the site. Returns the
+    // box through x0..y1 (inclusive).
+    void Mark(int x, int y, uint8_t bits, int& x0, int& x1, int& y0, int& y1) {
+        sites.push_back(static_cast<uint32_t>(static_cast<size_t>(y) * width + x));  // recorded first: Clear finds it
+        Box(x, y, x0, x1, y0, y1);
+        for (int j = y0; j <= y1; ++j)
+            for (int i = x0; i <= x1; ++i) clip[static_cast<size_t>(j) * width + i] |= bits;
+    }
+    void Box(int x, int y, int& x0, int& x1, int& y0, int& y1) const {
+        x0 = std::max(0, x - reach);
+        x1 = std::min(width - 1, x + reach);
+        y0 = std::max(0, y - reach);
+        y1 = std::min(height - 1, y + reach);
     }
     void Clear() {
-        ForEachBox([&](int x0, int x1, int y0, int y1, uint8_t) {
+        // Many sites (a clipped frame's tens of thousands): one fill of the plane costs less than a fill per site.
+        if (sites.size() * (2 * reach + 1) * (2 * reach + 1) > clip.size() / 8) {
+            std::fill(clip.begin(), clip.end(), uint8_t{0});
+            sites.clear();
+            return;
+        }
+        for (uint32_t p : sites) {
+            int x0, x1, y0, y1;
+            Box(static_cast<int>(p % static_cast<uint32_t>(width)), static_cast<int>(p / static_cast<uint32_t>(width)), x0, x1, y0, y1);
             for (int j = y0; j <= y1; ++j)
                 std::fill(clip.data() + static_cast<size_t>(j) * width + x0, clip.data() + static_cast<size_t>(j) * width + x1 + 1,
                           uint8_t{0});
-        });
+        }
         sites.clear();
     }
     struct Clearing {
@@ -653,10 +665,6 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     lumaW_ = width_ / scale_;
     lumaH_ = height_ / scale_;
     if (lumaW_ < 1 || lumaH_ < 1) throw std::invalid_argument("Accumulator: empty frame");
-    if (static_cast<uint64_t>(width_) * static_cast<uint64_t>(height_) >= (uint64_t{1} << 29))
-        throw std::invalid_argument("Accumulator: a frame of 2^29 pixels or more");  // ClipScratch's site index
-    if (static_cast<uint64_t>(width_) * static_cast<uint64_t>(height_) >= (uint64_t{1} << 29))
-        throw std::invalid_argument("Accumulator: a frame of 2^29 pixels or more");  // ClipScratch's site index
     if (reference.width != lumaW_ || reference.height != lumaH_ || residualSigma.width != lumaW_ ||
         residualSigma.height != lumaH_ || plan_.layout.width != lumaW_ || plan_.layout.height != lumaH_)
         throw std::invalid_argument("Accumulator: the reference, residual scale and plan must be the capture's luma size (" +
@@ -677,9 +685,7 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     sum_.assign(static_cast<size_t>(width_) * height_ * channels_, 0.f);
     const size_t px = static_cast<size_t>(width_) * height_;
     weight_.assign(px, 0.f);
-    weightX_.assign(sum_.size(), 0.f);
-    sumC_.assign(sum_.size(), 0.f);
-    weightC_.assign(sum_.size(), 0.f);
+    sat_.assign(3 * sum_.size(), 0.f);
     sumRej_.assign(sum_.size(), 0.f);
     weightRej_.assign(px, 0.f);
     reached_.assign(px, 0);
@@ -737,6 +743,16 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
         const float level = static_cast<float>(kClippedLuma);
         const float* d = frame.data.data();
         scratch.reach = pattern_ ? 1 : 0;
+        cx0 = W;
+        cy0 = H;
+        auto mark = [&](int x, int y, uint8_t bits) {  // flags set as the scan finds the site, the box grown
+            int x0, x1, y0, y1;
+            scratch.Mark(x, y, bits, x0, x1, y0, y1);
+            cx0 = std::min(cx0, x0);
+            cy0 = std::min(cy0, y0);
+            cx1 = std::max(cx1, x1 + 1);
+            cy1 = std::max(cy1, y1 + 1);
+        };
         if (pattern_) {
             for (int y = 0; y < H; ++y) {
                 const int* row = pattern_ + (y & 1) * 2;
@@ -745,7 +761,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                     const int s = row[x & 1];
                     const float v = r[static_cast<size_t>(x) * 3 + static_cast<size_t>(s)];
                     top = std::max(top, v);
-                    if (v >= level) scratch.sites.push_back(ClipScratch::Site(static_cast<size_t>(y) * W + x, 1u << s));
+                    if (v >= level) mark(x, y, static_cast<uint8_t>(1u << s));
                 }
             }
         } else {
@@ -757,23 +773,11 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                         top = std::max(top, p[c]);
                         if (p[c] >= level) bits = static_cast<uint8_t>(bits | (1u << c));
                     }
-                    if (bits) scratch.sites.push_back(ClipScratch::Site(static_cast<size_t>(y) * W + x, bits));
+                    if (bits) mark(x, y, bits);
                 }
         }
-        if (!scratch.sites.empty()) {
-            uint8_t* clip = scratch.clip.data();
-            cx0 = W;
-            cy0 = H;
-            scratch.ForEachBox([&](int x0, int x1, int y0, int y1, uint8_t bits) {
-                for (int j = y0; j <= y1; ++j)
-                    for (int i = x0; i <= x1; ++i) clip[static_cast<size_t>(j) * W + i] |= bits;
-                cx0 = std::min(cx0, x0);
-                cy0 = std::min(cy0, y0);
-                cx1 = std::max(cx1, x1 + 1);
-                cy1 = std::max(cy1, y1 + 1);
-            });
-            clipped = clip;
-        }
+        if (!scratch.sites.empty()) clipped = scratch.clip.data();
+        else cx0 = cy0 = 0;
     }
     Prefilter(frame);
 
@@ -845,6 +849,9 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     const float ig = static_cast<float>(invGain);
     // A saturated sample proves the scene at full scale on the reference's scale only from a frame no brighter than it.
     const float clipLevel = static_cast<float>(kClippedLuma);
+    // A channel within reach of a clip is a lower bound from its own value up: kClippedLuma in a frame no brighter than
+    // the reference, kNearClipBound in a brighter one, where the clip lies under full scale (Accumulate.h, "Clipping").
+    const float boundLevel = gain > 1 ? static_cast<float>(kNearClipBound) : clipLevel;
     const bool satCounts = gain <= 1;
 
     // Luma rows are processed in order through a ring of 2 kRejectReach + 1 rows (samples, weights,
@@ -945,9 +952,11 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             // Held and gain-corrected into the slot; a channel within reach of a clip whose own value reaches it is
             // saturated (bit c + 4). One branch per sample on the common path.
             for (int c = 0; c < C; ++c) o[c] = Hold(r[c] * ig, top);
-            if (flags & 0x0E)
-                for (int c = 0; c < C; ++c)
-                    if ((flags & (2u << c)) && r[c] >= clipLevel) flags = static_cast<uint8_t>(flags | (16u << c));
+            if (flags & 0x0E) {
+                unsigned high = 0;
+                for (int c = 0; c < C; ++c) high |= static_cast<unsigned>(r[c] >= boundLevel) << c;
+                flags = static_cast<uint8_t>(flags | (((flags >> 1) & high) << 4));
+            }
             orow[x] = flags;
         }
     };
@@ -976,19 +985,21 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                     float v = 0;
                     for (int c = 0; c < C; ++c) v += static_cast<float>(lumaWeights_[c]) * sbase[k * C + c];
                     if (obase[k] & kSaturated) {
-                        // A saturated sample: a lower bound at its own gain-corrected value, which proves an outlier
-                        // upward only (Accumulate.h, "Clipping").
                         floorSum += v;
                         ++nf;
-                        continue;
+                    } else {
+                        luma += v;
+                        ++n;
                     }
-                    luma += v;
-                    ++n;
                 }
             any[lc] = n > 0 || nf > 0;
             const size_t li = static_cast<size_t>(lr) * lw + lc;
-            d[lc] = n > 0 ? std::fabs(luma / n - refLuma_[li]) / sigma_[li] : 0.f;
-            if (nf > 0) d[lc] = std::max(d[lc], (floorSum / nf - refLuma_[li]) / sigma_[li]);
+            // A cell of measurements is judged both ways. A cell holding a lower bound (a saturated sample, at its own
+            // gain-corrected value) has a mean that is itself a lower bound of the cell's: it proves an outlier
+            // upward only. Its measurements alone are no stand-in for the cell either -- next to a clip they are
+            // the cell's darker part (Accumulate.h, "Clipping").
+            if (nf == 0) d[lc] = n > 0 ? std::fabs(luma / n - refLuma_[li]) / sigma_[li] : 0.f;
+            else d[lc] = std::max(0.f, ((luma + floorSum) / (n + nf) - refLuma_[li]) / sigma_[li]);
             strong[lc] = d[lc] > kRejectSigmas;
         }
         uint8_t* nr2 = near.data() + slot * lw;
@@ -1046,17 +1057,16 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                 // Kept with a saturated channel: that channel is a lower bound, summed apart (Accumulate.h,
                 // "Clipping"); from a frame no brighter than the reference, inside the frame, it marks the pixel's
                 // channel. Its other channels count on their own weights.
-                for (int c = 0; c < C; ++c) {
+                for (int c = 0; c < C; ++c) {  // branch-free: the channel's saturated bit selects the sums
                     const size_t i = o * C + c;
-                    if (fl & (16u << c)) {
-                        weightC_[i] += wgt;
-                        sumC_[i] += wgt * sbase[k * C + c];
-                        if (satCounts && !(fl & 1)) reached_[o] = static_cast<uint8_t>(reached_[o] | (2u << c));
-                    } else {
-                        weightX_[i] += wgt;
-                        sum_[i] += wgt * sbase[k * C + c];
-                    }
+                    const float s = static_cast<float>((fl >> (4 + c)) & 1u), u = 1 - s, wv = wgt * sbase[k * C + c];
+                    float* t = sat_.data() + 3 * i;
+                    t[0] += s * wv;
+                    t[1] += s * wgt;
+                    t[2] += u * wgt;
+                    sum_[i] += u * wv;
                 }
+                if (satCounts && !(fl & 1)) reached_[o] = static_cast<uint8_t>(reached_[o] | (((fl >> 4) & 7u) << 1));
             }
         }
     };
@@ -1097,7 +1107,8 @@ ser::FloatImage Accumulator::Finish() const {
                     // frames reach in-bounds (drift) holds a small weight however few samples were rejected
                     // there, and an absolute threshold blended a rejected trail back into it.
                     // Saturated samples count as present (kept) like the others (Accumulate.h, "Clipping").
-                    const double clean = static_cast<double>(weight_[o]) + weightX_[i], cont = weightC_[i], kept = clean + cont;
+                    const float* t = sat_.data() + 3 * i;  // the saturated sum and weight, the unsaturated weight apart
+                    const double clean = static_cast<double>(weight_[o]) + t[2], cont = t[1], kept = clean + cont;
                     const double all = kept + weightRej_[o];
                     if (!(all > 0)) continue;
                     // The kept samples' sum under the censored estimate: each saturated sample a lower bound at its own
@@ -1106,7 +1117,7 @@ ser::FloatImage Accumulator::Finish() const {
                     // brighter than the reference, else their own mean. Held to [0, 1].
                     double keptSum = sum_[i];
                     if (cont > 0) {
-                        const double own = sumC_[i] / cont;
+                        const double own = t[0] / cont;
                         const bool present = clean > kCleanPresence * cont;
                         const bool saturated = reached_[o] & (2u << c);
                         double v = present ? std::max(own, sum_[i] / clean) : saturated ? kClipOutput : own;
@@ -1125,8 +1136,8 @@ ser::FloatImage Accumulator::Finish() const {
 
 size_t Accumulator::BytesHeld() const {
     size_t b = sizeof(*this);
-    b += (sum_.capacity() + weight_.capacity() + weightX_.capacity()) * sizeof(float);
-    b += (sumRej_.capacity() + weightRej_.capacity() + sumC_.capacity() + weightC_.capacity()) * sizeof(float) + reached_.capacity();
+    b += (sum_.capacity() + weight_.capacity() + sat_.capacity()) * sizeof(float);
+    b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float) + reached_.capacity();
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();
     b += gridMask_.capacity() * sizeof(float);  // the layout's mask is shared (RegionLayout::mask), not held here

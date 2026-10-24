@@ -76,15 +76,19 @@ namespace planetary::stack {
 //  - Which samples. A channel of a frame's pixel is within reach of a clip where a sensor site it came from reaches
 //    kClippedLuma of full scale (Measure.h's level): in mono and RGB the sample itself; in a mosaic the sites of that
 //    colour within one pixel, the ones DemosaicHQ reads the channel from (DemosaicHQ keeps each site's raw value as
-//    its own channel, so the Accumulator reads them off the frame it is given). A warped sample's channel is
-//    saturated when a corner of the cell it lies in is within reach and its own interpolated value, before the
-//    gain, reaches kClippedLuma. A sample only next to a clip is a measurement like any other: Ruling R2 dropped
-//    every sample within reach, and the stack grew full-scale plateaus (bloat) and dipped where only some frames
-//    reached the clip, averaging the dimmer ones (moat; the 2023-02-12 Moon's limb, G 0.916 -> 0.729 at (1353, 889),
-//    review C1; unit test "The rim of a saturated crater": RGGB rim error 0.400 at 19ed2e15, 0.050 before R2 and now).
-//    Read on the samples' own value, the censoring of R3 as worded -- every sample within reach a lower bound --
-//    raised the crater's red rim to the few unsaturated frames' mean (0.074, from 3 of 40 frames).
-//  - The estimate, per output channel. The saturated samples are kept apart (sumC_, weightC_) and are present
+//    its own channel, so the Accumulator reads them off the frame it is given). A warped sample's channel is a lower
+//    bound ("saturated" below) when a corner of the cell it lies in is within reach and its own interpolated value,
+//    before the gain, reaches kClippedLuma -- or, in a frame brighter than the reference (gain > 1), whose clip lies
+//    under full scale on the reference's scale, kNearClipBound: there a sample next to the frame's saturated area
+//    interpolates clipped sites and reads truncated without reaching kClippedLuma (re-review N-I1; unit test "Near-
+//    clip samples of frames brighter": 0.932 where the truth is full scale at 28bb21f5, >= 0.98 now; the sweep at
+//    kNearClipBound). Any other sample next to a clip is a measurement: Ruling R2 dropped every sample within reach,
+//    and the stack grew full-scale plateaus (bloat) and dipped where only some frames reached the clip, averaging the
+//    dimmer ones (moat; the 2023-02-12 Moon's limb, G 0.916 -> 0.729 at (1353, 889), review C1; unit test "The rim of
+//    a saturated crater": RGGB rim error 0.400 at 19ed2e15, 0.050 before R2 and now). Every sample within reach a
+//    lower bound -- R3 as worded -- raised a gain-1 crater's red rim to the few unflagged frames' mean (0.074, from 3
+//    of 40 frames), and without kNearClipBound's level the R2 plateau test's RGGB rim (0.0775 against 0.07).
+//  - The estimate, per output channel. The saturated samples are kept apart (sat_) and are present
 //    (they count as kept in the never-a-hole share, and against out-of-frame stand-ins). With unsaturated samples
 //    present (clean weight over kCleanPresence of the saturated weight), the saturated ones count at max(their own
 //    mean, the unsaturated mean). With none, the stack is kClipOutput where one of them saturated inside a frame no
@@ -95,14 +99,22 @@ namespace planetary::stack {
 //    drifted 30 px off reads 1 (review C2: R2 read 0.60 and 0.20 -- the outlier or the out-of-frame mirror alone).
 //    The aggregate max(own mean, unsaturated mean) is a streaming stand-in for R3's per-sample max(own, mean); they
 //    agree whenever the saturated samples all lie on one side of the unsaturated mean.
-//  - Rejection judges a cell on its unsaturated samples, two-sided; a saturated sample is a lower bound at its own
-//    gain-corrected value, which counts only upward, above the reference by more than the thresholds: a saturated
-//    satellite trail is still an outlier and its unsaturated wings are rejected around it (unit test "A single-
-//    frame streak": Bayer leak 0, mono 0.0013, as before R2), frames identical to the reference reject nothing (R2's
-//    fixed floor, kClippedLuma x min(1, 1 / gain) for every flagged sample, rejected 2250 of 25 600 cells there).
-//    The residual scale is unchanged: a saturated frame there can only widen the tolerance.
-//  - A limit: where the scene sits at the clip in some frames only, the saturated samples count at least at the
-//    unsaturated mean; the true value can be higher.
+//  - Rejection judges a cell of measurements two-sided, as before. A cell holding a saturated sample (a lower bound
+//    at its own gain-corrected value) has a mean that is itself a lower bound of the cell's, and it counts only
+//    upward, above the reference by more than the thresholds; its measurements alone are no stand-in, being the
+//    cell's darker part next to a clip (judged alone, a mosaic plateau's edge cells read 8 residual scales under the
+//    reference, unit test "A plateau saturated only in frames brighter": 864 cells rejected, 0 now). A saturated
+//    satellite trail is still an outlier and its wings are rejected around it (unit test "A single-frame streak":
+//    Bayer leak 0, mono 0.0013, as before R2); frames identical to the reference reject nothing (R2's fixed floor,
+//    kClippedLuma x min(1, 1 / gain) for every flagged sample, rejected 2250 of 25 600 cells there); a plateau
+//    saturated only in frames of gain 1.25 (bounds of 0.8 under a reference of 1) is no outlier. Cells next to a clip
+//    therefore lose the downward test (a dark outlier there is not rejected). The residual scale is unchanged: a
+//    saturated frame there can only widen the tolerance.
+//  - Limits: where the scene sits at the clip in some frames only, the saturated samples count at least at the
+//    unsaturated mean; the true value can be higher. A plateau saturated only in frames brighter than the reference
+//    reads their bound, 1 / gain (unit test: 0.8 at gain 1.25). And Finish's stand-in for a pixel whose weight
+//    rejection mostly took (kMinKeptWeight) blends its rejected samples back at their own values, saturated or not:
+//    a saturated one from a bright frame comes back at its bound (re-review N-M3; rare by construction, not seen).
 //
 // Rejection, per luma cell (the s x s full-resolution pixels of one measurement-luma pixel): the
 // cell's mean luma (Bayer (R + 2G + B) / 4, RGB (R + G + B) / 3, mono the value) of the warped,
@@ -159,6 +171,21 @@ constexpr float kClipOutput = 1.0f;
 // out-of-frame stand-ins (kOutsideWeight of a frame's blend weight) fall under it, never an in-frame sample of a
 // blend that keeps fewer than 1 / kCleanPresence frames (see "Clipping").
 constexpr double kCleanPresence = 10 * kOutsideWeight;
+// In a frame brighter than the reference (gain > 1) the clip lies under full scale on the reference's scale, and a
+// sample next to that frame's saturated area interpolates clipped sites: it reads truncated without reaching
+// kClippedLuma. A channel within reach of a clip whose own value (before the gain) reaches this level is a lower bound
+// there too (see "Clipping"; re-review N-I1). Swept at the commit that added it, stack-probe with a scratch override,
+// the 2023-02-12 Moon (frames 0-260 at gain 1.257) against its gain-1 oracle (frames 261-2353 stacked alone), samples by
+// the oracle's level, share more than 0.02 low -- near clip (0.97-0.995) / bright (0.85-0.97), oracle as is and
+// level-matched (x 1.0097, the control band's median ratio):
+//   level      0.999 (none)    0.99          0.98          0.97          0.95          0.93          0.90         0.80
+//   as is      21.4 / 5.8 %    3.5 / 0.5 %   0.21 / 0.11   0.02 / 0.04   0.00 / 0.03   0.00 / 0.03   0.00 / 0.02  0.00 / 0.00
+//   matched    59.4 / 21.8 %   29.4 / 2.0    5.4 / 0.49    0.66 / 0.27   0.15 / 0.21   0.05 / 0.23   0.00 / 0.22  0.00 / 0.03
+// and the unit tests pass from 0.70 to 0.98 (0.99 and above: the N-I1 crater test; no level at all: the R2 plateau
+// test's RGGB rim, 0.0775 against 0.07). 0.90 is where both readings of the near-clip band reach 0; lower levels gain
+// at most 0.2 points in the bright band. Full-scale pixels: 1750 / 1662 / 1877 (R / G / B) from 0.97 down, the
+// oracle's 1589 / 1517 / 1683.
+constexpr double kNearClipBound = 0.90;
 // A pixel whose kept weight is under this share of the weight its samples brought (kept + rejected)
 // blends its rejected samples back in, linearly up to all of them at 0 kept: rejection never leaves a
 // hole (see Finish). A share, not an absolute weight: a border band only a tenth of the frames reach
@@ -351,10 +378,10 @@ private:
     const int* pattern_ = nullptr;        // Bayer: the CFA's channel per site ((y & 1) * 2 + (x & 1)); else null
     std::vector<float> refLuma_, sigma_;  // luma size: reference luma, residual scale
     // Kept samples: sum_ (channels per pixel) every unsaturated value; weight_ (per pixel) the weight of the samples
-    // with no saturated channel; weightX_ (channels per pixel) a channel's unsaturated weight from samples with
-    // another channel saturated; sumC_, weightC_ (channels per pixel) the saturated values, lower bounds (see
-    // "Clipping"). Only a sample with a saturated channel touches the per-channel weights.
-    std::vector<float> sum_, weight_, weightX_, sumC_, weightC_;
+    // with no saturated channel; sat_ (3 per output sample, side by side: one cache line) the saturated values' sum
+    // and weight -- lower bounds (see "Clipping") -- and the channel's unsaturated weight from samples with another
+    // channel saturated. Only a sample with a saturated channel touches sat_.
+    std::vector<float> sum_, weight_, sat_;
     std::vector<float> sumRej_, weightRej_;  // the rejected samples (Finish's stand-in): channels per pixel; per pixel
     std::vector<uint8_t> reached_;           // per pixel: bit c + 1, channel c saturated in a frame no brighter than the reference
     std::vector<int> blendRegion_;  // per region: 1 when it keeps frames
