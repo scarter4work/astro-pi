@@ -1206,6 +1206,40 @@ TEST_CASE("An out-of-frame stand-in is no unsaturated presence: it does not lift
     }
 }
 
+TEST_CASE("A dark speck in one frame next to a saturated area is rejected: cells holding a bound keep a downward test "
+          "(re-review 3, M5)",
+          "[accumulate]") {
+    // A cell holding a lower bound (a saturated sample) has a mean that is itself a lower bound of the cell's, so it
+    // cannot prove an outlier downward; a mosaic's 2 x 2 cell can hold a dark speck beside a saturated sample of the
+    // same frame. Its upper bound -- every bound channel raised to full scale, which the reference's clipped scale never
+    // exceeds -- can: a cell whose upper bound lies under the reference by the thresholds is an outlier. A plateau
+    // saturated in all 20 frames (gain 1, unjittered, residual scale 0.03), a speck of 0.1 in one frame, on the
+    // plateau's edge or 1 px inside it: how far it dims the stack against the same frames without it. (A lone red site
+    // on the edge column, (20, 20) radius 0.6, reads its cell's upper bound 5.8 residual scales under the reference, under
+    // kRejectSigmas: no test of a bound reaches it.)
+    const int w = 64, h = 40, n = 20;
+    auto plateau = [](int x, int y) { return x >= 20 && x < 44 && y >= 12 && y < 28; };
+    auto scene = [&](int x, int y) { return plateau(x, y) ? 1.2 : 0.5; };
+    const FloatImage ref = SceneLuma([&](int x, int y) { return std::min(1.0, scene(x, y)); }, w, h, true);
+    const std::vector<FloatImage> clean(n, SceneFrame(scene, w, h, true));
+    const FloatImage base = StackShifted(clean, std::vector<Shift>(n), std::vector<double>(n, 1.0), ref, 0.03f,
+                                         ser::ColorId::BayerRGGB);
+    for (const auto& [cx, radius] : std::vector<std::pair<double, double>>{{20.0, 1.0}, {21.0, 0.6}, {21.0, 1.0}}) {
+        INFO("speck at (" << cx << ", 20), radius " << radius);
+        std::vector<FloatImage> frames = clean;
+        frames[0] = SceneFrame([&](int x, int y) { return std::hypot(x - cx, y - 20.0) <= radius ? 0.1 : scene(x, y); }, w, h,
+                               true);
+        int64_t rejected = 0;
+        const FloatImage out = StackShifted(frames, std::vector<Shift>(n), std::vector<double>(n, 1.0), ref, 0.03f,
+                                            ser::ColorId::BayerRGGB, &rejected);
+        double dims = 0;
+        for (size_t k = 0; k < out.data.size(); ++k) dims = std::max(dims, static_cast<double>(base.data[k] - out.data[k]));
+        INFO("dims the stack by up to " << dims << "; rejected cells " << rejected);
+        CHECK(rejected > 0);
+        CHECK(dims < 0.01);  // 3a3092b3: its 1/n share unrejected, 0.045-0.050, 0 cells rejected
+    }
+}
+
 TEST_CASE("A frame's clip flags are its own: those of the frame before do not make bounds of its samples (re-review N-I2)",
           "[accumulate]") {
     // The flag plane is the Add thread's, kept between Adds and cleared around each frame's clipped sites. The first
