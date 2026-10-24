@@ -652,6 +652,18 @@ TEST_CASE("ResidualScale and Accumulator argument errors", "[accumulate]") {
     CHECK_THROWS_AS(stack::ResidualScale(lay, small), std::invalid_argument);
     const stack::RegionPlan empty = stack::PlanRegions(lay, {});
     CHECK_THROWS_AS(stack::Accumulator(empty, ref, ref, testing::NewCapture(w, h).info), std::invalid_argument);
+    // The clipped sites are 4-byte pixel indices (Accumulate.cpp, ClipScratch): a frame of more than 2^32 pixels is
+    // refused by name, before anything frame-sized is allocated (re-review 3, M3). 65536 x 65536 (the readers' largest)
+    // is 2^32 exactly and fits.
+    FrameRegions one;
+    one.frameIndex = 0;
+    one.regions.resize(lay.regions.size());
+    const stack::RegionPlan plan = stack::PlanRegions(lay, {one});
+    ser::FileInfo huge = testing::NewCapture(w, h).info;
+    huge.header.width = 65536;
+    huge.header.height = 65537;
+    CHECK_THROWS_WITH(stack::Accumulator(plan, ref, ref, huge),
+                      Catch::Matchers::ContainsSubstring("65536x65537") && Catch::Matchers::ContainsSubstring("2^32 pixels"));
 }
 
 TEST_CASE("The Accumulator holds a moved-in plan without copying it; HotPixelMap releases its counts at Finish (final review, engine M3)",
