@@ -2,54 +2,53 @@
 <xri version="1.0">
    <description>
       <p>astro-pi — unified PixInsight distribution (scarter4work)</p>
-      <p>NukeX integration/stretching module + EZ Stretch BSC script suite.</p>
+      <p>NukeX stacking and stretching module, PI Copilot assistant panel, Planetary video viewer and stacker, Gaia Depth Grade script and its sidecar program, and the EZ Stretch BSC scripts.</p>
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20261013-linux-x64-NukeX-5.2.0.1.tar.gz" sha1="07f040784c93acf931c76439f640e59b12f22830" type="module" releaseDate="20261023">
+      <package fileName="20261013-linux-x64-NukeX-5.2.0.1.tar.gz" sha1="07f040784c93acf931c76439f640e59b12f22830" type="module" releaseDate="20261024">
          <title>NukeX</title>
          <description>
             <p>
-               <b>NukeX 5.1.0.3</b>
+               <b>NukeX 5.2.0.1</b>
             </p>
-            <p>v5.1.0.3: now loads on any Linux that runs PixInsight 1.9.5 (glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+, current Fedora/Arch). Earlier builds only loaded on very new distributions and needed the Ceres, glog, gflags and OpenMP libraries installed. It no longer depends on any of them; the OpenCL loader is built in, and GPU drivers are found exactly as before. Also fixes dual-narrowband (HaO3 / S2O3, e.g. Askar ColorMagic D1/D2) stacks failing with &quot;Camera not in QE DB&quot;: real camera names such as &quot;ZWO ASI585MC Air&quot; now resolve, and the HaO3/S2O3 filter classes are in the database.</p>
-            <p>v5.1.0.2: Phase B batch sizing is now bounded by available system RAM (not just GPU VRAM), fixing an out-of-memory kill on hosts where RAM is smaller than VRAM headroom (e.g. a 16 GB GPU on a 30 GB machine). Per-batch host footprint is now shown in the Phase B log.</p>
-            <p>Astrophotography integration and stretching module. v5.1.0 is a color-science overhaul: physically-grounded, QE-database-driven channel decomposition for OSC/mono and dual-narrowband workflows (fixes the v4 green cast), with per-channel frame accounting for heterogeneous-geometry batches. The QE database is compiled into the module, so it installs with no extra files.</p>
-            <p>v5.1.0.1: broadband / clear filter-wheel slot labels (Full, Clear, None, Open, L-Pro, L-QEF, UV/IR-cut) on Bayer frames now route as plain OSC instead of hard-aborting the stack; corrected stale &quot;v4&quot; labels in the UI to v5.</p>
+            <p>Distribution-fitted stacking and auto-stretch for PixInsight. NukeX stacks the FITS light frames you add (with optional flats): it fits a statistical distribution to every pixel&apos;s samples across the stack, estimates the signal from the fitted model, and applies one of its stretches (Auto is recommended). A camera quantum-efficiency (QE) database built into the module routes each frame and decomposes dual-narrowband colour data (HaO3 / S2O3) into emission lines. It loads on any Linux with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
+            <p>Network: one kind of connection only, the camera-database update check. It makes HTTPS requests to raw.githubusercontent.com (this repository), automatically at most once every 7 days when you open the NukeX window, and whenever you press Check now; it sends no identifier, usage data or image data. A newer database is downloaded and installed only if you agree, after its Ed25519 signatures are verified. Automatic checks can be turned off in the NukeX window. NukeX launches no external program. Files outside the PixInsight installation: ~/.config/nukex4/ (update-check state, a downloaded database, filter names you teach it, your stretch ratings), a frame cache in ~/.cache/nukex4/cache/ while a run lasts, and progress files in /tmp. Documentation, including every network connection, external program and file location: doc/tools/NukeX/NukeX.html.</p>
          </description>
       </package>
-      <package fileName="20261013-linux-x64-PICopilot-0.2.2.0.tar.gz" sha1="c1edbd214718e2d6d0a52830b1cd2ce8eab20f5b" type="module" releaseDate="20261023">
+      <package fileName="20261024-linux-x64-PICopilot-0.2.2.1.tar.gz" sha1="a527699a9aa009f6e9d53adf777c3f9f4c874624" type="module" releaseDate="20261024">
          <title>PI Copilot</title>
          <description>
             <p>
-               <b>PI Copilot</b>
+               <b>PI Copilot 0.2.2.1</b>
             </p>
-            <p>PI Copilot — AI assistant panel for PixInsight (bring your own Anthropic API key).</p>
-            <p>v0.2.1.1: now loads on any Linux that runs PixInsight 1.9.5 (glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+). Earlier builds only loaded on very new distributions.</p>
+            <p>A chat panel for PixInsight: you talk to Claude, an AI model made by Anthropic, with your own Anthropic API key. It can see the active image (a small preview, its statistics and keywords) and, depending on the mode (Copilot, Guided, or the read-only Advisor), run PixInsight processes on your images, start installed and signed PixInsight scripts that you confirm, and record how each image was processed. It never runs a script written by the model; it can only start installed, signed scripts you confirm.</p>
+            <p>Network: HTTPS to api.anthropic.com only, and nothing is sent until you agree in its consent dialog. External programs: secret-tool, run through /bin/sh and /usr/bin/env, keeps the API key in the system keyring; PixInsight&apos;s GraXpert process, when the model runs it, starts the GraXpert program you chose in GraXpert&apos;s own settings. Files outside the PixInsight installation: the journey library in ~/.local/share/PICopilot/journeys/, short-lived files in the system temporary directory, and an export folder only if you choose one. Documentation, including every network connection, external program and file location: doc/tools/PICopilot/PICopilot.html.</p>
          </description>
       </package>
-      <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="9bb92ab3b6c336ccd7158ab3c2eb77df8ca697cf" type="generic" releaseDate="20261023">
+      <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="9bb92ab3b6c336ccd7158ab3c2eb77df8ca697cf" type="generic" releaseDate="20261024">
          <title>Gaia Depth Grade sidecar</title>
          <description>
             <p>
                <b>Gaia Depth Grade sidecar 1.0.8</b>
             </p>
             <p>The image-processing program used by the Gaia Depth Grade script (install both). It is installed as bin/gaia-depth-grade-sidecar and its licences in doc/scripts/GaiaDepthGrade/. It is a self-contained program (Python with NumPy, SciPy, Astropy, photutils, astroquery and Pillow); no Python installation is needed.</p>
-            <p>1.0.8: now delivered by PixInsight&apos;s update system instead of being downloaded by the script; 61 MB instead of 100 MB; runs on any Linux that runs PixInsight (glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+) — 1.0.7 only started on very new distributions. Image results are identical to 1.0.7.</p>
+            <p>Delivered by PixInsight&apos;s update system (earlier versions were downloaded by the script). It runs on any Linux that runs PixInsight with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
          </description>
       </package>
-      <package fileName="20261023-linux-x64-Planetary-0.2.2.0.tar.gz" sha1="27971809f1787cd44a7be17a80a56283b888d95b" type="module" releaseDate="20261023">
+      <package fileName="20261024-linux-x64-Planetary-0.3.0.0.tar.gz" sha1="205fc3eea773fb411d5441372769d7981befa1f7" type="module" releaseDate="20261024">
          <title>Planetary</title>
          <description>
             <p>
-               <b>Planetary</b>
+               <b>Planetary 0.3.0.0</b>
             </p>
-            <p>Planetary: SER video viewer for PixInsight. SERViewer opens SER video files: it shows any frame in a preview and opens it as a PixInsight image. It reads only the SER file you choose, uses no network and runs no external programs.</p>
+            <p>Planetary imaging for PixInsight, with two processes. SERViewer opens SER video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview, opens it as a PixInsight image, and can save an AVI as a SER file. PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest frames and aligns them, region by region, with nothing to set, previews the stack with zoom, and opens it as a new image, or says why a capture gives none.</p>
+            <p>Both read only the video file you choose and an AVI&apos;s .txt sidecar. SERViewer writes only the SER file you choose; either process writes, if you click Save pattern..., the .txt sidecar next to the AVI. Neither uses the network or runs external programs. Documentation: doc/tools/SERViewer/SERViewer.html and doc/tools/PlanetaryStack/PlanetaryStack.html.</p>
          </description>
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.11.zip" sha1="2e9b1ae6f14fb3b0980f78caca35741facdf1779" type="script" releaseDate="20261023">
+      <package fileName="EZStretch_v1.0.11.zip" sha1="2e9b1ae6f14fb3b0980f78caca35741facdf1779" type="script" releaseDate="20261024">
          <title>EZ Stretch</title>
          <description>
             <p>
@@ -58,7 +57,7 @@
             <p>Unified stretch suite combining three algorithms in a single interface.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.4.zip" sha1="55f2bb63a65f3c57493b55f5afc4ebb27e086fc3" type="script" releaseDate="20261023">
+      <package fileName="EZDonutRepair_v1.0.4.zip" sha1="55f2bb63a65f3c57493b55f5afc4ebb27e086fc3" type="script" releaseDate="20261024">
          <title>EZ Donut Repair</title>
          <description>
             <p>
@@ -67,7 +66,7 @@
             <p>Removes donut/dust artifacts from astrophotography frames.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.0.2.zip" sha1="49699f7494e06db18e54d6f88245db41288f782c" type="script" releaseDate="20261023">
+      <package fileName="EZHazeKill_v1.0.2.zip" sha1="49699f7494e06db18e54d6f88245db41288f782c" type="script" releaseDate="20261024">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -76,18 +75,17 @@
             <p>Gradient and haze reduction.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261023">
+      <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261024">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
                <b>Gaia Depth Grade v1.0.13</b>
             </p>
             <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving; no network use); an online option queries the ESA Gaia archive over HTTPS for Bailer-Jones distances. Linux x64 only: needs the &quot;Gaia Depth Grade sidecar&quot; package from this repository, and StarXTerminator. Documentation, including network use, the programs it runs and the files it writes: doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html.</p>
-            <p>v1.0.13 (sidecar 1.0.8): the sidecar program now comes from PixInsight&apos;s update system (package &quot;Gaia Depth Grade sidecar&quot;); the script no longer downloads, unpacks or installs anything, and no longer uses ~/.astro-pi (you may delete ~/.astro-pi/gaia-depth-grade). All working files and online Gaia query results now live in a private per-user directory, ~/.cache/gaia-depth-grade (mode 0700, checked before use), instead of the shared /tmp/gaia_depth_grade and PixInsight&apos;s bin directory. Ships its documentation. Image results are unchanged.</p>
-            <p>v1.0.12 (sidecar 1.0.7): enlarged (near) stars now wear a realistic STAR-SHINE HALO. The halo&apos;s radial shape is stacked from the frame&apos;s own bright, unsaturated, isolated stars and tinted to each star&apos;s own colour, with amplitude anchored to its real peak brightness — replacing the achromatic Gaussian blob that read as fake. Frames with too few clean reference stars fall back to a Moffat profile (with a warning).</p>
-            <p>v1.0.11 (sidecar 1.0.6): adds optional NEBULA DEPTH. A new checkbox grades the starless layer too — dark dust/globules come forward, the diffuse glow recedes, with gentle atmospheric perspective and noise-cored structural relief. The spatial variation comes from the nebula&apos;s own structure; the overall strength is calibrated by the Gaia matched-star distance spread, so the nebula depth matches the stars. Opt-in (off by default) with live Nebula depth / atmospheric / structure sliders.</p>
+            <p>Enlarged (near) stars wear a star-shine halo whose radial shape is stacked from the frame&apos;s own bright, unsaturated, isolated stars and tinted to each star&apos;s own colour; frames with too few clean reference stars fall back to a Moffat profile, with a warning. Optional nebula depth (off by default) grades the starless layer too: dark dust and globules come forward and the diffuse glow recedes, with the overall strength calibrated by the Gaia matched-star distance spread, and Nebula depth / atmospheric / structure sliders.</p>
+            <p>The sidecar program comes from PixInsight&apos;s update system (package &quot;Gaia Depth Grade sidecar&quot;); the script downloads, unpacks and installs nothing. Working files and online Gaia query results live in a private per-user directory, ~/.cache/gaia-depth-grade (mode 0700, checked before use). Earlier versions used ~/.astro-pi/gaia-depth-grade, which you may delete.</p>
          </description>
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-10-23T15:48:58.822Z" encoding="Base64">rde6e+GpOKemeSaWkNkAqX/RH6rNRKKwzlHGzWwHE1UDY4dM1Br4yPKyXD4wRda20nnHV8toLVzoQdxpV/b/AA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-10-24T04:21:11.375Z" encoding="Base64">qgaDF3BxUXudKlOrYvu+6VWTyCaZNcH0GsauI2LM4rTexlqSgr97uJvroQRILr87mf5EOh1aVBGzbYU0LZKhAg==</Signature>
