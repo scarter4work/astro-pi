@@ -1197,25 +1197,40 @@ TEST_CASE("An out-of-frame stand-in is no unsaturated presence: it does not lift
 TEST_CASE("A frame's clip flags are its own: those of the frame before do not make bounds of its samples (re-review N-I2)",
           "[accumulate]") {
     // The flag plane is the Add thread's, kept between Adds and cleared around each frame's clipped sites. The first
-    // frame (gain 1) saturates a 6 x 6 spot; the next ten (gain 1.25) read 0.95 there, unsaturated, and clip only two
-    // single pixels far from it whose box spans it: the spot's samples are measurements (0.76 on the reference's
-    // scale), not near-clip bounds. One thread, frames in order.
+    // frame (gain 1) saturates a spot; the next ten (gain 1.25) read 0.95 there, unsaturated, and clip only two single
+    // pixels far from it whose box spans it: the spot's samples are measurements (0.76 on the reference's scale), not
+    // near-clip bounds. One thread, frames in order. Two spots, one per way of clearing the plane (ClipScratch::Clear):
+    //  - 6 x 6, 36 sites: each site's box is cleared;
+    //  - 24 x 16, 384 sites, over an eighth of the 64 x 40 plane (320): the whole plane is filled, the path every clipped
+    //    Moon takes (2023-03-05: about 117 000 sites per frame against about 28 800; re-review 3, M1).
     const int w = 64, h = 40, n = 11;
-    auto spot = [](int x, int y) { return x >= 29 && x < 35 && y >= 17 && y < 23; };
-    auto dot = [](int x, int y) { return (x == 12 && y == 6) || (x == 52 && y == 34); };
-    std::vector<FloatImage> frames;
-    std::vector<double> gains(n, 1.25);
-    gains[0] = 1.0;
-    frames.push_back(SceneFrame([&](int x, int y) { return spot(x, y) ? 1.2 : 0.5; }, w, h, false));
-    for (int k = 1; k < n; ++k)
-        frames.push_back(SceneFrame([&](int x, int y) { return dot(x, y) ? 1.0 : spot(x, y) ? 0.95 : 0.625; }, w, h, false));
-    const FloatImage out = StackShifted(frames, std::vector<Shift>(n), gains,
-                                        SceneLuma([&](int x, int y) { return spot(x, y) ? 0.8 : 0.5; }, w, h, false), 1.f,
-                                        ser::ColorId::Mono);
-    // The spot: the first frame's bound (1, lifted to nothing above it) and ten measurements of 0.76.
-    const double v = out.data[static_cast<size_t>(20) * w + 32], expect = (1.0 + 10 * 0.95 / 1.25) / 11;
-    INFO("spot " << v << ", expected " << expect);
-    CHECK(v == Catch::Approx(expect).margin(0.005));
+    for (int side : {6, 24}) {
+        const int sx0 = 32 - side / 2, sy0 = side == 6 ? 17 : 12, sy1 = side == 6 ? 23 : 28;
+        INFO("spot " << side << " x " << sy1 - sy0 << " (" << side * (sy1 - sy0) << " clipped sites in the first frame)");
+        auto spot = [&](int x, int y) { return x >= sx0 && x < sx0 + side && y >= sy0 && y < sy1; };
+        auto dot = [](int x, int y) { return (x == 6 && y == 4) || (x == 58 && y == 36); };
+        std::vector<FloatImage> frames;
+        std::vector<double> gains(n, 1.25);
+        gains[0] = 1.0;
+        frames.push_back(SceneFrame([&](int x, int y) { return spot(x, y) ? 1.2 : 0.5; }, w, h, false));
+        for (int k = 1; k < n; ++k)
+            frames.push_back(SceneFrame([&](int x, int y) { return dot(x, y) ? 1.0 : spot(x, y) ? 0.95 : 0.625; }, w, h, false));
+        const FloatImage out = StackShifted(frames, std::vector<Shift>(n), gains,
+                                            SceneLuma([&](int x, int y) { return spot(x, y) ? 0.8 : 0.5; }, w, h, false), 1.f,
+                                            ser::ColorId::Mono);
+        // The spot, 2 px clear of its edge: the first frame's bound (1, lifted to nothing above it) and ten measurements
+        // of 0.76.
+        const double expect = (1.0 + 10 * 0.95 / 1.25) / 11;
+        double lo = 1, hi = 0;
+        for (int y = sy0 + 2; y < sy1 - 2; ++y)
+            for (int x = sx0 + 2; x < sx0 + side - 2; ++x) {
+                lo = std::min(lo, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
+                hi = std::max(hi, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
+            }
+        INFO("spot " << lo << " - " << hi << ", expected " << expect);
+        CHECK(lo == Catch::Approx(expect).margin(0.005));
+        CHECK(hi == Catch::Approx(expect).margin(0.005));
+    }
 }
 
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
