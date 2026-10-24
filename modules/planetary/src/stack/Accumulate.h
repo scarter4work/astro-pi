@@ -367,6 +367,9 @@ public:
     // ignored (returns false); adding the same frame twice is an std::logic_error; a size or channel
     // mismatch std::invalid_argument. Thread-safe.
     bool Add(int64_t frameIndex, ser::FloatImage frame);
+    // Add on the caller's buffer: the frame is prefiltered in place (its samples are overwritten when it is added), and
+    // the buffer stays the caller's to demosaic the next frame into (RunStack's stacking workers; re-review 3, M4).
+    bool AddInPlace(int64_t frameIndex, ser::FloatImage& frame);
 
     // The stack: full size, the capture's channels, interleaved, linear (normalised like DemosaicHQ).
     // Callable at any time (frames still to come are missing from it); std::logic_error before the

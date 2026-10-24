@@ -429,3 +429,48 @@ TEST_CASE("DemosaicHQ handles structure through the border of tiny frames", "[st
                 CHECK(hq <= bl + kTol);
             }
 }
+
+TEST_CASE("DemosaicHQ into reused buffers reads exactly as a fresh call", "[stack][demosaic]") {
+    // RunStack's stacking workers demosaic frame after frame into one frame and one scratch each (re-review 3, M4):
+    // what an earlier frame left in them -- here NaN, which any read would carry into the output -- must never show.
+    FloatImage out;
+    stack::DemosaicScratch scratch;
+    auto poison = [&] {
+        std::fill(out.data.begin(), out.data.end(), std::nanf(""));
+        std::fill(scratch.cfa.begin(), scratch.cfa.end(), std::nanf(""));
+        std::fill(scratch.green.begin(), scratch.green.end(), std::nanf(""));
+    };
+    int calls = 0;
+    // Sizes shrink and grow between calls, so each buffer is both cut down and extended.
+    for (auto [w, h] : {std::pair{16, 9}, std::pair{16, 9}, std::pair{7, 5}, std::pair{24, 20}, std::pair{2, 2}})
+        for (ColorId p : kPatterns) {
+            FloatImage truth = MakeTruth(w, h, [&](double x, double y, float* px) {
+                px[0] = static_cast<float>(0.5 + 0.4 * std::sin(0.9 * x + 0.3 * y + calls));
+                px[1] = static_cast<float>(0.5 + 0.4 * std::cos(0.5 * x - 0.7 * y));
+                px[2] = x + y > w / 2 ? 0.9f : 0.1f;
+            });
+            const Frame cfa = Mosaic(truth, p);
+            poison();
+            stack::DemosaicHQ(cfa, p, 16, out, scratch);
+            ++calls;
+            const FloatImage fresh = stack::DemosaicHQ(cfa, p, 16);
+            INFO(ser::ColorIdName(p) << " " << w << "x" << h);
+            CHECK(out.width == fresh.width);
+            CHECK(out.height == fresh.height);
+            CHECK(out.channels == 3);
+            CHECK(out.data == fresh.data);  // bit-identical (a NaN anywhere would fail it)
+        }
+    // Mono and RGB into the same buffers, after the Bayer frames.
+    Frame mono{3, 2, 1, {0, 100, 200, 255, 7, 9}};
+    poison();
+    stack::DemosaicHQ(mono, ColorId::Mono, 8, out, scratch);
+    CHECK(out.channels == 1);
+    CHECK(out.data == ser::Normalize(mono, 8).data);
+    Frame rgb{1, 2, 3, {1, 2, 3, 4095, 0, 7}};
+    poison();
+    stack::DemosaicHQ(rgb, ColorId::RGB, 12, out, scratch);
+    CHECK(out.channels == 3);
+    CHECK(out.width == 1);
+    CHECK(out.height == 2);
+    CHECK(out.data == ser::Normalize(rgb, 12).data);
+}

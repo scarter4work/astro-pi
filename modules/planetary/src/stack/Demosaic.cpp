@@ -35,15 +35,17 @@ float CheckFrame(const Frame& f, ColorId color, int depth) {
     return maxValue;
 }
 
-// A float plane with a mirrored border of `pad` samples on every side.
+// A float plane with a mirrored border of `pad` samples on every side, in caller-owned storage (DemosaicScratch):
+// resized, never cleared -- every sample is written, the interior by the caller and the border by MirrorBorder.
 struct Padded {
     int w = 0, h = 0, pad = 0, stride = 0;
-    std::vector<float> v;
+    std::vector<float>& v;
     float at(int x, int y) const { return v[static_cast<size_t>(y + pad) * stride + (x + pad)]; }
     float& at(int x, int y) { return v[static_cast<size_t>(y + pad) * stride + (x + pad)]; }
-    Padded(int width, int height, int border)
-        : w(width), h(height), pad(border), stride(width + 2 * border),
-          v(static_cast<size_t>(width + 2 * border) * (height + 2 * border)) {}
+    Padded(int width, int height, int border, std::vector<float>& storage)
+        : w(width), h(height), pad(border), stride(width + 2 * border), v(storage) {
+        v.resize(static_cast<size_t>(width + 2 * border) * (height + 2 * border));
+    }
     // Fills the border from the interior by parity-preserving reflection.
     void MirrorBorder() {
         for (int y = -pad; y < h + pad; ++y)
@@ -52,13 +54,13 @@ struct Padded {
     }
 };
 
-FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
+void HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue, FloatImage& out, DemosaicScratch& scratch) {
     const int w = cfa.width, h = cfa.height;
     const int* table = ser::PatternTable(pattern);
     auto site = [&](int x, int y) { return table[(y & 1) * 2 + (x & 1)]; };
 
     // Normalised CFA with a 2-sample mirrored border (the green step reads +-2).
-    Padded c(w, h, 2);
+    Padded c(w, h, 2, scratch.cfa);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             c.at(x, y) = static_cast<float>(cfa.samples[static_cast<size_t>(y) * w + x]) / maxValue;
@@ -70,7 +72,7 @@ FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
     // the four green neighbours: the correction cannot overshoot at a limb (measured: it cuts
     // the worst error on an anti-aliased disc from 0.18 to 0.12), and stays exact on flat
     // fields and, away from the border, on linear ramps.
-    Padded g(w, h, 1);
+    Padded g(w, h, 1, scratch.green);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             const float here = c.at(x, y);
@@ -100,11 +102,10 @@ FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
     const float top = static_cast<float>(*std::max_element(cfa.samples.begin(), cfa.samples.end())) / maxValue;
     auto bound = [top](float v) { return std::clamp(v, 0.0f, top); };
     auto diff = [&](int x, int y) { return c.at(x, y) - g.at(x, y); };
-    FloatImage out;
     out.width = w;
     out.height = h;
     out.channels = 3;
-    out.data.resize(static_cast<size_t>(w) * h * 3);
+    out.data.resize(static_cast<size_t>(w) * h * 3);  // every sample is written below
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             float* px = &out.data[(static_cast<size_t>(y) * w + x) * 3];
@@ -128,7 +129,6 @@ FloatImage HamiltonAdams(const Frame& cfa, ColorId pattern, float maxValue) {
                 px[2 - s] = bound(gHere + (d1 < d2 ? e1 : d2 < d1 ? e2 : 0.5f * (e1 + e2)));
             }
         }
-    return out;
 }
 }  // namespace
 
@@ -168,10 +168,25 @@ FloatImage LumaForMeasure(const Frame& frame, ColorId color, int normDepth) {
     return out;
 }
 
-FloatImage DemosaicHQ(const Frame& frame, ColorId color, int normDepth) {
+void DemosaicHQ(const Frame& frame, ColorId color, int normDepth, FloatImage& out, DemosaicScratch& scratch) {
     const float maxValue = CheckFrame(frame, color, normDepth);
-    if (ser::IsBayer(color)) return HamiltonAdams(frame, color, maxValue);
-    return ser::Normalize(frame, normDepth);
+    if (ser::IsBayer(color)) {
+        HamiltonAdams(frame, color, maxValue, out, scratch);
+        return;
+    }
+    out.width = frame.width;
+    out.height = frame.height;
+    out.channels = frame.channels;
+    out.data.resize(frame.samples.size());  // every sample is written by NormalizeInto
+    float* const planes[3] = {out.data.data(), out.data.data() + 1, out.data.data() + 2};
+    ser::NormalizeInto(frame, normDepth, planes, static_cast<size_t>(frame.channels));
+}
+
+FloatImage DemosaicHQ(const Frame& frame, ColorId color, int normDepth) {
+    FloatImage out;
+    DemosaicScratch scratch;
+    DemosaicHQ(frame, color, normDepth, out, scratch);
+    return out;
 }
 
 }  // namespace planetary::stack

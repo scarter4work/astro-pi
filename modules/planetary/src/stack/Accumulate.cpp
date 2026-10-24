@@ -717,7 +717,9 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
 
 Accumulator::~Accumulator() = default;
 
-bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
+bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) { return AddInPlace(frameIndex, frame); }
+
+bool Accumulator::AddInPlace(int64_t frameIndex, ser::FloatImage& frame) {
     if (frame.width != width_ || frame.height != height_ || frame.channels != channels_ ||
         frame.data.size() != static_cast<size_t>(width_) * height_ * channels_)
         throw std::invalid_argument("Accumulator::Add: expected a " + std::to_string(width_) + "x" +

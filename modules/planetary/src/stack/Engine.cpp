@@ -1051,11 +1051,22 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     Accumulator acc(std::move(plan), reference, residualSigma, info);
     Phase stacking(progress, kPhaseStacking, static_cast<int64_t>(stackList.size()));
     stacking.Report(0);
-    ForFrames(static_cast<int64_t>(stackList.size()), mem.stackWorkers, factory, info, stacking, 0,
-              [&](int, ser::FrameSource& src, int64_t pos) {
-                  const int64_t f = stackList[static_cast<size_t>(pos)];
-                  acc.Add(f, DemosaicHQ(src.ReadFrame(f), info.colorId, info.normDepth));
-              });
+    {
+        // Each worker demosaics into its own frame and planes, reused frame after frame (PlanMemory's stackWorkerBytes
+        // holds them; re-review 3, M4: allocated per frame they were zero-filled every time), freed before Finish.
+        struct WorkerBuffers {
+            ser::FloatImage frame;
+            DemosaicScratch demosaic;
+        };
+        std::vector<WorkerBuffers> buffers(static_cast<size_t>(std::max(1, mem.stackWorkers)));
+        ForFrames(static_cast<int64_t>(stackList.size()), mem.stackWorkers, factory, info, stacking, 0,
+                  [&](int w, ser::FrameSource& src, int64_t pos) {
+                      const int64_t f = stackList[static_cast<size_t>(pos)];
+                      WorkerBuffers& b = buffers[static_cast<size_t>(w)];
+                      DemosaicHQ(src.ReadFrame(f), info.colorId, info.normDepth, b.frame, b.demosaic);
+                      acc.AddInPlace(f, b.frame);
+                  });
+    }
     ser::FloatImage image = acc.Finish();
     stacking.ThrowIfCancelled();
     step("Stacking", t0);

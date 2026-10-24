@@ -1,4 +1,6 @@
 #pragma once
+#include <vector>
+
 #include "Debayer.h"
 #include "FrameSource.h"
 
@@ -26,5 +28,16 @@ ser::FloatImage LumaForMeasure(const ser::Frame& frame, ser::ColorId color, int 
 //  - Mono / RGB: Normalize, unchanged layout (no clamping).
 // Throws ser::SerError for the cases LumaForMeasure lists (Bayer frames under 2x2 included).
 ser::FloatImage DemosaicHQ(const ser::Frame& frame, ser::ColorId color, int normDepth);
+
+// DemosaicHQ's working planes (Bayer: the padded CFA and green planes, 8 bytes per pixel), kept by a caller that
+// demosaics frame after frame (RunStack's stacking workers, one each).
+struct DemosaicScratch {
+    std::vector<float> cfa, green;
+};
+// DemosaicHQ into `out`, the same samples. `out` and `scratch` are resized, never cleared (every sample is written), so
+// buffers reused for frames of one size are neither allocated nor zero-filled again (re-review 3, M4). One thread at a
+// time per `out` and `scratch`.
+void DemosaicHQ(const ser::Frame& frame, ser::ColorId color, int normDepth, ser::FloatImage& out,
+                DemosaicScratch& scratch);
 
 }  // namespace planetary::stack
