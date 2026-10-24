@@ -101,12 +101,13 @@ constexpr int kHotPixelFrames = 64;
 //    sampled centre, at most kNoiseResponsesPerTriple of them) and the runs it holds for its in-order
 //    merge, counted for the measuring workers when larger (noiseWorkerBytes: larger on a small frame,
 //    a 64 x 64 luma's 223 KB; 4K mono's 84 MB is under the 166 MB a measuring worker holds);
-//    in the stacking pass the demosaic's two float planes (8 bytes per pixel) and the demosaiced frame
-//    with room for its prefilter (8 bytes per output sample).
+//    in the stacking pass the demosaic's two float planes (8 bytes per pixel), the demosaiced frame
+//    with room for its prefilter (8 bytes per output sample) and its clipped-sample bits (2 bytes per pixel).
 //    Workers per pass are capped so fixed + observers + workers stay within kMemoryBudget (a 4K RGB
-//    16-bit capture: ~315 MB per stacking worker, so 11 of them; 1080p never hits the cap).
-//  - Fixed: the Accumulator's sums (8 bytes per output sample plus 8 per pixel, its kept and
-//    rejected halves), the reference and residual scale at luma size, the regions' blend mask. Not planned, being
+//    16-bit capture: ~323 MB per stacking worker beside ~647 MB fixed, so 10 of them; 1080p never hits the cap).
+//  - Fixed: the Accumulator's sums (16 bytes per output sample: kept and rejected, a value and a weight per
+//    channel, Accumulate.h "Clipping"; and a reached flag per pixel), the reference and residual scale at luma
+//    size, the regions' blend mask. Not planned, being
 //    transient and outside the worker passes: PlaceRegions' scratch for the mask (RegionBlendMask: the 3 x 3 means
 //    and the sky's samples, 4 + 4 bytes per luma px, and the distance transform's 8 per px of the grid's extent:
 //    ~16 bytes per luma px, ~130 MB on 4K mono), freed before the alignment pass.

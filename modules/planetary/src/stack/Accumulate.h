@@ -60,7 +60,32 @@ namespace planetary::stack {
 // holds no measure of how much brighter the scene was, above full scale. The 2026-10-23 Moon at c59e9fd4 read
 // 1.00265 in blue at 17 pixels of its brightest craters: at (105, 549) the warped samples reached 1.0066
 // before the gain (939 of 2315 above 1) and the gain (0.996-1.000) lifted them further (stack-probe, a scratch
-// dump of every frame's sample there). In range, interpolation and gain are untouched.
+// dump of every frame's sample there). In range, interpolation and gain are untouched. Since "Clipping" (below)
+// a clipped sample no longer reaches the sums, but the bound still holds what clipping leaves: an unclipped
+// sample just under full scale divided by a gain under 1, and the overshoot of a clipped pixel outside the
+// sample's own cell (without the upper bound the 2023-02-12 Moon read up to 1.0094, 62 samples above 1, at the
+// commit that added "Clipping"; the 2026-10-23 Moon none).
+//
+// Clipping (Ruling R2): a saturated sample is no measurement of the scene -- it says only that the scene was at
+// least that bright -- so after any gain correction it would be wrong whichever way the gain moves it (the
+// 2023-02-12 Moon's frames 0-260 are 1.257x brighter than the rest and saturated over its south limb: divided by
+// their gain they read 0.796 and dimmed it). A channel of a frame's pixel is clipped where the sensor sites it
+// came from reach kClippedLuma of full scale (Measure.h's level): in mono and RGB the sample itself; in a mosaic the
+// sites of that colour within one pixel, the ones DemosaicHQ reads the channel from there (DemosaicHQ keeps each
+// site's raw value as its own channel, so the Accumulator reads them off the frame it is given). A warped sample's
+// channel is clipped when any of the four pixels of the cell it lies in is. A clipped channel adds nothing to the
+// stack's sums, kept or rejected; where every sample a pixel's channel received was clipped the stack is
+// kClipOutput -- the clip on the reference's scale, never a gain-divided value (unit test: two frame groups at
+// gain 1 and 1.25 saturated on one plateau, mono, RGB with blue alone saturated, and RGGB: the plateau reads 1;
+// the groups' 1 and 0.8 gave 0.9 before). Rejection judges a cell on its unclipped samples; a clipped one gives
+// only a floor, the clip on the reference's scale (kClippedLuma x min(1, 1 / gain)), which counts when it lies
+// above the reference by more than the thresholds: a saturated satellite trail over the surface is still an
+// outlier and its unclipped wings are still rejected around it (unit test "A single-frame streak": Bayer leak 0,
+// mono 0.0013, as before; with clipped samples simply left out of the judgement, the Bayer trail's wings leaked
+// 0.0186), while a frame clipped where the reference is clipped too is no outlier. The residual scale is
+// unchanged: a clipped frame there can only widen the tolerance at that pixel. A limit of dropping clipped
+// samples: where only some frames clip (noise or seeing straddling the clip) the stack reads the unclipped ones
+// alone, below the clip (the 2026-10-23 Moon's (448, 205): blue 0.985, 0.999 before).
 //
 // Rejection, per luma cell (the s x s full-resolution pixels of one measurement-luma pixel): the
 // cell's mean luma (Bayer (R + 2G + B) / 4, RGB (R + G + B) / 3, mono the value) of the warped,
@@ -80,10 +105,12 @@ namespace planetary::stack {
 // Limit: a hot pixel that does NOT move on the output (a target perfectly still on the sensor) is in
 // the reference too and is not an outlier in time; that needs a sensor-space fix before demosaicing.
 //
-// Memory (asserted by BytesHeld): per output pixel (channels + 1) float sums and as many float sums of
-// rejected samples; the reference and residual scale at luma size; the plan (frames x regions x 9
-// bytes plus ~40 bytes per frame) -- 1080p RGB: 66 MB (32 bytes x 1920 x 1080). Per Add call: the frame itself (moved in and
-// prefiltered in place) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per
+// Memory (asserted by BytesHeld): per output sample a float sum and a float weight, and as many of the
+// rejected samples (per channel since Ruling R2: a clipped channel drops out alone), plus a reached flag per
+// pixel; the reference and residual scale at luma size; the plan (frames x regions x 9 bytes plus ~40 bytes
+// per frame) -- 1080p RGB: 101 MB (49 bytes x 1920 x 1080; 66 MB before R2). Per Add call: the frame itself
+// (moved in and prefiltered in place), its clipped-sample bits (1 byte per pixel when something in the frame
+// is clipped; a mosaic's site flags, 1 byte per pixel, always) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per
 // concurrent Add, independent of the number of frames. (Not the O(regions x region size) of
 // per-region stacks: the blend above needs none.)
 //
@@ -107,6 +134,9 @@ constexpr int kRejectGrow = 2;
 constexpr int kRejectReach = 4;
 // Weight of a sample whose position falls outside the frame (see "Interpolation").
 constexpr double kOutsideWeight = 1e-6;
+// The stack where every sample a pixel's channel received was clipped (see "Clipping"): full scale, the sensor's
+// clip on the reference's scale (the reference is the frames' own scale, at gain 1), within [0, 1].
+constexpr float kClipOutput = 1.0f;
 // A pixel whose kept weight is under this share of the weight its samples brought (kept + rejected)
 // blends its rejected samples back in, linearly up to all of them at 0 kept: rejection never leaves a
 // hole (see Finish). A share, not an absolute weight: a border band only a tenth of the frames reach
@@ -296,9 +326,11 @@ private:
     RegionPlan plan_;
     int width_, height_, channels_, scale_, lumaW_, lumaH_;
     double lumaWeights_[3];
+    const int* pattern_ = nullptr;        // Bayer: the CFA's channel per site ((y & 1) * 2 + (x & 1)); else null
     std::vector<float> refLuma_, sigma_;  // luma size: reference luma, residual scale
-    std::vector<float> sum_, weight_;         // full size (sum_: channels per pixel)
-    std::vector<float> sumRej_, weightRej_;   // full size: the rejected samples (Finish's stand-in)
+    std::vector<float> sum_, weight_;         // full size, channels per pixel (a clipped sample is in neither)
+    std::vector<float> sumRej_, weightRej_;   // full size, channels per pixel: the rejected samples (Finish's stand-in)
+    std::vector<uint8_t> reached_;            // per pixel: some frame's sample reached it, clipped or not
     std::vector<int> blendRegion_;  // per region: 1 when it keeps frames
     std::vector<float> gridMask_;   // the layout's blend mask at the kWarpGrid points (empty: 1 everywhere)
     std::vector<int> cellOfX_;      // per full-resolution column: its luma cell column

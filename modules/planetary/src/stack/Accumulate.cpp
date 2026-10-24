@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "BayerPattern.h"
 #include "Measure.h"
 #include "SerFile.h"
 
@@ -622,10 +623,12 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     }
     refLuma_ = reference.data;
     sigma_ = residualSigma.data;
+    if (bayer) pattern_ = ser::PatternTable(info.colorId);
     sum_.assign(static_cast<size_t>(width_) * height_ * channels_, 0.f);
-    weight_.assign(static_cast<size_t>(width_) * height_, 0.f);
+    weight_.assign(sum_.size(), 0.f);
     sumRej_.assign(sum_.size(), 0.f);
-    weightRej_.assign(weight_.size(), 0.f);
+    weightRej_.assign(sum_.size(), 0.f);
+    reached_.assign(static_cast<size_t>(width_) * height_, 0);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
     const BlendMask& mask = plan_.layout.mask;
@@ -665,6 +668,46 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     // scale], or its largest sample where that is above full scale.
     float top = 1.f;
     for (float v : frame.data) top = std::max(top, v);
+    // Clipped samples (Accumulate.h, "Clipping"): per pixel, bit c set where channel c came from a sensor site at or
+    // above kClippedLuma -- the sample itself in mono and RGB; in a mosaic, the sites of colour c within one pixel
+    // (the ones DemosaicHQ reads channel c from there), whose raw values DemosaicHQ keeps as the site's own channel.
+    // Read before the prefilter replaces the samples. Empty when nothing in the frame is clipped.
+    std::vector<uint8_t> clipped;
+    {
+        const int W = width_, H = height_, C = channels_;
+        const float level = static_cast<float>(kClippedLuma);
+        const float* d = frame.data.data();
+        if (pattern_) {
+            std::vector<uint8_t> site(static_cast<size_t>(W) * H, 0);  // bit (site colour) where the site is clipped
+            bool any = false;
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                    const int s = pattern_[(y & 1) * 2 + (x & 1)];
+                    const size_t p = static_cast<size_t>(y) * W + x;
+                    if (d[p * 3 + static_cast<size_t>(s)] >= level) {
+                        site[p] = static_cast<uint8_t>(1u << s);
+                        any = true;
+                    }
+                }
+            if (any) {
+                clipped.assign(site.size(), 0);
+                for (int y = 0; y < H; ++y)
+                    for (int x = 0; x < W; ++x) {
+                        uint8_t b = 0;
+                        for (int j = std::max(0, y - 1); j <= std::min(H - 1, y + 1); ++j)
+                            for (int i = std::max(0, x - 1); i <= std::min(W - 1, x + 1); ++i) b |= site[static_cast<size_t>(j) * W + i];
+                        clipped[static_cast<size_t>(y) * W + x] = b;
+                    }
+            }
+        } else {
+            for (size_t p = 0, n = static_cast<size_t>(W) * H; p < n; ++p)
+                for (int c = 0; c < C; ++c)
+                    if (d[p * C + static_cast<size_t>(c)] >= level) {
+                        if (clipped.empty()) clipped.assign(n, 0);
+                        clipped[p] = static_cast<uint8_t>(clipped[p] | (1u << c));
+                    }
+        }
+    }
     Prefilter(frame);
 
     // This frame's per-region data: local shift, usable, and its weight in each region's stack.
@@ -733,6 +776,8 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
     std::vector<float> rA(static_cast<size_t>(gw)), rX(rA.size()), rY(rA.size());
     const float* fr = frame.data.data();
     const float ig = static_cast<float>(invGain);
+    // The least a clipped sample's scene can be on the reference's scale, never above full scale.
+    const float clipFloor = static_cast<float>(kClippedLuma) * std::min(ig, 1.f);
 
     // Luma rows are processed in order through a ring of 2 kRejectReach + 1 rows (samples, weights,
     // deviations, dilated outlier masks): a row is added once the rows kRejectReach below it are
@@ -765,9 +810,17 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             if (!(a > 0)) continue;
             const float sx = static_cast<float>(x) + rX[gi] + tx * (rX[gi + 1] - rX[gi]);
             const float sy = static_cast<float>(y) + rY[gi] + tx * (rY[gi + 1] - rY[gi]);
-            orow[x] = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1;
             // floor without a libm call (the baseline x86-64 target has no rounding instruction).
             const int ix = FloorInt(sx), iy = FloorInt(sy);
+            // Bit 0: outside the frame; bit c + 1: channel c clipped in the pixel cell the sample lies in (its
+            // four corners; Accumulate.h, "Clipping").
+            uint8_t flags = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1 ? 1 : 0;
+            if (!clipped.empty()) {
+                const size_t r0 = static_cast<size_t>(Mirror(iy, H)) * W, r1 = static_cast<size_t>(Mirror(iy + 1, H)) * W;
+                const int c0 = Mirror(ix, W), c1 = Mirror(ix + 1, W);
+                flags = static_cast<uint8_t>(flags | (clipped[r0 + c0] | clipped[r0 + c1] | clipped[r1 + c0] | clipped[r1 + c1]) << 1);
+            }
+            orow[x] = flags;
             // Exact weights: a table at 1/64 px moved the stack by up to 6e-4 (measured), these by none.
             float wxa[4], wya[4];
             BSplineWeights(sx - ix, wxa);
@@ -825,20 +878,30 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
         uint8_t* any = cellAny.data() + slot * lw;
         for (int lc = 0; lc < lumaW_; ++lc) {
             const int xa = lc * scale_, xb = lc + 1 >= lumaW_ ? W : (lc + 1) * scale_;
-            float luma = 0;
-            int n = 0;
+            float luma = 0, floorSum = 0;
+            int n = 0, nf = 0;
             for (int y = ya; y < yb; ++y)
                 for (int x = xa; x < xb; ++x) {
                     const size_t k = static_cast<size_t>(y - ya) * W + x;
-                    if (!(abase[k] > 0) || obase[k]) continue;
+                    if (!(abase[k] > 0) || obase[k] & 1) continue;
                     float v = 0;
+                    if (obase[k]) {
+                        // A clipped sample: no value, only a floor -- the clip on the reference's scale, never above
+                        // full scale (Accumulate.h, "Clipping").
+                        for (int c = 0; c < C; ++c)
+                            v += static_cast<float>(lumaWeights_[c]) * (obase[k] & (2u << c) ? clipFloor : sbase[k * C + c]);
+                        floorSum += v;
+                        ++nf;
+                        continue;
+                    }
                     for (int c = 0; c < C; ++c) v += static_cast<float>(lumaWeights_[c]) * sbase[k * C + c];
                     luma += v;
                     ++n;
                 }
-            any[lc] = n > 0;
+            any[lc] = n > 0 || nf > 0;
             const size_t li = static_cast<size_t>(lr) * lw + lc;
             d[lc] = n > 0 ? std::fabs(luma / n - refLuma_[li]) / sigma_[li] : 0.f;
+            if (nf > 0) d[lc] = std::max(d[lc], (floorSum / nf - refLuma_[li]) / sigma_[li]);
             strong[lc] = d[lc] > kRejectSigmas;
         }
         uint8_t* nr2 = near.data() + slot * lw;
@@ -879,15 +942,18 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             for (int x = 0; x < W; ++x) {
                 const size_t k = kr + x;
                 if (!(abase[k] > 0)) continue;
-                const float wgt = abase[k] * (obase[k] ? static_cast<float>(kOutsideWeight) : 1.0f);
+                const uint8_t fl = obase[k];
+                const float wgt = abase[k] * (fl & 1 ? static_cast<float>(kOutsideWeight) : 1.0f);
                 const size_t o = orow + x;
-                if (grown[static_cast<size_t>(cellOfX_[static_cast<size_t>(x)])]) {
-                    weightRej_[o] += wgt;
-                    for (int c = 0; c < C; ++c) sumRej_[o * C + c] += wgt * sbase[k * C + c];
-                    continue;
+                reached_[o] = 1;
+                // A clipped channel adds nothing, kept or rejected (Accumulate.h, "Clipping").
+                float* s = grown[static_cast<size_t>(cellOfX_[static_cast<size_t>(x)])] ? sumRej_.data() : sum_.data();
+                float* wt = s == sum_.data() ? weight_.data() : weightRej_.data();
+                for (int c = 0; c < C; ++c) {
+                    if (fl & (2u << c)) continue;
+                    wt[o * C + c] += wgt;
+                    s[o * C + c] += wgt * sbase[k * C + c];
                 }
-                weight_[o] += wgt;
-                for (int c = 0; c < C; ++c) sum_[o * C + c] += wgt * sbase[k * C + c];
             }
         }
     };
@@ -920,19 +986,24 @@ ser::FloatImage Accumulator::Finish() const {
         for (int y = y0; y < y1; ++y)
             for (int x = 0; x < width_; ++x) {
                 const size_t o = static_cast<size_t>(y) * width_ + x;
-                // Never a hole: where rejection took most of a pixel's weight (it kept under kMinKeptWeight
-                // of the weight its samples brought), the rejected samples are blended back in, fully when
-                // nothing was kept. The share, not the absolute weight: a border band that only a few
-                // frames reach in-bounds (drift) holds a small weight however few samples were rejected
-                // there, and an absolute threshold blended a rejected trail back into it.
-                const double all = static_cast<double>(weight_[o]) + weightRej_[o];
-                if (!(all > 0)) continue;
-                const double lam = std::max(0.0, 1 - weight_[o] / all / kMinKeptWeight);
-                const double wt = weight_[o] + lam * weightRej_[o];
-                if (!(wt > 0)) continue;
-                for (int c = 0; c < channels_; ++c)
-                    out.data[o * channels_ + c] =
-                        static_cast<float>((sum_[o * channels_ + c] + lam * sumRej_[o * channels_ + c]) / wt);
+                for (int c = 0; c < channels_; ++c) {
+                    const size_t i = o * channels_ + c;
+                    // Never a hole: where rejection took most of a sample's weight (it kept under kMinKeptWeight
+                    // of the weight its samples brought), the rejected samples are blended back in, fully when
+                    // nothing was kept. The share, not the absolute weight: a border band that only a few
+                    // frames reach in-bounds (drift) holds a small weight however few samples were rejected
+                    // there, and an absolute threshold blended a rejected trail back into it.
+                    const double all = static_cast<double>(weight_[i]) + weightRej_[i];
+                    if (!(all > 0)) {
+                        // Reached, and every sample clipped: the clip on the reference's scale (Accumulate.h, "Clipping").
+                        if (reached_[o]) out.data[i] = kClipOutput;
+                        continue;
+                    }
+                    const double lam = std::max(0.0, 1 - weight_[i] / all / kMinKeptWeight);
+                    const double wt = weight_[i] + lam * weightRej_[i];
+                    if (!(wt > 0)) continue;
+                    out.data[i] = static_cast<float>((sum_[i] + lam * sumRej_[i]) / wt);
+                }
             }
     }
     return out;
@@ -941,7 +1012,7 @@ ser::FloatImage Accumulator::Finish() const {
 size_t Accumulator::BytesHeld() const {
     size_t b = sizeof(*this);
     b += (sum_.capacity() + weight_.capacity()) * sizeof(float);
-    b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float);
+    b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float) + reached_.capacity();
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();
     b += gridMask_.capacity() * sizeof(float);  // the layout's mask is shared (RegionLayout::mask), not held here
