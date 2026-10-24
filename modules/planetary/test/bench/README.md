@@ -296,7 +296,7 @@ box would give, and the lowest charges on the real disc boxes are about 10 % hig
 next bin: the safe direction (ours is over-charged, never under-charged). No disc verdict sits near
 that: all four disc captures are review for other reasons.
 
-**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6):
+**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative):
 * 48 synthetic RGGB captures, 24 per target kind (a banded disc; a lunar field with a limb);
 * 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter, each without and with a 3 DN
   black pedestal (review N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative
@@ -340,7 +340,7 @@ lunar runs, an artefact of the generator's wrapped edge, `e3-report.md`).
 * `calibration.json` is committed on its own, before the real-data run that uses it, which git
   history shows (fix round 3: 3ff1167f, re-frozen in ee79ddfd after the photon-transfer fit changed;
   fix round 4: 862a0cd9, before the round-4 real run; the final fix round: b35e770c; bench6: 84523c91,
-  committed 22:00:16, the real run's first file 22:00:28).
+  committed 22:00:16, the real run's first file 22:00:28; after the Align.h comment: 342bdd69, committed 00:32:24, before its real run).
 * Not claimed: that the procedure predates real data. Earlier rounds read real split-half ratios, and
   several procedure changes were made after reading real results:
   * the global refinement above, after Mars's real x10.3 (review N2-m7);
