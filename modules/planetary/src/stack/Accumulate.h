@@ -166,10 +166,11 @@ namespace planetary::stack {
 // from samples with another channel saturated, the saturated value and weight, the rejected value) and per pixel
 // two (the kept and the rejected weight) and a flag byte; the reference and residual scale at luma size; the plan
 // (frames x regions x 9 bytes plus ~40 bytes per frame) -- 1080p RGB: 143 MB (69 bytes x 1920 x 1080; 66 MB before
-// R2). Per Add call: the frame itself (moved in and prefiltered in place), the thread's clip flags (a plane of 1 byte
-// per pixel, kept across the thread's Adds, and the frame's clipped sites, 4 bytes each: up to 5 bytes per pixel) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per
-// concurrent Add, independent of the number of frames. (Not the O(regions x region size) of
-// per-region stacks: the blend above needs none.)
+// R2). Per Add call: the frame itself (moved in, or the caller's buffer with AddInPlace; prefiltered in place), the
+// thread's clip flags (a plane of 1 byte per pixel, kept across the thread's Adds, and the frame's clipped sites, 4 bytes
+// each: up to 5 bytes per pixel) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per concurrent
+// Add, independent of the number of frames. (Not the O(regions x region size) of per-region stacks: the blend above
+// needs none.)
 //
 // Cost: what a whole capture's stacking pass takes is in stack-probe's phase times ("Stacking"). It is
 // kept down by the prefilter in two streaming passes, no libm floor in the sampling, the 3 channels'
