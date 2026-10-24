@@ -346,7 +346,8 @@ public:
     // engine M3), while a caller that keeps using it passes a copy; reference: BuildReference's luma image;
     // residualSigma: ResidualScale::Sigma (both the plan's luma size); info: the capture -- full-resolution
     // size header.width x header.height, channels 3 for Bayer and RGB, 1 for mono; luma scale LumaScale(info).
-    // Throws std::invalid_argument on any size mismatch or a plan without frames.
+    // Throws std::invalid_argument on any size mismatch, a plan without frames, or a frame of more than 2^32 pixels (the
+    // clipped sites' 4-byte indices).
     Accumulator(RegionPlan plan, const ser::FloatImage& reference, const ser::FloatImage& residualSigma,
                 const ser::FileInfo& info);
     const RegionPlan& Plan() const { return plan_; }

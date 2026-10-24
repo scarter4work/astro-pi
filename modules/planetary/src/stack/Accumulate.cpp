@@ -53,7 +53,8 @@ constexpr uint8_t kSaturated = 0x70;
 // way out, normal or not: the cost follows the clipped sites, not the frame (review I3).
 struct ClipScratch {
     std::vector<uint8_t> clip;
-    // The clipped sites' pixel indices, 4 bytes each (the readers' frames hold at most 65536 x 65536 pixels).
+    // The clipped sites' pixel indices, 4 bytes each: the Accumulator refuses frames of more than 2^32 pixels (the
+    // readers' frames hold at most 65536 x 65536).
     std::vector<uint32_t> sites;
     int width = 0, height = 0, reach = 0;  // reach: the flags' radius around a site (1 in a mosaic, 0 else)
     // Sets `bits` in the flag box of the site at (x, y) (its reach, inside the frame) and records the site. Returns the
@@ -658,6 +659,12 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     if (plan_.frames.empty()) throw std::invalid_argument("Accumulator: the plan has no frames");
     width_ = info.header.width;
     height_ = info.header.height;
+    // The clipped sites are kept as 4-byte pixel indices (ClipScratch): refused here, before anything frame-sized is
+    // allocated, rather than truncated in Add (re-review 3, M3). The readers cap each side at 65536, 2^32 pixels at most.
+    if (width_ > 0 && height_ > 0 &&
+        static_cast<uint64_t>(width_) * static_cast<uint64_t>(height_) > (uint64_t{1} << 32))
+        throw std::invalid_argument("Accumulator: a " + std::to_string(width_) + "x" + std::to_string(height_) +
+                                    " frame holds more than 2^32 pixels, more than the clipped-site indices address");
     const bool bayer = ser::IsBayer(info.colorId);
     const bool rgb = info.colorId == ser::ColorId::RGB || info.colorId == ser::ColorId::BGR;
     channels_ = bayer || rgb ? 3 : 1;
