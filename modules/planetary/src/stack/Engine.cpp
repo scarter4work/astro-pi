@@ -720,7 +720,7 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     p.measureStoreBytes = frames * (regions * sizeof(RegionMeasure) + 2 * sizeof(FrameRegions) + sizeof(Shift) + 2);
     p.planBytes = frames * (regions * (2 * sizeof(float) + 1) + sizeof(int64_t) + sizeof(Shift) + sizeof(float) + 1) +
                   regions * (sizeof(RegionDetail) + sizeof(Region) + sizeof(int));
-    p.planScratchBytes = regions > 0 ? 6 * sizeof(double) * frames : 0;
+    p.planScratchBytes = regions > 0 ? PlanRegionsWorkerBytes(frames) : 0;
 
     auto fit = [&](size_t avail, size_t each) {
         if (each == 0) return threads;
@@ -738,7 +738,11 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     p.stackWorkers = fit(rest(kMemoryBudget, statsBytes + p.fixedBytes + p.planBytes), p.stackWorkerBytes);
     const size_t measurePeak = statsBytes + p.measureWorkers * p.measureWorkerBytes;
     const size_t alignPeak = alignFixed + p.observers * p.observerBytes + p.alignWorkers * p.alignWorkerBytes;
-    const size_t planPeak = alignFixed + p.observers * p.observerBytes + p.planBytes + p.alignWorkers * p.planScratchBytes;
+    // PlanRegions' workers: the alignment pass's, fewer when their scratch would not fit beside the measurements,
+    // the observers and the plan.
+    const size_t planFixed = alignFixed + p.observers * p.observerBytes + p.planBytes + (regions > 0 ? PlanRegionsOrderBytes(frames) : 0);
+    p.planWorkers = std::min(p.alignWorkers, fit(rest(kMemoryBudget, planFixed), p.planScratchBytes));
+    const size_t planPeak = planFixed + p.planWorkers * p.planScratchBytes;
     const size_t stackPeak = statsBytes + p.fixedBytes + p.planBytes + p.stackWorkers * p.stackWorkerBytes;
     // The focus measure holds its frames after the residual scale's observers are gone (RunStack).
     p.focusBytes = static_cast<size_t>(kFocusFrames) * 4 * lumaPx;
@@ -958,7 +962,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     }
 
     t0 = Clock::now();
-    RegionPlan plan = PlanRegions(layout, kept, mem.alignWorkers, aligning.Mapped(refUnits + nAlign, planUnits));
+    RegionPlan plan = PlanRegions(layout, kept, mem.planWorkers, aligning.Mapped(refUnits + nAlign, planUnits));
     aligning.Report(refUnits + nAlign + planUnits);
     aligning.ThrowIfCancelled();
     const int64_t nKept = static_cast<int64_t>(kept.size());

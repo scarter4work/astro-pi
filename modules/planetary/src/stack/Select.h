@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -511,5 +512,15 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
 // still sets the fence's noise floor (step 5). Empty sigma2: the form above.
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma,
                            const std::vector<double>& sigma2, int64_t need, int64_t floorCount, bool applyFence = true);
+// The heap RankByDetail holds at its peak for `samples` samples, in bytes (PlanMemory plans PlanRegions'
+// workers with it, through PlanRegionsWorkerBytes). The peak is at step 8, every sample left: its own
+// copies of the sigmas (sg, sg2), the positions left (and the result's copy), their quality and sigmas
+// (qLeft, sLeft, s2Left), step 6's likelihood table (kPriorGrid doubles per sample: most of it), the
+// ranked samples (a position and two doubles each) and the result's ranked, mean and mtf -- 616 bytes per
+// sample; step 5's arrays (log quality, relative noise, deviations, the order above the fence and one
+// Quantile copy, beside the sigmas and the positions left) are freed before step 6 and are fewer. Every
+// array is reserved to its final length, so this is what is allocated, not a bound on vector growth.
+// Measured: test_plan_memory (a counting allocator around PlanRegions).
+size_t RankByDetailPeakBytes(size_t samples);
 
 }  // namespace planetary::stack

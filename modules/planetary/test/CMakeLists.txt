@@ -27,6 +27,8 @@ planetary_add_test(test_regions unit/test_regions.cpp planetary_stack)
 planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
 planetary_add_test(test_engine unit/test_engine.cpp planetary_stack)
 planetary_add_test(test_noise unit/test_noise.cpp planetary_stack)
+# Its own executable: it replaces the global operator new / delete with a counting allocator (PlanRegions' heap).
+planetary_add_test(test_plan_memory unit/test_plan_memory.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
 planetary_add_test(test_fits_text unit/test_fits_text.cpp)
 target_include_directories(test_fits_text PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src/module")

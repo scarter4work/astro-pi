@@ -119,8 +119,11 @@ constexpr int kHotPixelFrames = 64;
 //    flags -- held from the pass, beside its workers and observers, to PlanRegions; planBytes, the plan --
 //    two floats and a flag per frame and region (local shift, flags) plus per frame its index, Shift, gain
 //    and stacked flag, and per region its detail and window -- held from PlanRegions to the end of the
-//    stack, once (the Accumulator takes it by move); planScratchBytes, PlanRegions' per-region arrays (six
-//    of 8 bytes per frame) on each of its workers. A 4K mono surface places up to 59 x 33 = 1947 regions
+//    stack, once (the Accumulator takes it by move); planScratchBytes, PlanRegions' heap on each of its workers
+//    (PlanRegionsWorkerBytes: 664 bytes per frame, 512 of them RankByDetail's likelihood table, kPriorGrid
+//    doubles per frame; test_plan_memory measures it, with the frames' order PlanRegions holds once, 8 bytes per
+//    frame: PlanRegionsOrderBytes), PlanRegions' workers (planWorkers) capped to fit it beside
+//    the measurements, the observers and the plan. A 4K mono surface places up to 59 x 33 = 1947 regions
 //    (kMaxRegionSize, half overlap): at 10 000 frames 545 MB of measurements and 175 MB of plan (unit test
 //    "PlanMemory counts what grows with frames x regions"), so the alignment pass's workers are capped to
 //    fit beside them. The per-frame statistics (sizeof(FrameStats) per frame) are counted with them.
@@ -131,6 +134,7 @@ constexpr size_t kWorkerScratchBytes = 8u << 20;
 
 struct MemoryPlan {
     int measureWorkers = 1, alignWorkers = 1, stackWorkers = 1;
+    int planWorkers = 1;               // PlanRegions' workers: alignWorkers, or fewer to fit planScratchBytes each
     int observers = 1;                 // ResidualScale instances
     size_t observerBytes = 0;          // one instance
     size_t measureWorkerBytes = 0, alignWorkerBytes = 0, stackWorkerBytes = 0;  // one worker of each pass

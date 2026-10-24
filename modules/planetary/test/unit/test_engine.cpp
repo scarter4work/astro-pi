@@ -979,7 +979,10 @@ TEST_CASE("PlanMemory counts what grows with frames x regions: the measurements,
           10000 * (regions * sizeof(stack::RegionMeasure) + 2 * sizeof(stack::FrameRegions) + sizeof(stack::Shift) + 2));
     CHECK(p.measureStoreBytes >= 545000000);  // 10 000 x 1947 x 28 = 545 MB
     CHECK(p.planBytes >= 10000 * regions * 9);  // 175 MB
-    CHECK(p.planScratchBytes == 6 * 8 * 10000);
+    CHECK(p.planScratchBytes == stack::PlanRegionsWorkerBytes(10000));  // 664 per frame (test_plan_memory measures it)
+    CHECK(p.planScratchBytes == 664 * 10000);
+    CHECK(p.planWorkers >= 1);
+    CHECK(p.planWorkers <= p.alignWorkers);
     // The real storage of one frame's measurements: its FrameRegions and the region array it owns.
     std::vector<stack::FrameRegions> real(2);
     for (auto& f : real) f.regions.resize(regions);
