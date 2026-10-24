@@ -444,7 +444,9 @@ TEST_CASE("A featureless region stacks every frame; textured ones keep their luc
     const Scene s = testing::MakeSurface(21, w, h);
     auto patch = [&](FloatImage& im, double noise, unsigned seed) {
         std::mt19937 rng(seed);
-        std::normal_distribution<double> n(0, noise);
+        // Drawn from only with noise > 0; a standard deviation of 0 breaks the distribution's precondition
+        // (libstdc++ with _GLIBCXX_ASSERTIONS aborts on it).
+        std::normal_distribution<double> n(0, noise > 0 ? noise : 1.0);
         for (int y = py0; y < py1; ++y)
             for (int x = px0; x < px1; ++x) {
                 const double dx = x - 96.3, dy = y - 95.7;
