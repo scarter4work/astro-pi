@@ -1004,6 +1004,19 @@ TEST_CASE("Clipped samples are present: an unclipped outlier among them and an o
     }
 }
 
+TEST_CASE("Frames identical to the reference reject nothing next to a clip (review I1)", "[accumulate]") {
+    const int w = 64, h = 40, n = 10;
+    auto scene = [](int x, int y) { return x >= 20 && x < 44 && y >= 12 && y < 28 ? 1.0 : 0.7; };
+    for (bool mosaic : {false, true}) {
+        INFO((mosaic ? "Bayer" : "mono"));
+        const std::vector<FloatImage> frames(n, SceneFrame(scene, w, h, mosaic));
+        int64_t rejected = -1;
+        StackShifted(frames, std::vector<Shift>(n), std::vector<double>(n, 1.0), SceneLuma(scene, w, h, mosaic), 0.03f,
+                     mosaic ? ser::ColorId::BayerRGGB : ser::ColorId::Mono, &rejected);
+        CHECK(rejected == 0);  // 3123eea8: 0
+    }
+}
+
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
     ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
