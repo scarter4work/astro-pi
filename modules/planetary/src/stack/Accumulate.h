@@ -122,6 +122,27 @@ namespace planetary::stack {
 //    reads their bound, 1 / gain (unit test: 0.8 at gain 1.25). And Finish's stand-in for a pixel whose weight
 //    rejection mostly took (kMinKeptWeight) blends its rejected samples back at their own values, saturated or not:
 //    a saturated one from a bright frame comes back at its bound (re-review N-M3; rare by construction, not seen).
+//    One unsaturated sample turns a channel whose other samples are all bounds from kClipOutput to max(the bounds'
+//    mean, its own) (re-review 3, M2): presence is all or nothing at kCleanPresence, and a gain <= 1 frame's saturated
+//    samples, which on the reference's clipped scale read what a measurement could, lift nothing. With a bright group
+//    the bounds' mean is under 1 (1 / gain), so a cold site or an unrejected dark speck dims a saturated core. Measured
+//    at 4d9db14b, stack-probe on the 2023-03-05 Moon (1705 frames as an 8-bit RGGB SER) with frames 0-255 x 1.25 and
+//    clipped, against the unmodified capture stacked at 3a3092b3 (the truth): blue samples at kClippedLuma or above
+//    3703 against the truth's 6245; blue 3 px or more inside the truth's area at 0.98, -0.0028 on average; a dead
+//    blue site (below) dims the stack by up to 0.058 (123 samples by more than 0.02). Two censored estimates at Finish
+//    were tried there and left out (Ruling R6), as each lifts the clipped area further above the truth than this rule
+//    leaves it below:
+//     - every bound of a frame no brighter than the reference at full scale, the others at their mean, each bound
+//       under the estimate counting at it: 10260 samples at kClippedLuma or above; the dead site 0.061 (162);
+//     - Tobit, the bounds censored at their mean with the unsaturated samples' spread as sigma, floored at 1e-6, 0.01
+//       or 0.03: 149710, 319238, 369718 samples (rising with sigma, so a larger floor, the noise model's, gives no
+//       fewer), and 226566-226568 on the unmodified capture itself, where this rule gives 6245; the dead site
+//       0.047-0.048 (39-43).
+//    Cold (dead) sensor sites are neither repaired nor rejected (re-review 3, M6): HotPixelMap finds sites above their
+//    neighbours only, and every cell a cold site in a saturated area touches holds a bound, judged downward on its upper
+//    bound alone (above), so it passes. Measured at 4d9db14b, the same SER with blue site (1469, 215) at 5 DN in every
+//    frame: the drift smears it over 70 x 40 px (x 1405-1474, y 183-222, dimmed by more than 0.005), up to 0.043 dimmer
+//    (42 samples by more than 0.02); with the bright group above, 0.058 (123).
 //
 // Rejection, per luma cell (the s x s full-resolution pixels of one measurement-luma pixel): the
 // cell's mean luma (Bayer (R + 2G + B) / 4, RGB (R + G + B) / 3, mono the value) of the warped,
