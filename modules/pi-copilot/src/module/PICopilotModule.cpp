@@ -89,7 +89,7 @@ void PICopilotModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 10;
-   day   = 13;
+   day   = 24;
 }
 
 void PICopilotModule::OnLoad()

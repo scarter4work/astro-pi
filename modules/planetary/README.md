@@ -9,7 +9,7 @@ image, debayered (bilinear) or as the raw CFA mosaic. For an AVI you pick the Ba
 sidecar decide); for an AVI with no sidecar, Save pattern... remembers the pattern you chose in a sidecar it writes next
 to the video, and Save as SER... writes the AVI out as a SER file.
 
-**PlanetaryStack** (on branch `feat/planetary-stack`, unreleased) stacks such a video into one image (lucky imaging), with
+**PlanetaryStack** stacks such a video into one image (lucky imaging), with
 nothing to set: it measures every frame, chooses the sharpest frames from the capture's own statistics, aligns them
 globally and region by region, and stacks them with outlier rejection; Stack! shows a progress bar and Cancel, the stack
 is previewed with zoom, and Execute opens it as a linear 32-bit image with FITS keywords. A capture with nothing usable

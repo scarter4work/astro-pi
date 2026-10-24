@@ -14,7 +14,7 @@ Then Resources → Updates → Check for Updates. Installs:
 
 - **NukeX** — integration + stretching module (`modules/nukex/`)
 - **PI Copilot** — AI assistant panel, bring your own Anthropic API key (`modules/pi-copilot/`)
-- **Planetary** — SER and AVI video viewer with Save as SER (process SERViewer), and PlanetaryStack, automatic lucky-imaging stacking of those videos (on branch `feat/planetary-stack`, unreleased) (`modules/planetary/`)
+- **Planetary** — SER and AVI video viewer with Save as SER (process SERViewer), and PlanetaryStack, automatic lucky-imaging stacking of those videos (`modules/planetary/`)
 - **Gaia Depth Grade** — PJSR scripts + their linux-x64 sidecar (`gaia-depth-grade/`)
 - **EZ Stretch / EZ Donut Repair / EZ Haze Kill** — PJSR scripts (`scripts/ez-stretch/`)
 

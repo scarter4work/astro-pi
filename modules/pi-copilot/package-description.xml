@@ -1,5 +1,5 @@
 <p>
-   <b>PI Copilot 0.2.2.0</b>
+   <b>PI Copilot 0.2.2.1</b>
 </p>
 <p>A chat panel for PixInsight: you talk to Claude, an AI model made by Anthropic, with your own Anthropic API key. It can see the active image (a small preview, its statistics and keywords) and, depending on the mode (Copilot, Guided, or the read-only Advisor), run PixInsight processes on your images, start installed and signed PixInsight scripts that you confirm, and record how each image was processed. It never runs a script written by the model; it can only start installed, signed scripts you confirm.</p>
 <p>Network: HTTPS to api.anthropic.com only, and nothing is sent until you agree in its consent dialog. External programs: secret-tool, run through /bin/sh and /usr/bin/env, keeps the API key in the system keyring; PixInsight&apos;s GraXpert process, when the model runs it, starts the GraXpert program you chose in GraXpert&apos;s own settings. Files outside the PixInsight installation: the journey library in ~/.local/share/PICopilot/journeys/, short-lived files in the system temporary directory, and an export folder only if you choose one. Documentation, including every network connection, external program and file location: doc/tools/PICopilot/PICopilot.html.</p>
