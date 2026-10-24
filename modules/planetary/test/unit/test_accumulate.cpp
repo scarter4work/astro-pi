@@ -780,6 +780,76 @@ TEST_CASE("The stack stays inside the frames' range: no overshoot at a clipped e
     CHECK(lo >= 0.0);
 }
 
+TEST_CASE("A clipped sample is no measurement: a saturated plateau stays at the reference's clipped level whatever the "
+          "frames' gains (Ruling R2)",
+          "[accumulate]") {
+    // The 2023-02-12 Moon: frames 0-260 are 1.257x brighter than the rest (FrameRegions::gain) and saturated over the
+    // south limb; divided by their gain, their clipped samples read 0.796 and dimmed the limb wherever a region kept
+    // them. Two frame groups here, no regions, both saturated on a plateau: one at the reference's brightness, one
+    // 1.25x brighter. Off the plateau both see the same scene (the brighter group's samples 1.25x the reference's).
+    const int w = 64, h = 40, n = 6;
+    auto plateau = [&](int x, int y) { return x >= 20 && x < 44 && y >= 12 && y < 28; };
+    auto scene = [&](int x, int y) { return 0.3 + 0.004 * x; };  // up to 0.55, unclipped in both groups
+    for (ser::ColorId color : {ser::ColorId::Mono, ser::ColorId::RGB, ser::ColorId::BayerRGGB}) {
+        const bool mosaic = color == ser::ColorId::BayerRGGB;
+        const int c = color == ser::ColorId::Mono ? 1 : 3;
+        INFO((color == ser::ColorId::Mono ? "mono" : mosaic ? "Bayer" : "RGB"));
+        const ser::FileInfo info = testing::NewCapture(w, h, color).info;
+        // RGB: only blue saturates on the plateau (red and green read the scene); mono and Bayer: every sample.
+        auto frame = [&](double gain) {
+            ser::Frame raw;
+            raw.width = w;
+            raw.height = h;
+            raw.channels = mosaic ? 1 : c;
+            raw.samples.resize(static_cast<size_t>(w) * h * raw.channels);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x)
+                    for (int k = 0; k < raw.channels; ++k) {
+                        const bool clip = plateau(x, y) && (c == 1 || mosaic || k == 2);
+                        const double v = clip ? 1.0 : std::min(1.0, gain * scene(x, y));
+                        raw.samples[(static_cast<size_t>(y) * w + x) * raw.channels + k] =
+                            static_cast<uint16_t>(std::lround(v * 65535));
+                    }
+            return stack::DemosaicHQ(raw, color, 16);
+        };
+        stack::RegionLayout none;
+        none.width = w / (mosaic ? 2 : 1);
+        none.height = h / (mosaic ? 2 : 1);
+        std::vector<FrameRegions> ms;
+        for (int k = 0; k < n; ++k) {
+            FrameRegions m;
+            m.frameIndex = k;
+            m.gain = k < n / 2 ? 1.0 : 1.25;
+            ms.push_back(m);
+        }
+        const stack::RegionPlan plan = stack::PlanRegions(none, ms);
+        FloatImage ref{none.width, none.height, 1, std::vector<float>(static_cast<size_t>(none.width) * none.height, 0.5f)};
+        const FloatImage noRejection{none.width, none.height, 1, std::vector<float>(ref.data.size(), 1.f)};
+        stack::Accumulator acc(plan, ref, noRejection, info);
+        for (int k = 0; k < n; ++k) acc.Add(k, frame(ms[static_cast<size_t>(k)].gain));
+        const FloatImage out = acc.Finish();
+        // Inside the plateau, 2 px clear of its edge (the demosaic's and the interpolation's reach).
+        double lo = 1, hi = 0, worstScene = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int k = 0; k < c; ++k) {
+                    const float v = out.data[(static_cast<size_t>(y) * w + x) * c + k];
+                    const bool clipped = c == 1 || mosaic || k == 2;
+                    if (clipped && x >= 22 && x < 42 && y >= 14 && y < 26) {
+                        lo = std::min(lo, static_cast<double>(v));
+                        hi = std::max(hi, static_cast<double>(v));
+                    }
+                    const bool far = x < 16 || x >= 48 || y < 8 || y >= 32;
+                    if ((far || !clipped) && x >= 3 && x < w - 3 && y >= 3 && y < h - 3)
+                        worstScene = std::max(worstScene, std::fabs(v - scene(x, y)));
+                }
+        INFO("plateau " << lo << " - " << hi << "; largest error off it (or in an unclipped channel) " << worstScene);
+        CHECK(lo >= 0.999);  // the reference's clipped level, not dimmed by the brighter group
+        CHECK(hi <= 1.0);
+        CHECK(worstScene < 1e-3);  // unclipped samples are still gain-corrected and stacked
+    }
+}
+
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
     ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
