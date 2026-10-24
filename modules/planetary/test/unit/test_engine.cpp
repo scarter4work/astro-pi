@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <random>
 #include <set>
@@ -746,7 +747,7 @@ TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, 
 TEST_CASE("RunStack: a small selection whose intact frames align is stacked, not refused as Unaligned (final review I1)",
           "[engine]") {
     // A poor night in miniature: 10 frames of one lunar field, 5 sharp and 5 blurred, so Select keeps as few as
-    // need (5). Two of the sharp frames are torn through the middle by 8 px: they fall under AlignmentCut. The 3
+    // need (5). Two of the sharp frames are torn through the middle by 8 px: they fail alignment. The 3
     // intact frames align at ~1.00 -- the frames show one scene, so the 3 that align are stacked (Ruling P15: a
     // false refusal leaves the user nothing). 3 < need = 5 refused it as "Unaligned".
     const int w = 160, h = 128;
@@ -784,6 +785,69 @@ TEST_CASE("RunStack: a small selection whose intact frames align is stacked, not
     // Engine M1: the selection line counts the frames SELECTED (5); the frames stacked (3) are summary.used.
     CHECK(o.summary.selection.rfind("selected 5 of 10 frames: ", 0) == 0);
     CHECK(o.summary.selection.find("used") == std::string::npos);
+}
+
+namespace {
+// A lunar capture of n frames, the first nSharp sharp (0.7 px) and the rest blurred (4 px), so Select keeps the sharp
+// ones; frame k in `tears` is torn: its rows from tears[k].first down are displaced by tears[k].second px. The tears
+// differ in row and size, as a shake during readout does, so no two torn frames agree with each other.
+Capture TornCapture(int n, int nSharp, const std::map<int, std::pair<int, double>>& tears, unsigned seed) {
+    const int w = 160, h = 128;
+    const Scene s = testing::MakeSurface(seed, w, h);
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(seed + 1);
+    std::normal_distribution<double> nd(0, 1);
+    testing::RenderCapture(cap, s, n, [&](int k) {
+        FrameSpec f;
+        f.gx = 1.0 * nd(rng);
+        f.gy = 1.0 * nd(rng);
+        f.hasLocal = true;
+        f.dx = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
+        f.dy = testing::RandomField(rng, w, h, 40, [] { return 0.0; });
+        const double blur = k < nSharp ? 0.7 : 4.0;
+        f.sigma = testing::RandomField(rng, w, h, 40, [blur] { return blur; });
+        const auto t = tears.find(k);
+        if (t != tears.end()) {
+            f.tearRow = t->second.first;
+            f.tearDx = t->second.second;
+        }
+        return f;
+    });
+    return cap;
+}
+}  // namespace
+
+TEST_CASE("RunStack: torn frames are excluded even when they are most of the selection (bench6 step 1)", "[engine]") {
+    // AlignmentCut is relative to the selection's median match. When most selected frames are torn, the reference
+    // averages their displaced parts and the median falls with them (measured at 9cf7f5b6: 3 of 5 torn -> median 0.87,
+    // cut 0.74; 7 of 12 -> median 0.84), so every torn frame passed and was stacked. A torn frame has to be refused on
+    // its own evidence, not by comparison with the rest.
+    SECTION("most of a small selection torn: the rest are too few, the capture is Unaligned (I1's rule)") {
+        const std::map<int, std::pair<int, double>> tears{{1, {64, 8.0}}, {2, {52, -7.0}}, {3, {76, 9.0}}};
+        const StackOutcome o = stack::RunStack(TornCapture(10, 5, tears, 5151).Factory(), 8, {});
+        INFO(o.diagnosis.message << " | " << o.summary.selection << " | " << o.summary.alignment);
+        for (int64_t f : o.frames.stacked) CHECK(tears.count(static_cast<int>(f)) == 0);
+        CHECK(o.diagnosis.kind == DiagnosisKind::Unaligned);
+        CHECK(o.diagnosis.message.find("only 2 of 5 selected frames") != std::string::npos);
+        CHECK(o.diagnosis.message.find(" torn: part of the frame displaced by more than 3 px)") != std::string::npos);
+        CHECK_FALSE(o.image.has_value());
+    }
+    SECTION("most of a larger selection torn: the intact frames that remain are stacked, the torn ones are not") {
+        // 13 sharp frames, 7 of them torn; the 6 intact are over need (5), so they are stacked (I1: Unaligned only
+        // when most of the selection fails AND fewer than need align).
+        const std::map<int, std::pair<int, double>> tears{{0, {64, 8.0}},  {1, {50, -8.0}}, {3, {70, 7.0}},
+                                                          {4, {58, -9.0}}, {6, {44, 8.0}},  {8, {80, -7.0}},
+                                                          {11, {66, 10.0}}};
+        const StackOutcome o = stack::RunStack(TornCapture(26, 13, tears, 6161).Factory(), 8, {});
+        INFO(o.diagnosis.message << " | " << o.summary.selection << " | " << o.summary.alignment);
+        REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+        REQUIRE(o.image.has_value());
+        CHECK(o.summary.selection.rfind("selected 13 of 26 frames: ", 0) == 0);
+        CHECK(o.frames.stacked == std::vector<int64_t>{2, 5, 7, 9, 10, 12});
+        CHECK(o.frames.alignmentExcluded == std::vector<int64_t>{0, 1, 3, 4, 6, 8, 11});
+        CHECK(o.summary.used == 6);
+        CheckFinalLines(o);
+    }
 }
 
 TEST_CASE("UnalignedBelow: half of a small selection, need for a large one; never reached with every clean frame over the floor",
@@ -915,7 +979,10 @@ TEST_CASE("PlanMemory counts what grows with frames x regions: the measurements,
           10000 * (regions * sizeof(stack::RegionMeasure) + 2 * sizeof(stack::FrameRegions) + sizeof(stack::Shift) + 2));
     CHECK(p.measureStoreBytes >= 545000000);  // 10 000 x 1947 x 28 = 545 MB
     CHECK(p.planBytes >= 10000 * regions * 9);  // 175 MB
-    CHECK(p.planScratchBytes == 6 * 8 * 10000);
+    CHECK(p.planScratchBytes == stack::PlanRegionsWorkerBytes(10000));  // 664 per frame (test_plan_memory measures it)
+    CHECK(p.planScratchBytes == 664 * 10000);
+    CHECK(p.planWorkers >= 1);
+    CHECK(p.planWorkers <= p.alignWorkers);
     // The real storage of one frame's measurements: its FrameRegions and the region array it owns.
     std::vector<stack::FrameRegions> real(2);
     for (auto& f : real) f.regions.resize(regions);

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -245,9 +246,10 @@ constexpr double kShrinkSnrNone = 15;
 //    (by count or shape it cannot be told from glitches; measured in review: 50 frames 8 sd above
 //    3000, no noise, 44 of them suspect) -- and being suspect costs it nothing when it aligns:
 //    AdmitSuspects puts every suspect whose global alignment confidence passes the clean frames'
-//    AlignmentCut back into the stack. A torn or foreign frame fails that cut (Align.h: real torn
-//    frames 0.51-0.81 of the median confidence against a cut of 0.85; another scene 0.05-0.27,
-//    under the 0.5 floor); a glitch that aligns well (a sharp frame with a
+//    AlignmentCut and is in one piece (PassesAlignment) back into the stack. A torn or foreign frame
+//    fails (Align.h: real torn frames 0.51-0.81 of the median confidence against a cut of 0.85, and
+//    their halves 3.46-4.35 px apart against kMaxTear's 3; another scene 0.05-0.27, under the 0.5
+//    floor); a glitch that aligns well (a sharp frame with a
 //    satellite crossing it) gets in, where per-region ranking and the stack's outlier rejection
 //    still apply. Suspects do not enter steps 6-8: q_ref and the kept count are the clean frames'.
 //    A glitch under the fence (within kFenceSigmas of the median) is not suspect by this rule and
@@ -440,7 +442,8 @@ struct Admission {
 // Decides the suspects once they are aligned: suspectShifts[i] is GlobalAligner::Align's result for
 // selection.suspects[i] against the reference built from the clean frames (BuildReference never
 // sees a suspect), and alignCut is AlignmentCut over the clean frames' shifts. A suspect is admitted
-// when its confidence >= alignCut (a NaN confidence is rejected). An admitted suspect joins the
+// when it passes alignment (PassesAlignment: confidence >= alignCut and not torn, Shift::tear <=
+// kMaxTear; a NaN is rejected). An admitted suspect joins the
 // stack like any kept frame -- it is sharper than every one of them -- without re-running steps 6-8:
 // q_ref and the kept count stay the clean frames' (with the admitted frames on top, S(k)'s optimum
 // could sit at a slightly smaller k; per-region ranking, Task 5, makes the finer choice anyway).
@@ -509,5 +512,15 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
 // still sets the fence's noise floor (step 5). Empty sigma2: the form above.
 DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector<double>& sigma,
                            const std::vector<double>& sigma2, int64_t need, int64_t floorCount, bool applyFence = true);
+// The heap RankByDetail holds at its peak for `samples` samples, in bytes (PlanMemory plans PlanRegions'
+// workers with it, through PlanRegionsWorkerBytes). The peak is at step 8, every sample left: its own
+// copies of the sigmas (sg, sg2), the positions left (and the result's copy), their quality and sigmas
+// (qLeft, sLeft, s2Left), step 6's likelihood table (kPriorGrid doubles per sample: most of it), the
+// ranked samples (a position and two doubles each) and the result's ranked, mean and mtf -- 616 bytes per
+// sample; step 5's arrays (log quality, relative noise, deviations, the order above the fence and one
+// Quantile copy, beside the sigmas and the positions left) are freed before step 6 and are fewer. Every
+// array is reserved to its final length, so this is what is allocated, not a bound on vector growth.
+// Measured: test_plan_memory (a counting allocator around PlanRegions).
+size_t RankByDetailPeakBytes(size_t samples);
 
 }  // namespace planetary::stack

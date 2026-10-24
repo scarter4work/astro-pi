@@ -51,7 +51,7 @@ bool HasDetail(const FrameStats& s) { return std::isfinite(s.quality) && s.quali
 double Sigma(const FrameStats& s) { return std::isfinite(s.qualitySigma) && s.qualitySigma > 0 ? s.qualitySigma : 0.0; }
 
 // "selected 612 of 4088 frames: <why>; not selected: <groups>[<suspects' outcome>][<note>]". "Selected", not
-// "used": the frames stacked are fewer whenever AlignmentCut excludes a clean frame or no region keeps one
+// "used": the frames stacked are fewer whenever alignment excludes a clean frame (PassesAlignment) or no region keeps one
 // (StackSummary::used, shown beside this line; final review, engine M1).
 std::string ComposeLine(int64_t used, const Selection::Line& parts, const std::vector<std::string>& notUsed,
                         const std::string& outcome) {
@@ -173,14 +173,18 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
 
     // 5. Upper fence on log quality.
     std::vector<size_t> left;
+    left.reserve(nd);
     {
         std::vector<double> lq, relNoise;
+        lq.reserve(nd);
+        relNoise.reserve(nd);
         for (size_t i = 0; i < nd; ++i) {
             lq.push_back(std::log(quality[i]));
             relNoise.push_back(sg[i] / quality[i]);
         }
         const double med = Quantile(lq, 0.5);
         std::vector<double> dev;
+        dev.reserve(nd);
         for (double v : lq) dev.push_back(std::fabs(v - med));
         const double robustSd =
             std::max({1.4826 * Quantile(dev, 0.5), Quantile(relNoise, 0.5), kFenceMinLogSd});
@@ -231,6 +235,9 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
 
     // 6. Deconvolution (Ruling P5): the distribution of the true quality, and each sample's posterior.
     std::vector<double> qLeft, sLeft, s2Left;
+    qLeft.reserve(left.size());
+    sLeft.reserve(left.size());
+    if (!sg2.empty()) s2Left.reserve(left.size());
     for (size_t i : left) {
         qLeft.push_back(quality[i]);
         sLeft.push_back(sg[i]);
@@ -280,6 +287,7 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         return q > 0 ? std::exp(-kDetailDepth * std::max(1.0, std::pow(qRef / q, 4))) : 0.0;
     };
     std::vector<Ranked> ranked;
+    ranked.reserve(left.size());
     for (size_t i = 0; i < left.size(); ++i) {
         const size_t pos = left[i];
         if (prior.k == 0 || sg[pos] <= 0) {
@@ -300,6 +308,9 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
         if (a.mtf != b.mtf) return a.mtf > b.mtf;
         return a.mean != b.mean ? a.mean > b.mean : a.pos < b.pos;
     });
+    out.ranked.reserve(ranked.size());
+    out.mean.reserve(ranked.size());
+    out.mtf.reserve(ranked.size());
     for (const Ranked& r : ranked) {
         out.ranked.push_back(r.pos);
         out.mean.push_back(r.mean);
@@ -319,6 +330,14 @@ DetailRanking RankByDetail(const std::vector<double>& quality, const std::vector
     }
     out.keep = static_cast<size_t>(std::max(keep, std::min(need, nLeft)));
     return out;
+}
+
+size_t RankByDetailPeakBytes(size_t samples) {
+    // Select.h: sg, sg2; left and out.left; qLeft, sLeft, s2Left; the likelihood table; ranked (Ranked: a
+    // position and two doubles); out.ranked, out.mean, out.mtf.
+    const size_t perSample = 2 * sizeof(double) + 2 * sizeof(size_t) + 3 * sizeof(double) + kPriorGrid * sizeof(double) +
+                             sizeof(Ranked) + sizeof(size_t) + 2 * sizeof(double);
+    return samples * perSample;
 }
 
 bool FillsFrame(const FrameStats& s, int lumaWidth, int lumaHeight) {
@@ -665,8 +684,8 @@ Admission AdmitSuspects(const Selection& selection, const std::vector<Shift>& su
         return a;
     }
     for (size_t i = 0; i < selection.suspects.size(); ++i) {
-        // `>=` is false for a NaN confidence: such a frame is rejected.
-        if (suspectShifts[i].confidence >= alignCut) a.admitted.push_back(selection.suspects[i].index);
+        // False for a NaN confidence or tear, and for a torn suspect (Shift::tear > kMaxTear): rejected.
+        if (PassesAlignment(suspectShifts[i], alignCut)) a.admitted.push_back(selection.suspects[i].index);
         else a.rejected.push_back(selection.suspects[i].index);
     }
     std::sort(a.admitted.begin(), a.admitted.end());

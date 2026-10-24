@@ -878,7 +878,9 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
     // One region's ranking (Ruling P27's gate, then RankByDetail): writes only its own detail and flags.
     auto rankRegion = [&](size_t r) {
         RegionDetail& d = plan.detail[r];
+        // Every array reserved to its final bound (PlanRegionsWorkerBytes counts them).
         std::vector<double> conf;
+        conf.reserve(nf);
         for (size_t f = 0; f < nf; ++f) {
             const RegionMeasure& q = measured[order[f]].regions[r];
             if (q.aligned && std::isfinite(q.confidence)) conf.push_back(q.confidence);
@@ -888,6 +890,10 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
         d.confidenceCut = kAlignRelative * conf[(conf.size() - 1) / 2];
         std::vector<double> q, sg, sg2;
         std::vector<size_t> pos;
+        q.reserve(nf);
+        sg.reserve(nf);
+        sg2.reserve(nf);
+        pos.reserve(nf);
         for (size_t f = 0; f < nf; ++f) {
             const RegionMeasure& m = measured[order[f]].regions[r];
             if (!(m.aligned && std::isfinite(m.confidence) && m.confidence >= d.confidenceCut)) continue;
@@ -907,6 +913,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
         // frames are the noise's tail -- or alignment collapsed there), or the median candidate's
         // quality under kRegionDetailSigmas of its own qualitySigma.
         std::vector<double> ratio;
+        ratio.reserve(q.size());
         for (size_t i = 0; i < q.size(); ++i)
             ratio.push_back(sg[i] > 0 && std::isfinite(sg[i]) ? q[i] / sg[i] : std::numeric_limits<double>::infinity());
         std::nth_element(ratio.begin(), ratio.begin() + static_cast<std::ptrdiff_t>(ratio.size() / 2), ratio.end());
@@ -923,6 +930,7 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
         // dropping the frame, and a garbage frame does not align.
         const DetailRanking rank = RankByDetail(q, sg, sg2, need, floorCount, false);
         std::vector<double> keptSigma;
+        keptSigma.reserve(rank.keep);
         for (size_t k = 0; k < rank.keep; ++k) {
             const size_t i = rank.ranked[k];
             plan.flags[pos[i] * nr + r] |= RegionPlan::kKept;
@@ -977,5 +985,12 @@ RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegion
     }
     return plan;
 }
+
+size_t PlanRegionsWorkerBytes(size_t frames) {
+    // Regions.h: conf, q, sg, sg2, ratio (doubles) and pos (size_t), each reserved to the frame count.
+    return frames * (5 * sizeof(double) + sizeof(size_t)) + RankByDetailPeakBytes(frames);
+}
+
+size_t PlanRegionsOrderBytes(size_t frames) { return frames * sizeof(size_t); }  // PlanRegions' `order`
 
 }  // namespace planetary::stack

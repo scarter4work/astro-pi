@@ -1,13 +1,17 @@
 // Test-only CLI over the stack engine's global alignment, for the real-data check
 // (test/run-align-real.sh). Never shipped, not a ctest case. Reads the video only.
 //
-//   align-probe <video> [--frames N] [--threads T] [--split]
+//   align-probe <video> [--frames N] [--threads T] [--split] [--anchor] [--list-tear PX]
 //
 // Runs MeasureAll -> SelectFrames -> BuildReference over the first N frames (default: all), then
 // aligns every selected frame to the reference on T threads (default: hardware threads) and prints
 // one table row:
-//   capture | luma WxH | mode window | frames | dx range | dy range | conf min / p1 / median | cut | below
-// plus, for a disc, |centroid offset - shift| (median / p99), and the timings. --split (full-frame
+//   capture | luma WxH | mode window | frames | dx range | dy range | conf min / p1 / median | cut | failing
+// ("failing": frames that fail PassesAlignment -- under the cut or torn), plus, for a disc, |centroid
+// offset - shift| (median / p99), the Shift::tear line (median / p99 / p99.9 / max over the frames over
+// the floor, how many over kMaxTear, and every frame over --list-tear PX, default kMaxTear) and the
+// timings. --anchor adds BuildReference's pass-1 case: the next kReferenceFrames - 1 sharpest selected
+// frames' tear against the sharpest one (a raw frame, not the average). --split (full-frame
 // targets) also aligns each frame's top and bottom halves separately against the reference's and
 // lists the frames whose halves disagree by more than 1 px or that fall below the cut -- a torn frame
 // shows both. Exit 0 on success, 2 when the capture is diagnosed (no frames to align), 1 on error.
@@ -64,18 +68,21 @@ ser::FloatImage Rows(const ser::FloatImage& im, int y0, int y1) {
 
 int main(int argc, char** argv) try {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: align-probe <video> [--frames N] [--threads T] [--split]\n");
+        std::fprintf(stderr, "usage: align-probe <video> [--frames N] [--threads T] [--split] [--anchor] [--list-tear PX]\n");
         return 1;
     }
     const std::string path = argv[1];
     int64_t limit = INT64_MAX;
     int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    bool split = false;
+    bool split = false, anchorCheck = false;
+    double listTear = stack::kMaxTear;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
         else if (a == "--threads" && i + 1 < argc) threads = std::max(1, std::atoi(argv[++i]));
         else if (a == "--split") split = true;
+        else if (a == "--anchor") anchorCheck = true;
+        else if (a == "--list-tear" && i + 1 < argc) listTear = std::atof(argv[++i]);
         else throw std::invalid_argument("unknown argument " + a);
     }
     using Clock = std::chrono::steady_clock;
@@ -131,7 +138,7 @@ int main(int argc, char** argv) try {
     }
     const double cut = stack::AlignmentCut(shifts);
     int below = 0;
-    for (double c : conf) below += c < cut ? 1 : 0;
+    for (const stack::Shift& s : shifts) below += stack::PassesAlignment(s, cut) ? 0 : 1;  // under the cut or torn
     double cpuSum = 0;
     for (double c : cpu) cpuSum += c;
     std::printf("%s | %dx%d %s | %s %dx%d | %zu of %lld | dx %.2f..%.2f | dy %.2f..%.2f | %.3f / %.3f / %.3f | %.3f | %d\n",
@@ -147,6 +154,46 @@ int main(int argc, char** argv) try {
             d.push_back(std::hypot(s.cx - rs.cx - shifts[k].dx, s.cy - rs.cy - shifts[k].dy));
         }
         std::printf("    |centroid offset - shift|: median %.3f, p99 %.3f px\n", Quantile(d, 0.5), Quantile(d, 0.99));
+    }
+    {
+        // Shift::tear over the frames over the floor (the only ones it is judged for), and the frames over kMaxTear.
+        std::vector<double> tear;
+        int torn = 0;
+        for (const stack::Shift& s : shifts)
+            if (s.confidence >= stack::kMinAlignConfidence) {
+                tear.push_back(s.tear);
+                torn += s.tear > stack::kMaxTear ? 1 : 0;
+            }
+        if (!tear.empty())
+            std::printf("    tear (luma px): median %.3f, p99 %.3f, p99.9 %.3f, max %.3f; %d of %zu over kMaxTear %.1f\n",
+                        Quantile(tear, 0.5), Quantile(tear, 0.99), Quantile(tear, 0.999), Quantile(tear, 1), torn,
+                        tear.size(), stack::kMaxTear);
+        for (size_t k = 0; k < shifts.size(); ++k)
+            if (shifts[k].tear > listTear)
+                std::printf("    frame %lld: tear %.2f px, confidence %.3f%s\n", static_cast<long long>(sel.frames[k]),
+                            shifts[k].tear, shifts[k].confidence, shifts[k].confidence < cut ? " (below the cut)" : "");
+    }
+    if (anchorCheck) {
+        // BuildReference's pass 1: the kReferenceFrames sharpest selected frames against the sharpest of them, a
+        // raw frame (its own seeing in it), not the average.
+        std::vector<int64_t> ranked = sel.frames;
+        std::sort(ranked.begin(), ranked.end(), [&](int64_t a, int64_t b) {
+            const double qa = stats[static_cast<size_t>(a)].quality, qb = stats[static_cast<size_t>(b)].quality;
+            return qa != qb ? qa > qb : a < b;
+        });
+        ranked.resize(std::min<size_t>(ranked.size(), stack::kReferenceFrames));
+        const auto src = factory();
+        const stack::GlobalAligner anchor(stack::MeasurementLuma(src->ReadFrame(ranked[0]), info), sel.fullFrameTarget,
+                                          stack::LumaScale(info));
+        std::vector<double> tear;
+        for (size_t k = 1; k < ranked.size(); ++k) {
+            const ser::FloatImage luma = stack::MeasurementLuma(src->ReadFrame(ranked[k]), info);
+            const stack::Shift s = anchor.Align(luma, stats[static_cast<size_t>(ranked[k])]);
+            if (s.confidence >= stack::kMinAlignConfidence) tear.push_back(s.tear);
+        }
+        if (!tear.empty())
+            std::printf("    tear against the sharpest frame (%zu of the %zu sharpest): median %.3f, max %.3f px\n",
+                        tear.size(), ranked.size() - 1, Quantile(tear, 0.5), Quantile(tear, 1));
     }
     std::printf("    measure+select %.2f s, reference %.2f s, align %.2f s wall (%d threads, %.1f ms/frame in Align)\n",
                 secs(t0, t1), secs(t1, t2), secs(t2, t3), threads, 1000 * cpuSum / static_cast<double>(shifts.size()));

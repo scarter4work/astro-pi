@@ -577,6 +577,23 @@ def idle(box):
     return bar_fill(box) == 0.0 and stack_enabled(box)
 
 
+def holds_video(samples=4, every=0.1):
+    """PixInsight (PLANETARY_PI_PID, from gui-smoke-stack.sh) holds a .ser / .avi open in any of `samples`
+    looks `every` s apart: a run is reading its video. (The interface itself never keeps one open; the
+    engine opens readers per pass, so the looks span the short gaps between passes.)"""
+    fd_dir = "/proc/%s/fd" % os.environ["PLANETARY_PI_PID"]
+    for i in range(samples):
+        if i:
+            time.sleep(every)
+        for fd in os.listdir(fd_dir):
+            try:
+                if os.readlink(os.path.join(fd_dir, fd)).endswith((".ser", ".avi")):
+                    return True
+            except OSError:
+                pass  # closed between listdir and readlink
+    return False
+
+
 def stack_mid_run(name):
     """Stack!, then `name` shot once the bar shows the run under way; FAIL if the shot shows
     the run (nearly) over."""
@@ -682,34 +699,48 @@ if MODE == "--stack-cancel":
 if MODE == "--stack-shade":
     # PixInsight's title-bar shade button (left of close, measured 21 px: glyphs at 1206 and 1227
     # in 03-progress.png) collapses the window to its title bar. A collapsed window is not a closed
-    # one: the run must go on and its stack be shown once the window is expanded again.
-    stack_mid_run("09b-shade-progress.png")
-    cx, cy = close_button(OUT + "/09b-shade-progress.png")
-    click(cx - 21, cy)
-    park()
-    shot("09c-shaded.png", 1.5)
-    # Collapsed, PixInsight moves the window to a bare title bar (~194 x 26) elsewhere (measured:
-    # mid-screen): found by the title colour; its expand button is 34 px inside its right end,
-    # the close button 13.
-    a = rgb(OUT + "/09c-shaded.png")
-    # The active title colour only: the inactive one is a neutral grey, as is much of the desktop.
-    title = (np.abs(a - np.array(TITLE_COLOURS[0])) <= 6).all(axis=2)
-    title[:80] = False     # the menu and tool bars
-    title[1040:] = False   # the status bar
-    title[:, :40] = False  # the side panels' tabs (blue icons)
-    ys, xs = np.nonzero(title)
-    if len(xs) < 500 or xs.max() - xs.min() > 400:
-        raise SystemExit("FAIL: no collapsed title bar found in 09c-shaded.png")
-    log.write("collapsed title bar at x %d..%d, y %d..%d\n" % (xs.min(), xs.max(), ys.min(), ys.max()))
-    click(int(xs.max()) - 34, (int(ys.min()) + int(ys.max())) // 2)
-    park()
-    shot("09c2-expanded.png", 1.5)
-    # Expanded, it is back where it was (its preview, black while the run goes on, exactly the recorded one).
-    if find_preview(OUT + "/09c2-expanded.png") != BOX:
-        raise SystemExit("FAIL: the window did not expand back in place (09c2-expanded.png: preview %r, recorded %r)"
-                         % (find_preview(OUT + "/09c2-expanded.png"), BOX))
-    wait_for(lambda: idle(BOX), 120, "the run to end after the window was expanded (the progress bar empty, Stack! enabled)")
-    shot("09d-unshaded.png", 1.0)
+    # one: collapsed mid-run, the run must go on and its stack be shown once the window is expanded.
+    # Whether the collapse landed mid-run is read when it lands -- PixInsight holds the video open only
+    # while a run reads it (holds_video) -- not inferred from how long a stack takes (bench6: the 7 s
+    # minimum stack time this step needed failed on a faster machine). The window's return to its place
+    # is read from its frame (the title bar's close button where it was), whatever the preview shows by
+    # then: the run may have ended while the window was collapsed. A run that ended before the collapse
+    # landed (between the mid-run shot and the click) proves nothing: the step is run again, at most 5 times.
+    for attempt in range(1, 6):
+        stack_mid_run("09b-shade-progress.png")
+        cx, cy = close_button(OUT + "/09b-shade-progress.png")
+        click(cx - 21, cy)
+        running = holds_video()
+        park()
+        shot("09c-shaded.png", 1.5)
+        # Collapsed, PixInsight moves the window to a bare title bar (~194 x 26) elsewhere (measured:
+        # mid-screen): found by the title colour; its expand button is 34 px inside its right end,
+        # the close button 13.
+        a = rgb(OUT + "/09c-shaded.png")
+        # The active title colour only: the inactive one is a neutral grey, as is much of the desktop.
+        title = (np.abs(a - np.array(TITLE_COLOURS[0])) <= 6).all(axis=2)
+        title[:80] = False     # the menu and tool bars
+        title[1040:] = False   # the status bar
+        title[:, :40] = False  # the side panels' tabs (blue icons)
+        ys, xs = np.nonzero(title)
+        if len(xs) < 500 or xs.max() - xs.min() > 400:
+            raise SystemExit("FAIL: no collapsed title bar found in 09c-shaded.png")
+        log.write("collapsed title bar at x %d..%d, y %d..%d\n" % (xs.min(), xs.max(), ys.min(), ys.max()))
+        click(int(xs.max()) - 34, (int(ys.min()) + int(ys.max())) // 2)
+        park()
+        shot("09c2-expanded.png", 1.5)
+        back = close_button(OUT + "/09c2-expanded.png")
+        if back != (cx, cy):
+            raise SystemExit("FAIL: the window did not expand back in place (09c2-expanded.png: close button at %r, "
+                             "before collapsing %r)" % (back, (cx, cy)))
+        wait_for(lambda: idle(BOX), 120, "the run to end after the window was expanded (the progress bar empty, Stack! enabled)")
+        shot("09d-unshaded.png", 1.0)
+        log.write("--stack-shade attempt %d: the run %s when the window collapsed\n"
+                  % (attempt, "was reading the video" if running else "had ended"))
+        if running:
+            break
+    else:
+        raise SystemExit("FAIL: in 5 attempts the window never collapsed while the run was reading the video")
     sys.exit(0)
 
 if MODE == "--stack-file":

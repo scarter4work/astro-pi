@@ -155,23 +155,30 @@ planetary_private_tmp()
 
 # The module a test loads is signed in place (its .xsgn deleted, then written
 # again), so it must be a build product, never a shipped module: refuse one
-# whose real path is inside the PixInsight install (the directory above
-# PLANETARY_PI_BIN_DIR: /opt/PixInsight is user-owned on the development
-# machine, so PLANETARY_SO=/opt/PixInsight/bin/Planetary-pxm.so would re-sign
-# the installed release) or inside the repository's repository/ (the published
-# packages). Every script that takes PLANETARY_SO runs this before anything
-# else, and planetary_sign again (final review, module m6).
+# whose real path is inside a PixInsight install -- the one PLANETARY_PI runs,
+# found from the launcher's real path (a symlinked launcher must not redirect
+# the guard: bench6, re-review Minor 1), the directory above the launcher as
+# given, and /opt/PixInsight always (user-owned on the development machine, so
+# PLANETARY_SO=/opt/PixInsight/bin/Planetary-pxm.so would re-sign the installed
+# release) -- or inside the repository's repository/ (the published packages).
+# Every script that takes PLANETARY_SO runs this before anything else, and
+# planetary_sign again (final review, module m6).
 PLANETARY_ASTROPI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 planetary_check_so()
 {
-   local so="$1" real pi repo
+   local so="$1" real dir repo
    real="$(realpath -m -- "$so")"
-   pi="$(realpath -m -- "$(dirname "$PLANETARY_PI_BIN_DIR")")"
    repo="$(realpath -m -- "$PLANETARY_ASTROPI_ROOT/repository")"
+   for dir in "$(dirname "$(dirname "$(realpath -m -- "$PI")")")" \
+              "$(realpath -m -- "$(dirname "$PLANETARY_PI_BIN_DIR")")" \
+              "$(realpath -m -- /opt/PixInsight)"; do
+      case "$real" in
+         "$dir"/*)
+            echo "FAIL: refusing PLANETARY_SO=$so: it is inside the PixInsight install ($dir); the tests delete and re-sign the .xsgn of the module they load"
+            return 1 ;;
+      esac
+   done
    case "$real" in
-      "$pi"/*)
-         echo "FAIL: refusing PLANETARY_SO=$so: it is inside the PixInsight install ($pi); the tests delete and re-sign the .xsgn of the module they load"
-         return 1 ;;
       "$repo"/*)
          echo "FAIL: refusing PLANETARY_SO=$so: it is inside repository/ ($repo), the published packages"
          return 1 ;;

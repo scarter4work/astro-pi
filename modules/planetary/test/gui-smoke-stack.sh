@@ -9,8 +9,9 @@
 #                                                               BLOCKED (exit 2): no signing pass file
 #
 # Captures: make-fixtures --stack (the probe's synthetic captures) and
-# --stack-long gui-long.avi (the long Bayer capture, 2500 frames: it must stack in at least 7 s,
-# checked below, so the progress bar, Cancel, a collapse and expand, a close and a Quit land mid-run). What
+# --stack-long gui-long.avi (the long Bayer capture, 2500 frames: it must stack in at least 3 s,
+# checked below, so Execute's 1.5 s check means something and the progress bar, Cancel, a close and a Quit
+# land mid-run; the collapse and expand needs no minimum, see 4b). What
 # each must give comes from the engine itself (stack-probe on the same file),
 # so a capture that stops giving it fails here, before PixInsight starts.
 #
@@ -22,7 +23,7 @@
 #     Execute                                                      -> 07-execute.png
 #     gui-smoke-stack-ipc.js (-x): exactly one image window, <stem>_stack, 1024x768 RGB, NCOMBINE /
 #     NFRAMES the engine's, its centre sample the engine's (within 1e-5): the stack Stack! made,
-#     opened without stacking again (it exists 1.5 s after the click; a stack takes at least 7 s).
+#     opened without stacking again (it exists 1.5 s after the click; a stack takes at least 3 s).
 #     The window is then closed.
 #  3b. --stack-unreadable: gui-long.avi made unreadable, Execute -> the error box -> 07b-unreadable.png
 #     Return: the stack kept (its preview still shown)             -> 07c-kept.png
@@ -34,8 +35,11 @@
 #     before the run (every engine thread and the worker joined).
 #  4b. --stack-shade: Stack! -> mid-run                            -> 09b-shade-progress.png
 #     the title bar's shade button: collapsed to its title bar     -> 09c-shaded.png
-#     expanded again, in place, still running                      -> 09c2-expanded.png
+#     (PixInsight still holding the video open then: the run was going on when it collapsed)
+#     expanded again, in place (its title bar's close button where it was) -> 09c2-expanded.png
 #     the run goes on to its stack (collapsing is not closing)     -> 09d-unshaded.png
+#     A run that had ended before the collapse landed proves nothing: the step runs again, at most 5 times.
+#     No minimum stack time is needed (bench6: the 7 s one failed on a faster machine).
 #  5. --stack-file: diag-notarget.ser (NoTarget) -> no preview     -> 10-diagnosis.png
 #     stack-mosaic.avi (Ruling P9 warning)                         -> 11-warning-mosaic.png
 #     stack-soft-disc.ser (focus warning, Rulings P16/P20)         -> 12-warning-focus.png
@@ -123,11 +127,13 @@ engine "$SOFT" auto image "may be out of focus" || exit 1
 engine "$BAYER" auto image "" || exit 1
 engine "$BAYER" BGGR image "" || exit 1
 LONG_JSON="$OUT/engine-gui-long.avi-auto.json"
-# At least 7 s: the collapse-and-expand step (4b) spends ~4.8 s from its mid-run shot to 09c2, which must
-# still show the run going on (measured: 09b 17:54:33.54 -> 09c2 17:54:38.31 on the host build; with 1500
-# frames, 5.2 s, the run had ended by 09c2 -- final fix round).
-jq -e '.seconds >= 7' "$LONG_JSON" >/dev/null \
-   || { echo "FAIL: gui-long.avi stacks in $(jq .seconds "$LONG_JSON") s: too fast for Cancel, a collapse and expand, a close and a Quit to land mid-run"; exit 1; }
+# At least 3 s (as before the final fix round): Execute's checks (3, 3b) tell "opened the stack made" from
+# "stacked again" by the window existing 1.5 s after the click, and Cancel, the close and the Quit act at once
+# after a mid-run shot. The collapse-and-expand step (4b) needs no minimum: it reads whether the run was
+# still reading the video when the window collapsed, and runs again if not (bench6; its 7 s minimum failed on
+# a faster machine).
+jq -e '.seconds >= 3' "$LONG_JSON" >/dev/null \
+   || { echo "FAIL: gui-long.avi stacks in $(jq .seconds "$LONG_JSON") s: too fast for Execute's 1.5 s check, Cancel, a close and a Quit to land mid-run"; exit 1; }
 
 planetary_sign "$SO" || exit 1
 planetary_seed_slot_modules || exit 1
@@ -194,6 +200,7 @@ drive()
 export PLANETARY_GUI_PROCESS=PlanetaryStack   # gui-smoke-setup.js opens this process's interface
 planetary_gui_launch "$OUT" "$HERE/gui-smoke-setup.js" || exit 1
 PI_PROC="$(pgrep -f -- "^$PLANETARY_PI_BIN_DIR/PixInsight -n=$PLANETARY_SLOT " | head -1)"
+export PLANETARY_PI_PID="$PI_PROC"   # gui_drive.py --stack-shade reads whether a run holds the video open
 
 drive --stack-open "$OUT" "$LONG" || exit 1
 expect_no_open_video "after Open..." || exit 1

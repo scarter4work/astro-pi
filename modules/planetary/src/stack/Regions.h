@@ -468,5 +468,14 @@ struct RegionPlan {
 // stops the workers, joins them and throws StackCancelled.
 RegionPlan PlanRegions(const RegionLayout& layout, const std::vector<FrameRegions>& measured, int threads = 1,
                        const Progress& progress = {});
+// PlanRegions' heap per worker at its peak, ranking one region of `frames` frames, in bytes (PlanMemory's
+// planScratchBytes): the ranking's own arrays -- the frames' region confidences, the candidates' quality,
+// sigmas and positions, their quality-to-noise ratios: six of 8 bytes per frame, each reserved to the frame
+// count -- beside RankByDetail's peak (RankByDetailPeakBytes): 48 + 616 = 664 bytes per frame. Measured:
+// test_plan_memory (a counting allocator around PlanRegions on one worker).
+size_t PlanRegionsWorkerBytes(size_t frames);
+// What PlanRegions holds beside its workers' scratch while they rank, once per call: the frames' order by
+// index (a size_t per frame), in bytes.
+size_t PlanRegionsOrderBytes(size_t frames);
 
 }  // namespace planetary::stack

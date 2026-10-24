@@ -795,26 +795,122 @@ def test_a_local_shift_between_the_halves_is_not_charged_as_noise():
     assert unremoved[0] > 3 * shifted[0]          # a field the global refinement alone leaks
 
 
-def test_a_level_offset_between_the_halves_is_never_charged_less_for_the_tile_shifts():
-    """Ruling P28d removes registration only. A smooth 2 % gain offset between the halves over part of a
-    disc and its limb (Investigation 2's level offsets between kept subsets) is not registration; near
-    a limb a gain change partly resembles a limb shift, so a shift fit could absorb it and under-charge
-    ours. The bench's tile fit must not: per END bin it charges at least what the global refinement
-    alone charges (less 3 % for the fit's degrees of freedom). Measured: it charges more (2.79 -> 5.05
-    in the 0.06-0.09 bin), because the fit leaves tile-shaped steps in D -- an over-charge of ours, the
-    safe direction. (A smoothly interpolated shift field was tried: it under-charges this pair, 1.76.)"""
+@pytest.mark.parametrize("amp, above", [(0.02, 1.1), (0.05, 1.5)])
+def test_a_level_offset_between_the_halves_is_never_charged_less_for_the_tile_shifts(amp, above):
+    """Ruling P28d removes registration only. A smooth gain offset between the halves over part of a disc
+    and its limb (Investigation 2's level offsets between kept subsets) is not registration; near a limb a
+    gain change partly resembles a limb shift, so a shift fit could absorb it and under-charge ours. The
+    bench's fit must not: per END bin it charges at least what the offset itself charges -- the gain-only
+    difference (triage.gain_only_difference: the registration and one global gain, no shift fit), less 3 %
+    for the fit's degrees of freedom -- and the global refinement alone (tile=None) reads it as the
+    gain-only difference does (within 3 %).
+    Until bench6 the reference here was the global refinement alone, whose fit read the bump partly as a
+    shift (Ruling F5): it charged a 2 % bump x2.79 in the 0.06-0.09 bin and the tile fit x5.05, where the
+    bump itself charges x1.18 (measured at ad36e4b7; at 5 %: x12.27 and x26.60 against x1.82). Both
+    readings were the shift fit's, not the bump's. Now: 2 % reads x1.17 with the tiles, x1.18 globally and
+    gain-only; 5 %, x1.92, x1.82 and x1.82. (A smoothly interpolated shift field was tried in fix round 4:
+    it under-charged this pair.)"""
+    import triage
     from conftest import planet_scene
     S = planet_scene(size=(240, 320), radius=90, seed=3, seeing=1.0)
     yy, xx = np.mgrid[0:240, 0:320]
     bump = np.exp(-(((yy - 190) / 30.0) ** 2 + ((xx - 160) / 60.0) ** 2))
     rng = np.random.default_rng(2)
     A = S + rng.normal(0, P28D_SIGMA, S.shape)
-    B = S * (1 + 0.02 * bump) + rng.normal(0, P28D_SIGMA, S.shape)
+    B = S * (1 + amp * bump) + rng.normal(0, P28D_SIGMA, S.shape)
     fitted, bare = _halves_ratio(A, B, P28D_SIGMA), _halves_ratio(A, B, P28D_SIGMA, tile=None)
-    print("\n2 % gain bump: per END bin, tile fit " + " ".join(f"{v:.2f}" for v in fitted) + "; global only "
-          + " ".join(f"{v:.2f}" for v in bare))
-    assert bare[0] > 2                                     # the offset is well above the noise
-    assert all(f >= 0.97 * b for f, b in zip(fitted, bare))
+    d, _, bx = triage.gain_only_difference(A, B)
+    s = metric.measure(A, bx).signal
+    truth = np.array(metric.band_means(metric.periodogram(d / s), metric.END_EDGES)) / (2 * P28D_SIGMA ** 2 / 4 / s ** 2)
+    print(f"\n{amp:.0%} gain bump: per END bin, tile fit " + " ".join(f"{v:.2f}" for v in fitted) + "; global only "
+          + " ".join(f"{v:.2f}" for v in bare) + "; gain-only " + " ".join(f"{v:.2f}" for v in truth))
+    assert truth[0] > above                                # the offset is above the noise
+    assert all(f >= 0.97 * t for f, t in zip(fitted, truth))
+    assert all(b == pytest.approx(t, rel=0.03) for b, t in zip(bare, truth))
+
+
+def _gain_field(shape, amplitude, period=128):
+    """A gain difference varying smoothly across the frame (period `period` px along y and x), as the
+    engine's region blends make the halves' differences vary (test_triage.py's field)."""
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]].astype(float)
+    return amplitude * np.sin(2 * np.pi * yy / period) * np.cos(2 * np.pi * xx / period)
+
+
+def _high_band(D, box, s):
+    """D's power over 0.21-0.30 cycles/px (halves.HIGH_BINS), D over the box in units of the signal s."""
+    import halves
+    p = metric.periodogram(D[box.y0:box.y1, box.x0:box.x1] / s)
+    return float(np.mean(metric.band_means(p, metric.END_EDGES)[halves.HIGH_BINS]))
+
+
+@pytest.mark.parametrize("seed", [3, 7])
+def test_a_smooth_gain_difference_between_the_halves_is_charged_as_gain_not_as_shift(seed):
+    """Ruling F5 (bench6): a smooth gain difference between the halves -- kept subsets at different
+    levels, varying across the frame as the engine's region blends do -- is a real difference, so it is
+    charged, but as itself: refined_difference must read it as a gain-only difference reads it
+    (triage.gain_only_difference: the registration and one global gain, no shift fit), not turn it into a
+    shift. Synthetic, truth known: B = A x (1 + a 3 % field), no shift. Measured at 80282e0e (before the
+    fix): the global fit read the field as a (+0.099, -0.181) px shift on seed 3, and with noise of 0.4 %
+    of the mean the 0.21-0.30 band read x1.51 (seed 3) and x2.02 (seed 7) the noise-only pair's, where the
+    gain-only difference reads x1.005 and x0.994 (the field is nearly invisible there)."""
+    import halves
+    import triage
+    from conftest import lunar_scene
+    A = lunar_scene(size=(256, 256), seed=seed, seeing=1.0)
+    B = A * (1 + _gain_field(A.shape, 0.03))
+    coef = halves.refined_difference(A, B, tile=None)[3]
+    rng = np.random.default_rng(11)
+    sd = 0.004 * A.mean()
+    nA, nB = rng.normal(0, sd, A.shape), rng.normal(0, sd, A.shape)
+
+    def gain_only(X, Y):
+        d, _, bx = triage.gain_only_difference(X, Y)
+        D = np.zeros_like(X)
+        D[bx.y0:bx.y1, bx.x0:bx.x1] = d
+        return D, bx
+
+    D_noise, box = halves.refined_difference(A + nA, A + nB)[:2]
+    s = metric.measure(A, box).signal
+    refined = _high_band(halves.refined_difference(A + nA, B + nB)[0], box, s) / _high_band(D_noise, box, s)
+    G_gain, gbx = gain_only(A + nA, B + nB)
+    G_noise, _ = gain_only(A + nA, A + nB)
+    truth = _high_band(G_gain, gbx, s) / _high_band(G_noise, gbx, s)
+    print(f"\nseed {seed}: global shift fit ({coef[1]:+.4f}, {coef[2]:+.4f}) px; 0.21-0.30 band over the noise-only "
+          f"pair: refined_difference x{refined:.3f}, gain-only x{truth:.3f}")
+    assert refined == pytest.approx(truth, rel=0.02)
+    assert abs(coef[1]) <= 0.005 and abs(coef[2]) <= 0.005
+
+
+@pytest.mark.parametrize("seed", [3, 7])
+def test_the_tiles_level_field_is_the_lowest_order_that_reads_a_gain_field_as_gain(seed, monkeypatch):
+    """Why remove_tile_shifts models a cubic level field (halves.LEVEL_ORDER, Ruling F5): on the gain-only
+    pair of the test above, the 0.21-0.30 band over the noise-only pair per order of the tiles' level field
+    -- one intercept (the procedure before bench6) x1.512 / x2.016 (seeds 3 / 7), first order x1.147 /
+    x1.303, second order x1.025 / x1.031, cubic x1.006 / x0.998, against gain-only x1.005 / x0.994. The
+    cubic is the lowest order within 2 % of the gain-only reading."""
+    import halves
+    import triage
+    from conftest import lunar_scene
+    A = lunar_scene(size=(256, 256), seed=seed, seeing=1.0)
+    B = A * (1 + _gain_field(A.shape, 0.03))
+    rng = np.random.default_rng(11)
+    sd = 0.004 * A.mean()
+    nA, nB = rng.normal(0, sd, A.shape), rng.normal(0, sd, A.shape)
+    d_g, _, gbx = triage.gain_only_difference(A + nA, B + nB)
+    d_n, _, _ = triage.gain_only_difference(A + nA, A + nB)
+    G_g, G_n = np.zeros_like(A), np.zeros_like(A)
+    G_g[gbx.y0:gbx.y1, gbx.x0:gbx.x1], G_n[gbx.y0:gbx.y1, gbx.x0:gbx.x1] = d_g, d_n
+    reading = {}
+    for order in (0, 1, 2, 3):
+        monkeypatch.setattr(halves, "LEVEL_ORDER", order)
+        D_noise, box = halves.refined_difference(A + nA, A + nB)[:2]
+        s = metric.measure(A, box).signal
+        reading[order] = _high_band(halves.refined_difference(A + nA, B + nB)[0], box, s) / _high_band(D_noise, box, s)
+    truth = _high_band(G_g, gbx, s) / _high_band(G_n, gbx, s)
+    print(f"\nseed {seed}: level order 0-3 " + " ".join(f"x{reading[o]:.3f}" for o in range(4)) + f"; gain-only x{truth:.3f}")
+    assert [o for o in range(4) if reading[o] == pytest.approx(truth, rel=0.02)] == [3]
+    monkeypatch.undo()
+    assert halves.LEVEL_ORDER == 3
 
 
 def test_noise_between_the_halves_is_still_charged():
@@ -826,7 +922,9 @@ def test_noise_between_the_halves_is_still_charged():
     honest = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA)
     noisy = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, 2 * P28D_SIGMA), P28D_SIGMA)
     charge = halves.charge(list(noisy) + [1.0], list(honest) + [1.0])
-    print("\nnoise only: per END bin " + " ".join(f"{v:.2f}" for v in honest) + "; B at 2 x the noise: charge "
+    unremoved = _halves_ratio(*_halves_pair(0.0, P28D_SIGMA, P28D_SIGMA), P28D_SIGMA, tile=None)  # printed only
+    print("\nnoise only: per END bin " + " ".join(f"{v:.2f}" for v in honest) + " (without the tile shifts "
+          + " ".join(f"{v:.2f}" for v in unremoved) + "); B at 2 x the noise: charge "
           + " ".join(f"{v:.2f}" for v in charge))
     assert all(0.85 <= v <= 1.10 for v in honest)
     assert all(v == pytest.approx(2.5, rel=0.08) for v in charge)

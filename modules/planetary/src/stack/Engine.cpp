@@ -720,7 +720,7 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     p.measureStoreBytes = frames * (regions * sizeof(RegionMeasure) + 2 * sizeof(FrameRegions) + sizeof(Shift) + 2);
     p.planBytes = frames * (regions * (2 * sizeof(float) + 1) + sizeof(int64_t) + sizeof(Shift) + sizeof(float) + 1) +
                   regions * (sizeof(RegionDetail) + sizeof(Region) + sizeof(int));
-    p.planScratchBytes = regions > 0 ? 6 * sizeof(double) * frames : 0;
+    p.planScratchBytes = regions > 0 ? PlanRegionsWorkerBytes(frames) : 0;
 
     auto fit = [&](size_t avail, size_t each) {
         if (each == 0) return threads;
@@ -738,7 +738,11 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     p.stackWorkers = fit(rest(kMemoryBudget, statsBytes + p.fixedBytes + p.planBytes), p.stackWorkerBytes);
     const size_t measurePeak = statsBytes + p.measureWorkers * p.measureWorkerBytes;
     const size_t alignPeak = alignFixed + p.observers * p.observerBytes + p.alignWorkers * p.alignWorkerBytes;
-    const size_t planPeak = alignFixed + p.observers * p.observerBytes + p.planBytes + p.alignWorkers * p.planScratchBytes;
+    // PlanRegions' workers: the alignment pass's, fewer when their scratch would not fit beside the measurements,
+    // the observers and the plan.
+    const size_t planFixed = alignFixed + p.observers * p.observerBytes + p.planBytes + (regions > 0 ? PlanRegionsOrderBytes(frames) : 0);
+    p.planWorkers = std::min(p.alignWorkers, fit(rest(kMemoryBudget, planFixed), p.planScratchBytes));
+    const size_t planPeak = planFixed + p.planWorkers * p.planScratchBytes;
     const size_t stackPeak = statsBytes + p.fixedBytes + p.planBytes + p.stackWorkers * p.stackWorkerBytes;
     // The focus measure holds its frames after the residual scale's observers are gone (RunStack).
     p.focusBytes = static_cast<size_t>(kFocusFrames) * 4 * lumaPx;
@@ -921,7 +925,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     std::vector<FrameRegions> kept;
     int64_t cleanAligned = 0;
     for (size_t p = 0; p < alignList.size(); ++p) {
-        const bool pass = shifts[p].confidence >= cut;
+        const bool pass = PassesAlignment(shifts[p], cut);
         if (!isSuspect[p] && !pass) out.frames.alignmentExcluded.push_back(alignList[p]);
         if (!isSuspect[p] && pass) ++cleanAligned;
         const bool use = isSuspect[p] ? std::binary_search(adm.admitted.begin(), adm.admitted.end(), alignList[p]) : pass;
@@ -936,23 +940,29 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     const int64_t nSelected = static_cast<int64_t>(sel.frames.size());
     const int64_t mustAlign = UnalignedBelow(n, nSelected);
     const double medianMatch = Median(cleanConfidence);
+    // Frames over the floor whose halves sit apart (Shift::tear): named in the diagnosis, which they can cause.
+    int64_t torn = 0;
+    for (const Shift& s : shifts) torn += s.confidence >= kMinAlignConfidence && s.tear > kMaxTear ? 1 : 0;
     if (static_cast<int64_t>(kept.size()) < mustAlign) {
         return finish(Diagnosed(
             std::move(out), DiagnosisKind::Unaligned,
             "The frames do not line up: only " + Count(static_cast<int64_t>(kept.size())) + " of " +
                 Count(nSelected + static_cast<int64_t>(sel.suspects.size())) +
                 " selected frames match the reference well enough to be aligned (median match " + Num(medianMatch, 2) +
-                ", needed " + Num(cut, 2) + ") -- the view shook or changed from frame to frame (wind, a knock, or "
-                "not one steady target).",
+                ", needed " + Num(cut, 2) +
+                (torn > 0 ? "; " + Count(torn) + " torn: part of the frame displaced by more than " + Num(kMaxTear * scale, 0) + " px"
+                          : std::string()) +
+                ") -- the view shook or changed from frame to frame (wind, a knock, or not one steady target).",
             {{"frames selected", static_cast<double>(nSelected + static_cast<int64_t>(sel.suspects.size()))},
              {"frames aligned", static_cast<double>(kept.size())},
+             {"frames torn", static_cast<double>(torn)},
              {"median match", medianMatch},
              {"alignment cut", cut},
              {"frames needed", static_cast<double>(mustAlign)}}));
     }
 
     t0 = Clock::now();
-    RegionPlan plan = PlanRegions(layout, kept, mem.alignWorkers, aligning.Mapped(refUnits + nAlign, planUnits));
+    RegionPlan plan = PlanRegions(layout, kept, mem.planWorkers, aligning.Mapped(refUnits + nAlign, planUnits));
     aligning.Report(refUnits + nAlign + planUnits);
     aligning.ThrowIfCancelled();
     const int64_t nKept = static_cast<int64_t>(kept.size());
@@ -972,7 +982,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
         std::vector<size_t> ranked;  // positions in alignList of the frames kept, sharpest first
         for (size_t p = 0; p < alignList.size(); ++p) {
             const bool use = isSuspect[p] ? std::binary_search(adm.admitted.begin(), adm.admitted.end(), alignList[p])
-                                          : shifts[p].confidence >= cut;
+                                          : PassesAlignment(shifts[p], cut);
             if (use) ranked.push_back(p);
         }
         std::sort(ranked.begin(), ranked.end(), [&](size_t a, size_t b) {
