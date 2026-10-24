@@ -102,9 +102,12 @@ disc blurred far beyond what in-focus captures show is refused (Out of focus, or
 from frame to frame); a disc blurred less, but more than in-focus captures show, is stacked with a focus warning.</li>
 <li><b>Aligning.</b> The 16 sharpest kept frames (torn ones left out) are averaged into a reference. Every frame is aligned to it with
 sub-pixel accuracy. Frames that match the reference clearly less well than the rest (below 0.85 of the median match,
-and never below a match of 0.5), such as shaken frames, are left out, and so is every torn frame -- one whose top and
-bottom halves line up more than 3 pixels apart (6 on a colour camera, aligned at half resolution), however many such
-frames the capture holds. The <b>Alignment:</b> line gives the
+and never below a match of 0.5), such as shaken frames, are left out, and so are torn frames -- ones whose top and
+bottom halves line up with the reference more than 3 pixels apart (6 on a colour camera, aligned at half resolution).
+One limit: the reference is built from the largest group of the sharpest frames that agree with each other. If most
+of them are torn the same way (shifted in the same direction by a similar amount, even through different rows), that
+torn group becomes the reference, and the intact frames are the ones left out as torn. This has not been seen in
+real captures. The <b>Alignment:</b> line gives the
 frames aligned, the median match and the cut.</li>
 <li><b>Regions.</b> Seeing blurs and moves each part of the image differently, so the image is divided into regions,
 placed automatically wherever there is structure to align on: about a quarter of a planet's width across, or an eighth
