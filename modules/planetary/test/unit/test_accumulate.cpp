@@ -964,6 +964,46 @@ TEST_CASE("The rim of a saturated crater under jitter keeps its values: no bloat
     }
 }
 
+TEST_CASE("Clipped samples are present: an unclipped outlier among them and an out-of-frame mirror do not set the pixel "
+          "(review C2)",
+          "[accumulate]") {
+    // Fix round 1 counted no clipped weight as presence: one unclipped sample, a rejected outlier or a 1e-6 out-of-frame
+    // mirror, was all the pixel had.
+    const int w = 64, h = 40, n = 20;
+    SECTION("a dark outlier in one frame over a plateau saturated in the others, with and without rejection") {
+        auto plateau = [](int x, int y) { return x >= 20 && x < 44 && y >= 12 && y < 28; };
+        auto scene = [&](int x, int y) { return plateau(x, y) ? 1.0 : 0.5; };
+        auto outlier = [&](int x, int y) { return x >= 29 && x < 35 && y >= 17 && y < 23 ? 0.6 : scene(x, y); };
+        std::vector<FloatImage> frames;
+        for (int k = 0; k < n; ++k) frames.push_back(SceneFrame(k == 0 ? std::function<double(int, int)>(outlier) : scene, w, h, false));
+        for (float sigma : {1.f, 0.01f}) {
+            INFO("residual scale " << sigma);
+            const FloatImage out = StackShifted(frames, std::vector<Shift>(n), std::vector<double>(n, 1.0), SceneLuma(scene, w, h, false),
+                                                sigma, ser::ColorId::Mono);
+            double lo = 1;
+            for (int y = 17; y < 23; ++y)
+                for (int x = 29; x < 35; ++x) lo = std::min(lo, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
+            INFO("the outlier patch reads at least " << lo);
+            CHECK(lo > 0.95);  // 3123eea8: 0.98 (sigma 1), 1.0 (sigma 0.01)
+        }
+    }
+    SECTION("a plateau saturated in every frame at the frame's edge, one frame drifted 30 px off it") {
+        auto scene = [](int x, int) { return x < 12 ? 1.0 : 0.2; };
+        std::vector<FloatImage> frames;
+        std::vector<Shift> shifts(n);
+        frames.push_back(SceneFrame([&](int x, int y) { return scene(x + 30, y); }, w, h, false));
+        shifts[0] = Shift{-30, 0, 1};
+        for (int k = 1; k < n; ++k) frames.push_back(SceneFrame(scene, w, h, false));
+        const FloatImage out = StackShifted(frames, shifts, std::vector<double>(n, 1.0), SceneLuma(scene, w, h, false), 1.f,
+                                            ser::ColorId::Mono);
+        double lo = 1;
+        for (int y = 0; y < h; ++y)
+            for (int x = 1; x < 10; ++x) lo = std::min(lo, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
+        INFO("the plateau reads at least " << lo);
+        CHECK(lo > 0.95);  // 3123eea8: 1.0
+    }
+}
+
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
     ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
