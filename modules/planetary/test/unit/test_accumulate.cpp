@@ -780,6 +780,16 @@ TEST_CASE("The stack stays inside the frames' range: no overshoot at a clipped e
     CHECK(lo >= 0.0);
 }
 
+namespace {
+// Bounds the behaviour before Ruling R2 (3123eea8) meets in the tests below, measured there with these tests.
+// The R2 test's largest error off its plateau (identical frames, no shift): mono and RGB 5.8e-6; RGGB 0.065, the
+// demosaic's own error next to the hard plateau edge.
+constexpr double kRimTolerance[2] = {1e-3, 0.07};
+// The crater test's largest error where the truth is under 0.95: mono 0.044, RGGB 0.050 -- the +-0.5 px jitter's blur
+// of the 1 px ramp.
+constexpr double kCraterRimBlur = 0.06;
+}  // namespace
+
 TEST_CASE("A clipped sample is no measurement: a saturated plateau stays at the reference's clipped level whatever the "
           "frames' gains (Ruling R2)",
           "[accumulate]") {
@@ -839,16 +849,71 @@ TEST_CASE("A clipped sample is no measurement: a saturated plateau stays at the 
                         lo = std::min(lo, static_cast<double>(v));
                         hi = std::max(hi, static_cast<double>(v));
                     }
-                    const bool far = x < 16 || x >= 48 || y < 8 || y >= 32;
-                    if ((far || !clipped) && x >= 3 && x < w - 3 && y >= 3 && y < h - 3)
+                    // Everywhere off the plateau, its rim included (review I2: a sample next to a clip is no clipped
+                    // sample), and in every unclipped channel, 3 px clear of the frame's edge.
+                    if ((!plateau(x, y) || !clipped) && x >= 3 && x < w - 3 && y >= 3 && y < h - 3)
                         worstScene = std::max(worstScene, std::fabs(v - scene(x, y)));
                 }
         INFO("plateau " << lo << " - " << hi << "; largest error off it (or in an unclipped channel) " << worstScene);
         CHECK(lo >= 0.999);  // the reference's clipped level, not dimmed by the brighter group
         CHECK(hi <= 1.0);
-        CHECK(worstScene < 1e-3);  // unclipped samples are still gain-corrected and stacked
+        CHECK(worstScene < kRimTolerance[mosaic ? 1 : 0]);  // unclipped samples are still gain-corrected and stacked
     }
 }
+
+namespace {
+
+// Mono frames of a scene given at sensor resolution, or a grey RGGB mosaic of it through DemosaicHQ, 16-bit.
+FloatImage SceneFrame(const std::function<double(int, int)>& scene, int w, int h, bool mosaic) {
+    ser::Frame raw;
+    raw.width = w;
+    raw.height = h;
+    raw.channels = 1;
+    raw.samples.resize(static_cast<size_t>(w) * h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            raw.samples[static_cast<size_t>(y) * w + x] =
+                static_cast<uint16_t>(std::lround(std::clamp(scene(x, y), 0.0, 1.0) * 65535));
+    return stack::DemosaicHQ(raw, mosaic ? ser::ColorId::BayerRGGB : ser::ColorId::Mono, 16);
+}
+
+// The reference (luma) of a scene: itself in mono, the 2 x 2 site mean of a mosaic.
+FloatImage SceneLuma(const std::function<double(int, int)>& scene, int w, int h, bool mosaic) {
+    const int s = mosaic ? 2 : 1;
+    FloatImage im{w / s, h / s, 1, std::vector<float>(static_cast<size_t>(w / s) * (h / s))};
+    for (int y = 0; y < h / s; ++y)
+        for (int x = 0; x < w / s; ++x) {
+            double v = 0;
+            for (int j = 0; j < s; ++j)
+                for (int i = 0; i < s; ++i) v += std::clamp(scene(x * s + i, y * s + j), 0.0, 1.0);
+            im.data[static_cast<size_t>(y) * (w / s) + x] = static_cast<float>(v / (s * s));
+        }
+    return im;
+}
+
+// One Accumulator over frames that each have a global shift (luma px) and a gain, no regions.
+FloatImage StackShifted(const std::vector<FloatImage>& frames, const std::vector<Shift>& shifts, const std::vector<double>& gains,
+                        const FloatImage& ref, float sigma, ser::ColorId color, int64_t* rejected = nullptr) {
+    stack::RegionLayout none;
+    none.width = ref.width;
+    none.height = ref.height;
+    std::vector<FrameRegions> ms;
+    for (size_t k = 0; k < frames.size(); ++k) {
+        FrameRegions m;
+        m.frameIndex = static_cast<int64_t>(k);
+        m.global = shifts[k];
+        m.gain = gains[k];
+        ms.push_back(m);
+    }
+    const stack::RegionPlan plan = stack::PlanRegions(none, ms);
+    const FloatImage sig{ref.width, ref.height, 1, std::vector<float>(ref.data.size(), sigma)};
+    stack::Accumulator acc(plan, ref, sig, testing::NewCapture(frames[0].width, frames[0].height, color).info);
+    for (size_t k = 0; k < frames.size(); ++k) acc.Add(static_cast<int64_t>(k), frames[k]);
+    if (rejected) *rejected = acc.RejectedCells();
+    return acc.Finish();
+}
+
+}  // namespace
 
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
