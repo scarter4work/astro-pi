@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <vector>
 
 #include "Fft.h"
@@ -44,6 +45,19 @@ struct Shift {
     // during readout (part of it displaced) loses about that part's share. 0 when either window has
     // no signal.
     double confidence = 0;
+    // Whether the frame is in one piece: the distance (luma px) between the shifts the top and the bottom
+    // half of the alignment window find, each aligned to the same half of the reference's window on its own
+    // (its frame window placed where the whole window found the reference). A frame torn by a shake during
+    // readout -- the rows from some line on displaced -- reads about the displacement; an intact frame reads
+    // the difference its seeing makes between the halves. Absolute (pixels), so unlike `confidence` it does
+    // not depend on the rest of the capture: a torn frame reads torn however many of the selection are torn
+    // too (kMaxTear). The halves split rows, as readout does. A tear whose row lies inside a half, away from
+    // the window's middle, leaves that half holding both parts, and its shift is a compromise: the tear is read
+    // short (unit test "Shift::tear": 6 px at 0.3 or 0.7 of the target's height read 1.2-6.1 px, 8 px 7.0-9.0).
+    // 0 when not judged: confidence under kMinAlignConfidence, a window under 2 x kMinTearHalf rows, or a
+    // half that does not show the reference's scene on its own (its confidence under kMinAlignConfidence --
+    // a half of sky beside a crescent).
+    double tear = 0;
 };
 
 // Absolute floor: below it the frame does not show the reference's scene. Measured at 23c10e97 (unit
@@ -62,14 +76,40 @@ constexpr double kMinAlignConfidence = 0.5;
 // torn through the middle by 8 px scores 0.72 of an intact one, its lower 60% displaced by 8 px
 // 0.78, a 1 px wobble 0.99. Limit: the match is measured after the low pass, where large-scale
 // structure still correlates across a few pixels, and blur matching widens that (Shift::confidence):
-// a sharp half-frame tear of 4 px (5 px: at the cut, within ~0.02), or of 6 px at 3x blur, passes and is stacked. Such tears are
+// a sharp half-frame tear of 4 px (5 px: at the cut, within ~0.02), or of 6 px at 3x blur, passes the cut. Shift::tear
+// refuses those (kMaxTear; a tear through the middle reads its size). Tears it lets through are
 // left to local alignment and per-region ranking: Task 5's local search must reach ~8 luma px.
+// A relative cut alone fails when most of the selection is torn: the reference averages the torn parts
+// and the median falls with them (measured at dd785993 -- 9cf7f5b6's engine -- test_engine "torn frames are excluded even when
+// they are most of the selection": 3 of 5 torn -> median 0.88, cut 0.75, two torn frames stacked; 7 of
+// 13 -> four stacked). kMaxTear refuses a torn frame on its own evidence.
 constexpr double kAlignRelative = 0.85;
-// Frames whose Shift::confidence is below the returned cut cannot be aligned and are excluded from
-// the stack (spec: "Frames that cannot be aligned are excluded, not smeared in"):
-//     cut = max(kMinAlignConfidence, kAlignRelative x median confidence of the frames >= the floor)
-// (lower median); kMinAlignConfidence when no frame reaches the floor. Independent of order.
+// Shift::tear: each half window at least this many rows (luma px), so the smallest disc window (32) is
+// still split.
+constexpr int kMinTearHalf = 16;
+// A frame whose halves sit further apart than this (Shift::tear, luma px) is torn: it fails alignment
+// whatever its confidence, is kept out of the reference and out of the stack. Measured with
+// test/run-align-real.sh at the commit that introduced it (every selected frame against BuildReference's
+// reference, 14 captures, the benchmark's 8 among them): 13 captures' 36 361 frames read at most 1.91 px;
+// the 2023-02-02 Moon's 1412 read 1.89-2.80 px on four frames the relative cut keeps (189, 190, 211, 574;
+// confidence 0.895-0.935) and 3.46 / 4.35 px on its two torn frames (41, 75; under the relative cut as
+// well). Against the sharpest frame instead (BuildReference's pass 1, align-probe --anchor) the 15 next
+// sharpest read at most 1.63 px. Synthetic: intact frames under seeing (unit test "Shift::tear", local
+// field rms 0.7 px) at most 1.76 px, tears through the middle of 6 / 8 px 5.57-6.56 / 7.37-8.64; without
+// seeing a tear through the middle reads its size within 0.02 (unit test "the documented tear tolerance":
+// 3 px reads 2.99-3.02, on the threshold; 4 px 4.00-4.02, refused). So 3 px
+// sits between the real steady frames' 2.80 and the real torn frames' 3.46. A tear it passes is local
+// alignment's to take out (kLocalSearch 8 px, Regions.h).
+constexpr double kMaxTear = 3.0;
+// Frames that fail PassesAlignment cannot be aligned and are excluded from the stack (spec: "Frames that
+// cannot be aligned are excluded, not smeared in"):
+//     cut = max(kMinAlignConfidence, kAlignRelative x median confidence of the frames >= the floor
+//                                    and in one piece, Shift::tear <= kMaxTear)
+// (lower median); kMinAlignConfidence when no frame qualifies. The median is the intact frames' so torn
+// frames, however many, cannot pull it down. Independent of order.
 double AlignmentCut(const std::vector<Shift>& shifts);
+// A frame aligns: confidence >= cut (AlignmentCut's) and not torn (tear <= kMaxTear). False for a NaN.
+bool PassesAlignment(const Shift& shift, double cut);
 // Largest correlation window side (luma px). 512 x 512 is 0.26 M samples: one or two pairs of 2-D
 // FFTs and a few Newton steps per frame. A bigger window buys no accuracy (already <= 0.03 px on clean
 // synthetic data: the accuracy unit tests below) while the cost grows with the area.
@@ -168,6 +208,10 @@ private:
         double confidence = 0;   // 0: a window without signal
         bool recentre = false;   // the integer peak is > 1 px off: correlate again around it
     };
+    // A half window (Shift::tear): the ww x wh window centred on (cx, cy), searched like a full frame.
+    GlobalAligner(const ser::FloatImage& reference, int cx, int cy, int ww, int wh);
+    void Prepare(const ser::FloatImage& reference);
+    Shift AlignAt(const ser::FloatImage& frameLuma, int fcx, int fcy) const;
     void Window(const ser::FloatImage& im, int cx, int cy, std::vector<Complex>& out) const;
     Peak Correlate(const ser::FloatImage& frameLuma, int fcx, int fcy, bool mayRecentre) const;
 
@@ -182,6 +226,7 @@ private:
     std::vector<double> blurX_;  // B_j(kx) at [kx * nBlurs + j] (contiguous per bin)
     std::vector<double> blurY_;  // B_j(ky) at [j * wh + ky]
     Fft2D fft_;
+    std::shared_ptr<const GlobalAligner> top_, bottom_;  // the window's halves (Shift::tear); null when too low
 };
 
 // One-call form (the plan's interface): prepares a GlobalAligner and aligns one frame -- the same
@@ -208,17 +253,22 @@ Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frame
 // Selection::frames -- a suspect frame, Ruling P6, is never part of the reference):
 //  1. read them (one reader from `factory`, in frame order) as MeasurementLuma luma (an undeclared mosaic
 //     binned, as every frame aligned to it is);
-//  2. pass 1: align each to an anchor and average those with confidence >= AlignmentCut (the anchor
+//  2. pass 1: align each to an anchor and average those that pass alignment against it
+//     (PassesAlignment: confidence >= AlignmentCut and not torn, Shift::tear <= kMaxTear; the anchor
 //     always) on the anchor's grid. The anchor is the sharpest frame unless the others do not
-//     confirm it: when fewer than half of them reach AlignmentCut against it (the cut taken over
+//     confirm it: when fewer than half of them pass alignment against it (the cut taken over
 //     the others -- its self-match is no evidence), the next sharpest is tried, and so on through
 //     every frame read until one is confirmed (a disc anchor must have a target); when none is, the
 //     candidate most others agreed with (the sharper on a tie). So a foreign or corrupt frame -- or a
 //     group of them smaller than half the frames read -- that measures sharpest cannot become the
 //     reference (unit tests: a square of terrain ranked first; three copies ranked first to third).
+//     Nor can a torn frame, however many of the frames read are torn: against a torn anchor the intact
+//     frames read torn, and torn frames agree with each other only when torn alike (the same rows by
+//     the same amount), so the intact frames are the largest group that agrees (unit test "a reference
+//     built from mostly torn frames"); a group torn alike larger than the intact one would win.
 //     Each anchor turned down costs one more alignment of the frames read;
 //  3. pass 2: align each to that average (lower noise, so a better template); average again those
-//     with confidence >= AlignmentCut, with the shifts re-centred on their mean -- the
+//     that pass alignment, with the shifts re-centred on their mean -- the
 //     reference sits at the mean position of the frames it is built from, so one frame's seeing
 //     tilt does not set the geometry every frame is stacked onto.
 // Averaging (ParallelBands over rows on `threads` threads, < 1 counts as 1; the same result for any

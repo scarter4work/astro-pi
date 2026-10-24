@@ -51,7 +51,7 @@ bool HasDetail(const FrameStats& s) { return std::isfinite(s.quality) && s.quali
 double Sigma(const FrameStats& s) { return std::isfinite(s.qualitySigma) && s.qualitySigma > 0 ? s.qualitySigma : 0.0; }
 
 // "selected 612 of 4088 frames: <why>; not selected: <groups>[<suspects' outcome>][<note>]". "Selected", not
-// "used": the frames stacked are fewer whenever AlignmentCut excludes a clean frame or no region keeps one
+// "used": the frames stacked are fewer whenever alignment excludes a clean frame (PassesAlignment) or no region keeps one
 // (StackSummary::used, shown beside this line; final review, engine M1).
 std::string ComposeLine(int64_t used, const Selection::Line& parts, const std::vector<std::string>& notUsed,
                         const std::string& outcome) {
@@ -665,8 +665,8 @@ Admission AdmitSuspects(const Selection& selection, const std::vector<Shift>& su
         return a;
     }
     for (size_t i = 0; i < selection.suspects.size(); ++i) {
-        // `>=` is false for a NaN confidence: such a frame is rejected.
-        if (suspectShifts[i].confidence >= alignCut) a.admitted.push_back(selection.suspects[i].index);
+        // False for a NaN confidence or tear, and for a torn suspect (Shift::tear > kMaxTear): rejected.
+        if (PassesAlignment(suspectShifts[i], alignCut)) a.admitted.push_back(selection.suspects[i].index);
         else a.rejected.push_back(selection.suspects[i].index);
     }
     std::sort(a.admitted.begin(), a.admitted.end());

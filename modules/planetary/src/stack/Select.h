@@ -245,9 +245,10 @@ constexpr double kShrinkSnrNone = 15;
 //    (by count or shape it cannot be told from glitches; measured in review: 50 frames 8 sd above
 //    3000, no noise, 44 of them suspect) -- and being suspect costs it nothing when it aligns:
 //    AdmitSuspects puts every suspect whose global alignment confidence passes the clean frames'
-//    AlignmentCut back into the stack. A torn or foreign frame fails that cut (Align.h: real torn
-//    frames 0.51-0.81 of the median confidence against a cut of 0.85; another scene 0.05-0.27,
-//    under the 0.5 floor); a glitch that aligns well (a sharp frame with a
+//    AlignmentCut and is in one piece (PassesAlignment) back into the stack. A torn or foreign frame
+//    fails (Align.h: real torn frames 0.51-0.81 of the median confidence against a cut of 0.85, and
+//    their halves 3.46-4.35 px apart against kMaxTear's 3; another scene 0.05-0.27, under the 0.5
+//    floor); a glitch that aligns well (a sharp frame with a
 //    satellite crossing it) gets in, where per-region ranking and the stack's outlier rejection
 //    still apply. Suspects do not enter steps 6-8: q_ref and the kept count are the clean frames'.
 //    A glitch under the fence (within kFenceSigmas of the median) is not suspect by this rule and
@@ -440,7 +441,8 @@ struct Admission {
 // Decides the suspects once they are aligned: suspectShifts[i] is GlobalAligner::Align's result for
 // selection.suspects[i] against the reference built from the clean frames (BuildReference never
 // sees a suspect), and alignCut is AlignmentCut over the clean frames' shifts. A suspect is admitted
-// when its confidence >= alignCut (a NaN confidence is rejected). An admitted suspect joins the
+// when it passes alignment (PassesAlignment: confidence >= alignCut and not torn, Shift::tear <=
+// kMaxTear; a NaN is rejected). An admitted suspect joins the
 // stack like any kept frame -- it is sharper than every one of them -- without re-running steps 6-8:
 // q_ref and the kept count stay the clean frames' (with the admitted frames on top, S(k)'s optimum
 // could sit at a slightly smaller k; per-region ranking, Task 5, makes the finer choice anyway).

@@ -254,6 +254,28 @@ GlobalAligner::GlobalAligner(const ser::FloatImage& reference, bool fullFrame, d
         refCx_ = static_cast<int>(std::lround(rs.cx));
         refCy_ = static_cast<int>(std::lround(rs.cy));
     }
+    Prepare(reference);
+    // The window's halves, each correlated on its own for Shift::tear: its top and its bottom hh rows.
+    if (wh_ >= 2 * kMinTearHalf) {
+        const int hh = PrevFastSize(wh_ / 2), y0 = refCy_ - wh_ / 2;
+        top_ = std::shared_ptr<const GlobalAligner>(new GlobalAligner(reference, refCx_, y0 + hh / 2, ww_, hh));
+        bottom_ = std::shared_ptr<const GlobalAligner>(new GlobalAligner(reference, refCx_, y0 + wh_ - hh + hh / 2, ww_, hh));
+    }
+}
+
+GlobalAligner::GlobalAligner(const ser::FloatImage& reference, int cx, int cy, int ww, int wh)
+    : fullFrame_(true),
+      width_(reference.width),
+      height_(reference.height),
+      ww_(ww),
+      wh_(wh),
+      refCx_(cx),
+      refCy_(cy),
+      fft_(1, 1) {
+    Prepare(reference);
+}
+
+void GlobalAligner::Prepare(const ser::FloatImage& reference) {
     fft_ = Fft2D(ww_, wh_);
     taperX_ = Tukey(ww_);
     taperY_ = Tukey(wh_);
@@ -333,6 +355,21 @@ Shift GlobalAligner::Align(const ser::FloatImage& frameLuma, const FrameStats& f
         fcx = static_cast<int>(std::lround(frameStats.cx));
         fcy = static_cast<int>(std::lround(frameStats.cy));
     }
+    Shift s = AlignAt(frameLuma, fcx, fcy);
+    // The tear: each half of the window aligned on its own, its frame window placed where the whole window
+    // found the reference. Judged only for a frame over the floor (under it the frame is excluded anyway) and
+    // when both halves show the reference's scene (kMinAlignConfidence); otherwise 0, nothing measured.
+    if (top_ && s.confidence >= kMinAlignConfidence) {
+        const int ix = static_cast<int>(std::lround(s.dx)), iy = static_cast<int>(std::lround(s.dy));
+        const Shift a = top_->AlignAt(frameLuma, top_->refCx_ + ix, top_->refCy_ + iy);
+        const Shift b = bottom_->AlignAt(frameLuma, bottom_->refCx_ + ix, bottom_->refCy_ + iy);
+        if (a.confidence >= kMinAlignConfidence && b.confidence >= kMinAlignConfidence)
+            s.tear = std::hypot(a.dx - b.dx, a.dy - b.dy);
+    }
+    return s;
+}
+
+Shift GlobalAligner::AlignAt(const ser::FloatImage& frameLuma, int fcx, int fcy) const {
     // Correlate; while the integer peak is more than a pixel off, move the frame's window onto it
     // and correlate again, so the final residual is sub-pixel (see kRecentrePasses). Only the last
     // correlation is refined.
@@ -518,10 +555,11 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     std::vector<Shift> shifts(k);
     std::vector<bool> use(k);
     // Pass 1: onto an anchor the other frames confirm. The sharpest frame first; it is turned down
-    // when fewer than half of the others reach AlignmentCut against it (cut over the others only --
+    // when fewer than half of the others pass alignment against it (PassesAlignment: the cut, over the others only --
     // its self-match is not evidence), and the next sharpest is tried -- through every frame read until
     // one is confirmed (a sharp group of foreign frames confirms itself only if it is at least half of
-    // the frames read). None confirmed: the candidate most others agreed with (the sharper on a tie).
+    // the frames read; a torn anchor is read torn by the intact frames). None confirmed: the candidate most others
+    // agreed with (the sharper on a tie).
     size_t anchor = 0;
     {
         int bestCount = -1;
@@ -546,7 +584,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
             s[a] = Shift{0, 0, 1};
             const double cut = AlignmentCut(others);
             int count = 0;
-            for (const Shift& o : others) count += o.confidence >= cut ? 1 : 0;
+            for (const Shift& o : others) count += PassesAlignment(o, cut) ? 1 : 0;
             if (count > bestCount) {
                 bestCount = count;
                 bestShifts = s;
@@ -562,7 +600,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
         for (size_t i = 0; i < k; ++i)
             if (i != anchor) others.push_back(shifts[i]);
         const double cut = AlignmentCut(others);
-        for (size_t i = 0; i < k; ++i) use[i] = i == anchor || shifts[i].confidence >= cut;
+        for (size_t i = 0; i < k; ++i) use[i] = i == anchor || PassesAlignment(shifts[i], cut);
     }
     const ser::FloatImage first = Average(frames, shifts, use, anchor, threads);
 
@@ -579,7 +617,7 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
     int used = 0;
     size_t bestKept = k;  // the sharpest frame kept: covers pixels no shifted frame reaches
     for (size_t i = 0; i < k; ++i) {
-        use[i] = shifts[i].confidence >= cut;
+        use[i] = PassesAlignment(shifts[i], cut);
         if (use[i]) {
             mx += shifts[i].dx;
             my += shifts[i].dy;
@@ -601,11 +639,13 @@ ser::FloatImage BuildReference(const SourceFactory& factory, const ser::FileInfo
 double AlignmentCut(const std::vector<Shift>& shifts) {
     std::vector<double> ok;
     for (const Shift& s : shifts)
-        if (s.confidence >= kMinAlignConfidence) ok.push_back(s.confidence);
+        if (s.confidence >= kMinAlignConfidence && s.tear <= kMaxTear) ok.push_back(s.confidence);
     if (ok.empty()) return kMinAlignConfidence;
     const size_t mid = (ok.size() - 1) / 2;
     std::nth_element(ok.begin(), ok.begin() + static_cast<std::ptrdiff_t>(mid), ok.end());
     return std::max(kMinAlignConfidence, kAlignRelative * ok[mid]);
 }
+
+bool PassesAlignment(const Shift& shift, double cut) { return shift.confidence >= cut && shift.tear <= kMaxTear; }
 
 }  // namespace planetary::stack

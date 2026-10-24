@@ -921,7 +921,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     std::vector<FrameRegions> kept;
     int64_t cleanAligned = 0;
     for (size_t p = 0; p < alignList.size(); ++p) {
-        const bool pass = shifts[p].confidence >= cut;
+        const bool pass = PassesAlignment(shifts[p], cut);
         if (!isSuspect[p] && !pass) out.frames.alignmentExcluded.push_back(alignList[p]);
         if (!isSuspect[p] && pass) ++cleanAligned;
         const bool use = isSuspect[p] ? std::binary_search(adm.admitted.begin(), adm.admitted.end(), alignList[p]) : pass;
@@ -936,16 +936,22 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     const int64_t nSelected = static_cast<int64_t>(sel.frames.size());
     const int64_t mustAlign = UnalignedBelow(n, nSelected);
     const double medianMatch = Median(cleanConfidence);
+    // Frames over the floor whose halves sit apart (Shift::tear): named in the diagnosis, which they can cause.
+    int64_t torn = 0;
+    for (const Shift& s : shifts) torn += s.confidence >= kMinAlignConfidence && s.tear > kMaxTear ? 1 : 0;
     if (static_cast<int64_t>(kept.size()) < mustAlign) {
         return finish(Diagnosed(
             std::move(out), DiagnosisKind::Unaligned,
             "The frames do not line up: only " + Count(static_cast<int64_t>(kept.size())) + " of " +
                 Count(nSelected + static_cast<int64_t>(sel.suspects.size())) +
                 " selected frames match the reference well enough to be aligned (median match " + Num(medianMatch, 2) +
-                ", needed " + Num(cut, 2) + ") -- the view shook or changed from frame to frame (wind, a knock, or "
-                "not one steady target).",
+                ", needed " + Num(cut, 2) +
+                (torn > 0 ? "; " + Count(torn) + " torn: part of the frame displaced by more than " + Num(kMaxTear * scale, 0) + " px"
+                          : std::string()) +
+                ") -- the view shook or changed from frame to frame (wind, a knock, or not one steady target).",
             {{"frames selected", static_cast<double>(nSelected + static_cast<int64_t>(sel.suspects.size()))},
              {"frames aligned", static_cast<double>(kept.size())},
+             {"frames torn", static_cast<double>(torn)},
              {"median match", medianMatch},
              {"alignment cut", cut},
              {"frames needed", static_cast<double>(mustAlign)}}));
@@ -972,7 +978,7 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
         std::vector<size_t> ranked;  // positions in alignList of the frames kept, sharpest first
         for (size_t p = 0; p < alignList.size(); ++p) {
             const bool use = isSuspect[p] ? std::binary_search(adm.admitted.begin(), adm.admitted.end(), alignList[p])
-                                          : shifts[p].confidence >= cut;
+                                          : PassesAlignment(shifts[p], cut);
             if (use) ranked.push_back(p);
         }
         std::sort(ranked.begin(), ranked.end(), [&](size_t a, size_t b) {

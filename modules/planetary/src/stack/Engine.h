@@ -31,7 +31,8 @@ namespace planetary::stack {
 //     region layout is placed on it (PlaceRegions with the capture-level fullFrameTarget). Then one
 //     streaming pass (Ruling P1) over the selected frames AND the suspects, ascending: per frame its
 //     measurement luma, GlobalAligner shift, RegionMeasurer::Measure and ResidualScale::Observe.
-//     Afterwards: cut = AlignmentCut over the clean frames' shifts; clean frames under it are excluded
+//     Afterwards: cut = AlignmentCut over the clean frames' shifts; clean frames that fail PassesAlignment
+//     (under the cut, or torn: Shift::tear > kMaxTear) are excluded
 //     (reported in StackSummary::alignment); AdmitSuspects(selection, suspects' shifts, cut) decides
 //     the suspects (its explanation becomes StackSummary::selection); PlanRegions over the frames kept.
 //     One diagnosis is made here (below): Unaligned. The region-stage focus check (Rulings P4, P15, P20)
@@ -46,8 +47,8 @@ namespace planetary::stack {
 // the capture in full once (measuring), the selected frames once (aligning) and the stacked ones once
 // more (stacking); BuildReference and the focus measure read up to kReferenceFrames frames each.
 // ResidualScale observes every frame of the alignment pass over kMinAlignConfidence: a superset of
-// the frames stacked, since the cut and the plan come after the pass. The extra frames -- those between
-// the floor and the cut (torn or shaken: 6 of 1750 on the 2023-02-02 Moon, Align.h) and those no region
+// the frames stacked, since the cut and the plan come after the pass. The extra frames -- those over the
+// floor that fail alignment (torn or shaken: 6 of 1750 on the 2023-02-02 Moon, Align.h) and those no region
 // keeps -- can only widen the rejection tolerance, never narrow it (rejection that bites into detail
 // was Task 5's critical finding); a fourth read of the stacked frames to observe exactly them was not
 // worth a whole pass.
@@ -173,15 +174,19 @@ SourceFactory RepairingFactory(SourceFactory base, std::shared_ptr<const HotPixe
 // ---- Diagnoses made after selection ---------------------------------------------------------------
 //
 // Unaligned: most of the selection fails to align -- fewer frames align to the reference (clean frames
-// over AlignmentCut plus admitted suspects) than UnalignedBelow(N, S) = max(1, min(need, ceil(S / 2))),
+// passing alignment -- over AlignmentCut and not torn, PassesAlignment -- plus admitted suspects) than
+// UnalignedBelow(N, S) = max(1, min(need, ceil(S / 2))),
 // with SelectFrames' need = max(1, min(kMinStackFrames, ceil(N / 2))) and S the clean frames selected.
 // The frames do not show one scene (shake, wind, a target that changes from frame to frame); no image
 // is made from the few that align. Otherwise the frames that align are stacked, however few: a
 // selection of 5 on a poor night (Select keeps as few as need) whose 3 intact frames align is stacked
 // from those 3, not refused (final review I1; Ruling P15: a false refusal leaves the user nothing).
 // Reachable only when clean selected frames score under kMinAlignConfidence (not the reference's
-// scene): AlignmentCut is at most the median of the clean frames over that floor, so at least half of
-// those pass it -- with every clean frame over the floor, at least ceil(S / 2) align.
+// scene) or are torn (Shift::tear > kMaxTear): AlignmentCut is at most the median of the clean frames
+// over that floor and in one piece, so at least half of those pass it -- with every clean frame over the
+// floor and in one piece, at least ceil(S / 2) align. A selection mostly torn is Unaligned when the
+// intact frames left are under the threshold (test_engine "torn frames are excluded even when they are
+// most of the selection": 2 intact of 5 -> Unaligned; 6 intact of 13 -> those 6 stacked).
 int64_t UnalignedBelow(int64_t frames, int64_t selected);
 //
 // Focus from the region stage (Rulings P4, P15). The kFocusFrames sharpest frames the stack keeps
@@ -425,7 +430,7 @@ struct StackFrames {
     std::vector<int64_t> stacked;             // frames the stack uses, ascending
     std::vector<int64_t> admittedSuspects;    // Admission::admitted
     std::vector<int64_t> rejectedSuspects;    // Admission::rejected
-    std::vector<int64_t> alignmentExcluded;   // clean selected frames under AlignmentCut
+    std::vector<int64_t> alignmentExcluded;   // clean selected frames failing PassesAlignment (under the cut, or torn)
     // Per stacked frame (same order): how many regions stack it (0: only the fallback stack, where no
     // region covers). regions: the regions placed.
     std::vector<int> regionsKeeping;

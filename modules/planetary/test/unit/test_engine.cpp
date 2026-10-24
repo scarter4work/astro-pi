@@ -747,7 +747,7 @@ TEST_CASE("RunStack: frames that do not show one scene are diagnosed Unaligned, 
 TEST_CASE("RunStack: a small selection whose intact frames align is stacked, not refused as Unaligned (final review I1)",
           "[engine]") {
     // A poor night in miniature: 10 frames of one lunar field, 5 sharp and 5 blurred, so Select keeps as few as
-    // need (5). Two of the sharp frames are torn through the middle by 8 px: they fall under AlignmentCut. The 3
+    // need (5). Two of the sharp frames are torn through the middle by 8 px: they fail alignment. The 3
     // intact frames align at ~1.00 -- the frames show one scene, so the 3 that align are stacked (Ruling P15: a
     // false refusal leaves the user nothing). 3 < need = 5 refused it as "Unaligned".
     const int w = 160, h = 128;
@@ -829,6 +829,7 @@ TEST_CASE("RunStack: torn frames are excluded even when they are most of the sel
         for (int64_t f : o.frames.stacked) CHECK(tears.count(static_cast<int>(f)) == 0);
         CHECK(o.diagnosis.kind == DiagnosisKind::Unaligned);
         CHECK(o.diagnosis.message.find("only 2 of 5 selected frames") != std::string::npos);
+        CHECK(o.diagnosis.message.find(" torn: part of the frame displaced by more than 3 px)") != std::string::npos);
         CHECK_FALSE(o.image.has_value());
     }
     SECTION("most of a larger selection torn: the intact frames that remain are stacked, the torn ones are not") {

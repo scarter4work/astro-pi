@@ -23,6 +23,7 @@
 #include "Parallel.h"
 #include "Select.h"
 #include "StackTypes.h"
+#include "StackSynth.h"
 #include "TestUtil.h"
 
 using namespace planetary;
@@ -485,6 +486,138 @@ TEST_CASE("the documented tear tolerance: sharp half-frame tears of 4 px pass th
         CHECK(four > five);
         CHECK(five > six);
         CHECK(five >= cut - 0.02);
+        // Shift::tear (kMaxTear) refuses what the cut lets through: the halves read the tear itself.
+        const double t3 = align(3.0, 100 + seed).tear, t4 = align(4.0, 100 + seed).tear, t5 = align(5.0, 100 + seed).tear,
+                     t6 = align(6.0, 100 + seed).tear, t0 = intact[seed].tear;
+        INFO("tear read: intact " << t0 << ", 3 px " << t3 << ", 4 px " << t4 << ", 5 px " << t5 << ", 6 px " << t6);
+        // Measured: intact 0.004-0.030 px; 3 / 4 / 5 / 6 px read 2.99-3.02 / 4.00-4.02 / 5.00-5.02 / 5.99-6.02.
+        // So a sharp tear through the middle from 4 px up is refused, where the cut lets 4 px and 5 px through;
+        // 3 px sits on kMaxTear (pinned within 0.05 of the size, not as a side of it).
+        CHECK(t0 <= 0.05);
+        CHECK(std::abs(t3 - 3) <= 0.05);
+        for (double t : {t4, t5, t6}) CHECK(t > stack::kMaxTear);
+        CHECK(std::abs(t4 - 4) <= 0.05);
+        CHECK(std::abs(t6 - 6) <= 0.05);
+    }
+}
+
+TEST_CASE("Shift::tear: a torn frame reads its tear, an intact frame under seeing does not") {
+    // The engine's scenes (StackSynth.h): two frame-filling surfaces and three discs. The reference is one clean
+    // frame (blur 1 px, little noise), standing for BuildReference's average. Frames: Seeing() -- drift 2 px, a
+    // local displacement field of rms 0.7 px in 40-px cells, blur fields around 0.8 / 1.6 / 2.4 px, noise 0.01.
+    // Measured at the commit that introduced Shift::tear: intact frames read at most 1.76 px (150 per case and
+    // blur); tears through the middle of 6 / 8 px read 5.57-6.56 / 7.37-8.64. Off-centre, at 0.3 or 0.7 of the
+    // target's height, 8 px reads 6.99-8.99 but 6 px 1.23-6.05: when the tear row lies inside a half, that half
+    // holds both parts and its shift is a compromise, so the tear is read short -- the measure's limit, pinned as
+    // "8 px anywhere from 0.3 to 0.7 of the target's height is refused".
+    auto image = [](const std::vector<float>& d, int w, int h) { return FloatImage{w, h, 1, d}; };
+    struct Case {
+        const char* name;
+        int w, h;
+        bool full;
+        testing::Scene s;
+    };
+    const Case cases[] = {{"surface 160x128", 160, 128, true, testing::MakeSurface(11, 160, 128)},
+                          {"surface 320x240", 320, 240, true, testing::MakeSurface(12, 320, 240)},
+                          {"disc r20", 160, 128, false, testing::MakeDisc(13, 80, 64, 20)},
+                          {"disc r40", 200, 160, false, testing::MakeDisc(14, 100, 80, 40)},
+                          {"disc r12", 96, 80, false, testing::MakeDisc(15, 48, 40, 12)}};
+    std::pair<double, double> middle[2] = {{1e9, 0}, {1e9, 0}}, offCentre[2] = {{1e9, 0}, {1e9, 0}};  // [6 px, 8 px]: min, max
+    // One job per scene and blur, on its own thread (rendering is the cost); the checks run afterwards, here.
+    struct Torn {
+        double at, jump;
+        Shift s;
+    };
+    struct Job {
+        const Case* c;
+        double blur;
+        double worst = 0, lowest = 1;  // intact frames: largest tear, lowest confidence
+        std::vector<Torn> torn;
+    };
+    std::vector<Job> jobs;
+    for (const Case& c : cases)
+        for (double blur : {0.8, 1.6, 2.4}) jobs.push_back(Job{&c, blur, 0, 1, {}});
+    std::vector<std::thread> pool;
+    for (Job& j : jobs)
+        pool.emplace_back([&j, &image] {
+            const Case& c = *j.c;
+            testing::FrameSpec r;
+            r.noise = 0.002;
+            std::mt19937 rng0(1);
+            r.sigma = testing::RandomField(rng0, c.w, c.h, 40, [] { return 1.0; });
+            const GlobalAligner aligner(image(testing::RenderFrame(c.s, c.w, c.h, r, 7), c.w, c.h), c.full, 1);
+            std::mt19937 rng(99);
+            for (int k = 0; k < 150; ++k) {
+                const FloatImage f =
+                    image(testing::RenderFrame(c.s, c.w, c.h, testing::Seeing(rng, c.w, c.h, 2.0, 40, j.blur), 100 + k), c.w, c.h);
+                const Shift s = aligner.Align(f, stack::MeasureFrame(f, k, 1));
+                j.worst = std::max(j.worst, s.tear);
+                j.lowest = std::min(j.lowest, s.confidence);
+            }
+            for (double at : {0.3, 0.5, 0.7})
+                for (double jump : {6.0, 8.0}) {
+                    testing::FrameSpec t = testing::Seeing(rng, c.w, c.h, 2.0, 40, j.blur);
+                    t.tearRow = c.full ? static_cast<int>(at * c.h) : static_cast<int>(c.s.cy + (at - 0.5) * 1.6 * c.s.radius);
+                    t.tearDx = jump;
+                    const FloatImage f = image(testing::RenderFrame(c.s, c.w, c.h, t, 500), c.w, c.h);
+                    j.torn.push_back({at, jump, aligner.Align(f, stack::MeasureFrame(f, 0, 1))});
+                }
+        });
+    for (std::thread& t : pool) t.join();
+    for (const Job& j : jobs) {
+        INFO(j.c->name << ", blur " << j.blur << ": intact frames' tear at most " << j.worst << ", confidence at least " << j.lowest);
+        REQUIRE(j.lowest >= stack::kMinAlignConfidence);
+        CHECK(j.worst <= 2.0);
+        CHECK(j.worst < stack::kMaxTear);
+        for (const Torn& t : j.torn) {
+            const Shift& s = t.s;
+            INFO(t.jump << " px torn at " << t.at << " reads " << s.tear << " (confidence " << s.confidence << ")");
+            const bool judged = s.confidence >= stack::kMinAlignConfidence;
+            if (judged) {
+                auto& range = t.at == 0.5 ? middle[t.jump == 8] : offCentre[t.jump == 8];
+                range.first = std::min(range.first, s.tear);
+                range.second = std::max(range.second, s.tear);
+            }
+            // Through the middle: read as the tear, refused. Off-centre (0.3 / 0.7 of the target's height, so the
+            // tear row lies inside a half): 8 px is still refused; 6 px may be read short (above).
+            if (t.at == 0.5 || t.jump == 8) {
+                CHECK_FALSE(stack::PassesAlignment(s, stack::kMinAlignConfidence));
+                if (judged) CHECK(s.tear > stack::kMaxTear);
+            }
+            if (t.at == 0.5 && judged) CHECK(std::abs(s.tear - t.jump) <= 1.0);
+        }
+    }
+    INFO("through the middle 6 px " << middle[0].first << "-" << middle[0].second << ", 8 px " << middle[1].first << "-"
+                                    << middle[1].second << "; off-centre 6 px " << offCentre[0].first << "-" << offCentre[0].second
+                                    << ", 8 px " << offCentre[1].first << "-" << offCentre[1].second);
+    CHECK(offCentre[1].first > stack::kMaxTear);
+    SECTION("not judged: a frame under the floor, and a half window with nothing in it") {
+        const testing::Scene moon = testing::MakeSurface(21, 160, 128), other = testing::MakeSurface(22, 160, 128);
+        testing::FrameSpec r;
+        r.noise = 0.002;
+        std::mt19937 rng(3);
+        r.sigma = testing::RandomField(rng, 160, 128, 40, [] { return 1.0; });
+        const GlobalAligner aligner(image(testing::RenderFrame(moon, 160, 128, r, 7), 160, 128), true, 1);
+        const FloatImage foreign = image(testing::RenderFrame(other, 160, 128, r, 8), 160, 128);
+        const Shift sf = aligner.Align(foreign, stack::MeasureFrame(foreign, 0, 1));
+        CHECK(sf.confidence < stack::kMinAlignConfidence);
+        CHECK(sf.tear == 0);
+        // The lower half flat sky in the reference and the frame (a terminator along the middle): the lower half
+        // window has nothing to align on, so the frame is not judged -- even with its lower half displaced.
+        auto skyBelow = [](FloatImage im) {
+            for (size_t i = static_cast<size_t>(im.width) * (im.height / 2); i < im.data.size(); ++i) im.data[i] = 0.05f;
+            return im;
+        };
+        const GlobalAligner half(skyBelow(image(testing::RenderFrame(moon, 160, 128, r, 7), 160, 128)), true, 1);
+        testing::FrameSpec t = r;
+        t.tearRow = 64;
+        t.tearDx = 8;
+        FloatImage f = skyBelow(image(testing::RenderFrame(moon, 160, 128, t, 9), 160, 128));
+        AddNoise(f, 0.01, 10);
+        const Shift s = half.Align(f, stack::MeasureFrame(f, 0, 1));
+        INFO("confidence " << s.confidence << ", tear " << s.tear);
+        CHECK(s.confidence >= stack::kMinAlignConfidence);
+        CHECK(s.tear == 0);
     }
 }
 
@@ -987,6 +1120,61 @@ TEST_CASE("BuildReference: three copies of a foreign scene ranked sharpest do no
         const Shift s = aligner.Align(stack::LumaForMeasure(probe->ReadFrame(f), info.colorId, info.normDepth), stats[f]);
         INFO("frame " << f << " confidence " << s.confidence);
         CHECK(s.confidence >= 0.9);
+    }
+}
+
+TEST_CASE("BuildReference: a reference built from mostly torn frames is the intact frames'") {
+    // Of the 16 sharpest frames 10 are torn -- each from a different row by a different amount, as shakes during
+    // readout are -- and they rank sharpest. The intact six are the largest group that agrees, so the reference is
+    // theirs: every intact frame reads it in one piece, every torn frame reads its tear.
+    static testing::TempDir dir;
+    const std::string path = dir.NewPath(".avi");
+    const int w = 192, h = 144, n = 16;
+    const Lunar moon = MakeLunar(43);
+    const std::map<int, std::pair<int, double>> tears{{0, {72, 8}},  {2, {60, -7}}, {3, {84, 9}},  {5, {50, -8}},
+                                                      {6, {66, 10}}, {8, {90, -9}}, {9, {56, 7}},  {11, {78, -10}},
+                                                      {12, {64, 8.5}}, {14, {70, -7.5}}};
+    std::vector<std::vector<uint8_t>> frames;
+    for (int f = 0; f < n; ++f) {
+        const double dx = 1.3 * std::sin(1.7 * f), dy = 1.1 * std::cos(2.3 * f);
+        FloatImage im = RenderLunar(w, h, moon, dx, dy);
+        const auto t = tears.find(f);
+        if (t != tears.end()) {
+            const FloatImage moved = RenderLunar(w, h, moon, dx + t->second.second, dy);
+            std::copy(moved.data.begin() + static_cast<size_t>(t->second.first) * w, moved.data.end(),
+                      im.data.begin() + static_cast<size_t>(t->second.first) * w);
+        }
+        im = GaussianBlur(im, 0.8);
+        AddNoise(im, 0.008, 2100u + f);
+        frames.push_back(To8(im));
+    }
+    testing::AviSpec spec;
+    spec.width = w;
+    spec.height = h;
+    testing::WriteAvi(path, spec, frames);
+    auto probe = ser::OpenVideo(path, ser::BayerChoice::None);
+    const ser::FileInfo info = probe->Info();
+    const stack::SourceFactory factory = [&] { return ser::OpenVideo(path, ser::BayerChoice::None); };
+    std::vector<FrameStats> stats = stack::MeasureAll(factory, info, 4, {});
+    double qmax = 0;
+    for (const FrameStats& s : stats) qmax = std::max(qmax, s.quality);
+    for (const auto& t : tears) stats[static_cast<size_t>(t.first)].quality = 2 * qmax + t.first;  // the torn rank first
+    stack::Selection sel;
+    sel.fullFrameTarget = true;
+    for (int f = 0; f < n; ++f) sel.frames.push_back(f);
+
+    const FloatImage ref = stack::BuildReference(factory, info, sel, stats, 4, {});
+    const GlobalAligner aligner(ref, true, 1);
+    for (int f = 0; f < n; ++f) {
+        const Shift s = aligner.Align(stack::LumaForMeasure(probe->ReadFrame(f), info.colorId, info.normDepth), stats[f]);
+        const auto t = tears.find(f);
+        INFO("frame " << f << (t != tears.end() ? " (torn)" : "") << ": confidence " << s.confidence << ", tear " << s.tear);
+        if (t == tears.end()) {
+            CHECK(s.tear <= 1.0);
+            CHECK(s.confidence >= 0.9);
+        } else {
+            CHECK(s.tear > stack::kMaxTear);
+        }
     }
 }
 

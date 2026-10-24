@@ -384,7 +384,7 @@ int main(int argc, char** argv) try {
     std::vector<stack::FrameRegions> kept;
     std::vector<stack::FrameRegions> keptGlobal;
     for (size_t p = 0; p < alignList.size(); ++p) {
-        const bool pass = shifts[p].confidence >= cut;
+        const bool pass = stack::PassesAlignment(shifts[p], cut);
         const bool use = isSuspect[p] ? std::binary_search(adm.admitted.begin(), adm.admitted.end(), alignList[p]) : pass;
         if (!use || !hasRegions[p]) continue;
         kept.push_back(measured[p]);

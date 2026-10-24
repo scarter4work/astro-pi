@@ -100,9 +100,11 @@ left out for each reason above.</li>
 <li><b>Focus and seeing</b> (a disc, not a frame-filling surface). The sharpest frames' limb is measured against the size of the disc. A
 disc blurred far beyond what in-focus captures show is refused (Out of focus, or Seeing too poor when the blur changes
 from frame to frame); a disc blurred less, but more than in-focus captures show, is stacked with a focus warning.</li>
-<li><b>Aligning.</b> The 16 sharpest kept frames are averaged into a reference. Every frame is aligned to it with
+<li><b>Aligning.</b> The 16 sharpest kept frames (torn ones left out) are averaged into a reference. Every frame is aligned to it with
 sub-pixel accuracy. Frames that match the reference clearly less well than the rest (below 0.85 of the median match,
-and never below a match of 0.5), such as torn or shaken frames, are left out. The <b>Alignment:</b> line gives the
+and never below a match of 0.5), such as shaken frames, are left out, and so is every torn frame -- one whose top and
+bottom halves line up more than 3 pixels apart (6 on a colour camera, aligned at half resolution), however many such
+frames the capture holds. The <b>Alignment:</b> line gives the
 frames aligned, the median match and the cut.</li>
 <li><b>Regions.</b> Seeing blurs and moves each part of the image differently, so the image is divided into regions,
 placed automatically wherever there is structure to align on: about a quarter of a planet's width across, or an eighth
@@ -143,7 +145,8 @@ radius (usable: under <i>u</i> px), and the blur is the same in every frame ... 
 frames blur the limb by <i>b</i> px, ...&rdquo;</td>
 <td>Capture on a steadier night or with the target higher.</td></tr>
 <tr><td>Frames do not line up</td><td>&ldquo;The frames do not line up: only <i>n</i> of <i>N</i> selected frames match the
-reference well enough to be aligned (median match <i>m</i>, needed <i>c</i>) -- the view shook or changed from frame to
+reference well enough to be aligned (median match <i>m</i>, needed <i>c</i>; when any are torn: <i>t</i> torn: part of the frame displaced by
+more than <i>p</i> px) -- the view shook or changed from frame to
 frame (wind, a knock, or not one steady target).&rdquo;</td>
 <td>Shield the telescope from wind and knocks; capture one target per video.</td></tr>
 </table>
