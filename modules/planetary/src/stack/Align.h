@@ -262,10 +262,13 @@ Shift GlobalShift(const ser::FloatImage& reference, const ser::FloatImage& frame
 //     candidate most others agreed with (the sharper on a tie). So a foreign or corrupt frame -- or a
 //     group of them smaller than half the frames read -- that measures sharpest cannot become the
 //     reference (unit tests: a square of terrain ranked first; three copies ranked first to third).
-//     Nor can a torn frame, however many of the frames read are torn: against a torn anchor the intact
-//     frames read torn, and torn frames agree with each other only when torn alike (the same rows by
-//     the same amount), so the intact frames are the largest group that agrees (unit test "a reference
-//     built from mostly torn frames"); a group torn alike larger than the intact one would win.
+//     A torn frame cannot either while the intact frames are the largest group that agrees: against a
+//     torn anchor the intact frames read torn, and torn frames that differ in direction or amount do not
+//     agree with each other (unit test "a reference built from mostly torn frames"). Known limit (Ruling
+//     F11): torn frames DO agree within kMaxTear when torn the same way -- the same direction by a similar
+//     amount, not necessarily through the same rows -- so when most of the frames read are torn alike,
+//     that group becomes the reference and the intact frames are dropped as torn (unit test "RunStack
+//     KNOWN LIMIT (Ruling F11)"; never seen in real data, 0 of 37,773 frames).
 //     Each anchor turned down costs one more alignment of the frames read;
 //  3. pass 2: align each to that average (lower noise, so a better template); average again those
 //     that pass alignment, with the shifts re-centred on their mean -- the
