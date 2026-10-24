@@ -443,7 +443,7 @@ pass. Against the final fix round's run (both output trees compared: stack pixel
   "Aligning frames" +1.2-1.7 s (probe.json phaseSeconds), the two half-window correlations per frame
   that Shift::tear costs on a 512 x 512 window. The planets change by under 0.3 s.
 
-### What the excess is (`triage.py`; fix round 3, review I-E; re-measured in the final fix round)
+### What the excess is (`triage.py`; fix round 3, review I-E; re-measured after bench6, Ruling F12)
 
 `triage.py halves` re-stacks both halves with `stack-region-probe --fits-out`: the region stack (the
 engine's flow) and the global-only stack of the same frames (no regions, so no kept subsets and no
@@ -453,24 +453,29 @@ level or gain offset between kept subsets multiplies the texture), a shift (the 
 differently, locally or as a whole) and a local blur. D is taken after the registration and one global
 gain only: fix round 3's decomposition took it after `refined_difference`'s global gain-and-shift fit,
 which turned a smooth gain field into a pseudo-shift until bench6 (Ruling F5), so it read a level offset as a local shift (a pure
-3 % gain field: 0.13 gain / 0.82 shift; `test_triage.py`, final review M4). Re-measured with the fixed
-decomposition on the final fix round's run (calibration b35e770c; its R columns predate F5 -- bench6's are in the run
-table above; `triage.py halves`, at 047d3c50's
-triage):
+3 % gain field: 0.13 gain / 0.82 shift; `test_triage.py`, final review M4).
+
+Every figure in the table and the bullets below was measured on 2026-10-24 at commit 98f9361c: R with
+bench6's `refined_difference` (the level field of Ruling F5), against the calibration frozen at 84523c91,
+whose identity (engine 92d7cc94, probe sources 0df5d655, procedure 51d16c62) equals the tree's and the
+probes' (none stale). Method: `python -I triage.py halves test/output/bench <capture> <work dir>` over the
+bench6 run's output; it re-stacks the even/odd halves split from the NAS capture with the built
+`stack-region-probe`. The decomposition columns read the same as the final fix round's (047d3c50's
+triage on calibration b35e770c) to 3 decimals; the R columns moved with F5.
 
 | Capture | Region stacks: 0.21-0.30 / 0.06-0.09 | Global-only: 0.21-0.30 / 0.06-0.09 | Region stacks' D explained by gain / shift / local blur | Global-only's D: gain / shift / blur |
 |---|---|---|---|---|
-| 2024-02-01 Moon | x0.95 / x1.17 | x0.94 / x1.17 | 0.008 / 0.854 / 0.009 | 0.022 / 0.230 / 0.033 |
-| 2023-02-12 Moon | x1.27 / x14.9 | x1.92 / x5.18 | 0.121 / 0.597 / 0.078 | 0.026 / 0.138 / 0.039 |
-| 2026-01-30 Jupiter | x3.72 / x9.56 | x1.77 / x7.71 | 0.001 / 0.820 / 0.001 | 0.002 / 0.713 / 0.000 |
-| Mars (no regions) | x1.74 / x5.23 | the same | 0.003 / 0.956 / 0.004 | the same |
+| 2024-02-01 Moon | x0.94 / x1.19 | x0.94 / x1.18 | 0.008 / 0.854 / 0.009 | 0.022 / 0.230 / 0.033 |
+| 2023-02-12 Moon | x1.06 / x10.27 | x1.91 / x5.27 | 0.121 / 0.597 / 0.078 | 0.026 / 0.138 / 0.039 |
+| 2026-01-30 Jupiter | x3.38 / x9.84 | x1.68 / x7.96 | 0.001 / 0.820 / 0.001 | 0.002 / 0.713 / 0.000 |
+| Mars (no regions) | x1.74 / x5.36 | the same | 0.003 / 0.956 / 0.004 | the same |
 
-* **The 2024-02-01 Moon.** The tile shifts already took its excess out (x0.95, inside the band), and
+* **The 2024-02-01 Moon.** The tile shifts already took its excess out (x0.94, inside the band), and
   what is left of D is still mostly shift (0.85), a gain on A 0.8 %: with the fixed decomposition a
   level offset would read as gain, so the region stacks' level offsets are not what D holds here.
   Fix round 3's reading (0.847 shift, 0.008 gain, before the tile shifts) stands.
 * **The 2023-02-12 Moon.** Mostly shift too (0.60), but a gain on A carries 12 %: the capture
-  Investigation 2 found the level offsets on. Its low bins stay charged (x14.9) after the tile shifts.
+  Investigation 2 found the level offsets on. Its low bins stay charged (x10.27) after the tile shifts.
 * **The 2026-01-30 Jupiter.** Shift explains 82 % of the region stacks' D and 71 % of the global-only
   stacks'. On a 52 x 56 box the tile is the whole box, so this "shift" is the halves' residual global
   and affine registration (README, round-4 run). Fix round 3 read 44 % (an untested guess at the gap: the global fit it decomposed after had
@@ -481,7 +486,7 @@ triage):
 A shift between the two half-stacks is registration, not noise; in the full stack it is a geometric
 offset that END does not see, and P28d's per-tile first-order fit removes it from R. On the disc
 boxes that fit is one global affine field; the 2026-01-30 Jupiter and Mars still read outside their
-band after it (x3.72 / x1.74; at bench6, with the level field of F5, x3.38 / x1.74), and what the rest of
+band after it (x3.38 / x1.74 with the level field of F5, table above; x3.72 / x1.74 before F5), and what the rest of
 their D is, is not established.
 
 ### What the interleaved halves share (fix round 2, review I-D)
