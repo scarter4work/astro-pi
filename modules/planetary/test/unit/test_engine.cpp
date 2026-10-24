@@ -1476,3 +1476,49 @@ TEST_CASE("The region phrase does not count sky-only regions as placed on the ta
     CHECK(phrase.rfind("2 regions placed on the target's detail", 0) == 0);
     CHECK(phrase.find("1 over the sky only") != std::string::npos);
 }
+
+TEST_CASE("RunStack: a frame-filling surface drifting off one edge is stacked there from the frames that saw it (field defect D1, "
+          "2026-10-23 Moon)",
+          "[engine]") {
+    // The 2026-10-23 Moon (Scott, PlanetaryStack 0.3.0.0): the capture drifted 28 luma px left, the limb runs off the
+    // frame's left edge, and the regions of the left column -- sky on their left, surface on their right -- kept
+    // only frames whose window had mostly left the frame (ranked on the part still inside, a different part of the
+    // scene per frame). Their pixels near the edge were then made of samples from outside every frame they kept:
+    // Moon-coloured staircase triangles in the sky and a smeared bright block on the surface. Here: a surface whose
+    // limb leaves sky in the left corners, drifting from +2 to -26 px over the capture.
+    const int w = 320, h = 240, n = 60;
+    Scene s = testing::MakeSurface(91, w, h);
+    s.cx = 300;
+    s.cy = 120;
+    s.radius = 300;  // touches the left edge at mid-height; sky left of x ~25 at the top and bottom rows
+    Capture cap = testing::NewCapture(w, h);
+    std::mt19937 rng(9100);
+    testing::RenderCapture(cap, s, n, [&](int k) {
+        FrameSpec f = testing::Seeing(rng, w, h, 0.5, 40, 1.0);
+        f.gx += 2.0 - 28.0 * k / (n - 1);
+        return f;
+    });
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    INFO(o.summary.selection << " | " << o.summary.alignment);
+    // The band the drift takes out of most frames, against the interior, both over the whole height.
+    const double edge = testing::RmsToTruth(*o.image, s, [](int x, int) { return x < 28; });
+    const double mid = testing::RmsToTruth(*o.image, s, [](int x, int) { return x >= 140 && x < 168; });
+    // The largest error in the band, registered as RmsToTruth registers.
+    const FloatImage& im = *o.image;
+    FloatImage truth{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) truth.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0));
+    const stack::Shift d = stack::GlobalShift(truth, im, stack::MeasureFrame(im, 0, 1), 1);
+    double worst = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < 28; ++x)
+            worst = std::max(worst, std::fabs(im.data[static_cast<size_t>(y) * w + x] - s.Eval(x - d.dx, y - d.dy, 0)));
+    INFO("rms to the truth: left band " << edge << ", interior band " << mid << "; largest error in the band " << worst);
+    // Measured at c59e9fd4 (released engine): left band 0.0249 rms against the interior's 0.0064, largest error 0.362
+    // -- surface in the sky. Fixed: 0.0102 against 0.0066 (fewer frames reach the band), largest 0.111 -- the limb,
+    // blurred by the seeing in the stack and sharp in the truth.
+    CHECK(edge < 2 * mid);
+    CHECK(worst < 0.2);
+}

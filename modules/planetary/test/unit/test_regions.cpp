@@ -327,6 +327,41 @@ TEST_CASE("Region quality follows the local blur; gain follows the frame's brigh
     CHECK(b.gain == Catch::Approx(0.8).margin(0.01));
 }
 
+TEST_CASE("A region judges a frame's detail on its whole window only: a frame that shows part of it has none there (field defect D1)",
+          "[regions]") {
+    // Ranked on the part of its window still inside the frame, a region compared its frames on different parts of the
+    // scene, and kept those whose window had mostly left the frame (the 2026-10-23 Moon: the left column kept 135-1145
+    // of ~2290 frames, mean shift -27 to -16 luma px against the capture's -14; test_engine's "drifting off one edge").
+    const int w = 256, h = 192;
+    const Scene s = testing::MakeSurface(31, w, h);
+    const FloatImage ref = Truth(s, w, h, 0.6);
+    const RegionLayout lay = stack::PlaceRegions(ref, stack::MeasureFrame(ref, 0, 1), true, testing::WhiteNoise(0.01));
+    const RegionMeasurer m(ref, lay);
+    FrameSpec f;
+    f.gx = -10;  // the scene moved 10 px left: the left column's windows start 10 px outside the frame
+    f.hasLocal = true;
+    f.dx = Constant(0);
+    f.dy = Constant(0);
+    f.sigma = Constant(0.8);
+    f.noise = 0.01;
+    const FrameRegions r = m.Measure(Render(s, w, h, f, 5), 0, Shift{-10, 0, 1});
+    int partial = 0, whole = 0;
+    for (size_t i = 0; i < r.regions.size(); ++i) {
+        const stack::RegionMeasure& q = r.regions[i];
+        INFO("region " << i << " at x " << lay.regions[i].x0 << ": aligned " << q.aligned << ", quality " << q.quality);
+        if (!q.aligned) continue;  // the shift is still measured where at least half the window is inside
+        if (lay.regions[i].x0 - 10 < 0) {
+            ++partial;
+            CHECK(q.quality == 0);
+        } else {
+            ++whole;
+            CHECK(q.quality > 0);
+        }
+    }
+    CHECK(partial >= 4);
+    CHECK(whole >= 20);
+}
+
 TEST_CASE("PlanRegions: each region keeps the frames sharp there", "[regions]") {
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(21, w, h);
