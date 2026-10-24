@@ -807,13 +807,23 @@ FrameRegions RegionMeasurer::Measure(const ser::FloatImage& frameLuma, int64_t f
         m.dx = static_cast<float>(ok ? dx : 0);
         m.dy = static_cast<float>(ok ? dy : 0);
         m.confidence = static_cast<float>(ok ? ncc : 0);
-        if (m.aligned) {
+        // Detail only over the same rectangle of the scene in every frame -- the window less kQualityEdgeInset on its
+        // sides at the image's edge -- and only where the frame shows all of it (Regions.h, RegionMeasure::quality).
+        // The shift and the gain still count with half the window inside.
+        const int qx0 = reg.x0 + (reg.x0 == 0 ? kQualityEdgeInset : 0) + ox;
+        const int qy0 = reg.y0 + (reg.y0 == 0 ? kQualityEdgeInset : 0) + oy;
+        const int qx1 = reg.x1 - (reg.x1 == layout_.width ? kQualityEdgeInset : 0) + ox;
+        const int qy1 = reg.y1 - (reg.y1 == layout_.height ? kQualityEdgeInset : 0) + oy;
+        const bool whole = qx0 >= 0 && qy0 >= 0 && qx1 <= frameLuma.width && qy1 <= frameLuma.height;
+        if (m.aligned && whole) {
             const QualityEstimate q =
-                RegionQuality(frameLuma.data.data(), frameLuma.width, rx0, ry0, rx1, ry1, sMean, frameNoise,
+                RegionQuality(frameLuma.data.data(), frameLuma.width, qx0, qy0, qx1, qy1, sMean, frameNoise,
                               variance.empty() ? nullptr : variance.data(), ex0, ey0, ex1 - ex0);
             m.quality = static_cast<float>(q.quality);
             m.qualitySigma = static_cast<float>(q.sigma);
             m.quality2Sigma = static_cast<float>(q.sigma2);
+        }
+        if (m.aligned) {
             gainNum += sSum;
             gainDen += tSum;
         }

@@ -212,8 +212,19 @@ TEST_CASE("Local shifts: sub-pixel, up to 8 px, and a torn frame's halves", "[re
             sum2 += ex * ex + ey * ey;
             worst = std::max({worst, std::fabs(ex), std::fabs(ey)});
             CHECK(q.confidence > 0.8);
-            CHECK(q.quality > 0);
-            CHECK(q.qualitySigma > 0);
+            // Detail where the whole window (less kQualityEdgeInset at the image's edge) is inside the frame at the
+            // rounded shift, none where part of it is outside (field defect D1, "judges a frame's detail on its
+            // whole window only" below).
+            const stack::Region& g = lay.regions[i];
+            const long ox = std::lround(3.3 + q.dx), oy = std::lround(-2.2 + q.dy);
+            const int in = stack::kQualityEdgeInset;
+            if (g.x0 + (g.x0 == 0 ? in : 0) + ox >= 0 && g.y0 + (g.y0 == 0 ? in : 0) + oy >= 0 &&
+                g.x1 - (g.x1 == w ? in : 0) + ox <= w && g.y1 - (g.y1 == h ? in : 0) + oy <= h) {
+                CHECK(q.quality > 0);
+                CHECK(q.qualitySigma > 0);
+            } else {
+                CHECK(q.quality == 0);
+            }
         }
         CHECK(aligned == static_cast<int>(r.regions.size()));
         const double rms = std::sqrt(sum2 / (2.0 * aligned));
@@ -330,8 +341,9 @@ TEST_CASE("Region quality follows the local blur; gain follows the frame's brigh
 TEST_CASE("A region judges a frame's detail on its whole window only: a frame that shows part of it has none there (field defect D1)",
           "[regions]") {
     // Ranked on the part of its window still inside the frame, a region compared its frames on different parts of the
-    // scene, and kept those whose window had mostly left the frame (the 2026-10-23 Moon: the left column kept 135-1145
-    // of ~2290 frames, mean shift -27 to -16 luma px against the capture's -14; test_engine's "drifting off one edge").
+    // scene, and kept those whose window had mostly left the frame (the 2026-10-23 Moon at c59e9fd4: 9 of the 16
+    // regions of the left column kept 135-1145 frames, none showing the window's left edge; Regions.h,
+    // RegionMeasure::quality; test_engine's "drifting off one edge").
     const int w = 256, h = 192;
     const Scene s = testing::MakeSurface(31, w, h);
     const FloatImage ref = Truth(s, w, h, 0.6);

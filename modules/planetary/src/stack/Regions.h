@@ -267,6 +267,13 @@ constexpr double kMaxLocalShift = 12.0;
 constexpr double kLocalSearch = 8.0;
 // Pyramid levels of the local search ([1 3 3 1] / 8 low pass, then every other pixel).
 constexpr int kLocalLevels = 3;
+// Luma px left out of a region's quality rectangle on each side where its window meets the image's edge
+// (RegionMeasure::quality). The quality is read at the shift rounded to whole pixels, so a frame within a
+// pixel of the reference's position rounds out by one at that edge; without the inset it could not be ranked
+// there (test_accumulate's sharpest frame, 0.6 px off the reference: 4 of its 99 regions -- each at an edge
+// it sat within a pixel of -- dropped it). One pixel bounds how far outside the frame a kept frame's samples
+// at the edge can fall: 1.5 luma px, where the prefilter's mirrored edge stands in.
+constexpr int kQualityEdgeInset = 1;
 
 struct RegionMeasure {
     // Local shift on top of the global one: frame(x + global + d) ~ reference(x) over the window.
@@ -277,7 +284,16 @@ struct RegionMeasure {
     // RegionQuality over the frame's pixels at the window's position rounded to the found shift
     // (unresampled: interpolation would blur by an amount that depends on the fractional shift), with
     // the window mean as background and the capture's noise model (RegionLayout::noise). 0 = no measurable
-    // detail. Over a window partly outside the frame, the part inside.
+    // detail. Read over the window less kQualityEdgeInset on its sides at the image's edge -- the same
+    // rectangle of the scene in every frame -- and 0 (not a candidate in PlanRegions) when the frame does not
+    // show all of that rectangle, aligned or not. Read on the part inside, frames were ranked on different parts
+    // of the scene (field defect D1, the 2026-10-23 Moon 203401, which drifted 30 luma px left: at c59e9fd4, 9 of
+    // the 16 regions of its left column kept 135-1145 frames none of which showed the window's left edge, and
+    // their pixels near the edge were made of samples from outside every frame they kept -- stack-probe with a
+    // scratch dump of the plan; test_regions, test_engine "drifting off one edge"). So every frame a region keeps
+    // covers its window to within kQualityEdgeInset. The price, where a capture drifts: a region at the frame's
+    // edge ranks only the frames that show it (that capture, same method: left column 108-230 and top row
+    // 338-355 candidates of 2297), or takes the plain mean under kMinStackFrames.
     float quality = 0, qualitySigma = 0;
     float quality2Sigma = 0;  // sd of quality^2 (FrameStats::quality2Sigma)
     // The search and refinement succeeded (see Method) with the window at least half inside the frame.
