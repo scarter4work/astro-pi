@@ -915,6 +915,55 @@ FloatImage StackShifted(const std::vector<FloatImage>& frames, const std::vector
 
 }  // namespace
 
+TEST_CASE("The rim of a saturated crater under jitter keeps its values: no bloat, no moat (review C1)", "[accumulate]") {
+    // Fix round 1 (Ruling R2) dropped every sample next to a clip as no measurement: where every frame's rim sample was
+    // flagged the rim read full scale (bloat), where only some were the stack averaged the frames the clip had not
+    // reached -- the dimmer ones -- and read low (moat; the 2023-02-12 Moon's limb, G 0.916 -> 0.729). A crater of
+    // 1.3 over 0.6 with a 1 px ramp, area-sampled 4 x 4 per pixel and clipped, 40 frames jittered +-0.5 px.
+    const int w = 64, h = 40, n = 40;
+    auto crater = [](double x, double y) { return 0.6 + 0.7 * std::clamp(9.0 - std::hypot(x - 32, y - 20), 0.0, 1.0); };
+    auto area = [&](double dx, double dy) {
+        return [=](int x, int y) {
+            double v = 0;
+            for (int j = 0; j < 4; ++j)
+                for (int i = 0; i < 4; ++i) v += crater(x + (i + 0.5) / 4 - 0.5 - dx, y + (j + 0.5) / 4 - 0.5 - dy);
+            return std::min(1.0, v / 16);
+        };
+    };
+    const auto truth = area(0, 0);
+    for (bool mosaic : {false, true}) {
+        INFO((mosaic ? "Bayer" : "mono"));
+        std::mt19937 rng(5);
+        std::uniform_real_distribution<double> jit(-0.5, 0.5);
+        std::vector<FloatImage> frames;
+        std::vector<Shift> shifts;
+        for (int k = 0; k < n; ++k) {
+            const double dx = jit(rng), dy = jit(rng);  // the scene's point x shows at x + d: frame(x + g) ~ ref(x)
+            frames.push_back(SceneFrame(area(dx, dy), w, h, mosaic));
+            shifts.push_back(Shift{dx / (mosaic ? 2 : 1), dy / (mosaic ? 2 : 1), 1});
+        }
+        const int c = mosaic ? 3 : 1;
+        const FloatImage out = StackShifted(frames, shifts, std::vector<double>(n, 1.0), SceneLuma(truth, w, h, mosaic), 1.f,
+                                            mosaic ? ser::ColorId::BayerRGGB : ser::ColorId::Mono);
+        double worst = 0, plateauLo = 1;
+        int bloated = 0;
+        for (int y = 3; y < h - 3; ++y)
+            for (int x = 3; x < w - 3; ++x)
+                for (int k = 0; k < c; ++k) {
+                    const double t = truth(x, y), v = out.data[(static_cast<size_t>(y) * w + x) * c + k];
+                    if (t < 0.95) worst = std::max(worst, std::fabs(v - t));
+                    if (t < 0.9 && v >= 0.99) ++bloated;
+                    if (std::hypot(x - 32, y - 20) < 6) plateauLo = std::min(plateauLo, v);
+                }
+        INFO("largest error where the truth is under 0.95: " << worst << "; samples of truth < 0.9 reading >= 0.99: " << bloated
+                                                             << "; plateau's lowest " << plateauLo);
+        // Measured at 3123eea8 (before R2): the jitter's blur of the 1 px ramp, mono and Bayer alike (this test).
+        CHECK(worst < kCraterRimBlur);
+        CHECK(bloated == 0);
+        CHECK(plateauLo >= 0.999);
+    }
+}
+
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
     ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
