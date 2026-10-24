@@ -817,6 +817,58 @@ def test_a_level_offset_between_the_halves_is_never_charged_less_for_the_tile_sh
     assert all(f >= 0.97 * b for f, b in zip(fitted, bare))
 
 
+def _gain_field(shape, amplitude, period=128):
+    """A gain difference varying smoothly across the frame (period `period` px along y and x), as the
+    engine's region blends make the halves' differences vary (test_triage.py's field)."""
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]].astype(float)
+    return amplitude * np.sin(2 * np.pi * yy / period) * np.cos(2 * np.pi * xx / period)
+
+
+def _high_band(D, box, s):
+    """D's power over 0.21-0.30 cycles/px (halves.HIGH_BINS), D over the box in units of the signal s."""
+    import halves
+    p = metric.periodogram(D[box.y0:box.y1, box.x0:box.x1] / s)
+    return float(np.mean(metric.band_means(p, metric.END_EDGES)[halves.HIGH_BINS]))
+
+
+@pytest.mark.parametrize("seed", [3, 7])
+def test_a_smooth_gain_difference_between_the_halves_is_charged_as_gain_not_as_shift(seed):
+    """Ruling F5 (bench6): a smooth gain difference between the halves -- kept subsets at different
+    levels, varying across the frame as the engine's region blends do -- is a real difference, so it is
+    charged, but as itself: refined_difference must read it as a gain-only difference reads it
+    (triage.gain_only_difference: the registration and one global gain, no shift fit), not turn it into a
+    shift. Synthetic, truth known: B = A x (1 + a 3 % field), no shift. Measured at 80282e0e (before the
+    fix): the global fit read the field as a (+0.099, -0.181) px shift on seed 3, and with noise of 0.4 %
+    of the mean the 0.21-0.30 band read x1.51 (seed 3) and x2.02 (seed 7) the noise-only pair's, where the
+    gain-only difference reads x1.005 and x0.994 (the field is nearly invisible there)."""
+    import halves
+    import triage
+    from conftest import lunar_scene
+    A = lunar_scene(size=(256, 256), seed=seed, seeing=1.0)
+    B = A * (1 + _gain_field(A.shape, 0.03))
+    coef = halves.refined_difference(A, B, tile=None)[3]
+    rng = np.random.default_rng(11)
+    sd = 0.004 * A.mean()
+    nA, nB = rng.normal(0, sd, A.shape), rng.normal(0, sd, A.shape)
+
+    def gain_only(X, Y):
+        d, _, bx = triage.gain_only_difference(X, Y)
+        D = np.zeros_like(X)
+        D[bx.y0:bx.y1, bx.x0:bx.x1] = d
+        return D, bx
+
+    D_noise, box = halves.refined_difference(A + nA, A + nB)[:2]
+    s = metric.measure(A, box).signal
+    refined = _high_band(halves.refined_difference(A + nA, B + nB)[0], box, s) / _high_band(D_noise, box, s)
+    G_gain, gbx = gain_only(A + nA, B + nB)
+    G_noise, _ = gain_only(A + nA, A + nB)
+    truth = _high_band(G_gain, gbx, s) / _high_band(G_noise, gbx, s)
+    print(f"\nseed {seed}: global shift fit ({coef[1]:+.4f}, {coef[2]:+.4f}) px; 0.21-0.30 band over the noise-only "
+          f"pair: refined_difference x{refined:.3f}, gain-only x{truth:.3f}")
+    assert refined == pytest.approx(truth, rel=0.02)
+    assert abs(coef[1]) <= 0.005 and abs(coef[2]) <= 0.005
+
+
 def test_noise_between_the_halves_is_still_charged():
     """Ruling P28d: removing the local shift must not remove noise. Noise-only halves read the true
     model per END bin (within -15 / +10 %: the fit's degrees of freedom cost a little in the lowest
