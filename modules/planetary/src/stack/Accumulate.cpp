@@ -983,7 +983,7 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
         uint8_t* any = cellAny.data() + slot * lw;
         for (int lc = 0; lc < lumaW_; ++lc) {
             const int xa = lc * scale_, xb = lc + 1 >= lumaW_ ? W : (lc + 1) * scale_;
-            float luma = 0, floorSum = 0;
+            float luma = 0, floorSum = 0, ceilSum = 0;
             int n = 0, nf = 0;
             for (int y = ya; y < yb; ++y)
                 for (int x = xa; x < xb; ++x) {
@@ -992,7 +992,14 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
                     float v = 0;
                     for (int c = 0; c < C; ++c) v += static_cast<float>(lumaWeights_[c]) * sbase[k * C + c];
                     if (obase[k] & kSaturated) {
+                        // Its upper bound: each saturated channel raised to full scale, which no channel exceeds on the
+                        // reference's clipped scale.
+                        float up = v;
+                        for (int c = 0; c < C; ++c)
+                            if (obase[k] & (0x10u << c))
+                                up += static_cast<float>(lumaWeights_[c]) * std::max(0.f, 1.f - sbase[k * C + c]);
                         floorSum += v;
+                        ceilSum += up;
                         ++nf;
                     } else {
                         luma += v;
@@ -1002,11 +1009,16 @@ bool Accumulator::Add(int64_t frameIndex, ser::FloatImage frame) {
             any[lc] = n > 0 || nf > 0;
             const size_t li = static_cast<size_t>(lr) * lw + lc;
             // A cell of measurements is judged both ways. A cell holding a lower bound (a saturated sample, at its own
-            // gain-corrected value) has a mean that is itself a lower bound of the cell's: it proves an outlier
-            // upward only. Its measurements alone are no stand-in for the cell either -- next to a clip they are
-            // the cell's darker part (Accumulate.h, "Clipping").
-            if (nf == 0) d[lc] = n > 0 ? std::fabs(luma / n - refLuma_[li]) / sigma_[li] : 0.f;
-            else d[lc] = std::max(0.f, ((luma + floorSum) / (n + nf) - refLuma_[li]) / sigma_[li]);
+            // gain-corrected value) is judged on two bounds of its mean: upward on the lower one (each bound at its own
+            // value), downward on the upper one (each bound channel at full scale). Its measurements alone are no
+            // stand-in for the cell -- next to a clip they are the cell's darker part (Accumulate.h, "Clipping").
+            if (nf == 0) {
+                d[lc] = n > 0 ? std::fabs(luma / n - refLuma_[li]) / sigma_[li] : 0.f;
+            } else {
+                const float m = static_cast<float>(n + nf);
+                d[lc] = std::max({0.f, ((luma + floorSum) / m - refLuma_[li]) / sigma_[li],
+                                  (refLuma_[li] - (luma + ceilSum) / m) / sigma_[li]});
+            }
             strong[lc] = d[lc] > kRejectSigmas;
         }
         uint8_t* nr2 = near.data() + slot * lw;

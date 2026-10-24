@@ -107,9 +107,16 @@ namespace planetary::stack {
 //    satellite trail is still an outlier and its wings are rejected around it (unit test "A single-frame streak":
 //    Bayer leak 0, mono 0.0013, as before R2); frames identical to the reference reject nothing (R2's fixed floor,
 //    kClippedLuma x min(1, 1 / gain) for every flagged sample, rejected 2250 of 25 600 cells there); a plateau
-//    saturated only in frames of gain 1.25 (bounds of 0.8 under a reference of 1) is no outlier. Cells next to a clip
-//    therefore lose the downward test (a dark outlier there is not rejected). The residual scale is unchanged: a
-//    saturated frame there can only widen the tolerance.
+//    saturated only in frames of gain 1.25 (bounds of 0.8 under a reference of 1) is no outlier. Downward such a cell is
+//    judged on an upper bound of its mean instead: each saturated channel raised to full scale, which no channel exceeds
+//    on the reference's clipped scale, so it never reads below the cell's true mean and cannot reject a straddling cell
+//    or a bright-only plateau (re-review 3, M5). Only a mosaic's 2 x 2 cell can hold a dark speck beside a saturated
+//    sample of the same frame (unit test "A dark speck in one frame": a 1 px speck of 0.1 on a plateau's edge dimmed the
+//    stack by its 1/n share, 0.045-0.050, at 3a3092b3 and is rejected now). Measured at the commit that added it,
+//    stack-probe on the 2023-03-05 Moon (1705 frames as an 8-bit RGGB SER) against 3a3092b3: the stack moves by at most
+//    5.0e-4 and rejected cells rise from 4761 to 6491; with its frames 0-255 multiplied by 1.25 and clipped (a bright
+//    group), at most 0.0060 (one sample over 1e-3), 4745 -> 5040 cells. The residual scale is unchanged: a saturated
+//    frame there can only widen the tolerance.
 //  - Limits: where the scene sits at the clip in some frames only, the saturated samples count at least at the
 //    unsaturated mean; the true value can be higher. A plateau saturated only in frames brighter than the reference
 //    reads their bound, 1 / gain (unit test: 0.8 at gain 1.25). And Finish's stand-in for a pixel whose weight
