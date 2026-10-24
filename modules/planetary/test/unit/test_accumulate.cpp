@@ -1019,6 +1019,89 @@ TEST_CASE("Frames identical to the reference reject nothing next to a clip (revi
     }
 }
 
+namespace {
+
+// A jittered capture of a scene given on the reference's scale, each frame at its own gain: the frame records gain x
+// the scene area-sampled 4 x 4 per pixel, plus white noise of sd 0.01, clipped to [0, 1] (mono, or a grey RGGB
+// mosaic). Stacked with no regions and residual scale `sigma`; `truth` is the scene clipped to full scale.
+struct GainCapture {
+    FloatImage out;
+    int64_t rejected = 0;
+};
+GainCapture StackGains(const std::function<double(double, double)>& scene, const std::vector<double>& gains, bool mosaic,
+                       float sigma, unsigned seed, int w = 64, int h = 40) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> jit(-0.5, 0.5);
+    std::normal_distribution<double> noise(0, 0.01);
+    auto area = [&](double dx, double dy, double gain) {
+        return [&, dx, dy, gain](int x, int y) {
+            double v = 0;
+            for (int j = 0; j < 4; ++j)
+                for (int i = 0; i < 4; ++i) v += scene(x + (i + 0.5) / 4 - 0.5 - dx, y + (j + 0.5) / 4 - 0.5 - dy);
+            return gain * v / 16 + noise(rng);
+        };
+    };
+    std::vector<FloatImage> frames;
+    std::vector<Shift> shifts;
+    for (double g : gains) {
+        const double dx = jit(rng), dy = jit(rng);
+        frames.push_back(SceneFrame(area(dx, dy, g), w, h, mosaic));
+        shifts.push_back(Shift{dx / (mosaic ? 2 : 1), dy / (mosaic ? 2 : 1), 1});
+    }
+    auto truth = [&](int x, int y) {
+        double v = 0;
+        for (int j = 0; j < 4; ++j)
+            for (int i = 0; i < 4; ++i) v += scene(x + (i + 0.5) / 4 - 0.5, y + (j + 0.5) / 4 - 0.5);
+        return std::min(1.0, v / 16);
+    };
+    GainCapture g;
+    g.out = StackShifted(frames, shifts, gains, SceneLuma(truth, w, h, mosaic), sigma,
+                         mosaic ? ser::ColorId::BayerRGGB : ser::ColorId::Mono, &g.rejected);
+    return g;
+}
+
+// Every frame k at gains[k % gains.size()], n frames.
+std::vector<double> Groups(std::initializer_list<double> gains, int n) {
+    std::vector<double> g(gains), out;
+    for (int k = 0; k < n; ++k) out.push_back(g[static_cast<size_t>(k) % g.size()]);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("Near-clip samples of frames brighter than the reference are lower bounds too: a soft crater keeps its fringe "
+          "(re-review N-I1)",
+          "[accumulate]") {
+    // In a frame of gain g > 1 the clip lies at 1 / g on the reference's scale, under full scale: a sample next to that
+    // frame's saturated area interpolates clipped sites and reads truncated, below kClippedLuma, and divided by g it
+    // dims the stack around every saturated area (the 2023-02-12 Moon's frames 0-260 at gain 1.257). A crater of 1.3
+    // over 0.6 with a 3 px ramp, 60 frames at gains 1.25 / 1.0 / 0.85, jittered +-0.5 px.
+    auto crater = [](double x, double y) { return 0.6 + 0.7 * std::clamp((9.0 - std::hypot(x - 32, y - 20)) / 3, 0.0, 1.0); };
+    auto truth = [&](int x, int y) {
+        double v = 0;
+        for (int j = 0; j < 4; ++j)
+            for (int i = 0; i < 4; ++i) v += crater(x + (i + 0.5) / 4 - 0.5, y + (j + 0.5) / 4 - 0.5);
+        return std::min(1.0, v / 16);
+    };
+    for (bool mosaic : {false, true}) {
+        INFO((mosaic ? "Bayer" : "mono"));
+        const GainCapture g = StackGains(crater, Groups({1.25, 1.0, 0.85}, 60), mosaic, 1.f, 23);
+        const int c = mosaic ? 3 : 1;
+        double fullLo = 1;
+        int off = 0;
+        for (int y = 3; y < 37; ++y)
+            for (int x = 3; x < 61; ++x)
+                for (int k = 0; k < c; ++k) {
+                    const double t = truth(x, y), v = g.out.data[(static_cast<size_t>(y) * 64 + x) * c + k];
+                    if (t >= 1) fullLo = std::min(fullLo, v);
+                    if (t >= 0.6 && std::fabs(v - t) > 0.02) ++off;
+                }
+        INFO("lowest where the truth is full scale " << fullLo << "; samples off by more than 0.02 " << off);
+        CHECK(fullLo >= 0.98);
+        CHECK(off == 0);
+    }
+}
+
 TEST_CASE("Hot pixels fixed on the sensor are found and repaired; a moving moon's peak is not", "[accumulate]") {
     const int w = 128, h = 96;
     ser::FileInfo info = testing::NewCapture(w, h, ser::ColorId::BayerRGGB).info;
