@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The PixInsight harness never re-signs a shipped module (final review, module m6): planetary_check_so
-# and planetary_sign refuse a PLANETARY_SO inside the PixInsight install or inside repository/, and every
+# and planetary_sign refuse a PLANETARY_SO inside the PixInsight install (found through a symlinked launcher
+# too, and /opt/PixInsight always: bench6) or inside repository/, and every
 # script that takes PLANETARY_SO (run-probe.sh, run-probe-stack.sh, gui-smoke.sh, gui-smoke-stack.sh)
 # stops on it before anything runs. Against a stand-in install in a scratch directory (PLANETARY_PI points
 # there; its PixInsight.sh only records that it was called): the real install is never touched.
@@ -40,6 +41,35 @@ bad(){ echo "  FAIL  $*"; fails=$((fails + 1)); }
    exit "$n"
 )
 fails=$((fails + $?))
+
+# A symlinked launcher (bench6; final-fix re-review Minor 1): PLANETARY_PI names a link, in another directory,
+# to the stand-in install's launcher. The guard follows the link to the install it runs, and refuses
+# /opt/PixInsight whatever PLANETARY_PI says (paths need not exist: realpath -m).
+mkdir -p "$T/link/bin"
+ln -s "$T/pi/bin/PixInsight.sh" "$T/link/bin/PixInsight.sh"
+(
+   export PLANETARY_PI="$T/link/bin/PixInsight.sh"
+   . "$HERE/harness.sh"
+   n=0
+   for so in "$T/pi/bin/Planetary-pxm.so" "$T/link/../pi/bin/Planetary-pxm.so" /opt/PixInsight/bin/Planetary-pxm.so \
+             /opt/PixInsight/../PixInsight/bin/Planetary-pxm.so; do
+      if planetary_check_so "$so" >/dev/null; then echo "  FAIL  planetary_check_so accepted $so (launcher a symlink)"; n=$((n + 1))
+      else echo "  ok    planetary_check_so refuses $so (launcher a symlink)"; fi
+   done
+   if planetary_check_so "$T/build/Planetary-pxm.so" >/dev/null; then echo "  ok    planetary_check_so accepts a build product (launcher a symlink)"
+   else echo "  FAIL  planetary_check_so refused a build product (launcher a symlink)"; n=$((n + 1)); fi
+   PLANETARY_RUN_DIR="$T"
+   if planetary_sign "$T/pi/bin/Planetary-pxm.so" >/dev/null; then echo "  FAIL  planetary_sign signed the installed module (launcher a symlink)"; n=$((n + 1))
+   else echo "  ok    planetary_sign refuses the installed module (launcher a symlink)"; fi
+   exit "$n"
+)
+fails=$((fails + $?))
+for s in run-probe.sh run-probe-stack.sh gui-smoke.sh gui-smoke-stack.sh; do
+   out="$(PLANETARY_PI="$T/link/bin/PixInsight.sh" PLANETARY_SO="$T/pi/bin/Planetary-pxm.so" bash "$HERE/$s" "$T/out-link-$s" 2>&1)"; rc=$?
+   if [ "$rc" -eq 1 ] && grep -q "refusing PLANETARY_SO" <<<"$out" && [ ! -e "$T/pi-called" ]; then
+      ok "$s refuses the installed module with a symlinked launcher before anything runs"
+   else bad "$s with a symlinked launcher: exit $rc, PixInsight $([ -e "$T/pi-called" ] && echo called || echo "not called"): $(tail -2 <<<"$out")"; fi
+done
 
 # Every script that takes PLANETARY_SO stops on it first: exit 1, the refusal said, PixInsight never started.
 for s in run-probe.sh run-probe-stack.sh gui-smoke.sh gui-smoke-stack.sh; do
