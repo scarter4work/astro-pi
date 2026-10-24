@@ -4229,13 +4229,27 @@ bool RunJourneySelfTest( nlohmann::json& out )
 
          // (j) Cost on 500 steps (spec risk 3): full read + parse, and the tail
          //     read the tracker normally does (pcHrLong, built at top level).
-         jclock::time_point t0 = jclock::now();
-         const HistorySnapshot full = ReadViewHistory( "pcHrLong", 0 );
-         const double fullMs = MsSince( t0 );
-         t0 = jclock::now();
-         const HistorySnapshot tail = ReadViewHistory( "pcHrLong", full.TotalCount() - 1 );
-         const double tailMs = MsSince( t0 );
-         d["cost"] = { { "fullMs", fullMs }, { "tailMs", tailMs }, { "steps", full.steps.size() }, { "full", SnapJson( full ) } };
+         //     The budgets judge the MINIMUM of 3 samples each (re-review 2): one wall-clock sample flipped
+         //     with machine load alone (27 ms vs 155 ms on the same build); a real regression raises the
+         //     minimum, load noise does not. Every sample is recorded.
+         HistorySnapshot full, tail;
+         nlohmann::json fullSamples = nlohmann::json::array(), tailSamples = nlohmann::json::array();
+         double fullMs = 1e300, tailMs = 1e300;
+         for ( int sample = 0; sample < 3; ++sample )
+         {
+            jclock::time_point t0 = jclock::now();
+            full = ReadViewHistory( "pcHrLong", 0 );
+            const double f = MsSince( t0 );
+            t0 = jclock::now();
+            tail = ReadViewHistory( "pcHrLong", full.TotalCount() - 1 );
+            const double t = MsSince( t0 );
+            fullSamples.push_back( f );
+            tailSamples.push_back( t );
+            fullMs = std::min( fullMs, f );
+            tailMs = std::min( tailMs, t );
+         }
+         d["cost"] = { { "fullMs", fullMs }, { "tailMs", tailMs }, { "fullSamplesMs", fullSamples },
+                       { "tailSamplesMs", tailSamples }, { "steps", full.steps.size() }, { "full", SnapJson( full ) } };
          costOk = full.ok && tail.ok && full.length == 500 && full.steps.size() >= 500 && tail.steps.size() == 1
                && tailMs <= 150 && fullMs <= 3000;
 
@@ -4406,9 +4420,22 @@ bool RunJourneySelfTest( nlohmann::json& out )
          {
             JTempDir dir( "picopilot-ss60-" );
             JWindow w( "pcSs60", 9504, 6336, 3, 0.1 );
-            const StepStatsResult r = ComputeStepStats( w.MainView(), dir.Path() + "/t.jpg" );
-            d["mp60"] = { { "ok", r.ok }, { "ms", r.elapsedMs }, { "budgetMs", PICopilotJourneyStepBudgetMs }, { "stride", r.rowStride } };
-            budgetOk = r.ok && r.thumbnailError.IsEmpty() && r.elapsedMs <= PICopilotJourneyStepBudgetMs;
+            // The budget judges the MINIMUM of 3 samples (re-review 2: one wall-clock sample is load
+            // noise); every sample must succeed, and all are recorded.
+            bool allOk = true;
+            double minMs = 1e300;
+            nlohmann::json samples = nlohmann::json::array();
+            StepStatsResult r;
+            for ( int sample = 0; sample < 3; ++sample )
+            {
+               r = ComputeStepStats( w.MainView(), dir.Path() + "/t.jpg" );
+               allOk = allOk && r.ok && r.thumbnailError.IsEmpty();
+               samples.push_back( r.elapsedMs );
+               minMs = std::min( minMs, r.elapsedMs );
+            }
+            d["mp60"] = { { "ok", allOk }, { "ms", minMs }, { "samplesMs", samples }, { "budgetMs", PICopilotJourneyStepBudgetMs },
+                          { "stride", r.rowStride } };
+            budgetOk = allOk && minMs <= PICopilotJourneyStepBudgetMs;
          }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
