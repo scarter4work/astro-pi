@@ -441,14 +441,18 @@ TEST_CASE("DemosaicHQ into reused buffers reads exactly as a fresh call", "[stac
         std::fill(scratch.green.begin(), scratch.green.end(), std::nanf(""));
     };
     int calls = 0;
-    // Sizes shrink and grow between calls, so each buffer is both cut down and extended.
+    // Sizes shrink and grow between calls, so each buffer is both cut down and extended. A black corner puts zero
+    // samples, a dark sky's, on poisoned buffers: a write skipped where the sample is 0 relies on a zero-fill that reused
+    // buffers do not have (re-review 4, m2).
     for (auto [w, h] : {std::pair{16, 9}, std::pair{16, 9}, std::pair{7, 5}, std::pair{24, 20}, std::pair{2, 2}})
         for (ColorId p : kPatterns) {
             FloatImage truth = MakeTruth(w, h, [&](double x, double y, float* px) {
                 px[0] = static_cast<float>(0.5 + 0.4 * std::sin(0.9 * x + 0.3 * y + calls));
                 px[1] = static_cast<float>(0.5 + 0.4 * std::cos(0.5 * x - 0.7 * y));
                 px[2] = x + y > w / 2 ? 0.9f : 0.1f;
+                if (x < 4 && y < 3) px[0] = px[1] = px[2] = 0.f;
             });
+            CHECK(std::count(truth.data.begin(), truth.data.end(), 0.f) >= 6);
             const Frame cfa = Mosaic(truth, p);
             poison();
             stack::DemosaicHQ(cfa, p, 16, out, scratch);
