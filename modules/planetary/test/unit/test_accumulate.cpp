@@ -664,6 +664,11 @@ TEST_CASE("ResidualScale and Accumulator argument errors", "[accumulate]") {
     huge.header.height = 65537;
     CHECK_THROWS_WITH(stack::Accumulator(plan, ref, ref, huge),
                       Catch::Matchers::ContainsSubstring("65536x65537") && Catch::Matchers::ContainsSubstring("2^32 pixels"));
+    // The boundary (re-review 4, m3): 2^32 pixels exactly passes the index check and is refused only later, by the
+    // luma-size check (this reference is not its size), so nothing frame-sized is allocated here either.
+    huge.header.height = 65536;
+    CHECK_THROWS_WITH(stack::Accumulator(plan, ref, ref, huge),
+                      Catch::Matchers::ContainsSubstring("luma size") && !Catch::Matchers::ContainsSubstring("2^32 pixels"));
 }
 
 TEST_CASE("The Accumulator holds a moved-in plan without copying it; HotPixelMap releases its counts at Finish (final review, engine M3)",
