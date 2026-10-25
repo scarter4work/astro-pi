@@ -93,7 +93,7 @@ void PlanetaryModule::GetReleaseDate( int& year, int& month, int& day ) const
 {
    year  = 2026;
    month = 10;
-   day   = 24;
+   day   = 25;
 }
 
 void PlanetaryModule::OnUnload()
