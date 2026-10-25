@@ -178,7 +178,8 @@ void DemosaicHQ(const Frame& frame, ColorId color, int normDepth, FloatImage& ou
     out.height = frame.height;
     out.channels = frame.channels;
     out.data.resize(frame.samples.size());  // every sample is written by NormalizeInto
-    float* const planes[3] = {out.data.data(), out.data.data() + 1, out.data.data() + 2};
+    float* planes[3] = {};  // only the frame's channels: data() + c past a mono frame's end is not formed
+    for (int c = 0; c < frame.channels; ++c) planes[c] = out.data.data() + c;
     ser::NormalizeInto(frame, normDepth, planes, static_cast<size_t>(frame.channels));
 }
 
