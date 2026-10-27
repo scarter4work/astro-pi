@@ -391,3 +391,55 @@ constexpr const char* kPhaseMineral = "Mineral moon";
 - [ ] **Step 2:** Run `tools/build-env/build-modules.sh`, then `tools/build-env/verify-portable.sh`, then the probes against the container build (`PLANETARY_SO=build-portable/...`). All PASS.
 - [ ] **Step 3:** Dispatch a fresh reviewer on the most capable model for a whole-branch review. Fix its findings under the no-deferring rule.
 - [ ] **Step 4:** Ask Scott for the release go-ahead. Then: version bump, `./release.sh`, ff-merge, push, and verify the served manifest and sha1.
+
+---
+
+## Amendment 2026-10-27 (spec amendment: Scott's ratio-based algorithm), binding over B4–B9
+
+**B5, chroma.** `DenoiseChroma` becomes the Gaussian chroma blur:
+
+```cpp
+ser::FloatImage ChromaLayer(const ser::FloatImage& rgb, double sigma, int threads)
+```
+
+Its tests are unchanged.
+
+**B6, mineral colour.** `BoostSaturation` and `CleanHighlights` are replaced by:
+
+```cpp
+struct MineralParams { double strength = 8.0, chromaBlurSigma = 2.5, eps = 0.002, devClamp = 0.06, satRamp = 0.12; };
+double AutoSatThreshold(const ser::FloatImage& rgb);   // 0.92 x min over channels of the 99.99th percentile
+StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p);   // out = clip(L(1 + k w d))
+```
+
+The tests:
+- **Hue preserved:** sign(d) of the maria and highlands is kept.
+- **Strength scales:** chroma at k = 8 is 8/4 × chroma at k = 4, within 5 %, wherever there is no clamp and no fade.
+- **Fade at highlights:** pixels at or above `sat_threshold` come out neutral.
+- **Clamp:** a single 1.0 blue pixel gives |d| ≤ 0.06.
+- **Range:** no sample > 1 or < 0.
+- **Auto threshold:** on synthetic data it equals 0.92 × the minimum per-channel p99.99.
+
+The "saturation: adaptive" test is dropped, because strength is now a user parameter.
+
+**B4b, new.** Channel alignment:
+
+```cpp
+StepRecord AlignChannels(ser::FloatImage& rgb, int threads)
+```
+
+It is skipped when the measured R/B-to-G shift is ≤ 0.1 px. Tests:
+- a known 0.5 px vertical R/B offset is corrected to ≤ 0.05 px;
+- a 0.02 px offset is a no-op, with a HISTORY line.
+
+**B7, pipeline.** The new order:
+
+Segment → Calibrate → Background → Display transfer → AlignChannels → SharpenLuminance (gives L) → MineralColour
+
+**B8, parameters.** Add:
+- `mineralStrength` (double, 0–15, default 8), shown as an interface slider;
+- `chromaBlur` (double, 0.5–6, default 2.5).
+
+Changing either re-runs only `MineralColour` on the cached stack and L, with no restack.
+
+**B9, real data.** Run every capture at k = 8. For 64.6F, also produce side-by-sides at k = 5 and k = 12 for Scott.

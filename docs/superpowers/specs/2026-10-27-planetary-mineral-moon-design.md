@@ -267,3 +267,27 @@ Gating tests, on real file names:
 - How the preview switches.
 
 All of these must meet the measured requirements.
+
+## Amendment 2026-10-27: the mineral-moon algorithm (Scott's pasted spec)
+
+Scott supplied an algorithm spec for steps 5–7. It is adopted. Where it conflicts with the sections above, this amendment wins.
+
+**Inputs.** The calibrated, background-neutralised, display-transferred RGB, plus a sharp, denoised luminance L. L comes from step 4's sharpening of the stack's own luminance (the mean of the channels).
+
+**Steps 5–7 become one ratio-based colour transfer:**
+1. `C` = each RGB channel Gaussian-blurred by `chroma_blur_sigma` (default 2.5 px at 1–2k width, scaled with resolution). This *is* the chroma noise reduction of step 5.
+2. `d = clip(C / (mean(C) + eps) − 1, ±dev_clamp)`, with `eps` = 0.002 and `dev_clamp` = 0.06.
+3. Highlight fade: `w = clip((sat_threshold − max(C_R, C_G)) / sat_ramp, 0, 1)`.
+   - `sat_threshold` is set automatically: 0.92 × the lowest per-channel 99.99th percentile of the RGB.
+   - `sat_ramp` = 0.12.
+
+   This replaces step 7's clean-up.
+4. `out = clip(L · (1 + k · w · d), 0, 1)`, with gain `k` default 8.
+
+**Why ratios.** Hue is preserved, all detail comes from the sharp L, and colour can be lower resolution than luminance (as in LRGB). HSV or Lab saturation pushed this far shifts hues and amplifies noise.
+
+**Changes to the decisions above:**
+- **Strength is a user control, not solved from the image.** The process parameter is `mineralStrength` (k), with a slider from 0 to 15 and a default of 8. `chroma_blur_sigma` is also exposed. `eps`, `dev_clamp` and `sat_ramp` stay internal, and `sat_threshold` is automatic.
+- **New optional step 4b: align R and B to G.** This corrects atmospheric dispersion. The step runs only when the measured inter-channel shift exceeds 0.1 px, and HISTORY reports the shift. On 64.6F the measured shift is ≤ 0.02 px, so the step is a no-op there. Dispersion left uncorrected shows up as a blue or red limb fringe once the colour is amplified.
+- **Limb fade: Claude's call, Scott may veto.** `w` → 0 within a few px of the limb, applied only if the real-data runs show a limb fringe after step 4b.
+- **Optional final mild S-curve on L.** It is not added in this increment; the bar is judged without it. No second saturation step.
