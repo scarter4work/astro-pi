@@ -24,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 218 tests + 32 strict xfails (C1), ~3.7 min with the NAS (bench6, 84523c91); the engine tests need the built probes
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 165 tests + 26 strict xfails without the NAS, ~2 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 219 tests + 32 strict xfails (C1), ~3.7 min with the NAS (A3 re-freeze); the engine tests need the built probes
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 166 tests + 26 strict xfails without the NAS, ~2 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -296,7 +296,7 @@ box would give, and the lowest charges on the real disc boxes are about 10 % hig
 next bin: the safe direction (ours is over-charged, never under-charged). No disc verdict sits near
 that: all four disc captures are review for other reasons.
 
-**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative):
+**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative; re-frozen in Task A3 on the 0.3.0.2 engine, with the k boxes on the cropped grid (R14), moves below the table):
 * 48 synthetic RGGB captures, 24 per target kind (a banded disc; a lunar field with a limb);
 * 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter, each without and with a 3 DN
   black pedestal (review N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative
@@ -316,21 +316,31 @@ different frames: unshared signal is absent by construction. On real data it can
 the E3 fix every half keeps 295-300 of its 300 frames over the box (84523c91; fix round 3: 5-32 on 6 of the 12
 lunar runs, an artefact of the generator's wrapped edge, `e3-report.md`).
 
-| Kind (calibration.json at 84523c91) | 0.21-0.30: mean / sd (ddof 1, 24 runs); range | log R: mean / sd | Tolerance exp(mean ± 5.81 sd) | R_cal per END bin (0.06 ... 0.30) |
+| Kind (calibration.json, A3 re-freeze, 0.3.0.2 engine) | 0.21-0.30: mean / sd (ddof 1, 24 runs); range | log R: mean / sd | Tolerance exp(mean ± 5.81 sd) | R_cal per END bin (0.06 ... 0.30) |
 |---|---|---|---|---|
-| disc | 0.863 / 0.078; 0.720-1.029 | -0.151 / 0.091 | 0.507-1.458 | 0.82 0.79 0.89 0.83 0.96 0.93 0.86 0.80 |
-| lunar | 0.868 / 0.134; 0.586-1.004 | -0.156 / 0.176 | 0.308-2.376 | 1.16 0.92 0.88 0.91 0.90 0.91 0.85 0.84 |
+| disc | 0.862 / 0.079; 0.718-1.029 | -0.152 / 0.092 | 0.505-1.463 | 0.82 0.79 0.89 0.83 0.96 0.93 0.86 0.80 |
+| lunar | 0.868 / 0.134; 0.583-1.005 | -0.155 / 0.177 | 0.307-2.389 | 1.12 0.90 0.89 0.92 0.88 0.91 0.85 0.84 |
 
+* **What the A3 re-freeze moved** (Task A3, against the 342bdd69 freeze; attributed by a third freeze on the
+  0.3.0.1 engine, 9e01b598, in a scratch worktree): every run's 0.21-0.30 ratio within 1 %, every k within
+  0.2 frames of 295-300 (6e-4 relative). The disc moved only with the 0.3.0.1 engine (mean 0.863 -> 0.862, band 0.507-1.458 ->
+  0.505-1.463); A2's guard band and crop and R14's boxes then moved it under 1e-5. Lunar R_cal's two lowest
+  bins (1.16 / 0.92 -> 1.12 / 0.90) and its 0.40-0.50 bin (0.48 -> 0.54, outside the charge) moved with A2:
+  the crop makes the lunar stacks 8 px smaller each way (288 x 384 -> 280 x 376), so the near-full-frame
+  lunar target box, taken on the cropped stack, sits 4 px further inside the scene on every side.
+  R14 on its own moves k by at most 1.2e-3 relative (measured on two lunar conditions: j0.7-s3-p3 294.99
+  -> 295.35, j0.3-s1 6e-6), so R by at most as much, and D not at all (D's box was already
+  taken on the cropped stack).
 * 5.81 is the two-sided normal tolerance factor (Howe) at 99 % coverage and 95 % confidence for n = 6,
   the number of scenes: the scene dominates the spread (review N2-m2), so the 24 runs are not 24
-  independent draws. The lunar scene 2 reads 0.586-0.595 at both jitters and both pedestals.
-* The pedestal does not move the ratio: disc 0.864 without, 0.862 with; lunar 0.867 and 0.868.
-* Jitter moves the disc: 0.906 at 0.3 px, 0.820 at 0.7 px, where the photon-transfer line reads
-  +4 to +17 % high (a moving textured disc). It barely moves the lunar runs: 0.871 and 0.864.
+  independent draws. The lunar scene 2 reads 0.583-0.596 at both jitters and both pedestals.
+* The pedestal does not move the ratio: disc 0.864 without, 0.861 with; lunar 0.867 and 0.868.
+* Jitter moves the disc: 0.905 at 0.3 px, 0.820 at 0.7 px, where the photon-transfer line reads
+  +4 to +17 % high (a moving textured disc). It barely moves the lunar runs: 0.874 and 0.862.
 * **The interval is taken on log R** (review N3-m1). R is a ratio of powers, positive, and a leak
   scales it, so its spread is multiplicative. Fix round 3 took mean ± k sd on R, and the lunar lower
   end came out below 0 (clamped to 0), so below-band review could never fire on lunar. On log R both
-  ends are real: the lunar band's lower end is 0.308, about half the lowest calibration run (0.586).
+  ends are real: the lunar band's lower end is 0.307, about half the lowest calibration run (0.583).
 * The level field (F5) raised lunar R_cal's lowest bin from 0.94 (b35e770c) to 1.16 and moved nothing
   else by more than 0.07: a noise-only pair reads its lowest bin a little higher with the level terms
   fitted beside the shifts (the noise-only test: 0.99 against 0.90), and that cost sits in R_cal as in R.
