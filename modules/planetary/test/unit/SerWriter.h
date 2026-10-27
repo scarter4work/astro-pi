@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,8 @@ inline void WriteSer(const std::string& path, const SerSpec& s,
         PutI64(b, 0, t);
         out.write(reinterpret_cast<const char*>(b.data()), 8);
     }
+    out.close();
+    if (!out) throw std::runtime_error("WriteSer: cannot write " + path + " (disk full?)");
 }
 
 }  // namespace planetary::testing

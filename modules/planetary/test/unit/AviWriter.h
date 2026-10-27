@@ -293,6 +293,8 @@ inline void WriteAvi(const std::string& path, const AviSpec& s,
 
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+    out.close();
+    if (!out) throw std::runtime_error("WriteAvi: cannot write " + path + " (disk full?)");
 }
 
 }  // namespace planetary::testing

@@ -158,8 +158,8 @@ void WriteTiff(const std::string& path, const ser::FloatImage& im, int bits) {
     put32(0);
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) throw std::runtime_error("cannot write " + path);
-    std::fwrite(b.data(), 1, b.size(), f);
-    std::fclose(f);
+    const bool written = std::fwrite(b.data(), 1, b.size(), f) == b.size();
+    if (std::fclose(f) != 0 || !written) throw std::runtime_error("cannot write " + path + " (disk full?)");
 }
 
 bool EndsWith(const std::string& s, const std::string& t) { return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0; }
@@ -457,6 +457,8 @@ int main(int argc, char** argv) try {
                         d.keptQualitySigma, d.detailScale, static_cast<long long>(d.kept), static_cast<long long>(d.candidates));
         }
     }
+    // A summary lost to a full disk must not pass for one written (the GUI smoke read an empty JSON as "no warning").
+    if (std::fflush(stdout) != 0 || std::ferror(stdout)) throw std::runtime_error("cannot write the summary to standard output (disk full?)");
     return o.image ? 0 : 2;
 } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

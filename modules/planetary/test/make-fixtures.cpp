@@ -202,6 +202,7 @@ std::vector<std::vector<uint8_t>> GenFrames8(int w, int h, int n) {
 void WriteText(const std::string& path, const std::string& text) {
     std::ofstream out(path, std::ios::binary);
     out << text;
+    out.close();  // a full disk shows only on the flush
     if (!out) {
         std::fprintf(stderr, "make-fixtures: cannot write %s\n", path.c_str());
         std::exit(1);

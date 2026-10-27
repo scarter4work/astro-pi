@@ -49,9 +49,9 @@ inline void WriteFits(const std::string& path, const ser::FloatImage& im) {
     data.resize((data.size() + 2879) / 2880 * 2880, 0);
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) throw std::runtime_error("cannot write " + path);
-    std::fwrite(header.data(), 1, header.size(), f);
-    std::fwrite(data.data(), 1, data.size(), f);
-    std::fclose(f);
+    const bool written = std::fwrite(header.data(), 1, header.size(), f) == header.size() &&
+                         std::fwrite(data.data(), 1, data.size(), f) == data.size();
+    if (std::fclose(f) != 0 || !written) throw std::runtime_error("cannot write " + path + " (disk full?)");
 }
 
 }  // namespace planetary::probe
