@@ -49,8 +49,13 @@ if(PLANETARY_PYTHON3)
     add_test(NAME fpn_verdict_fails_closed
              COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_fpn_verdict.py")
     set_tests_properties(fpn_verdict_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
+    # edge_chroma.py (the edge chroma bar, Ruling R8) on synthetic stacks: a noisy edge fails, a clean one passes,
+    # an unmeasurable one fails closed.
+    add_test(NAME edge_chroma_fails_closed
+             COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_edge_chroma.py")
+    set_tests_properties(edge_chroma_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
 else()
-    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed is not registered")
+    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed and edge_chroma_fails_closed are not registered")
 endif()
 
 # The PixInsight harness refuses to re-sign a shipped module (a PLANETARY_SO inside the PixInsight install
