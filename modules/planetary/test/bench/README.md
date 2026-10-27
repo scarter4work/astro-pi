@@ -453,6 +453,27 @@ pass. Against the final fix round's run (both output trees compared: stack pixel
   "Aligning frames" +1.2-1.7 s (probe.json phaseSeconds), the two half-window correlations per frame
   that Shift::tear costs on a 512 x 512 window. The planets change by under 0.3 s.
 
+**The A3 run** (2026-10-27, finished 13:19; the 0.3.0.2 engine: the 0.3.0.1 edge round plus A2's guard band and
+crop, k boxes on the cropped grid (R14), calibration re-frozen in A3 with its identity, staged to local disk):
+4 pass, 4 review, 0 fail, the same verdicts as bench6; the diagnosis cases pass.
+
+| Capture | END full / int (bench6) | Split halves 0.21-0.30 (bench6) | Status | Time s (bench6) |
+|---|---|---|---|---|
+| 2023-02-11 Jupiter | 1.337 (1.337) | agrees x1.14 (x1.14) | review | 4.4 (4.7) |
+| 2026-01-30 Jupiter | 2.239 / 1.011 (2.240 / 1.010) | outside x3.38 (x3.38) | review | 1.9 (1.8) |
+| Saturn | 2.902 (2.902) | agrees x0.73 (x0.73) | review | 17.7 (19.5) |
+| Mars | 1.544 (1.544) | outside x1.74 (x1.74) | review | 1.8 (1.7) |
+| 2023-02-12 Moon | 1.356 / 1.294 (1.280 / 1.164) | agrees x0.98 (x1.06) | pass | 18.8 (19.2) |
+| 2024-02-01 Moon | 1.813 / 1.570 (1.815 / 1.572) | agrees x0.94 (x0.94) | pass | 16.2 (17.0) |
+| 2023-08-22 Moon | 1.592 / 1.670 (1.593 / 1.666) | agrees x0.82 (x0.82) | pass | 18.5 (19.6) |
+| 2023-03-05 Moon | 2.028 / 1.670 (2.034 / 1.676) | agrees x0.48 (x0.49) | pass | 23.7 (24.2) |
+
+* The 2023-02-12 Moon moved most: its split halves read x0.98 (x1.06), its lowest-bin charge 3.24 (8.88), and
+  END rose to 1.356 / 1.294. The other captures moved by under 0.01 in END.
+* The 4000-frame 1080p Bayer gate (the 2023-03-05 Moon x4000, 8-bit RGGB SER on local disk, page cache evicted,
+  `stack-probe --threads 32`): 52.1, 52.2, 51.9 and 52.2 s wall, stacking 26.4-26.6 s, peak RSS 1980 MB, cropped
+  3 px left.
+
 ### What the excess is (`triage.py`; fix round 3, review I-E; re-measured after bench6, Ruling F12)
 
 `triage.py halves` re-stacks both halves with `stack-region-probe --fits-out`: the region stack (the
