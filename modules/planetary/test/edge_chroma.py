@@ -11,9 +11,9 @@ std((ratio0 - ratio1) / sqrt 2) of B/G and of R/G (one half-stack's noise), over
 (G >= 0.05) in both, and exits 0 when the edge band's is <= 1.5 x the reference band's for both ratios.
 Registration. Each half-stack is a run of its own, with its own crop and its own reference, and the reference
 sits at the mean position of that half's sharpest frames (Align.h BuildReference). So the halves' grids differ
-by whole pixels plus an arbitrary fraction: 0.16 / 0.12 px on the 64.6F, 0.16 / 0.60 px on the 70.0F. Left in,
-the fraction makes the difference carry the scene's colour gradient: unregistered, the 70.0F top band read 3x
-its noise. So half 1 is registered onto half 0 on G. First comes the whole-pixel offset, by phase correlation:
+by whole pixels plus an arbitrary fraction (x / y): 0.16 / 0.12 px on the 64.6F, 0.16 / 0.60 px on the 70.0F.
+Left in, the fraction makes the difference carry the scene's colour gradient: registered to the whole pixel
+only, the 70.0F top band read 3x its noise. So half 1 is registered onto half 0 on G. First comes the whole-pixel offset, by phase correlation:
 "offset" x, y says half 1's pixel (0, 0) is half 0's (x, y). Then the sub-pixel residual ("residual_x",
 "residual_y"), by Lucas-Kanade iterated to convergence over pixels that are disk in both, 2 px clear of the
 limb. Both halves are then resampled half-way, half 0 by +residual/2 and half 1 by -residual/2. Each uses
