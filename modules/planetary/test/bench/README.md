@@ -24,8 +24,8 @@ Python 3.14 in a venv outside the repo (any location; the session used its scrat
 python3 -m venv <venv>
 <venv>/bin/pip install numpy scipy astropy tifffile Pillow opencv-python-headless pytest
 cd modules/planetary/test/bench
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 219 tests + 32 strict xfails (C1), ~3.7 min with the NAS (A3 re-freeze); the engine tests need the built probes
-<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 166 tests + 26 strict xfails without the NAS, ~2 min
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider               # 220 tests + 32 strict xfails (C1), ~3.7 min with the NAS (A3 fix round 1); the engine tests need the built probes
+<venv>/bin/python -I -m pytest -q -p no:cacheprovider -m "not nas"  # 167 tests + 26 strict xfails without the NAS, ~2 min
 <venv>/bin/python -I benchset.py survey ../output/bench-survey       # survey.json + thumbnails (gitignored)
 ```
 
@@ -296,7 +296,7 @@ box would give, and the lowest charges on the real disc boxes are about 10 % hig
 next bin: the safe direction (ours is over-charged, never under-charged). No disc verdict sits near
 that: all four disc captures are review for other reasons.
 
-**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative; re-frozen in Task A3 on the 0.3.0.2 engine, with the k boxes on the cropped grid (R14), moves below the table):
+**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative; re-frozen in Task A3 on the 0.3.0.2 engine, with the k boxes on the cropped grid (R14), moves below the table; re-frozen twice in A3 fix round 1 for probe changes, values within 8e-6 and k identical):
 * 48 synthetic RGGB captures, 24 per target kind (a banded disc; a lunar field with a limb);
 * 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter, each without and with a 3 DN
   black pedestal (review N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative
@@ -470,6 +470,49 @@ crop, k boxes on the cropped grid (R14), calibration re-frozen in A3 with its id
 
 * The 2023-02-12 Moon moved most: its split halves read x0.98 (x1.06), its lowest-bin charge 3.24 (8.88), and
   END rose to 1.356 / 1.294. The other captures moved by under 0.01 in END.
+* **What moved the 2023-02-12 Moon** (Task A3 review M5; its even / odd halves re-stacked by each engine's
+  stack-probe, the bench's R taken with k held at this run's 333.7 / 333.0, so only the stacks differ). The lowest
+  END bin's R, which sets the 0.06-0.09 charge, and 0.21-0.30:
+
+  | Engine | R 0.06-0.09 | R 0.21-0.30 |
+  |---|---|---|
+  | 342bdd69 (bench6's freeze) | 10.59 | x1.093 |
+  | 56429f27 (0.3.0.1 round: field defects D1, D2) | 7.35 | x0.971 |
+  | 9e01b598 (0.3.0.1: + clip rulings R2 / R3 and their review fixes) | 3.63 | x0.981 |
+  | HEAD with the guard band set to 0 (crop 3 px left) | 3.63 | x0.981 |
+  | HEAD (guard 4, crop 7 px left) | 3.63 | x0.981 |
+
+  Neither A2's guard band nor its crop moves it (identical to 3 decimals). The 0.3.0.1 edge round does: D1/D2 take
+  the lowest bin from 10.59 to 7.35, and the clip rulings R2/R3 from 7.35 to 3.63. That is the capture whose south
+  limb clips (54 % of a window's samples at 255; above). Under R2/R3 a clipped area stacks at full scale in both
+  halves (9184 samples >= 0.999 in half A, 0 at 342bdd69), so the ~10 % level difference between the halves there
+  leaves D, and the charge falls with it. The two stacks differ by more than 0.01 over 102 919 px, at a mean
+  luminance of 0.805.
+* **Split-half chroma noise at the stack edge** (Ruling R12's acceptance check; `edge_chroma.py --noise` on the
+  `stack-probe --parity even|odd` halves, `--rows 320:740`, bands 0:6 vs 20:40, bar 1.5). Not a bench capture;
+  recorded here because this is the tracked run record (review M6):
+
+  | Capture | Side | B/G edge / ref noise | B/G | R/G edge / ref noise | R/G | Verdict |
+  |---|---|---|---|---|---|---|
+  | 2026-10-23 64.6F Moon | left | 0.00121 / 0.00120 | 1.01 | 0.00144 / 0.00143 | 1.01 | pass |
+  | 2026-10-23 64.6F Moon | top | 0.00110 / 0.00093 | 1.18 | 0.00101 / 0.00105 | 0.96 | pass |
+  | 2026-10-23 64.6F Moon | bottom | 0.00051 / 0.00051 | 0.99 | 0.00060 / 0.00059 | 1.01 | pass |
+  | 2026-10-23 70.0F Moon | left | -- | -- | -- | -- | not judged (3): 64 disk px, the edge is sky (Ruling R16) |
+  | 2026-10-23 70.0F Moon | top | 0.00105 / 0.00109 | 0.96 | 0.00084 / 0.00096 | 0.88 | pass |
+  | 2026-10-23 70.0F Moon | bottom | 0.00091 / 0.00082 | 1.11 | 0.00100 / 0.00096 | 1.04 | pass |
+
+  Registration: 64.6F residual 0.155 / 0.123 px (x / y), 70.0F -0.163 / -0.602 px, G match 0.99997-0.99998. The
+  0.3.0.1 engine's halves (Task A1's) read left 1.24 / 1.13, top 1.50 / 1.16 (B/G 1.5036: 0.24 % over the bar,
+  inside the band's sampling error and the edge resampling's +-1-3 %), bottom 0.99 / 1.07. So there is no
+  measurable edge-noise excess on either engine (Ruling R17); this check does not tell 0.3.0.1 from 0.3.0.2. The
+  engine's edge defect is A2's still-capture test's (synthetic, truth known), and this mode does not judge the 2-3
+  px of the stack beyond the halves' overlap (`edge_chroma.py`).
+* **Re-run after A3's fix round 1** (calibration re-frozen for the probe changes, values within 8e-6 of the A3
+  freeze, every k identical): the same 4 pass / 4 review / 0 fail, every END and split-half ratio as above to 3
+  decimals. Ruling R15's precondition (stack-region-probe `reach` in each keff.json) measured the 2023-02-12 Moon's
+  boxes -- the only ones some frames miss part of, the Moon drifting ~54 px against a 22 px margin -- at a k
+  over-count of 2.5e-5 (ours), 2.9e-5 / 2.6e-5 (halves), under its 1e-4 limit (bound 3.4e-3 / 1.3e-3 / 1.6e-3). The
+  other boxes' bounds are at most 6e-9.
 * The 4000-frame 1080p Bayer gate (the 2023-03-05 Moon x4000, 8-bit RGGB SER on local disk, page cache evicted,
   `stack-probe --threads 32`): 52.1, 52.2, 51.9 and 52.2 s wall, stacking 26.4-26.6 s, peak RSS 1980 MB, cropped
   3 px left.
