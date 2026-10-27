@@ -143,16 +143,28 @@ class EdgeChroma(unittest.TestCase):
         nan = planes.copy()
         nan[2, 100, 2] = np.nan
         self.assertEqual(self.run_json(nan)[0], 1)
-        # Not a 3-plane image: refused, never a pass.
-        path = os.path.join(self.tmp.name, "mono.fits")
-        write_fits(path, planes[1:2])
-        p = subprocess.run([sys.executable, "-I", TOOL, path], capture_output=True, text=True)
-        self.assertNotEqual(p.returncode, 0)
-        p = subprocess.run([sys.executable, "-I", TOOL, os.path.join(self.tmp.name, "missing.fits")],
-                           capture_output=True, text=True)
-        self.assertNotEqual(p.returncode, 0)
-        # A band outside the image is refused.
-        self.assertNotEqual(self.run_tool(planes, "--ref", "150:170")[0], 0)
+        # Bad input is refused with 2 (never 1, the "defect found" verdict, and never a pass).
+        def refused(path, *args):
+            p = subprocess.run([sys.executable, "-I", TOOL, path, *args], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 2, (path, args, p.stdout, p.stderr))
+            self.assertTrue(p.stderr.startswith("edge_chroma: "), p.stderr)
+        mono = os.path.join(self.tmp.name, "mono.fits")
+        write_fits(mono, planes[1:2])
+        refused(mono)
+        refused(os.path.join(self.tmp.name, "missing.fits"))
+        # A header without NAXIS1 / NAXIS2.
+        full = os.path.join(self.tmp.name, "full.fits")
+        write_fits(full, planes)
+        with open(full, "rb") as f:
+            good = f.read()
+        for key in (b"NAXIS1  ", b"NAXIS2  "):
+            i = good.index(key)
+            bad = os.path.join(self.tmp.name, "no_%s.fits" % key.strip().decode())
+            with open(bad, "wb") as f:
+                f.write(good[:i] + b"COMMENT".ljust(80) + good[i + 80:])
+            refused(bad)
+        # A band outside the image.
+        refused(full, "--ref", "150:170")
 
 
 if __name__ == "__main__":

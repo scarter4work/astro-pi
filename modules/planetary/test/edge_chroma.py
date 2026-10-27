@@ -9,19 +9,22 @@ edge band and over the reference band, and reports edge std / reference std.
 
   --side   the frame edge measured (default left).
   --rows   the span ALONG that edge, in image pixels: rows for left/right, columns for top/bottom
-           (default 320:760, where the 2026-10-23 64.6F Moon touches the left edge; its disk also covers
-           columns 320-760 of the top and bottom rows).
+           (default 320:760, the spec's band for the 2026-10-23 64.6F Moon, whose disk also covers columns
+           320-760 of the top and bottom rows). On that capture the default takes in the limb at rows
+           740-763 of the left edge, which raises the edge std: left B/G 3.80x with 320:760, 2.46x with 320:740.
   --edge   the edge band, as distances from that edge in pixels (default 0:6, i.e. the 6 outermost).
   --ref    the reference band, the same way (default 20:40).
 
 Ranges are half-open A:B. Exit 0 when both ratios are <= 1.5, 1 otherwise -- including whenever a band
 cannot be measured (fewer than 100 disk pixels, or a non-finite sample in it): the check fails closed.
-Exit 2 for a bad argument, an unreadable file or a stack that is not 3 float planes.
+Exit 2 for a bad argument, an unreadable file, a malformed header (NAXIS1 / NAXIS2 missing) or a stack
+that is not 3 float planes.
 
-Limit (Ruling R8): the std of B/G and R/G is colour structure, the scene's included, not noise alone. On
-the 64.6F Moon the edge band's 3.8x (B/G) is reproducible colour (two independent half-stacks agree, corr
-0.97-1.00; the split-half noise ratio is 1.54x), and the clean synthetic scene's own truth reads 0.27x.
-A ratio here is evidence about the stack only where the scene's colour is known to be uniform.
+Limit (Ruling R8, corrected): the std of B/G and R/G measures colour structure of any origin, not
+noise alone -- what the frames recorded counts as much as what the engine adds. A ratio over 1.5 says
+the edge band is more colourful than the reference band, not why. Read it as a verdict on the engine
+only on a stack whose input has no colour structure of its own (a synthetic capture of uniform,
+white-balanced colour), or beside a measurement that separates the recorded light (Ruling R8).
 """
 import argparse
 import json
@@ -54,7 +57,13 @@ def read_fits(path):
             raise ValueError("%s: expected a 32-bit float stack of 3 planes (BITPIX -32, NAXIS 3, NAXIS3 3), got "
                              "BITPIX %s NAXIS %s NAXIS3 %s" % (path, cards.get("BITPIX"), cards.get("NAXIS"),
                                                                 cards.get("NAXIS3")))
-        w, h = int(cards["NAXIS1"]), int(cards["NAXIS2"])
+        try:
+            w, h = int(cards["NAXIS1"]), int(cards["NAXIS2"])
+        except (KeyError, ValueError):
+            raise ValueError("%s: NAXIS1 / NAXIS2 missing or not integers (%r, %r)"
+                             % (path, cards.get("NAXIS1"), cards.get("NAXIS2")))
+        if w < 1 or h < 1:
+            raise ValueError("%s: NAXIS1 %d x NAXIS2 %d is empty" % (path, w, h))
         raw = f.read(w * h * 3 * 4)
         if len(raw) != w * h * 3 * 4:
             raise ValueError("%s: short data (%d of %d bytes)" % (path, len(raw), w * h * 3 * 4))
