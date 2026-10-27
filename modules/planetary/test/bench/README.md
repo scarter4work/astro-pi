@@ -296,7 +296,7 @@ box would give, and the lowest charges on the real disc boxes are about 10 % hig
 next bin: the safe direction (ours is over-charged, never under-charged). No disc verdict sits near
 that: all four disc captures are review for other reasons.
 
-**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative; re-frozen in Task A3 on the 0.3.0.2 engine, with the k boxes on the cropped grid (R14), moves below the table; re-frozen twice in A3 fix round 1 for probe changes, values within 8e-6 and k identical):
+**Calibration** (`halves.calibrate`, frozen in `bench/calibration.json`; fix round 4's design, re-frozen at 84523c91 for bench6 and at 342bdd69 after the Align.h comment change, values equal to 2.7e-5 relative; re-frozen in Task A3 on the 0.3.0.2 engine, with the k boxes on the cropped grid (R14), moves below the table; re-frozen twice in A3 fix round 1 for probe changes, values within 8e-6 and k identical; re-frozen after Ruling R19's thin-line crop (Part A final fix wave), moves below the table):
 * 48 synthetic RGGB captures, 24 per target kind (a banded disc; a lunar field with a limb);
 * 6 static scenes per kind, each at 0.3 and 0.7 px of per-frame jitter, each without and with a 3 DN
   black pedestal (review N3-m6: every real capture but the 2026-01-30 Jupiter fits a negative
@@ -316,10 +316,10 @@ different frames: unshared signal is absent by construction. On real data it can
 the E3 fix every half keeps 295-300 of its 300 frames over the box (84523c91; fix round 3: 5-32 on 6 of the 12
 lunar runs, an artefact of the generator's wrapped edge, `e3-report.md`).
 
-| Kind (calibration.json, A3 re-freeze, 0.3.0.2 engine) | 0.21-0.30: mean / sd (ddof 1, 24 runs); range | log R: mean / sd | Tolerance exp(mean ± 5.81 sd) | R_cal per END bin (0.06 ... 0.30) |
+| Kind (calibration.json, R19 re-freeze, 0.3.0.2 engine) | 0.21-0.30: mean / sd (ddof 1, 24 runs); range | log R: mean / sd | Tolerance exp(mean ± 5.81 sd) | R_cal per END bin (0.06 ... 0.30) |
 |---|---|---|---|---|
 | disc | 0.862 / 0.079; 0.718-1.029 | -0.152 / 0.092 | 0.505-1.463 | 0.82 0.79 0.89 0.83 0.96 0.93 0.86 0.80 |
-| lunar | 0.868 / 0.134; 0.583-1.005 | -0.155 / 0.177 | 0.307-2.389 | 1.12 0.90 0.89 0.92 0.88 0.91 0.85 0.84 |
+| lunar | 0.871 / 0.135; 0.583-1.001 | -0.152 / 0.178 | 0.306-2.411 | 1.14 0.90 0.89 0.92 0.88 0.91 0.86 0.84 |
 
 * **What the A3 re-freeze moved** (Task A3, against the 342bdd69 freeze; attributed by a third freeze on the
   0.3.0.1 engine, 9e01b598, in a scratch worktree): every run's 0.21-0.30 ratio within 1 %, every k within
@@ -331,16 +331,21 @@ lunar runs, an artefact of the generator's wrapped edge, `e3-report.md`).
   R14 on its own moves k by at most 1.2e-3 relative (measured on two lunar conditions: j0.7-s3-p3 294.99
   -> 295.35, j0.3-s1 6e-6), so R by at most as much, and D not at all (D's box was already
   taken on the cropped stack).
+* **What the R19 re-freeze moved** (Part A final fix wave, against the A3 fix round 1 freeze): the thin-line crop
+  (Engine.h "The crop", step 2) takes up to 1 more px per side off the synthetic stacks (lunar 376 x 280 -> 375 x
+  279 on 23 of 24 halves; box origins [4..5, 4..5]). The disc did not move (under 2e-6). Lunar: mean 0.8679 ->
+  0.8707, sd 0.1342 -> 0.1349, band 0.307-2.389 -> 0.306-2.411, R_cal's lowest bin 1.122 -> 1.144 and its
+  0.40-0.50 bin 0.537 -> 0.823 (outside the charge); every run within -0.004..+0.011, every k within 0.13 frames.
 * 5.81 is the two-sided normal tolerance factor (Howe) at 99 % coverage and 95 % confidence for n = 6,
   the number of scenes: the scene dominates the spread (review N2-m2), so the 24 runs are not 24
   independent draws. The lunar scene 2 reads 0.583-0.596 at both jitters and both pedestals.
-* The pedestal does not move the ratio: disc 0.864 without, 0.861 with; lunar 0.867 and 0.868.
+* The pedestal does not move the ratio: disc 0.864 without, 0.861 with; lunar 0.871 and 0.871.
 * Jitter moves the disc: 0.905 at 0.3 px, 0.820 at 0.7 px, where the photon-transfer line reads
-  +4 to +17 % high (a moving textured disc). It barely moves the lunar runs: 0.874 and 0.862.
+  +4 to +17 % high (a moving textured disc). It barely moves the lunar runs: 0.876 and 0.866.
 * **The interval is taken on log R** (review N3-m1). R is a ratio of powers, positive, and a leak
   scales it, so its spread is multiplicative. Fix round 3 took mean ± k sd on R, and the lunar lower
   end came out below 0 (clamped to 0), so below-band review could never fire on lunar. On log R both
-  ends are real: the lunar band's lower end is 0.307, about half the lowest calibration run (0.583).
+  ends are real: the lunar band's lower end is 0.306, about half the lowest calibration run (0.583).
 * The level field (F5) raised lunar R_cal's lowest bin from 0.94 (b35e770c) to 1.16 and moved nothing
   else by more than 0.07: a noise-only pair reads its lowest bin a little higher with the level terms
   fitted beside the shifts (the noise-only test: 0.99 against 0.90), and that cost sits in R_cal as in R.
@@ -516,6 +521,15 @@ crop, k boxes on the cropped grid (R14), calibration re-frozen in A3 with its id
 * The 4000-frame 1080p Bayer gate (the 2023-03-05 Moon x4000, 8-bit RGGB SER on local disk, page cache evicted,
   `stack-probe --threads 32`): 52.1, 52.2, 51.9 and 52.2 s wall, stacking 26.4-26.6 s, peak RSS 1980 MB, cropped
   3 px left.
+* **Re-run after Ruling R19's thin-line crop** (Part A final fix wave; calibration re-frozen, above): the same 4
+  pass / 4 review / 0 fail and both diagnoses. Moved (END full / interior; mean-kept k reading in brackets):
+  2023-02-12 Moon 1.356 / 1.294 -> 1.362 / 1.299 (1.363 / 1.300 -> 1.370 / 1.306), split x0.98 -> x0.97, k 672 ->
+  671; 2024-02-01 Moon 1.813 / 1.570 -> 1.815 / 1.572 (1.792 / 1.551 -> 1.793 / 1.553); 2023-03-05 Moon 2.028 /
+  1.670 -> 2.027 / 1.671 (1.861 / 1.533 -> 1.860 / 1.534); 2023-08-22 Moon (1.481 / 1.551 -> 1.485 / 1.555), k 965
+  -> 966; 2026-01-30 Jupiter interior 1.011 -> 1.010 (1.018 -> 1.017); every other END ratio and every split ratio
+  the same to 3 decimals. The 1080p gate (same
+  method, the SER rebuilt from the NAS AVI and removed afterwards): 51.8, 51.9, 51.8 and 51.8 s wall, stacking
+  26.2-26.3 s, peak RSS 1980 MB, cropped 3 px left, 4 px right, 4 px bottom (the right and bottom 4 thin).
 
 ### What the excess is (`triage.py`; fix round 3, review I-E; re-measured after bench6, Ruling F12)
 
