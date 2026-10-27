@@ -210,13 +210,21 @@ def test_detail_tiles_on_the_target_skip_the_limb():
 
 
 def test_our_box_k_is_taken_only_from_a_plan_that_matches_runstack():
-    probe = {"used": 100, "regionDetail": [{"kept": 80, "noiseOnly": False}, {"kept": 0, "noiseOnly": True}]}
-    keff = {"stacked": 100, "regionKept": [80, 0], "keffBox": 91.5, "box": [0, 10, 0, 10]}
+    probe = {"used": 100, "regionDetail": [{"kept": 80, "noiseOnly": False}, {"kept": 0, "noiseOnly": True}],
+             "crop": {"left": 5, "top": 3, "right": 5, "bottom": 3, "uncovered": 0}}
+    keff = {"stacked": 100, "regionKept": [80, 0], "keffBox": 91.5, "box": [0, 10, 0, 10], "origin": [3, 5]}
+    assert benchset.crop_origin(probe) == [3, 5]                  # [top, left]: the stack's (0, 0) on the probe's grid
     assert benchset.ours_frames_box(probe, keff) == (91.5, "")
     k, why = benchset.ours_frames_box(probe, dict(keff, regionKept=[79, 0]))
     assert k is None and "differs from RunStack's" in why
     k, why = benchset.ours_frames_box(probe, None)
     assert k is None and "not computed" in why
+    # Ruling R14: a box read on the uncropped grid (no origin, or another one) is refused, as is a probe without a crop.
+    for other in ({k_: v for k_, v in keff.items() if k_ != "origin"}, dict(keff, origin=[5, 3])):
+        k, why = benchset.ours_frames_box(probe, other)
+        assert k is None and "cropped at" in why
+    k, why = benchset.ours_frames_box({k_: v for k_, v in probe.items() if k_ != "crop"}, keff)
+    assert k is None and "no crop" in why
     # the flip check: used x the unweighted mean kept fraction, a no-frame region counting 1
     assert benchset.ours_frames_mean(probe) == pytest.approx(100 * (0.8 + 1.0) / 2)
 

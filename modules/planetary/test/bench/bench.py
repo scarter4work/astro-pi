@@ -719,6 +719,9 @@ def _main(argv=None):
                         "that box moved into the second stack's grid (halves.box_in_b)")
     tb.add_argument("fits")
     tb.add_argument("other", nargs="?")
+    og = sub.add_parser("origin", help="TOP,LEFT of a stack-probe JSON's crop: stack-region-probe --keff-origin for a "
+                        "box taken on that stack (Ruling R14)")
+    og.add_argument("probe_json")
     r = sub.add_parser("report")
     r.add_argument("out_dir")
     r.add_argument("runs", nargs="*")
@@ -728,6 +731,14 @@ def _main(argv=None):
     if a.cmd == "box":
         b = benchset.compare_capture(run_by_id(a.run).capture, a.ours)[0].result.box
         print(f"{b.y0},{b.y1},{b.x0},{b.x1}")
+        return 0
+    if a.cmd == "origin":
+        with open(a.probe_json) as fh:
+            o = benchset.crop_origin(json.load(fh))
+        if o is None:
+            print(f"{a.probe_json}: no crop (a stack-probe JSON with an image carries one)", file=sys.stderr)
+            return 1
+        print(f"{o[0]},{o[1]}")
         return 0
     if a.cmd == "target-box":
         A = metric.luminance(refs.load_image(a.fits))

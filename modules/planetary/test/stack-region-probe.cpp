@@ -2,7 +2,8 @@
 // case. Reads the video only.
 //
 //   stack-region-probe <video> [--frames N] [--threads T] [--out DIR] [--bayer auto|none|RGGB|GRBG|GBRG|BGGR]
-//                      [--keff-box Y0,Y1,X0,X1 --json-out FILE] [--plan-only] [--fits-out DIR] [--mask-out FILE]
+//                      [--keff-box Y0,Y1,X0,X1 [--keff-origin TOP,LEFT] --json-out FILE] [--plan-only] [--fits-out DIR]
+//                      [--mask-out FILE]
 //
 // Runs the engine's flow on the first N frames (default: all) on T threads (default: hardware):
 // FitNoiseModel -> MeasureAll -> SelectFrames -> BuildReference -> pass A (every selected frame: luma, GlobalAligner,
@@ -22,7 +23,12 @@
 // sigma^2 sum_f alpha_f^2 / (sum_f alpha_f)^2; over the box it is averaged with the metric's Hann
 // window squared, and k_eff = 1 / that average (in units of sigma^2). Frame gains, rejected samples
 // and the outside-frame weight are left out. --json-out writes it with the plan's per-region kept
-// counts (the bench checks them against stack-probe's, the engine's own run). --plan-only stops
+// counts (the bench checks them against stack-probe's, the engine's own run). This probe does not crop
+// (Engine.h "The crop"): its grid is the reference grid, while RunStack's stack -- stack-probe's --out,
+// where the bench takes its boxes -- is that grid cropped. --keff-origin TOP,LEFT (Ruling R14; default
+// 0,0) says the box is on such a cropped grid, whose pixel (0, 0) is this grid's (TOP, LEFT) -- stack-probe's
+// JSON "crop" top and left: the box is read here at (Y + TOP, X + LEFT). The JSON then records "box" as
+// given and "origin" [TOP, LEFT], so the bench can check both against the stack it measures. --plan-only stops
 // after the plan (no pass B). --bayer as stack-probe's (default Auto: the sidecar or the header).
 // The JSON also carries keffBoxGlobal, the same over the global-only plan (every planned frame, equal
 // weight). --fits-out DIR writes DIR/ours.fits (the region stack) and DIR/global.fits (the global-only
@@ -288,6 +294,7 @@ int main(int argc, char** argv) try {
     ser::BayerChoice bayer = ser::BayerChoice::Auto;
     bool planOnly = false;
     std::optional<std::array<int, 4>> keffBox;
+    std::array<int, 2> keffOrigin{0, 0};  // --keff-origin TOP,LEFT: the box's grid is this one cropped there
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--bayer" && i + 1 < argc) bayer = ParseBayer(argv[++i]);
@@ -298,6 +305,9 @@ int main(int argc, char** argv) try {
             if (std::sscanf(argv[++i], "%d,%d,%d,%d", &b[0], &b[1], &b[2], &b[3]) != 4 || b[1] <= b[0] || b[3] <= b[2])
                 throw std::invalid_argument("--keff-box Y0,Y1,X0,X1");
             keffBox = b;
+        } else if (a == "--keff-origin" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%d,%d", &keffOrigin[0], &keffOrigin[1]) != 2 || keffOrigin[0] < 0 || keffOrigin[1] < 0)
+                throw std::invalid_argument("--keff-origin TOP,LEFT (both >= 0)");
         } else if (a == "--frames" && i + 1 < argc) limit = std::stoll(argv[++i]);
         else if (a == "--threads" && i + 1 < argc) threads = std::max(1, std::atoi(argv[++i]));
         else if (a == "--out" && i + 1 < argc) out = argv[++i];
@@ -487,15 +497,21 @@ int main(int argc, char** argv) try {
     }
     if (keffBox) {
         const auto& b = *keffBox;
-        const double keff = BoxKeff(plan, b[0], b[1], b[2], b[3], scale);
-        const double keffGlobal = BoxKeff(global, b[0], b[1], b[2], b[3], scale);
-        std::printf("keff     %.2f over the box y %d-%d, x %d-%d (stacked %lld)\n", keff, b[0], b[1], b[2], b[3],
-                    static_cast<long long>(plan.stackedCount));
+        const int oy = keffOrigin[0], ox = keffOrigin[1];  // the box on this (uncropped) grid: + origin
+        const int width = info.header.width, height = info.header.height;
+        if (b[1] + oy > height || b[3] + ox > width)
+            throw std::invalid_argument("--keff-box + --keff-origin runs past the " + std::to_string(width) + "x" +
+                                        std::to_string(height) + " grid");
+        const double keff = BoxKeff(plan, b[0] + oy, b[1] + oy, b[2] + ox, b[3] + ox, scale);
+        const double keffGlobal = BoxKeff(global, b[0] + oy, b[1] + oy, b[2] + ox, b[3] + ox, scale);
+        std::printf("keff     %.2f over the box y %d-%d, x %d-%d of the grid cropped at (%d, %d) (stacked %lld)\n", keff, b[0], b[1],
+                    b[2], b[3], oy, ox, static_cast<long long>(plan.stackedCount));
         if (!jsonOut.empty()) {
             std::FILE* f = std::fopen(jsonOut.c_str(), "w");
             if (!f) throw std::runtime_error("cannot write " + jsonOut);
-            std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"keffBoxGlobal\": %.6f, \"box\": [%d, %d, %d, %d], \"regionKept\": [",
-                         static_cast<long long>(plan.stackedCount), keff, keffGlobal, b[0], b[1], b[2], b[3]);
+            std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"keffBoxGlobal\": %.6f, \"box\": [%d, %d, %d, %d], "
+                            "\"origin\": [%d, %d], \"regionKept\": [",
+                         static_cast<long long>(plan.stackedCount), keff, keffGlobal, b[0], b[1], b[2], b[3], oy, ox);
             for (size_t r = 0; r < plan.detail.size(); ++r)
                 std::fprintf(f, "%s%lld", r ? ", " : "", static_cast<long long>(plan.detail[r].kept));
             std::fprintf(f, "], \"regionSize\": %d, \"nodes\": [%d, %d], \"flatEdges\": %s}\n", layout.size, layout.nx,

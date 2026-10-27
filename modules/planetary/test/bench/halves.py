@@ -462,8 +462,13 @@ def calibrate(work, stack_probe, region_probe, conditions=None):
         for half, probe in zip("AB", probes):
             b = boxes[half]
             kj = os.path.join(work, f"{tag}-{half}.keff.json")
+            # The box is on stack-probe's cropped stack; the region probe reads it at the crop's origin (R14).
+            origin = benchset.crop_origin(probe)
+            if origin is None:
+                raise RuntimeError(f"{tag} half {half}: stack-probe gave no crop")
+            top, left = origin
             _run([region_probe, sers[half], "--bayer", "RGGB", "--plan-only", "--keff-box",
-                  f"{b.y0},{b.y1},{b.x0},{b.x1}", "--json-out", kj])
+                  f"{b.y0},{b.y1},{b.x0},{b.x1}", "--keff-origin", f"{top},{left}", "--json-out", kj])
             with open(kj) as fh:
                 kv, why = benchset.ours_frames_box(probe, json.load(fh))
             if kv is None:

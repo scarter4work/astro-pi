@@ -145,6 +145,14 @@ def reference_paths(c: Capture) -> List[str]:
     return [nas(p) for p in c.references]
 
 
+def crop_origin(probe: dict) -> Optional[List[int]]:
+    """[top, left] of stack-probe's crop (JSON "crop"; Engine.h "The crop"): the stack's pixel (0, 0) is the
+    reference grid's (top, left) -- the --keff-origin a box on that stack needs in stack-region-probe, whose
+    grid is uncropped (Ruling R14). None when the JSON carries no crop."""
+    c = probe.get("crop")
+    return None if c is None else [int(c["top"]), int(c["left"])]
+
+
 def ours_frames_box(probe: dict, keff: Optional[dict]) -> Tuple[Optional[float], str]:
     """Our stack's effective frame count for END's noise budget (Ruling P28 fix round 1, ruling 2): the
     NOISE-POWER k_eff over the compare box -- 1 / (the box's Hann^2-weighted mean of sum_f alpha_f(p)^2
@@ -152,9 +160,17 @@ def ours_frames_box(probe: dict, keff: Optional[dict]) -> Tuple[Optional[float],
     stack-region-probe --keff-box computes from the engine's own plan (its per-frame kept flags and
     AxisWeightAt). That probe repeats RunStack's selection steps rather than being RunStack, so its
     plan is accepted only when its stacked count and every region's kept count equal stack-probe's
-    (RunStack's own run). (k, why): k None with the reason when it cannot be had."""
+    (RunStack's own run), and only when it read the box on stack-probe's cropped grid: its "origin" is
+    stack-probe's crop (crop_origin; Ruling R14 -- the box is taken on the cropped stack, the probe's own
+    grid is not cropped). (k, why): k None with the reason when it cannot be had."""
     if keff is None:
         return None, "our noise-power k_eff over the box was not computed (stack-region-probe --keff-box)"
+    origin = crop_origin(probe)
+    if origin is None:
+        return None, "stack-probe gave no crop to place the box on the region probe's grid"
+    if list(keff.get("origin", [0, 0])) != origin:
+        return None, (f"the region probe read the box on the grid cropped at {keff.get('origin', [0, 0])} (top, left), "
+                      f"but stack-probe's stack is cropped at {origin}")
     used, detail = probe.get("used"), probe.get("regionDetail")
     if detail is None:
         return None, "stack-probe gave no regionDetail to check the region probe's plan against"

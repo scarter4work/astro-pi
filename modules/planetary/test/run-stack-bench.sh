@@ -121,14 +121,17 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
         printf '%s\n' "$IDENT" >"$dir/identity.json"
         # Our noise-power k over the compare box (END's budget, Ruling P28): the region probe repeats the
         # engine's plan; bench.py report checks its kept counts against probe.json.
-        keff_for() {   # <video> <stack.fits> <out.json> <box-command...>
-            local box
+        # The box is taken on stack-probe's stack, which is cropped (Engine.h "The crop"); the region probe's grid
+        # is not, so it reads the box at the crop's origin from that stack's JSON (Ruling R14).
+        keff_for() {   # <video> <stack-probe.json> <out.json> <box-command...>
+            local box origin
             box="$("${@:4}")" || { echo "FAIL $run: box for $(basename "$3"): $box"; status=1; return; }
-            "$RPROBE" "$1" --bayer "$bayer" "${THREADS[@]}" --plan-only --keff-box "$box" --json-out "$3" \
+            origin="$("$PY" -I "$BENCH/bench.py" origin "$2" 2>&1)" || { echo "FAIL $run: crop origin for $(basename "$3"): $origin"; status=1; return; }
+            "$RPROBE" "$1" --bayer "$bayer" "${THREADS[@]}" --plan-only --keff-box "$box" --keff-origin "$origin" --json-out "$3" \
                 >"${3%.json}.log" 2>&1 || { echo "FAIL $run: stack-region-probe for $(basename "$3"): $(tail -2 "${3%.json}.log")"; status=1; rm -f "$3"; }
         }
         if [ "$expect" = stack ] && [ "$rc" -eq 0 ]; then
-            keff_for "$src" "$dir/ours.fits" "$dir/keff.json" "$PY" -I "$BENCH/bench.py" box "$run" "$dir/ours.fits"
+            keff_for "$src" "$dir/probe.json" "$dir/keff.json" "$PY" -I "$BENCH/bench.py" box "$run" "$dir/ours.fits"
         fi
         if [ "$SPLIT" -eq 1 ] && [ "$expect" = stack ] && [ "$rc" -eq 0 ]; then
             hdir="${STAGE:-$dir}"
@@ -143,8 +146,8 @@ if [ "$REPORT_ONLY" -eq 0 ]; then
                 done
                 # both halves' k over A's target box (in B's own grid for B), where halves.check measures D (N-m3, N2-m5)
                 if [ -f "$dir/halfA.json" ] && [ -f "$dir/halfB.json" ]; then
-                    keff_for "$even" "$dir/halfA.fits" "$dir/halfA.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/halfA.fits"
-                    keff_for "$odd" "$dir/halfB.fits" "$dir/halfB.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/halfA.fits" "$dir/halfB.fits"
+                    keff_for "$even" "$dir/halfA.json" "$dir/halfA.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/halfA.fits"
+                    keff_for "$odd" "$dir/halfB.json" "$dir/halfB.keff.json" "$PY" -I "$BENCH/bench.py" target-box "$dir/halfA.fits" "$dir/halfB.fits"
                 fi
             else
                 echo "FAIL $run: split: $(tail -2 "$dir/halves.log")"; status=1

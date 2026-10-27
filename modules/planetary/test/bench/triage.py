@@ -207,8 +207,15 @@ def halves_triage(out, cid, work, rprobe):
         hd = os.path.join(work, h)
         os.makedirs(hd, exist_ok=True)
         b = boxes[h]
+        # The boxes are on the bench's cropped half-stacks; the region probe's grid -- and its --fits-out stacks,
+        # which ratio() below reads -- is not cropped: it reads the box at the half's crop origin (Ruling R14).
+        with open(os.path.join(d, f"half{h}.json")) as fh:
+            origin = benchset.crop_origin(json.load(fh))
+        if origin is None:
+            raise RuntimeError(f"{cid}: half{h}.json gives no crop")
         with open(os.path.join(hd, "probe.log"), "w") as log:
             subprocess.run([rprobe, ser, "--bayer", "RGGB", "--keff-box", f"{b.y0},{b.y1},{b.x0},{b.x1}",
+                            "--keff-origin", f"{origin[0]},{origin[1]}",
                             "--json-out", os.path.join(hd, "keff.json"), "--fits-out", hd], check=True, stdout=log)
         with open(os.path.join(hd, "keff.json")) as fh:
             kj[h] = json.load(fh)

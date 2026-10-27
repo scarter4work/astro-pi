@@ -610,8 +610,9 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
         else:                                     # A's box in B's own grid (review N2-m5)
             hbox = halves.box_in_b(A_lum, metric.luminance(refs.load_image(fits)), box)
         kj = str(tmp_path / f"h{half}.keff.json")
+        top, left = benchset.crop_origin(probe)   # the box is on the cropped stack (Ruling R14)
         halves._run([PROBES[1], ser, "--bayer", "RGGB", "--plan-only", "--keff-box",
-                     f"{hbox.y0},{hbox.y1},{hbox.x0},{hbox.x1}", "--json-out", kj])
+                     f"{hbox.y0},{hbox.y1},{hbox.x0},{hbox.x1}", "--keff-origin", f"{top},{left}", "--json-out", kj])
         with open(kj) as fh:
             k[half], why = benchset.ours_frames_box(probe, _json.load(fh))
         assert k[half] is not None, why
@@ -627,6 +628,47 @@ def test_end_to_end_noise_model_through_the_engine(tmp_path, kind, jitter, seed,
     if steady is not None:
         assert max(k.values()) < 0.6 * (n // 2)           # the engine dropped the blurred frames
         assert not naive["high"] == pytest.approx(cal["high_mean"], rel=0.30)
+
+
+@pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")
+def test_the_keff_box_is_read_on_the_cropped_grid(tmp_path):
+    """Ruling R14: the bench takes its boxes on stack-probe's stack, which RunStack crops (A2: the frames' guard
+    band is never stacked, and pixels no frame reached are cut), while stack-region-probe's grid is the
+    uncropped reference grid. A box given with --keff-origin TOP,LEFT (stack-probe's crop) is read at
+    (Y + TOP, X + LEFT): the same k as that box moved by hand onto the uncropped grid, and the JSON carries
+    the origin, which ours_frames_box checks against stack-probe's crop -- a box read without it is refused."""
+    import halves
+    import json as _json
+    _fresh_probes()
+    frames, _, _ = halves.synthetic_frames("disc", 120, 0.5, 0.15, 0.6, 7)
+    ser, fits = str(tmp_path / "c.ser"), str(tmp_path / "c.fits")
+    halves.write_ser(ser, frames)
+    probe = _json.loads(halves._run([PROBES[0], ser, "--bayer", "RGGB", "--out", fits, "--json"]))
+    top, left = benchset.crop_origin(probe)
+    print(f"\ncrop {probe['crop']}, guard {probe['guard']}, image {probe['image']}")
+    assert top > 0 and left > 0 and probe["guard"] > 0       # a still Bayer capture loses about its guard band
+    b = metric.target_box(metric.luminance(refs.load_image(fits)))
+    assert (b.y1, b.x1) <= (probe["image"]["height"], probe["image"]["width"])
+
+    def keff(box, *origin):
+        kj = str(tmp_path / f"k{len(os.listdir(tmp_path))}.json")
+        halves._run([PROBES[1], ser, "--bayer", "RGGB", "--plan-only", "--keff-box",
+                     ",".join(str(v) for v in box), *origin, "--json-out", kj])
+        with open(kj) as fh:
+            return _json.load(fh)
+    on_crop = keff((b.y0, b.y1, b.x0, b.x1), "--keff-origin", f"{top},{left}")
+    by_hand = keff((b.y0 + top, b.y1 + top, b.x0 + left, b.x1 + left))
+    assert on_crop["box"] == [b.y0, b.y1, b.x0, b.x1] and on_crop["origin"] == [top, left]
+    assert by_hand["origin"] == [0, 0]
+    assert on_crop["keffBox"] == pytest.approx(by_hand["keffBox"], rel=1e-12)
+    assert on_crop["keffBoxGlobal"] == pytest.approx(by_hand["keffBoxGlobal"], rel=1e-12)
+    assert benchset.ours_frames_box(probe, on_crop) == (pytest.approx(on_crop["keffBox"]), "")
+    k, why = benchset.ours_frames_box(probe, keff((b.y0, b.y1, b.x0, b.x1)))   # the pre-R14 reading
+    assert k is None and "cropped at" in why
+    # A box that runs past the uncropped grid once moved is refused, not read short.
+    h, w = probe["height"], probe["width"]
+    with pytest.raises(RuntimeError):
+        keff((h - 10, h, w - 10, w), "--keff-origin", f"{top},{left}")
 
 
 def test_the_tolerance_has_a_real_lower_bound():
