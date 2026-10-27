@@ -686,12 +686,14 @@ def test_the_keff_box_is_read_on_the_cropped_grid(tmp_path):
     assert at < 1e-6 and min(near.values()) > 100 * max(at, 1e-9)
     # Ruling R15: a box reaching into the frames' guard band far enough to move k (here the uncropped grid's corner:
     # its outer 4-5 rows and columns are in every frame's guard band, a few % of its Hann^2 weight) is refused with the
-    # reason, not over-counted. A box whose omission is negligible -- the cropped stack's corner, whose missed outer
-    # columns carry Hann^2 weight ~1e-5 -- is measured.
-    with pytest.raises(RuntimeError, match=r"guard band .* over-count k by up to"):
+    # measured over-count, not over-counted. A box whose omission is negligible -- the cropped stack's corner, whose
+    # missed outer columns carry Hann^2 weight ~1e-5 -- is measured, its bound in the JSON (stage 2 not needed).
+    with pytest.raises(RuntimeError, match=r"guard band .* over-counts its k by [0-9.e+-]+ relative \(measured"):
         keff((0, 20, 0, 20))
     corner = keff((0, 40, 0, 40), "--keff-origin", f"{top},{left}")
     assert corner["keffBox"] == pytest.approx(120, rel=1e-3)
+    assert 0 < corner["reach"]["bound"] <= 1e-4 and corner["reach"]["measured"] is None
+    assert on_crop["reach"] == {"bound": 0, "measured": None}       # every frame reaches the target box
 
 
 @pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")

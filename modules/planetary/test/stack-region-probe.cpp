@@ -29,8 +29,9 @@
 // 0,0) says the box is on such a cropped grid, whose pixel (0, 0) is this grid's (TOP, LEFT) -- stack-probe's
 // JSON "crop" top and left: the box is read here at (Y + TOP, X + LEFT). The JSON then records "box" as
 // given and "origin" [TOP, LEFT], so the bench can check both against the stack it measures. A box reaching
-// so far into the frames' guard band or past their edge that BoxKeff (which counts every kept frame everywhere) could
-// over-count its k by more than 1e-4 is refused with the reason (exit 1; Ruling R15, BoxReachError). --plan-only stops
+// so far into the frames' guard band or past their edge that BoxKeff (which counts every kept frame everywhere) does
+// over-count its k by more than 1e-4 is refused with the reason (exit 1; Ruling R15, BoxReachCheck; the JSON records
+// "reach" {bound, measured}). --plan-only stops
 // after the plan (no pass B). --bayer as stack-probe's (default Auto: the sidecar or the header).
 // The JSON also carries keffBoxGlobal, the same over the global-only plan (every planned frame, equal
 // weight). --fits-out DIR writes DIR/ours.fits (the region stack) and DIR/global.fits (the global-only
@@ -41,6 +42,7 @@
 // "masksky" line what it was judged on (BlendMask::skyLevel, targetLevel, shareUnder) and the sky-only regions.
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <map>
 #include <atomic>
 #include <chrono>
@@ -139,26 +141,36 @@ double Hann(int i, int n) { return n > 1 ? 0.5 - 0.5 * std::cos(2 * M_PI * i / (
 
 // Ruling R15, BoxKeff's precondition. BoxKeff counts every kept frame at every pixel of the box; a frame whose sample
 // there falls off the frame or in its guard band (Accumulate.h "The frame's border") adds nothing to that pixel, so near
-// the edge of the frames' reach BoxKeff's k is too high. This bounds by how much, and refuses the box when the bound
-// passes kMaxBoxOverCount.
+// the edge of the frames' reach BoxKeff's k is too high. BoxReach says by how much, and refuses the box when the
+// over-count passes kMaxBoxOverCount. Two stages:
 //  - Reach. The Accumulator samples frame f at x + s (global.dx + the local warp there) -- LocalWarpAt, the blend of the
 //    frame's usable regions' shifts around that point -- and counts the sample outside below `guard` or above
-//    W - 1 - guard (Accumulate.cpp). The warp is smooth (sin^2 blends over regions of >= 32 luma px), so each frame's
-//    offset is taken, exactly as the Accumulator computes it, on the box's border (left / right columns, top / bottom
-//    rows), its extreme over the border applied to the columns / rows next to it; 0.05 px covers the Accumulator's warp
-//    grid (interpolation error under 0.02 px).
-//  - Bound. A frame missing from a pixel changes that pixel's noise-power count by at most 1 / K (K the smallest count
-//    any region, or the fallback, stacks: its share of the blend there is at most 1 / K). BoxKeff averages over the box
-//    with Hann^2 weights, separable in x and y; a frame that misses c columns at one side misses at most the Hann^2 share
-//    of those columns (summed over the whole box height). So k is over-counted by at most sum_f share_f / K, relative.
-//  - Why not "guard band + largest drift from the edge": the box's outermost rows and columns carry Hann^2 weight 0 and
-//    the next ones ~1e-8 of the centre's, so such a rule refuses boxes whose omission is negligible -- the held-out
-//    lunar engine test's box, 6 px inside the crop, where one frame warped ~9 px misses one column by 0.06 px (bound
-//    ~1e-10).
-// Empty when the bound is at most kMaxBoxOverCount, else the reason with the numbers.
+//    W - 1 - guard (Accumulate.cpp).
+//  - 1, a cheap bound. Each frame's offset is taken, as the Accumulator computes it, on the box's border (its extreme
+//    there applied to the columns / rows next to it; the warp is smooth: sin^2 blends over regions of >= 32 luma px;
+//    0.05 px covers the Accumulator's warp grid, interpolation error under 0.02 px). A frame missing from a pixel
+//    changes that pixel's noise-power count by at most 1 / K (K the smallest count any region, or the fallback,
+//    stacks), and BoxKeff's Hann^2 weights are separable, so k is over-counted by at most sum_f share_f / K, share_f the
+//    Hann^2 share of the columns and rows frame f misses. Most boxes end here (bound 0 when every frame reaches it).
+//  - 2, the measure, when the bound passes the limit. 1 / K is far from what a missing frame costs where K is a small
+//    region's count (the 2023-02-12 Moon: K 15 against a median ~1058; bound 3.4e-3, measured 2.5e-5). So BoxKeff's
+//    per-pixel noise-power term is evaluated on a kReachGrid px grid over the box twice -- over every stacked frame, and
+//    over the frames whose sample there lies in their stacked part, each frame's own warp at that pixel -- and averaged
+//    with the same Hann^2 weights: over-count = k(every frame) / k(frames that reach) - 1. (A 4 px and an 8 px grid agree
+//    to 1e-8 on that box; the measure adds ~1 s to a 1015 x 1637 box of 1248 frames.)
+//  - Why not "guard band + largest drift from the edge", the ruling's words: the box's outermost rows and columns carry
+//    Hann^2 weight 0, so such a rule refuses boxes whose omission is negligible -- the held-out lunar engine test's box
+//    (one frame warped ~9 px misses a near-zero-weight column by 0.06 px; bound ~1e-10) and the 2023-02-12 Moon's
+//    (drift ~54 px against a 22 px margin; measured 2.5e-5).
+// why is empty unless the box is refused; measured is -1 when stage 2 did not run.
 constexpr double kMaxBoxOverCount = 1e-4;  // the calibration's own reproduction bound on R (test_end), which k enters linearly
-std::string BoxReachError(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, double s, int width, int height,
-                          int guard) {
+constexpr int kReachGrid = 4;
+struct BoxReach {
+    double bound = 0, measured = -1;
+    std::string why;
+};
+BoxReach BoxReachCheck(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, double s, int width, int height,
+                       int guard) {
     const stack::RegionLayout& lay = plan.layout;
     const size_t nr = plan.RegionCount();
     const double slack = 0.05;
@@ -179,40 +191,46 @@ std::string BoxReachError(const stack::RegionPlan& plan, int y0, int y1, int x0,
     std::vector<stack::AxisWeight> col(static_cast<size_t>(width)), row(static_cast<size_t>(height));
     for (int x = x0; x < x1; ++x) col[static_cast<size_t>(x)] = stack::AxisWeightAt(lay, false, (x + 0.5) / s - 0.5);
     for (int y = y0; y < y1; ++y) row[static_cast<size_t>(y)] = stack::AxisWeightAt(lay, true, (y + 0.5) / s - 0.5);
-    std::vector<float> ldx(nr), ldy(nr);
-    std::vector<uint8_t> usable(nr);
-    double total = 0, worst = 0;  // sum over frames of the missed share; the largest one frame misses
-    int64_t missing = 0;          // frames that miss some of the box
-    double loX = 1e300, hiX = -1e300, loY = 1e300, hiY = -1e300;
-    for (size_t p = 0; p < plan.frames.size(); ++p) {
-        if (!plan.stacked[p]) continue;
+    std::vector<size_t> stacked;
+    for (size_t p = 0; p < plan.frames.size(); ++p)
+        if (plan.stacked[p]) stacked.push_back(p);
+    // Per stacked frame: its regions' local shifts and usable flags, as the Accumulator reads them.
+    std::vector<std::vector<float>> LX(stacked.size(), std::vector<float>(nr)), LY = LX;
+    std::vector<std::vector<uint8_t>> US(stacked.size(), std::vector<uint8_t>(nr));
+    for (size_t q = 0; q < stacked.size(); ++q)
         for (size_t r = 0; r < nr; ++r) {
-            const size_t k = p * nr + r;
-            ldx[r] = plan.dx[k];
-            ldy[r] = plan.dy[k];
-            usable[r] = plan.flags[k] & stack::RegionPlan::kShiftUsable ? 1 : 0;
+            const size_t k = stacked[q] * nr + r;
+            LX[q][r] = plan.dx[k];
+            LY[q][r] = plan.dy[k];
+            US[q][r] = plan.flags[k] & stack::RegionPlan::kShiftUsable ? 1 : 0;
         }
-        auto offset = [&](int x, int y, double& ox, double& oy) {  // the sample position minus (x, y)
-            double lx = 0, ly = 0;
-            if (nr > 0)
-                stack::LocalWarpAt(lay, col[static_cast<size_t>(x)], row[static_cast<size_t>(y)],
-                                   lay.mask.At((x + 0.5) / s - 0.5, (y + 0.5) / s - 0.5), ldx.data(), ldy.data(),
-                                   usable.data(), lx, ly);
-            ox = s * (plan.global[p].dx + lx);
-            oy = s * (plan.global[p].dy + ly);
-        };
-        double lo = 1e300, hi = -1e300, top = 1e300, bot = -1e300, ox, oy;
+    // Frame q's sample position at full-resolution (x, y), given the pixel's axis weights and mask.
+    auto sample = [&](size_t q, int x, int y, double mk, double& sx, double& sy) {
+        double lx = 0, ly = 0;
+        if (nr > 0)
+            stack::LocalWarpAt(lay, col[static_cast<size_t>(x)], row[static_cast<size_t>(y)], mk, LX[q].data(),
+                               LY[q].data(), US[q].data(), lx, ly);
+        sx = x + s * (plan.global[stacked[q]].dx + lx);
+        sy = y + s * (plan.global[stacked[q]].dy + ly);
+    };
+    auto maskAt = [&](int x, int y) { return lay.mask.At((x + 0.5) / s - 0.5, (y + 0.5) / s - 0.5); };
+    // Stage 1.
+    double total = 0;
+    int64_t missing = 0;  // frames that miss some of the box
+    double loX = 1e300, hiX = -1e300, loY = 1e300, hiY = -1e300;
+    for (size_t q = 0; q < stacked.size(); ++q) {
+        double lo = 1e300, hi = -1e300, top = 1e300, bot = -1e300, sx, sy;
         for (int y = y0; y < y1; ++y) {
-            offset(x0, y, ox, oy);
-            lo = std::min(lo, ox);
-            offset(x1 - 1, y, ox, oy);
-            hi = std::max(hi, ox);
+            sample(q, x0, y, maskAt(x0, y), sx, sy);
+            lo = std::min(lo, sx - x0);
+            sample(q, x1 - 1, y, maskAt(x1 - 1, y), sx, sy);
+            hi = std::max(hi, sx - (x1 - 1));
         }
         for (int x = x0; x < x1; ++x) {
-            offset(x, y0, ox, oy);
-            top = std::min(top, oy);
-            offset(x, y1 - 1, ox, oy);
-            bot = std::max(bot, oy);
+            sample(q, x, y0, maskAt(x, y0), sx, sy);
+            top = std::min(top, sy - y0);
+            sample(q, x, y1 - 1, maskAt(x, y1 - 1), sx, sy);
+            bot = std::max(bot, sy - (y1 - 1));
         }
         loX = std::min(loX, x0 + lo);
         hiX = std::max(hiX, x1 - 1 + hi);
@@ -227,29 +245,84 @@ std::string BoxReachError(const stack::RegionPlan& plan, int y0, int y1, int x0,
                          share(cy, missedLow(y0, top), missedHigh(y1, bot, height));
         if (f > 0) ++missing;
         total += f;
-        worst = std::max(worst, f);
     }
-    const double bound = kMin > 0 ? total / static_cast<double>(kMin) : 1.0;
-    if (bound > kMaxBoxOverCount) {
-        char why[640];
+    BoxReach out;
+    out.bound = kMin > 0 ? total / static_cast<double>(kMin) : 1.0;
+    if (out.bound <= kMaxBoxOverCount) return out;
+    // Stage 2: BoxKeff's per-pixel term over every stacked frame vs over the frames that reach the pixel.
+    const double fb = 1.0 / static_cast<double>(plan.stackedCount);
+    double numAll = 0, numIn = 0, den = 0;
+    for (int y = y0; y < y1; y += kReachGrid) {
+        const double hy = Hann(y - y0, bh);
+        for (int x = x0; x < x1; x += kReachGrid) {
+            const double hh = std::pow(hy * Hann(x - x0, bw), 2);
+            if (!(hh > 0)) continue;
+            const stack::AxisWeight& ax = col[static_cast<size_t>(x)];
+            const stack::AxisWeight& ay = row[static_cast<size_t>(y)];
+            const double mk = maskAt(x, y);
+            std::array<int, 4> ids{-1, -1, -1, -1};
+            std::array<double, 4> wts{0, 0, 0, 0};
+            int m = 0;
+            double cover = 0;
+            for (int b = 0; b < 2; ++b) {
+                const int j = ay.i0 + b;
+                const double wy = b ? ay.w1 : ay.w0;
+                if (j < 0 || j >= lay.ny || wy == 0) continue;
+                for (int c = 0; c < 2; ++c) {
+                    const int i = ax.i0 + c;
+                    const double wx = c ? ax.w1 : ax.w0;
+                    if (i < 0 || i >= lay.nx || wx == 0) continue;
+                    const int r = lay.node[static_cast<size_t>(j) * lay.nx + i];
+                    if (r < 0 || plan.detail[static_cast<size_t>(r)].kept <= 0) continue;
+                    ids[static_cast<size_t>(m)] = r;
+                    wts[static_cast<size_t>(m)] = wx * wy * mk;
+                    cover += wx * wy * mk;
+                    ++m;
+                }
+            }
+            const double fbw = std::max(0.0, 1 - cover) * fb;
+            double s1a = 0, s2a = 0, s1i = 0, s2i = 0;
+            for (size_t q = 0; q < stacked.size(); ++q) {
+                double a = fbw;
+                for (int k = 0; k < m; ++k)
+                    if (plan.flags[stacked[q] * nr + static_cast<size_t>(ids[static_cast<size_t>(k)])] & stack::RegionPlan::kKept)
+                        a += wts[static_cast<size_t>(k)] /
+                             static_cast<double>(plan.detail[static_cast<size_t>(ids[static_cast<size_t>(k)])].kept);
+                s1a += a;
+                s2a += a * a;
+                double sx, sy;
+                sample(q, x, y, mk, sx, sy);
+                if (sx >= guard && sx <= width - 1 - guard && sy >= guard && sy <= height - 1 - guard) {
+                    s1i += a;
+                    s2i += a * a;
+                }
+            }
+            if (!(s1a > 0)) continue;
+            den += hh;
+            numAll += hh * s2a / (s1a * s1a);
+            numIn += s1i > 0 ? hh * s2i / (s1i * s1i) : std::numeric_limits<double>::infinity();
+        }
+    }
+    out.measured = den > 0 && numAll > 0 ? numIn / numAll - 1 : std::numeric_limits<double>::infinity();
+    if (out.measured > kMaxBoxOverCount) {
+        char why[700];
         std::snprintf(why, sizeof why,
                       "the box y %d-%d, x %d-%d (uncropped grid) reaches into the frames' guard band (%d px) or past their "
                       "edge: %lld stacked frames miss part of it (their samples run x %.2f..%.2f, y %.2f..%.2f against the "
-                      "stacked part x %d..%d, y %d..%d), so BoxKeff, which counts every kept frame everywhere, may "
-                      "over-count k by up to %.2e relative (over %.0e; the largest one-frame share missed %.2e, smallest "
-                      "kept count %lld; Ruling R15)",
+                      "stacked part x %d..%d, y %d..%d), and BoxKeff, which counts every kept frame everywhere, "
+                      "over-counts its k by %.2e relative (measured on a %d px grid; over %.0e; bound %.2e; Ruling R15)",
                       y0, y1, x0, x1, guard, static_cast<long long>(missing), loX, hiX, loY, hiY, guard, width - 1 - guard,
-                      guard, height - 1 - guard, bound, kMaxBoxOverCount, worst, static_cast<long long>(kMin));
-        return why;
+                      guard, height - 1 - guard, out.measured, kReachGrid, kMaxBoxOverCount, out.bound);
+        out.why = why;
     }
-    return "";
+    return out;
 }
 
 // See --keff-box in the header. The layout's blend mask (RegionLayout::mask; empty for a frame-filling layout)
 // scales every region weight, as in the Accumulator -- the fallback takes 1 - cover where it is under 1.
 // The model's limit (Ruling R15): it counts every kept frame at every pixel of the box. A frame whose sample there
 // falls off the frame or in its guard band (Accumulate.h "The frame's border") adds nothing to that pixel, so near the
-// edge of the frames' reach the real k is lower than this one. BoxReachError bounds that and refuses the box first.
+// edge of the frames' reach the real k is lower than this one. BoxReachCheck measures that and refuses the box first.
 double BoxKeff(const stack::RegionPlan& plan, int y0, int y1, int x0, int x1, double s) {
     const stack::BlendMask& mask = plan.layout.mask;
     const stack::RegionLayout& lay = plan.layout;
@@ -615,19 +688,24 @@ int main(int argc, char** argv) try {
         if (b[1] + oy > height || b[3] + ox > width)
             throw std::invalid_argument("--keff-box + --keff-origin runs past the " + std::to_string(width) + "x" +
                                         std::to_string(height) + " grid");
-        const std::string unreached = BoxReachError(plan, b[0] + oy, b[1] + oy, b[2] + ox, b[3] + ox, scale, width, height,
-                                                    stack::FrameGuard(info));
-        if (!unreached.empty()) throw std::runtime_error(unreached);
+        const BoxReach reach = BoxReachCheck(plan, b[0] + oy, b[1] + oy, b[2] + ox, b[3] + ox, scale, width, height,
+                                             stack::FrameGuard(info));
+        if (!reach.why.empty()) throw std::runtime_error(reach.why);
         const double keff = BoxKeff(plan, b[0] + oy, b[1] + oy, b[2] + ox, b[3] + ox, scale);
         const double keffGlobal = BoxKeff(global, b[0] + oy, b[1] + oy, b[2] + ox, b[3] + ox, scale);
         std::printf("keff     %.2f over the box y %d-%d, x %d-%d of the grid cropped at (%d, %d) (stacked %lld)\n", keff, b[0], b[1],
                     b[2], b[3], oy, ox, static_cast<long long>(plan.stackedCount));
+        char measured[32] = "null";
+        if (reach.measured >= 0) std::snprintf(measured, sizeof measured, "%.6g", reach.measured);
+        std::printf("reach    frames missing part of the box over-count k by at most %.3g (bound), measured %s (Ruling R15)\n",
+                    reach.bound, measured);
         if (!jsonOut.empty()) {
             std::FILE* f = std::fopen(jsonOut.c_str(), "w");
             if (!f) throw std::runtime_error("cannot write " + jsonOut);
             std::fprintf(f, "{\"stacked\": %lld, \"keffBox\": %.6f, \"keffBoxGlobal\": %.6f, \"box\": [%d, %d, %d, %d], "
-                            "\"origin\": [%d, %d], \"regionKept\": [",
-                         static_cast<long long>(plan.stackedCount), keff, keffGlobal, b[0], b[1], b[2], b[3], oy, ox);
+                            "\"origin\": [%d, %d], \"reach\": {\"bound\": %.6g, \"measured\": %s}, \"regionKept\": [",
+                         static_cast<long long>(plan.stackedCount), keff, keffGlobal, b[0], b[1], b[2], b[3], oy, ox,
+                         reach.bound, measured);
             for (size_t r = 0; r < plan.detail.size(); ++r)
                 std::fprintf(f, "%s%lld", r ? ", " : "", static_cast<long long>(plan.detail[r].kept));
             std::fprintf(f, "], \"regionSize\": %d, \"nodes\": [%d, %d], \"flatEdges\": %s}\n", layout.size, layout.nx,
