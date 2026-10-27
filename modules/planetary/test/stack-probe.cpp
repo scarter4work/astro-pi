@@ -3,7 +3,7 @@
 //
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
 //               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
-//               [--cancel-at measuring|aligning|stacking,F]
+//               [--cancel-at measuring|aligning|stacking,F] [--parity even|odd]
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -23,7 +23,11 @@
 // test/run-probe-stack.sh), next to the image's size ("image"), the first and last frame stacked
 // ("stackedFirst", "stackedLast"), the crop (Engine.h "The crop": "crop" {left, top, right, bottom,
 // uncovered}, so output pixel (x, y) is the reference grid's (x + left, y + top)) and the frames' guard band
-// ("guard", Accumulate.h "The frame's border"; Ruling R14). Exit 0 with an image, 2 when diagnosed, 1 on error.
+// ("guard", Accumulate.h "The frame's border"; Ruling R14). --parity even|odd (Task A3, Ruling R12) hands the
+// engine only the even- or the odd-numbered frames of the capture (after --frames), as frames 0..n-1: two
+// independent half-stacks for the split-half chroma noise check (edge_chroma.py --noise); the JSON names it
+// ("parity"). Each half is a run of its own, with its own reference and so its own grid: edge_chroma.py
+// registers the halves before it compares them. Exit 0 with an image, 2 when diagnosed, 1 on error.
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -159,7 +163,7 @@ void WriteTiff(const std::string& path, const ser::FloatImage& im, int bits) {
 
 bool EndsWith(const std::string& s, const std::string& t) { return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0; }
 
-// --keep-best F: the engine sees only these frames of the source (ascending), as frames 0..n-1.
+// --keep-best F, --parity: the engine sees only these frames of the source (ascending), as frames 0..n-1.
 class SubsetSource : public ser::FrameSource {
 public:
     SubsetSource(std::unique_ptr<ser::FrameSource> s, std::shared_ptr<const std::vector<int64_t>> keep)
@@ -172,7 +176,7 @@ public:
 
 private:
     int64_t At(int64_t i) const {
-        if (i < 0 || i >= static_cast<int64_t>(keep_->size())) throw ser::SerError("stack-probe: frame past --keep-best");
+        if (i < 0 || i >= static_cast<int64_t>(keep_->size())) throw ser::SerError("stack-probe: frame past the subset");
         return (*keep_)[static_cast<size_t>(i)];
     }
     std::unique_ptr<ser::FrameSource> s_;
@@ -185,7 +189,7 @@ private:
 int main(int argc, char** argv) try {
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
-                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...\n");
+                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd]\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -197,6 +201,7 @@ int main(int argc, char** argv) try {
     int64_t limit = INT64_MAX;
     double blur = 0;
     double keepBest = 0;
+    int parity = -1;  // --parity: 0 even, 1 odd, -1 every frame
     std::vector<std::pair<int, int>> samples;
     // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
     // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
@@ -220,6 +225,12 @@ int main(int argc, char** argv) try {
             keepBest = std::stod(next());
             if (!(keepBest > 0 && keepBest <= 1)) throw std::invalid_argument("--keep-best: a fraction in (0, 1]");
         }
+        else if (a == "--parity") {
+            const std::string v = next();
+            if (v == "even") parity = 0;
+            else if (v == "odd") parity = 1;
+            else throw std::invalid_argument("--parity: even or odd");
+        }
         else if (a == "--sample") {
             const std::string v = next();
             const size_t comma = v.find(',');
@@ -240,6 +251,7 @@ int main(int argc, char** argv) try {
         else throw std::invalid_argument("unknown argument " + a);
     }
     if (bits != 16 && bits != 32) throw std::invalid_argument("--bits: 16 or 32");
+    if (parity >= 0 && keepBest > 0) throw std::invalid_argument("--parity and --keep-best do not combine");
 
     stack::Progress progress;
     auto lastPrint = std::chrono::steady_clock::now();
@@ -294,6 +306,16 @@ int main(int argc, char** argv) try {
         std::shared_ptr<const std::vector<int64_t>> k = keep;
         factory = [probeFactory, k]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<SubsetSource>(probeFactory(), k); };
     }
+    if (parity >= 0) {
+        const int64_t n = probeFactory()->Info().frameCount;
+        keep = std::make_shared<std::vector<int64_t>>();
+        for (int64_t i = parity; i < n; i += 2) keep->push_back(i);
+        if (keep->empty()) throw std::invalid_argument("--parity: no frame of that parity");
+        std::fprintf(stderr, "  --parity %s: %zu of %lld frames handed to the engine\n", parity ? "odd" : "even", keep->size(),
+                     static_cast<long long>(n));
+        std::shared_ptr<const std::vector<int64_t>> k = keep;
+        factory = [probeFactory, k]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<SubsetSource>(probeFactory(), k); };
+    }
     progress.cancelled = [&] { return cancelNow.load(); };
     stack::StackOutcome o;
     try {
@@ -324,7 +346,7 @@ int main(int argc, char** argv) try {
              std::to_string(o.info.header.width) + ",\"height\":" + std::to_string(o.info.header.height) +
              ",\"colour\":" + Json(ser::ColorIdName(o.info.colorId)) + ",\"undeclaredMosaic\":" +
              (stack::UndeclaredMosaic(o.info) ? "true" : "false") + ",\"threads\":" + std::to_string(threads) +
-             ",\"blur\":" + Fmt(blur, 2);
+             ",\"blur\":" + Fmt(blur, 2) + ",\"parity\":" + (parity < 0 ? std::string("null") : Json(parity ? "odd" : "even"));
         j += ",\"diagnosis\":{\"kind\":" + Json(KindName(o.diagnosis.kind)) + ",\"message\":" + Json(o.diagnosis.message) + ",\"numbers\":{";
         for (size_t i = 0; i < o.diagnosis.numbers.size(); ++i)
             j += (i ? "," : "") + Json(o.diagnosis.numbers[i].first) + ":" + Fmt(o.diagnosis.numbers[i].second, 4);

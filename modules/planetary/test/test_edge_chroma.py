@@ -7,6 +7,12 @@ B/G) of a chosen std in the edge columns and in the rest. The tool must exit 1 o
 (and report the ratio), 0 on a clean one, and 1 whenever it cannot measure. numpy is the one
 dependency.
 
+The split-half mode (--noise HALF0 HALF1, Ruling R12) gets two half-stacks of one analytic scene --
+real colour structure common to both, independent chroma noise in each, the second half on a grid
+offset by whole pixels (each half-stack is cropped on its own) -- and must judge the noise alone:
+pass on a colourful but quiet edge, fail on a noisy one, fail closed when the halves cannot be
+registered to a whole pixel.
+
     python3 -I test_edge_chroma.py
 """
 import json
@@ -55,6 +61,41 @@ def stack(edge_std, rest_std, edge_cols=6, channels=(0, 2), seed=3, sky_ratio_no
         ratio = 1.0 + std * rng.standard_normal((H, W))
         # Sky (G < 0.05) is outside the measurement: give it wild colour to prove it is masked out.
         ratio = np.where(disk, ratio, 1.0 + sky_ratio_noise * rng.standard_normal((H, W)))
+        planes[ch] = g * ratio
+    return planes.astype(np.float32)
+
+
+# Split-half pairs. Half 1's pixel (y, x) shows the scene at half 0's (y + OFF_Y, x + OFF_X) (+ sub): the two
+# half-stacks of a capture are each cropped on their own and carry their own reference grid.
+OFF_Y, OFF_X = 2, 3
+
+
+def scene(wy, wx):
+    """The analytic scene at world coordinates (floats): (disk mask, G, texture phase)."""
+    disk = (wx - 60) ** 2 + (wy - 120) ** 2 <= 110 ** 2
+    tex = sum(a * np.sin(fx * wx + fy * wy + ph) for a, fx, fy, ph in
+              ((0.05, 0.31, 0.17, 0.4), (0.04, -0.23, 0.41, 1.3), (0.03, 0.57, -0.29, 2.2), (0.03, 0.11, 0.07, 0.9)))
+    g = np.where(disk, 0.45 + 0.15 * np.sin(wx / 9.0) * np.cos(wy / 13.0) + tex, 0.01)
+    return disk, g
+
+
+def half(which, edge_std, rest_std, colour=0.0, channels=(0, 2), sub=(0.0, 0.0), seed=11):
+    """One half-stack (which 0 or 1) of the split. Colour: real colour structure of this amplitude in the
+    scene's edge region (common to both halves, so it is not noise). Chroma noise of edge_std in the 6 px
+    of the overlap's left edge, rest_std elsewhere, independent per half."""
+    h, w = (H, W) if which == 0 else (H - 3, W - 5)
+    oy, ox = (0.0, 0.0) if which == 0 else (OFF_Y + sub[0], OFF_X + sub[1])
+    y, x = np.mgrid[0:h, 0:w].astype(np.float64)
+    wy, wx = y + oy, x + ox
+    disk, g = scene(wy, wx)
+    near = wx < OFF_X + 6  # the overlap's left edge is at world x OFF_X; the band is its 6 outermost px
+    rng = np.random.default_rng(seed + which)
+    planes = np.empty((3, h, w))
+    planes[1] = g
+    for k, ch in enumerate((0, 2)):
+        std = np.where(near, edge_std, rest_std) if ch in channels else rest_std
+        col = colour * np.where(wx < OFF_X + 12, np.sin(wx / 1.7 + wy / 2.3 + k), 0.0)
+        ratio = np.where(disk, 1.0 + col + std * rng.standard_normal((h, w)), 1.0)
         planes[ch] = g * ratio
     return planes.astype(np.float32)
 
@@ -165,6 +206,153 @@ class EdgeChroma(unittest.TestCase):
             refused(bad)
         # A band outside the image.
         refused(full, "--ref", "150:170")
+
+
+class SplitHalfNoise(unittest.TestCase):
+    """--noise HALF0 HALF1: std((ratio0 - ratio1) / sqrt 2) per band, edge vs reference (Ruling R12)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_tool(self, h0, h1, *args):
+        p0, p1 = os.path.join(self.tmp.name, "h0.fits"), os.path.join(self.tmp.name, "h1.fits")
+        write_fits(p0, h0)
+        write_fits(p1, h1)
+        p = subprocess.run([sys.executable, "-I", TOOL, "--noise", p0, p1, "--rows", SPAN, *args],
+                           capture_output=True, text=True)
+        return p.returncode, p.stdout, p.stderr
+
+    def run_json(self, h0, h1, *args):
+        code, out, err = self.run_tool(h0, h1, "--json", *args)
+        self.assertEqual(err, "", err)
+        return code, json.loads(out)
+
+    def pair(self, *a, **k):
+        return half(0, *a, **k), half(1, *a, **k)
+
+    def test_colourful_quiet_edge_passes_where_the_raw_ratio_fails(self):
+        h0, h1 = self.pair(0.008, 0.008, colour=0.05)
+        code, r = self.run_json(h0, h1)
+        self.assertEqual(code, 0, r)
+        self.assertTrue(r["pass"])
+        self.assertEqual(r["mode"], "noise")
+        for k in ("B/G", "R/G"):
+            self.assertLess(r[k]["ratio"], 1.5, r)
+            self.assertAlmostEqual(r[k]["edge_noise"], 0.008, delta=0.001)
+            self.assertAlmostEqual(r[k]["ref_noise"], 0.008, delta=0.001)
+        # The same half-stack's colour fails the raw ratio: it is colour, which --noise must not count.
+        path = os.path.join(self.tmp.name, "raw.fits")
+        write_fits(path, h0[:, OFF_Y:, OFF_X:])
+        p = subprocess.run([sys.executable, "-I", TOOL, path, "--rows", SPAN], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+
+    def test_noisy_edge_fails_with_its_ratio_and_the_registration(self):
+        code, r = self.run_json(*self.pair(0.03, 0.008))
+        self.assertEqual(code, 1, r)
+        self.assertFalse(r["pass"])
+        for k in ("B/G", "R/G"):
+            self.assertGreater(r[k]["ratio"], 3.0, r)
+            self.assertAlmostEqual(r[k]["edge_noise"], 0.03, delta=0.004)
+            self.assertAlmostEqual(r[k]["ref_noise"], 0.008, delta=0.001)
+        # Half 1's pixel (0, 0) is half 0's (OFF_X, OFF_Y); the bands sit on the overlap.
+        self.assertEqual((r["offset"]["x"], r["offset"]["y"]), (OFF_X, OFF_Y), r)
+        self.assertLess(abs(r["offset"]["residual_x"]), 0.05, r)
+        self.assertLess(abs(r["offset"]["residual_y"]), 0.05, r)
+        self.assertEqual((r["overlap"]["width"], r["overlap"]["height"]), (W - 5, H - 3), r)
+
+    def test_halves_in_either_order(self):
+        h0, h1 = self.pair(0.03, 0.008)
+        code, r = self.run_json(h1, h0)
+        self.assertEqual(code, 1, r)
+        self.assertEqual((r["offset"]["x"], r["offset"]["y"]), (-OFF_X, -OFF_Y), r)
+        self.assertGreater(r["B/G"]["ratio"], 3.0, r)
+
+    def test_one_noisy_ratio_is_enough_to_fail(self):
+        for ch, name, other in ((2, "B/G", "R/G"), (0, "R/G", "B/G")):
+            with self.subTest(noisy=name):
+                code, r = self.run_json(*self.pair(0.03, 0.008, channels=(ch,)))
+                self.assertEqual(code, 1, r)
+                self.assertGreater(r[name]["ratio"], 3.0, r)
+                self.assertLess(r[other]["ratio"], 1.5, r)
+
+    def test_bands_follow_the_side(self):
+        # Transposed, the noisy left edge is the top one; the disk's own left (the old top) is all sky.
+        t = lambda p: np.ascontiguousarray(p.transpose(0, 2, 1))
+        h0, h1 = self.pair(0.03, 0.008)
+        code, r = self.run_json(t(h0), t(h1), "--side", "top")
+        self.assertEqual(code, 1, r)
+        self.assertGreater(r["B/G"]["ratio"], 3.0, r)
+        self.assertEqual((r["offset"]["x"], r["offset"]["y"]), (OFF_Y, OFF_X), r)
+        c0, c1 = self.pair(0.008, 0.008)
+        self.assertEqual(self.run_json(t(c0), t(c1), "--side", "top")[0], 0)
+        # Mirrored left-right: the noisy edge is the right one.
+        m = lambda p: np.ascontiguousarray(p[:, :, ::-1])
+        self.assertEqual(self.run_json(m(h0), m(h1), "--side", "right")[0], 1)
+
+    def test_plain_output(self):
+        code, out, err = self.run_tool(*self.pair(0.03, 0.008))
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "")
+        self.assertIn("split-half", out)
+        for k in ("B/G", "R/G"):
+            self.assertIn(k, out)
+        self.assertIn("FAIL", out)
+
+    def test_subpixel_residual_is_registered_out(self):
+        # Each half's reference sits at its own sharpest frames' mean position: the halves differ by a fraction of
+        # a pixel (0.60 px on the 70.0F). Left in, colour structure leaks into the difference; registered out, the
+        # colourful but quiet edge passes and a noisy one still fails.
+        for sub in ((0.1, -0.1), (0.4, 0.0), (-0.3, 0.45)):
+            with self.subTest(sub=sub):
+                code, r = self.run_json(*self.pair(0.008, 0.008, colour=0.05, sub=sub))
+                self.assertEqual(code, 0, r)
+                o = r["offset"]
+                true_y, true_x = OFF_Y + sub[0], OFF_X + sub[1]
+                self.assertAlmostEqual(o["y"] + o["residual_y"], true_y, delta=0.02)
+                self.assertAlmostEqual(o["x"] + o["residual_x"], true_x, delta=0.02)
+                self.assertGreater(o["match"], 0.99)
+                for k in ("B/G", "R/G"):
+                    self.assertLess(r[k]["ratio"], 1.5, r)
+                self.assertEqual(self.run_json(*self.pair(0.03, 0.008, colour=0.05, sub=sub))[0], 1)
+
+    def test_halves_of_different_scenes_fail_closed(self):
+        h0, _ = self.pair(0.008, 0.008)
+        rng = np.random.default_rng(5)
+        other = h0.copy()
+        other[:, 30:220, 0:140] = rng.uniform(0.1, 0.6, (1, 190, 140)) * np.ones((3, 1, 1))
+        code, r = self.run_json(h0, np.ascontiguousarray(other))
+        self.assertEqual(code, 1, r)
+        self.assertFalse(r["pass"])
+        self.assertIsNone(r["B/G"]["ratio"], r)
+        self.assertIn("unmeasurable", r)
+        # The same scene under G noise far above the scene's own structure registers, but does not match.
+        g = h0[1] + rng.normal(0.0, 0.3, h0[1].shape).astype(np.float32) * (h0[1] >= 0.05)
+        code, r = self.run_json(h0, np.ascontiguousarray(np.stack([h0[0], g, h0[2]])))
+        self.assertEqual(code, 1, r)
+        self.assertIn("not one scene", r["unmeasurable"])
+
+    def test_fails_closed_and_refuses_bad_input(self):
+        h0, h1 = self.pair(0.008, 0.008)
+        dark0, dark1 = h0.copy(), h1.copy()
+        dark0[:, :, :OFF_X + 6] = 0.01  # the overlap's edge band is all sky
+        self.assertEqual(self.run_json(dark0, dark1)[0], 1)
+        nan1 = h1.copy()
+        nan1[0, 100, 1] = np.nan
+        self.assertEqual(self.run_json(h0, nan1)[0], 1)
+        p0, p1 = os.path.join(self.tmp.name, "a.fits"), os.path.join(self.tmp.name, "mono.fits")
+        write_fits(p0, h0)
+        write_fits(p1, h1[1:2])
+
+        def refused(*args):
+            p = subprocess.run([sys.executable, "-I", TOOL, *args], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 2, (args, p.stdout, p.stderr))
+        refused("--noise", p0, p1)        # a mono half
+        refused("--noise", p0)            # one half
+        refused(p0, p0)                   # two stacks without --noise
+        refused("--noise", p0, os.path.join(self.tmp.name, "missing.fits"))
 
 
 if __name__ == "__main__":
