@@ -1701,6 +1701,86 @@ TEST_CASE("RunStack: a chroma-free capture under the 64.6F drift has no more chr
     }
 }
 
+namespace {
+
+// The sky's noise along one outer line of a stack, `d` lines in from `side` (L, T, R, B): the std of the luminance (mean
+// of the channels) over the line's pixels farther than `clear` from (cx, cy); NaN with under 50 such pixels.
+double LineSkyNoise(const FloatImage& im, char side, int d, double cx, double cy, double clear) {
+    const bool column = side == 'L' || side == 'R';
+    const int len = column ? im.height : im.width;
+    const int at = side == 'L' || side == 'T' ? d : (column ? im.width : im.height) - 1 - d;
+    double s = 0, s2 = 0;
+    int64_t n = 0;
+    for (int t = 0; t < len; ++t) {
+        const int x = column ? at : t, y = column ? t : at;
+        if (std::hypot(x - cx, y - cy) <= clear) continue;
+        const float* p = im.data.data() + (static_cast<size_t>(y) * im.width + x) * im.channels;
+        double l = 0;
+        for (int c = 0; c < im.channels; ++c) l += p[c];
+        l /= im.channels;
+        s += l;
+        s2 += l * l;
+        ++n;
+    }
+    if (n < 50) return std::numeric_limits<double>::quiet_NaN();
+    const double m = s / static_cast<double>(n);
+    return std::sqrt(std::max(0.0, s2 / static_cast<double>(n) - m * m));
+}
+
+}  // namespace
+
+TEST_CASE("RunStack: a near-still Bayer capture keeps no outer line that only a few stray frames reach (Ruling R19)",
+          "[engine]") {
+    // Final review of Part A, I1: the guard band moves each frame's stacked edge 4 px in, and a crop of only the pixels
+    // no frame reached keeps every line that some frame reaches beyond its guard. On a capture held nearly still, those
+    // outer lines are held by the tail of the shift distribution -- a handful of frames -- and are several times
+    // noisier than the interior (2026-09-07 Saturn: the outermost 1-4 lines 2-4.5x the interior sky noise, against
+    // 1.1-1.2x on 0.3.0.1). Here: a small planet on flat sky, every frame within 0.3 px rms of the reference, but 20
+    // stray frames shifted 6 px diagonally, 5 towards each corner, so each side's outer 4 lines are reached by 10 of the
+    // 160 frames.
+    const int w = 256, h = 192, n = 160;
+    Scene s = testing::MakeDisc(1907, w / 2.0, h / 2.0, 34);
+    s.sky = 0.1;  // well above 0, so the frames' noise is not clipped
+    Capture cap = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
+    std::mt19937 rng(19070);
+    std::normal_distribution<double> jitter(0, 0.3);
+    RenderMosaic(cap, s, n, [&](int k) {
+        FrameSpec f;
+        f.gx = jitter(rng);
+        f.gy = jitter(rng);
+        f.noise = 0.01;
+        // frame(p) = scene(p - g): a frame shifted +6 px in x reaches 6 px further left on the reference's grid. Each
+        // stray goes diagonally, so every outer line, corners included, is reached by two of the four sets (10 frames).
+        if (k % 32 == 3 || k % 32 == 19) f.gx += 6;
+        if (k % 32 == 11 || k % 32 == 27) f.gx -= 6;
+        if (k % 32 == 3 || k % 32 == 11) f.gy += 6;
+        if (k % 32 == 19 || k % 32 == 27) f.gy -= 6;
+        return f;
+    });
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    const FloatImage& im = *o.image;
+    const stack::StackCrop& c = o.summary.crop;
+    INFO(o.summary.selection << " | " << o.summary.alignment);
+    INFO("output " << im.width << " x " << im.height << ", crop " << c.left << "/" << c.top << "/" << c.right << "/"
+                   << c.bottom);
+    REQUIRE(o.summary.used == n);  // the strays are stacked: they are as sharp as the rest
+    // The disc's centre on the output grid (the reference sits within a fraction of a px of the still frames), and the
+    // sky clear of its limb by 16 px.
+    const double cx = w / 2.0 - c.left, cy = h / 2.0 - c.top, clear = 34 + 16;
+    for (const char side : {'L', 'T', 'R', 'B'}) {
+        // The interior: the sky of lines 12-23 in from the same side, pooled.
+        double ref = 0;
+        for (int d = 12; d < 24; ++d) ref += LineSkyNoise(im, side, d, cx, cy, clear) / 12;
+        for (int d = 0; d < 4; ++d) {
+            const double e = LineSkyNoise(im, side, d, cx, cy, clear);
+            INFO("side " << side << ", line " << d << ": sky noise " << e << " against " << ref << " (" << e / ref << "x)");
+            CHECK(e <= 1.5 * ref);
+        }
+    }
+}
+
 TEST_CASE("UncoveredCrop cuts the edge rows and columns no frame reached, counts a hole, and says so (Ruling R11)", "[engine]") {
     const int w = 12, h = 9;
     std::vector<float> in(static_cast<size_t>(w) * h, 1.f);
