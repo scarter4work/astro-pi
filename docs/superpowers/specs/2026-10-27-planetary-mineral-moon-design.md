@@ -106,7 +106,15 @@ or Bayer warp near the border.
 2. Fix it at the cause. The planned approach is the edge coverage-quantile design (review Q1, R4,
    R5). If the measured cause is the Bayer warp instead, fix that.
 3. **Acceptance:** on 64.6F, chroma std (B/G and R/G) in x 0–5 is within 1.5× of x 20–40, over rows
-   320–760. No regression elsewhere: the existing ctest, probes, bench and the D1/D2/clip tests stay
+   320–760. *Retired 2026-10-27 (Ruling R12).* The 64.6F edge colour is real lunar colour. In the
+   70.0F capture of the same night, those locations sit 27–47 px inside the frame, with every frame
+   covering them. There the colour correlates 0.98–0.99 with matching amplitude. A raw colour ratio
+   on real data compares terrains, not edge against interior. Part A's acceptance is now:
+   - a still-capture test: the demosaic border error at column 0 (2.33× on 0.3.0.1, fixed);
+   - a drift no-regression test, at ≤ 1.5×;
+   - on real data, split-half chroma *noise* at the edge ≤ 1.5× the interior.
+
+   The fix is a 4 px frame guard band, plus a crop of only the pixels no frame reaches. No regression elsewhere: the existing ctest, probes, bench and the D1/D2/clip tests stay
    green, and the bench verdicts are no worse than 4 pass / 4 review / 0 fail.
 4. A RED test that fails on 0.3.0.1 first, then goes green.
 
@@ -154,8 +162,9 @@ use the engine's `Parallel.h`).
 On `2026-10-23/Moon/2026-10-23-203401-Moon-Bin1 Lqef 64.6F.avi`:
 
 - every numbered requirement above, measured and reported by a probe;
-- the Part A edge acceptance still holds on the mineral image, so no left-edge colour fringe after
-  saturation (the same chroma ratio test, run on the mineral output);
+- no edge fringe: the B5/B7 synthetic edge-band tests, with truth known, pass. On real data, the
+  mineral output's split-half chroma noise at each edge is ≤ 1.5× its interior. Real lunar colour at
+  an edge is not a fringe (Ruling R12);
 - **Scott's judgement:** a side-by-side of our mineral image next to
   `~/Desktop/Mineral_Moon_10_26_2026.png`, cropped to the same field. It should be close, with no
   fringe and no blown highlands. Less sharp than BXT is acceptable.

@@ -87,7 +87,12 @@
 **Files:**
 - Modify: `modules/planetary/test/bench/calibration.json` (re-freeze), the ledger, and `modules/planetary/test/bench/README.md` if the calibration figures it quotes change.
 
-- [ ] **Step 1:** Run `edge_chroma.py` on the fixed stack of 64.6F, with `--side left`, `--side top` and `--side bottom`. All must exit 0. Record the numbers.
+- [ ] **Step 1 (amended by R12):** Add split-half chroma noise.
+  - `stack-probe --parity even|odd` stacks only the even or odd frames.
+  - `edge_chroma.py --noise <half0.fits> <half1.fits>` reports, per band, std((ratio₀ − ratio₁)/√2). It exits 0 when edge ≤ 1.5 × ref for B/G and R/G.
+  - Add a synthetic ctest for this mode in `test_edge_chroma.py`.
+  - Run it on 64.6F (`--rows 320:740`) and 70.0F, on left, top and bottom. All must exit 0. Record the numbers.
+  - The raw-ratio mode stays as a measuring tool. It is no longer an acceptance bar, because real lunar colour fails it.
 - [ ] **Step 2: Scoped re-review.** Dispatch a fresh reviewer on fix round 5 (`7cba77e8..9e952d92` and `9be53d59..d22a1c6b`) plus this task's fix commits. Address its findings under the no-deferring rule, each with a ledger line.
 - [ ] **Step 3: Re-freeze the calibration** (F2: `halves.calibrate`, as documented in `bench/README.md` "Calibration") on the 0.3.0.2 engine. Values that move must be explained in the ledger.
 - [ ] **Step 4: Bench.** Run `bash test/run-stack-bench.sh`. Verdicts must be no worse than 4 pass / 4 review / 0 fail, and the 1080p gate ≤ 60 s.
@@ -358,7 +363,7 @@ constexpr const char* kPhaseMineral = "Mineral moon";
   - Add `--mineral-stages DIR`, which writes the linear luminance before and after sharpening and before the display transfer, as FITS for DAN_interior.
 - Create: `test/run-mineral-real.sh` (host-only, NAS read-only) and `test/mineral_check.py`.
   - The script runs every capture below and prints each spec requirement's number with PASS/FAIL. That includes:
-    - `edge_chroma.py` on the mineral output;
+    - `edge_chroma.py --noise` on the mineral outputs of the two parity half-stacks (R12: noise, not colour);
     - DAN_interior rise from `bench/metric.py` on the stages;
     - the `≤ 5 s` mineral timing, from `stepSeconds`, at 32 threads.
   - It writes a side-by-side PNG per capture. For 64.6F, the side-by-side is against `~/Desktop/Mineral_Moon_10_26_2026.png`, registered by cross-correlation and cropped to the common field.
