@@ -13,19 +13,27 @@ Registration. Each half-stack is a run of its own, with its own crop and its own
 sits at the mean position of that half's sharpest frames (Align.h BuildReference). So the halves' grids differ
 by whole pixels plus an arbitrary fraction (x / y): 0.16 / 0.12 px on the 64.6F, 0.16 / 0.60 px on the 70.0F.
 Left in, the fraction makes the difference carry the scene's colour gradient: registered to the whole pixel
-only, the 70.0F top band read 3x its noise. So half 1 is registered onto half 0 on G. First comes the whole-pixel offset, by phase correlation:
-"offset" x, y says half 1's pixel (0, 0) is half 0's (x, y). Then the sub-pixel residual ("residual_x",
-"residual_y"), by Lucas-Kanade iterated to convergence over pixels that are disk in both, 2 px clear of the
-limb. Both halves are then resampled half-way, half 0 by +residual/2 and half 1 by -residual/2. Each uses
-Catmull-Rom (the engine's own interpolator) on its whole image, so a half's own pixels beyond the overlap feed
-the overlap's border (edge-replicated only past its own edge). Both halves get the same interpolation
-filter, so the ratio edge / reference is unchanged by it, though the noise values come out up to ~20% lower
-than an unresampled half's (a quarter pixel on both axes).
+only, the 70.0F top band read 3x its noise. So half 1 is registered onto half 0 on G. First comes the
+whole-pixel offset, by phase correlation: "offset" x, y says half 1's pixel (0, 0) is half 0's (x, y). Then the
+sub-pixel residual ("residual_x", "residual_y"), by Lucas-Kanade iterated to convergence over pixels that are
+disk in both, 2 px clear of the limb. Both halves are then resampled half-way, half 0 by +residual/2 and half 1
+by -residual/2. Each uses Catmull-Rom (the engine's own interpolator) on its whole image, so a half's own pixels
+beyond the overlap feed the overlap's border; past a half's own edge its edge row is replicated.
+What the resampling does to the numbers. Inside the image both halves get the same interpolation filter, so the
+interior noise values come out up to ~20% lower than an unresampled half's (a half-pixel shift on both axes) and
+the reference band is scaled exactly like the edge band. Where a half's own edge forms the overlap's edge the
+replicated row changes that row's Catmull-Rom noise gain -- up by x1.24 for a half shifted 0.30 px outward, down
+by x0.92 for 0.30 px inward (the two halves move opposite ways) -- so the 6 px edge band's noise, and the ratio,
+move by about -1% to +3%: +1.5% on the 70.0F top (half-shift 0.30 px; the Task A3 review measured ~2%), +0.1% on
+the 64.6F (0.08 px). Small against the 1.5 bar, not against a ratio within a few % of it.
 The bands are taken on the overlap of the two -- its edges and its --rows -- whose pixel (0, 0) is half 0's
-("overlap" x, y). It fails closed (1) when the registered halves' G correlates under 0.9 over the disk (they
-do not show one scene) or the residual does not converge under 1 px. Two half-stacks see each frame once
-between them, so the overlap's outermost pixels are the ones fewer frames reach. This is the same thinning a
-full stack has at its edge, though the overlap's edge can lie a few px inside either half's own.
+("overlap" x, y). It fails (1) when the registered halves' G correlates under 0.9 over the disk (they do not
+show one scene) or the residual does not converge under 1 px.
+Not judged by this mode: the full stack's outermost pixels beyond the overlap. A full stack reaches as far as the
+farther-reaching half; the overlap stops at the nearer half's edge, 2-3 px inside the other on every side of the
+64.6F (11 px on the 70.0F left). A defect confined to those pixels is not seen here; the engine's own border error
+there is A2's still-capture test's (test_engine "the demosaic's frame border does not reach the stack", synthetic,
+truth known).
 
 Input: `stack-probe --out x.fits` (32-bit float, NAXIS3 = 3 planes R, G, B, first row = top). Per pixel
 it forms B/G and R/G over the disk (G >= 0.05; sky is left out), then takes each ratio's std over the
@@ -39,10 +47,15 @@ edge band and over the reference band, and reports edge std / reference std.
   --edge   the edge band, as distances from that edge in pixels (default 0:6, i.e. the 6 outermost).
   --ref    the reference band, the same way (default 20:40).
 
-Ranges are half-open A:B. Exit 0 when both ratios are <= 1.5, 1 otherwise -- including whenever a band
-cannot be measured (fewer than 100 disk pixels, or a non-finite sample in it): the check fails closed.
-Exit 2 for a bad argument, an unreadable file, a malformed header (NAXIS1 / NAXIS2 missing) or a stack
-that is not 3 float planes.
+Ranges are half-open A:B. Exits, both modes (Ruling R16; JSON "verdict"):
+  0  pass: both ratios <= 1.5.
+  1  fail: a ratio over 1.5, a non-finite sample in a band, or (--noise) halves that do not register as one scene.
+  3  not judged: a band holds too little disk to judge -- fewer than 100 disk pixels (G >= 0.05; in both halves
+     for --noise), or (--noise) halves that share too little disk to register -- and nothing failed. The reason is
+     printed ("unmeasurable"). A side whose edge band is sky is not judged, not failed: the 70.0F's left edge, where
+     the disk never reaches (64 disk px), is judged on top and bottom only.
+  2  bad input: a bad argument, an unreadable file, a malformed header (NAXIS1 / NAXIS2 missing) or a stack that is
+     not 3 float planes.
 
 Limit (Rulings R8, R12): the single-stack std of B/G and R/G measures colour structure of any origin, not
 noise alone -- what the frames recorded counts as much as what the engine adds. A ratio over 1.5 says
@@ -118,17 +131,38 @@ def oriented(planes, side):
 
 
 def band_stats(planes, along, depth):
-    """{"B/G": std, "R/G": std, "pixels": n} over one band, or None for a field that cannot be measured."""
+    """{"B/G": std, "R/G": std, "pixels": n} over one band, or None for a field that cannot be measured, with "why"
+    and "sparse" (True: too little disk to judge, R16's exit 3; False: a defect, exit 1)."""
     r, g, b = (p[along[0]:along[1], depth[0]:depth[1]] for p in planes)
     if not (np.isfinite(r).all() and np.isfinite(g).all() and np.isfinite(b).all()):
-        return {"pixels": 0, "B/G": None, "R/G": None, "why": "non-finite sample in the band"}
+        return {"pixels": 0, "B/G": None, "R/G": None, "why": "non-finite sample in the band", "sparse": False}
     disk = g >= DISK_G
     n = int(disk.sum())
     if n < MIN_PIXELS:
-        return {"pixels": n, "B/G": None, "R/G": None,
+        return {"pixels": n, "B/G": None, "R/G": None, "sparse": True,
                 "why": "%d disk pixels (G >= %g), need %d" % (n, DISK_G, MIN_PIXELS)}
     gd = g[disk]
     return {"pixels": n, "B/G": float(np.std(b[disk] / gd)), "R/G": float(np.std(r[disk] / gd))}
+
+
+def verdict(out, problems, ratios):
+    """Sets out's "verdict", "pass" and "unmeasurable" (Ruling R16). problems: [(why, sparse)]; ratios: the two ratios
+    (None when not measured). fail: a defect or a ratio over the bar; else not judged: a band too sparse; else pass."""
+    defect = [w for w, sparse in problems if not sparse]
+    over = [r for r in ratios if r is not None and r > BAR]
+    if defect or over:
+        out["verdict"] = "fail"
+    elif problems or any(r is None for r in ratios):
+        out["verdict"] = "not judged"
+    else:
+        out["verdict"] = "pass"
+    if problems:
+        out["unmeasurable"] = "; ".join(w for w, _ in problems)
+    out["pass"] = out["verdict"] == "pass"
+    return out
+
+
+EXIT = {"pass": 0, "fail": 1, "not judged": 3}
 
 
 def measure(planes, side, rows, edge, ref):
@@ -141,17 +175,14 @@ def measure(planes, side, rows, edge, ref):
     e, f = band_stats(o, rows, edge), band_stats(o, rows, ref)
     out = {"side": side, "rows": "%d:%d" % rows, "edge": "%d:%d" % edge, "ref": "%d:%d" % ref, "bar": BAR,
            "edge_pixels": e["pixels"], "ref_pixels": f["pixels"]}
-    why = [w for w in (e.get("why"), f.get("why")) if w]
-    ok = not why
+    problems = [(x["why"], x["sparse"]) for x in (e, f) if x.get("why")]
+    ratios = []
     for k in ("B/G", "R/G"):
         es, rs = e[k], f[k]
         ratio = es / rs if es is not None and rs is not None and rs > 0 else None
         out[k] = {"edge_std": es, "ref_std": rs, "ratio": ratio}
-        ok = ok and ratio is not None and ratio <= BAR
-    if why:
-        out["unmeasurable"] = "; ".join(why)
-    out["pass"] = ok
-    return out
+        ratios.append(ratio)
+    return verdict(out, problems, ratios)
 
 
 def catmull_rom(p, sy, sx):
@@ -206,6 +237,7 @@ def register(g0, g1):
     reg = {"dy": dy, "dx": dx, "ry": None, "rx": None, "peak": float(c[y, x]), "match": None}
     if m.sum() < MIN_PIXELS:
         reg["why"] = "the halves share %d disk pixels at offset (%d, %d), need %d" % (m.sum(), dx, dy, MIN_PIXELS)
+        reg["sparse"] = True
         return reg
     r = np.zeros(2)
     for _ in range(20):
@@ -241,11 +273,11 @@ def noise_band(o0, o1, along, depth):
     q0 = [p[along[0]:along[1], depth[0]:depth[1]] for p in o0]
     q1 = [p[along[0]:along[1], depth[0]:depth[1]] for p in o1]
     if not all(np.isfinite(q).all() for q in q0 + q1):
-        return {"pixels": 0, "B/G": None, "R/G": None, "why": "non-finite sample in the band"}
+        return {"pixels": 0, "B/G": None, "R/G": None, "why": "non-finite sample in the band", "sparse": False}
     disk = (q0[1] >= DISK_G) & (q1[1] >= DISK_G)
     n = int(disk.sum())
     if n < MIN_PIXELS:
-        return {"pixels": n, "B/G": None, "R/G": None,
+        return {"pixels": n, "B/G": None, "R/G": None, "sparse": True,
                 "why": "%d pixels are disk (G >= %g) in both halves, need %d" % (n, DISK_G, MIN_PIXELS)}
     g0, g1 = q0[1][disk], q1[1][disk]
     out = {"pixels": n}
@@ -259,9 +291,9 @@ def measure_noise(p0, p1, side, rows, edge, ref):
     out = {"mode": "noise", "side": side, "rows": "%d:%d" % rows, "edge": "%d:%d" % edge, "ref": "%d:%d" % ref,
            "bar": BAR, "offset": {"x": reg["dx"], "y": reg["dy"], "residual_x": reg["rx"], "residual_y": reg["ry"],
                                   "peak": reg["peak"], "match": reg["match"]}}
-    why = [reg["why"]] if "why" in reg else []
+    problems = [(reg["why"], reg.get("sparse", False))] if "why" in reg else []
     e = f = {"pixels": 0, "B/G": None, "R/G": None}
-    if not why:
+    if not problems:
         # Half-way each (see the module docstring): p0'(q) = p0(q + r/2), p1'(q) = p1(q - r/2), so p0'(q) ~ p1'(q - d).
         h0 = catmull_rom(p0, reg["ry"] / 2, reg["rx"] / 2)
         h1 = catmull_rom(p1, -reg["ry"] / 2, -reg["rx"] / 2)
@@ -273,18 +305,15 @@ def measure_noise(p0, p1, side, rows, edge, ref):
                 raise ValueError("%s %d:%d is outside the halves' overlap (%d px along that axis for --side %s)"
                                  % (name, a, b, n, side))
         e, f = noise_band(v0, v1, rows, edge), noise_band(v0, v1, rows, ref)
-        why += [w for w in (e.get("why"), f.get("why")) if w]
+        problems += [(x["why"], x["sparse"]) for x in (e, f) if x.get("why")]
     out["edge_pixels"], out["ref_pixels"] = e["pixels"], f["pixels"]
-    ok = not why
+    ratios = []
     for k in ("B/G", "R/G"):
         en, rn = e[k], f[k]
         ratio = en / rn if en is not None and rn is not None and rn > 0 else None
         out[k] = {"edge_noise": en, "ref_noise": rn, "ratio": ratio}
-        ok = ok and ratio is not None and ratio <= BAR
-    if why:
-        out["unmeasurable"] = "; ".join(why)
-    out["pass"] = ok
-    return out
+        ratios.append(ratio)
+    return verdict(out, problems, ratios)
 
 
 def fmt(v, spec):
@@ -325,7 +354,7 @@ def main(argv=None):
                                                             fmt(q["ratio"], ".2f")))
         if "unmeasurable" in r:
             print("  unmeasurable: %s" % r["unmeasurable"])
-        print("%s (bar: both ratios <= %g)" % ("PASS" if r["pass"] else "FAIL", BAR))
+        print("%s (bar: both ratios <= %g)" % (r["verdict"].upper(), BAR))
     else:
         print("%s edge, along %s: edge band %s (%d disk px) vs reference band %s (%d disk px)"
               % (r["side"], r["rows"], r["edge"], r["edge_pixels"], r["ref"], r["ref_pixels"]))
@@ -335,8 +364,8 @@ def main(argv=None):
                                                           fmt(q["ratio"], ".2f")))
         if "unmeasurable" in r:
             print("  unmeasurable: %s" % r["unmeasurable"])
-        print("%s (bar: both ratios <= %g)" % ("PASS" if r["pass"] else "FAIL", BAR))
-    return 0 if r["pass"] else 1
+        print("%s (bar: both ratios <= %g)" % (r["verdict"].upper(), BAR))
+    return EXIT[r["verdict"]]
 
 
 if __name__ == "__main__":

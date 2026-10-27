@@ -4,7 +4,8 @@
 mkser.py in.avi out.ser W H [--gain G --gain-frames A:B] [--dead X,Y,V]
   --gain G         multiply frames A..B-1 (AVI frame index) by G, round, clip at 255
   --dead X,Y,V     set sensor site (X, Y) to V in every frame
-The SER header's colour id is 0 (mono); stack it with stack-probe --bayer RGGB.
+The SER header's colour id is 8 (BAYER_RGGB, header offset 18); run.sh stacks it with stack-probe --bayer RGGB,
+which names the same pattern.
 """
 import struct
 import subprocess

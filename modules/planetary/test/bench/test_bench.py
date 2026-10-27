@@ -277,6 +277,19 @@ def test_identity_tracks_every_part_and_words_each_mismatch(tmp_path):
     os.utime(probe, None)
     assert identity.stale(str(probe), str(root)) == []
     assert identity.stale(str(tmp_path / "missing"), str(root)) == [f"{tmp_path / 'missing'} does not exist"]
+    # Only the binary's own .cpp and the shared headers count (A3 concern 5): the other probe's source does not.
+    t = os.path.getmtime(probe)
+    for rel in ("test/stack-region-probe.cpp", "test/stack-probe.cpp", "test/ProbeFits.h"):
+        os.utime(root / rel, (t - 10, t - 10))
+    os.utime(root / "test/stack-region-probe.cpp", (t + 10, t + 10))
+    assert identity.stale(str(probe), str(root)) == []
+    os.utime(root / "test/ProbeFits.h", (t + 10, t + 10))
+    assert identity.stale(str(probe), str(root)) == ["stack-probe is older than test/ProbeFits.h"]
+    os.utime(root / "test/ProbeFits.h", (t - 10, t - 10))
+    other = tmp_path / "some-probe"                                    # named after neither .cpp: held to both
+    other.write_bytes(b"binary")
+    os.utime(other, (t, t))
+    assert identity.stale(str(other), str(root)) == ["some-probe is older than test/stack-region-probe.cpp"]
 
 
 def test_the_identity_at_a_commit_is_the_tree_identity_of_that_commit():

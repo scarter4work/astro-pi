@@ -669,6 +669,47 @@ def test_the_keff_box_is_read_on_the_cropped_grid(tmp_path):
     h, w = probe["height"], probe["width"]
     with pytest.raises(RuntimeError):
         keff((h - 10, h, w - 10, w), "--keff-origin", f"{top},{left}")
+    # The origin is the RIGHT one, not just applied (review M1): the region probe's own (uncropped) stack, cropped at
+    # (top, left), is stack-probe's stack -- and strictly closer than at any neighbouring offset.
+    out = tmp_path / "rp"
+    out.mkdir()
+    halves._run([PROBES[1], ser, "--bayer", "RGGB", "--fits-out", str(out)])
+    full, ours = refs.load_image(str(out / "ours.fits")), refs.load_image(fits)
+    hh, ww = ours.shape[:2]
+
+    def rms(oy, ox):
+        return float(np.sqrt(np.mean((full[oy:oy + hh, ox:ox + ww] - ours) ** 2)))
+    at = rms(top, left)
+    near = {(oy, ox): rms(oy, ox) for oy in range(max(0, top - 2), top + 3) for ox in range(max(0, left - 2), left + 3)
+            if (oy, ox) != (top, left) and oy + hh <= full.shape[0] and ox + ww <= full.shape[1]}
+    print(f"crop at ({top}, {left}): rms {at:.2e}; nearest other offset {min(near.values()):.2e}")
+    assert at < 1e-6 and min(near.values()) > 100 * max(at, 1e-9)
+    # Ruling R15: a box reaching into the frames' guard band far enough to move k (here the uncropped grid's corner:
+    # its outer 4-5 rows and columns are in every frame's guard band, a few % of its Hann^2 weight) is refused with the
+    # reason, not over-counted. A box whose omission is negligible -- the cropped stack's corner, whose missed outer
+    # columns carry Hann^2 weight ~1e-5 -- is measured.
+    with pytest.raises(RuntimeError, match=r"guard band .* over-count k by up to"):
+        keff((0, 20, 0, 20))
+    corner = keff((0, 40, 0, 40), "--keff-origin", f"{top},{left}")
+    assert corner["keffBox"] == pytest.approx(120, rel=1e-3)
+
+
+@pytest.mark.skipif(not all(os.access(p, os.X_OK) for p in PROBES), reason="stack-probe / stack-region-probe not built")
+def test_stack_probe_parity_reports_capture_frame_numbers(tmp_path):
+    """stack-probe --parity even|odd (Ruling R12's split halves) hands the engine every other frame; its JSON's
+    stackedFirst / stackedLast are the capture's own frame numbers, not the subset's (Task A3 review M4)."""
+    import halves
+    import json as _json
+    _fresh_probes()
+    frames, _, _ = halves.synthetic_frames("disc", 41, 0.5, 0.15, 0.6, 7)
+    ser = str(tmp_path / "c.ser")
+    halves.write_ser(ser, frames)
+    for parity, rest in (("even", 0), ("odd", 1)):
+        p = _json.loads(halves._run([PROBES[0], ser, "--bayer", "RGGB", "--parity", parity, "--json"]))
+        print(f"\n{parity}: frames {p['frames']}, used {p['used']}, stacked {p['stackedFirst']}..{p['stackedLast']}")
+        assert p["parity"] == parity and p["frames"] == (21 if parity == "even" else 20)
+        assert p["stackedFirst"] % 2 == rest and p["stackedLast"] % 2 == rest
+        assert 0 <= p["stackedFirst"] < p["stackedLast"] <= 40
 
 
 def test_the_tolerance_has_a_real_lower_bound():

@@ -94,11 +94,16 @@ def source_parts_at(commit, repo=None):
 
 
 def stale(binary, root=MODULE):
-    """The sources newer than `binary` (empty: up to date). A missing binary is reported as such."""
+    """The sources newer than `binary` (empty: up to date): the engine's, the shared probe headers and the binary's
+    own .cpp (test/<name>.cpp) -- not the other probe's .cpp, which it is not built from (an edit there left this
+    binary up to date but marked it stale; Task A3 concern 5). A binary named after neither .cpp is held to both.
+    A missing binary is reported as such."""
     if not os.path.exists(binary):
         return [f"{binary} does not exist"]
     t = os.path.getmtime(binary)
-    newer = [rel for rel in engine_files(root) + list(PROBE_SOURCES) if os.path.getmtime(os.path.join(root, rel)) > t]
+    own = [s for s in PROBE_SOURCES if not s.endswith(".cpp") or os.path.basename(s)[:-4] == os.path.basename(binary)]
+    own = own if any(s.endswith(".cpp") for s in own) else list(PROBE_SOURCES)
+    newer = [rel for rel in engine_files(root) + own if os.path.getmtime(os.path.join(root, rel)) > t]
     return [f"{os.path.basename(binary)} is older than {rel}" for rel in newer]
 
 

@@ -49,8 +49,8 @@ if(PLANETARY_PYTHON3)
     add_test(NAME fpn_verdict_fails_closed
              COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_fpn_verdict.py")
     set_tests_properties(fpn_verdict_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
-    # edge_chroma.py (Rulings R8, R12) on synthetic stacks: a noisy edge fails, a clean one passes, an unmeasurable
-    # one fails closed; its split-half mode (--noise) judges noise, not the colour both halves share.
+    # edge_chroma.py (Rulings R8, R12, R16) on synthetic stacks: a noisy edge fails (1), a clean one passes (0), a band
+    # with too little disk is not judged (3); its split-half mode (--noise) judges noise, not the colour both halves share.
     add_test(NAME edge_chroma_fails_closed
              COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_edge_chroma.py")
     set_tests_properties(edge_chroma_fails_closed PROPERTIES SKIP_RETURN_CODE 77)

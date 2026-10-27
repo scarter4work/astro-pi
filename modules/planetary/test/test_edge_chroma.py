@@ -143,6 +143,15 @@ class EdgeChroma(unittest.TestCase):
             self.assertIn(k, out)
         self.assertIn("FAIL", out)
 
+    def test_near_the_bar(self):
+        # Edge std 1.4x the reference's passes, 1.6x fails (review M2).
+        for edge, want, code in ((0.0112, 1.4, 0), (0.0128, 1.6, 1)):
+            with self.subTest(ratio=want):
+                c, r = self.run_json(stack(edge, 0.008))
+                self.assertEqual(c, code, r)
+                for k in ("B/G", "R/G"):
+                    self.assertAlmostEqual(r[k]["ratio"], want, delta=0.07)
+
     def test_one_noisy_ratio_is_enough_to_fail(self):
         for ch, name in ((2, "B/G"), (0, "R/G")):
             with self.subTest(noisy=name):
@@ -178,11 +187,20 @@ class EdgeChroma(unittest.TestCase):
         planes = stack(0.008, 0.008)
         dark = planes.copy()
         dark[:, :, :6] = 0.01  # edge band is all sky: no disk pixels to measure
+        # Ruling R16: too little disk is NOT JUDGED (3, with the reason) -- not a pass, and not a fail either.
         code, r = self.run_json(dark)
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3, r)
         self.assertFalse(r["pass"])
+        self.assertEqual(r["verdict"], "not judged")
+        self.assertIn("0 disk pixels", r["unmeasurable"])
+        code, out, _ = self.run_tool(dark)
+        self.assertEqual(code, 3)
+        self.assertIn("NOT JUDGED", out)
+        # A non-finite sample is a defect: a fail (1), even beside a band that is only sparse.
         nan = planes.copy()
         nan[2, 100, 2] = np.nan
+        self.assertEqual(self.run_json(nan)[0], 1)
+        nan[:, :, 20:40] = 0.01
         self.assertEqual(self.run_json(nan)[0], 1)
         # Bad input is refused with 2 (never 1, the "defect found" verdict, and never a pass).
         def refused(path, *args):
@@ -278,6 +296,28 @@ class SplitHalfNoise(unittest.TestCase):
                 self.assertGreater(r[name]["ratio"], 3.0, r)
                 self.assertLess(r[other]["ratio"], 1.5, r)
 
+    def test_near_the_bar(self):
+        # Edge noise 1.4x the interior's passes, 1.6x fails (review M2): the bar is the bar, not a 3x detector.
+        for edge, want, code in ((0.0112, 1.4, 0), (0.0128, 1.6, 1)):
+            with self.subTest(ratio=want):
+                c, r = self.run_json(*self.pair(edge, 0.008))
+                self.assertEqual(c, code, r)
+                for k in ("B/G", "R/G"):
+                    self.assertAlmostEqual(r[k]["ratio"], want, delta=0.07)
+
+    def test_what_lies_outside_the_overlap_is_not_judged(self):
+        # The mode's blind spot, pinned so it is not mistaken for coverage (review M2; module docstring): a full stack
+        # reaches as far as the farther-reaching half, the overlap only as far as the nearer one. Chroma noise 5x the
+        # interior's in half 0's own outer columns that half 1 does not reach (world x 0-2) is not seen: a pass. The
+        # engine's border error there is A2's still-capture test's (test_engine, synthetic, truth known).
+        h0, h1 = self.pair(0.008, 0.008)
+        rng = np.random.default_rng(9)
+        for ch in (0, 2):
+            h0[ch, :, :OFF_X] *= (1 + 0.04 * rng.standard_normal((H, OFF_X))).astype(np.float32)
+        code, r = self.run_json(h0, h1)
+        self.assertEqual(code, 0, r)
+        self.assertEqual(r["overlap"]["x"], OFF_X)
+
     def test_bands_follow_the_side(self):
         # Transposed, the noisy left edge is the top one; the disk's own left (the old top) is all sky.
         t = lambda p: np.ascontiguousarray(p.transpose(0, 2, 1))
@@ -337,8 +377,20 @@ class SplitHalfNoise(unittest.TestCase):
     def test_fails_closed_and_refuses_bad_input(self):
         h0, h1 = self.pair(0.008, 0.008)
         dark0, dark1 = h0.copy(), h1.copy()
-        dark0[:, :, :OFF_X + 6] = 0.01  # the overlap's edge band is all sky
-        self.assertEqual(self.run_json(dark0, dark1)[0], 1)
+        dark0[:, :, :OFF_X + 6] = 0.01  # the overlap's edge band is all sky: not judged (R16), as the 70.0F's left edge
+        code, r = self.run_json(dark0, dark1)
+        self.assertEqual(code, 3, r)
+        self.assertEqual(r["verdict"], "not judged")
+        self.assertIn("disk (G >= 0.05) in both halves", r["unmeasurable"])
+        # Halves that share too little disk to register at all: not judged either.
+        sky0, sky1 = h0.copy(), h1.copy()
+        sky0[:, :, :] = 0.01
+        sky0[:, 100:105, 60:65] = 0.5
+        sky1[:, :, :] = 0.01
+        sky1[:, 98:103, 57:62] = 0.5
+        code, r = self.run_json(sky0, sky1)
+        self.assertEqual(code, 3, r)
+        self.assertIn("share", r["unmeasurable"])
         nan1 = h1.copy()
         nan1[0, 100, 1] = np.nan
         self.assertEqual(self.run_json(h0, nan1)[0], 1)

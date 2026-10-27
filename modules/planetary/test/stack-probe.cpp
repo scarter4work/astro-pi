@@ -21,7 +21,8 @@
 // adds the stack's value at pixel (X, Y) -- on the output's grid, after the crop -- in every channel to the
 // JSON ("samples"; the headless PixInsight probe compares PlanetaryStack's window with them,
 // test/run-probe-stack.sh), next to the image's size ("image"), the first and last frame stacked
-// ("stackedFirst", "stackedLast"), the crop (Engine.h "The crop": "crop" {left, top, right, bottom,
+// ("stackedFirst", "stackedLast": the capture's own frame numbers, mapped back through --keep-best's or
+// --parity's subset), the crop (Engine.h "The crop": "crop" {left, top, right, bottom,
 // uncovered}, so output pixel (x, y) is the reference grid's (x + left, y + top)) and the frames' guard band
 // ("guard", Accumulate.h "The frame's border"; Ruling R14). --parity even|odd (Task A3, Ruling R12) hands the
 // engine only the even- or the odd-numbered frames of the capture (after --frames), as frames 0..n-1: two
@@ -332,6 +333,8 @@ int main(int argc, char** argv) try {
     getrusage(RUSAGE_SELF, &ru);
     const double peakMB = ru.ru_maxrss / 1024.0;  // KiB on Linux
     const stack::StackSummary& s = o.summary;
+    // The engine numbers the frames it was handed; under --keep-best / --parity that is the subset (Task A3 review M4).
+    auto captureFrame = [&](int64_t i) { return keep ? (*keep)[static_cast<size_t>(i)] : i; };
 
     if (o.image && !out.empty()) {
         if (EndsWith(out, ".fits") || EndsWith(out, ".fit")) WriteFits(out, *o.image);
@@ -383,8 +386,8 @@ int main(int argc, char** argv) try {
         if (o.image) {
             const ser::FloatImage& im = *o.image;
             j += ",\"image\":{\"width\":" + std::to_string(im.width) + ",\"height\":" + std::to_string(im.height) +
-                 ",\"channels\":" + std::to_string(im.channels) + "},\"stackedFirst\":" + std::to_string(o.frames.stacked.front()) +
-                 ",\"stackedLast\":" + std::to_string(o.frames.stacked.back()) + ",\"crop\":{\"left\":" +
+                 ",\"channels\":" + std::to_string(im.channels) + "},\"stackedFirst\":" + std::to_string(captureFrame(o.frames.stacked.front())) +
+                 ",\"stackedLast\":" + std::to_string(captureFrame(o.frames.stacked.back())) + ",\"crop\":{\"left\":" +
                  std::to_string(s.crop.left) + ",\"top\":" + std::to_string(s.crop.top) + ",\"right\":" + std::to_string(s.crop.right) +
                  ",\"bottom\":" + std::to_string(s.crop.bottom) + ",\"uncovered\":" + std::to_string(s.crop.uncovered) +
                  "},\"guard\":" + std::to_string(s.crop.guard) + ",\"samples\":[";
