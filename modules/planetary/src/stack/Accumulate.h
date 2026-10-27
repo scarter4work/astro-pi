@@ -57,6 +57,10 @@ namespace planetary::stack {
 // 1.45x / 1.69x bottom (bar 1.5); guard 2-8 all within it (4: 0.94x / 0.97x, 1.13x / 1.16x, 1.04x / 1.01x), and the
 // drift test beside it within it at 4. Not the 64.6F's edge colour: there excluding every frame's outer 10 px moved
 // the stacked B/G by at most 0.002 rms where coverage remained (R8 corrected 2; Task A2 report, round 2).
+// Only where the engine demosaics -- a declared Bayer capture (Ruling R13). Mono, RGB and an undeclared mosaic (stacked
+// as mono, Ruling P9) have no demosaic border: every sample is the sensor's own, and the guard would only cost each
+// frame 4 px per side (and a still capture its outer 4 px). Their guard is 0 (unit test: a mono still capture keeps
+// its full size).
 // InFrameWeight is each pixel's in-frame blend weight, before rejection: 0 where no frame reached it.
 //
 // Photometry: every sample is divided by the frame's gain (FrameRegions::gain), so frames chosen by
@@ -211,11 +215,13 @@ constexpr int kRejectGrow = 2;
 constexpr int kRejectReach = 4;
 // Weight of a sample whose position falls outside the frame (see "Interpolation").
 constexpr double kOutsideWeight = 1e-6;
-// The frame's guard band, sensor px (see "The frame's border"): samples within it count as outside the frame.
+// The frame's guard band of a declared Bayer capture, sensor px (see "The frame's border"): samples within it count as
+// outside the frame.
 constexpr int kFrameGuard = 4;
-// The guard band of a width x height frame: kFrameGuard, or less on a frame too small for it -- at most
-// (min(width, height) - 1) / 4, so at least half the frame's extent is stacked in each direction.
-int FrameGuard(int width, int height);
+// The guard band of the capture's frames: 0 unless it is a declared Bayer capture (Ruling R13); then kFrameGuard, or
+// less on a frame too small for it -- at most (min(width, height) - 1) / 4, so at least half the frame's extent is
+// stacked in each direction.
+int FrameGuard(const ser::FileInfo& info);
 // The stack where every sample a pixel's channel kept was contaminated by a clip and one of them saturated in a frame
 // no brighter than the reference (see "Clipping"): full scale, the sensor's clip on the reference's scale (the
 // reference is the frames' own scale, at gain 1), within [0, 1].
@@ -429,7 +435,7 @@ public:
     // rejection (see "The frame's border"); 0 where every frame's sample fell off the frame or in its guard band -- the
     // pixel then holds only the out-of-frame stand-in. Callable at any time, like Finish.
     std::vector<float> InFrameWeight() const;
-    int Guard() const { return guard_; }  // FrameGuard of the capture's frame
+    int Guard() const { return guard_; }  // FrameGuard(info): 0 unless a declared Bayer capture
     // Bytes held between calls (sums, reference, residual scale, plan, tables).
     size_t BytesHeld() const;
 

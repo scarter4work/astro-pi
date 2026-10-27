@@ -403,8 +403,9 @@ std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t aligne
 // frame's border") -- holds only the out-of-frame stand-in, a frame edge's value carried outward, which is invented
 // data, so it is cut, never filled. There is no coverage floor: a pixel a few frames reach is a stack of those frames
 // (thinner, noisier; Task A2 measured a floor on the 64.6F and found it cut through the sky's frame share, not the
-// target's -- Ruling R11 dropped it). A still capture loses about its guard band on every side (less how far the
-// jitter carries frames outward); a drifting one, where no frame's stacked part reaches.
+// target's -- Ruling R11 dropped it). A still Bayer capture loses about its guard band on every side (less how far
+// the jitter carries frames outward); a drifting one, where no frame's stacked part reaches. Mono, RGB and an
+// undeclared mosaic have no guard band (Ruling R13), so only drift can leave an edge unreached.
 struct StackCrop {
     int left = 0, top = 0, right = 0, bottom = 0;  // px removed from each side of the full-resolution stack
     int guard = 0;                                 // the frames' guard band (Accumulator::Guard), for the phrase
@@ -415,7 +416,8 @@ struct StackCrop {
 // outer line holds one. guard: Accumulator::Guard. std::invalid_argument on a size mismatch.
 StackCrop UncoveredCrop(const std::vector<float>& inFrame, int width, int height, int guard);
 // The alignment line's crop clause, one ASCII phrase ("cropped 7 px left, 6 px top: no frame reached them inside its
-// stacked part ..."); empty when nothing is cropped and no pixel inside is unreached.
+// stacked part ..."; without a guard band, no clause about one); empty when nothing is cropped and no pixel inside is
+// unreached.
 std::string CropPhrase(const StackCrop& crop);
 
 // ---- The result -----------------------------------------------------------------------------------

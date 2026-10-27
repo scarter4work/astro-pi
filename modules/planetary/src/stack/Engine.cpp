@@ -686,9 +686,13 @@ std::string CropPhrase(const StackCrop& c) {
     for (const auto& [n, name] : s)
         if (n > 0) sides += (sides.empty() ? "" : ", ") + Count(n) + " px " + name;
     std::string t;
+    // Without a guard band (not a declared Bayer capture, or a frame too small for it) the frames themselves end there:
+    // no clause about a band that does not exist.
     if (!sides.empty())
-        t = "cropped " + sides + ": no frame reached them inside its stacked part (each frame's outer " +
-            Plural(c.guard, "pixel is", "pixels are") + " not stacked)";
+        t = "cropped " + sides +
+            (c.guard > 0 ? ": no frame reached them inside its stacked part (each frame's outer " +
+                               Plural(c.guard, "pixel is", "pixels are") + " not stacked)"
+                         : std::string(": no frame reached them"));
     if (c.uncovered > 0)
         t += std::string(t.empty() ? "" : "; ") + Plural(c.uncovered, "pixel", "pixels") +
              " inside the image hold no frame's sample, only the nearest frame edge's";

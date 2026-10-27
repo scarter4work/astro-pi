@@ -697,7 +697,7 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     weightRej_.assign(px, 0.f);
     reached_.assign(px, 0);
     covIn_.assign(px, 0.f);
-    guard_ = FrameGuard(width_, height_);
+    guard_ = FrameGuard(info);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
     const BlendMask& mask = plan_.layout.mask;
@@ -864,8 +864,8 @@ bool Accumulator::AddInPlace(int64_t frameIndex, ser::FloatImage& frame) {
     // the reference, kNearClipBound in a brighter one, where the clip lies under full scale (Accumulate.h, "Clipping").
     const float boundLevel = gain > 1 ? static_cast<float>(kNearClipBound) : clipLevel;
     const bool satCounts = gain <= 1;
-    // The frame's stacked part: positions at least guard_ px inside its edge pixels' centres (Accumulate.h, "The
-    // frame's border").
+    // The frame's stacked part: positions at least guard_ px inside its edge pixels' centres -- guard_ is 0 but on a
+    // declared Bayer capture, where DemosaicHQ makes a border (Accumulate.h, "The frame's border"; Ruling R13).
     const float guardLo = static_cast<float>(guard_), guardX = static_cast<float>(W - 1 - guard_),
                 guardY = static_cast<float>(H - 1 - guard_);
 
@@ -1177,10 +1177,11 @@ std::vector<float> Accumulator::InFrameWeight() const {
     return out;
 }
 
-int FrameGuard(int width, int height) {
+int FrameGuard(const ser::FileInfo& info) {
+    // Only where DemosaicHQ makes a border (Accumulate.h, "The frame's border"; Ruling R13).
+    if (!ser::IsBayer(info.colorId)) return 0;
     // A frame too small for the band keeps at least half its extent in each direction.
-    const int g = kFrameGuard;
-    return std::max(0, std::min(g, (std::min(width, height) - 1) / 4));
+    return std::max(0, std::min(kFrameGuard, (std::min(info.header.width, info.header.height) - 1) / 4));
 }
 
 size_t Accumulator::BytesHeld() const {

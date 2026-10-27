@@ -21,8 +21,9 @@
 #     the stack's preview at Fit, 100 %, 200 %                     -> 04-fit.png, 05-zoom-100.png, 06-zoom-200.png
 #     zoom in, a drag (pan), Fit again                             -> 06b-zoom-in.png, 06c-pan.png, 06d-fit-again.png
 #     Execute                                                      -> 07-execute.png
-#     gui-smoke-stack-ipc.js (-x): exactly one image window, <stem>_stack, 1024x768 RGB, NCOMBINE /
-#     NFRAMES the engine's, its centre sample the engine's (within 1e-5): the stack Stack! made,
+#     gui-smoke-stack-ipc.js (-x): exactly one image window, <stem>_stack, the engine's size (its JSON: the stack
+#     is cropped, Engine.h "The crop"), RGB, NCOMBINE / NFRAMES the engine's, its centre sample the engine's (within
+#     1e-5; both on the cropped grid): the stack Stack! made,
 #     opened without stacking again (it exists 1.5 s after the click; a stack takes at least 3 s).
 #     The window is then closed.
 #  3b. --stack-unreadable: gui-long.avi made unreadable, Execute -> the error box -> 07b-unreadable.png
@@ -215,10 +216,11 @@ echo "threads during the run: peak $(sort -n "$OUT/threads-during-run.txt" | tai
 # Execute opened the stack Stack! made: the engine's size, counts and pixels.
 ipc '{"mode":"windows","out":"windows-execute.json","sample":[[512,384]],"close":true}' windows-execute.json || exit 1
 jq -e --slurpfile e "$LONG_JSON" '
-   .windows | length == 1 and .[0].id == "gui_long_stack" and .[0].width == 1024 and .[0].height == 768
+   .windows | length == 1 and .[0].id == "gui_long_stack"
+   and .[0].width == $e[0].image.width and .[0].height == $e[0].image.height
    and .[0].channels == 3 and .[0].keywords.NCOMBINE == ($e[0].used | tostring)
    and .[0].keywords.NFRAMES == ($e[0].measured | tostring)' "$OUT/windows-execute.json" >/dev/null \
-   || { echo "FAIL: Execute: expected one window gui_long_stack (1024x768 RGB, NCOMBINE $(jq .used "$LONG_JSON")), got $(cat "$OUT/windows-execute.json")"; exit 1; }
+   || { echo "FAIL: Execute: expected one window gui_long_stack ($(jq -r '"\(.image.width)x\(.image.height)"' "$LONG_JSON") RGB, NCOMBINE $(jq .used "$LONG_JSON")), got $(cat "$OUT/windows-execute.json")"; exit 1; }
 python3 - "$OUT/windows-execute.json" "$LONG_JSON" <<'PY' || exit 1
 import json, sys
 w = json.load(open(sys.argv[1]))["windows"][0]

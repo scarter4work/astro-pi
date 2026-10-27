@@ -184,18 +184,15 @@ TEST_CASE("RunStack: an end-to-end synthetic AVI stacks closer to the truth than
 
     REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
     REQUIRE(o.image.has_value());
-    // The full frame less the crop (Engine.h, "The crop"; Task A2): only the edge pixels no frame reached inside its
-    // stacked part are cut -- the guard band, less how far the frames drifted outward (2 px rms here) -- and the
-    // alignment line says so.
+    // A mono capture has no demosaic border, so no guard band (Ruling R13; Accumulate.h, "The frame's border"): every
+    // pixel some frame reaches in-frame -- all of them, at 2 px rms of drift -- and the full frame, uncropped.
     const stack::StackCrop& crop = o.summary.crop;
-    CHECK(o.image->width == w - crop.left - crop.right);
-    CHECK(o.image->height == h - crop.top - crop.bottom);
-    for (int side : {crop.left, crop.top, crop.right, crop.bottom}) {
-        CHECK(side > 0);
-        CHECK(side <= stack::kFrameGuard);
-    }
-    CHECK(o.summary.alignment.find("cropped ") != std::string::npos);
+    CHECK(crop.guard == 0);
+    CHECK(crop.left + crop.top + crop.right + crop.bottom == 0);
     CHECK(crop.uncovered == 0);
+    CHECK(o.image->width == w);
+    CHECK(o.image->height == h);
+    CHECK(o.summary.alignment.find("cropped") == std::string::npos);
     CHECK(o.image->channels == 1);
     CHECK(o.info.colorId == ser::ColorId::Mono);
     CHECK(o.summary.measured == 60);
@@ -471,10 +468,9 @@ TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic 
     REQUIRE(raw.image.has_value());
     CHECK(stack::UndeclaredMosaic(raw.info));
     CHECK(raw.image->channels == 1);
-    // Full resolution -- the mosaic itself, not its 2 x 2 luma -- less the crop (Engine.h, "The crop"; Task A2).
-    CHECK(raw.image->width == w - raw.summary.crop.left - raw.summary.crop.right);
-    CHECK(raw.image->height == h - raw.summary.crop.top - raw.summary.crop.bottom);
-    CHECK(raw.image->width > w / 2);
+    CHECK(raw.image->width == w);  // full resolution: the mosaic itself, not its 2 x 2 luma
+    CHECK(raw.image->height == h);
+    CHECK(raw.summary.crop.guard == 0);  // stacked as mono: no demosaic border, no guard band (Ruling R13)
     CHECK(std::count(raw.summary.warnings.begin(), raw.summary.warnings.end(), std::string(stack::kUndeclaredMosaicWarning)) == 1);
     const std::string warning = stack::kUndeclaredMosaicWarning;
     CHECK(warning.find("mono") != std::string::npos);
@@ -491,6 +487,7 @@ TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic 
     REQUIRE(colour.image.has_value());
     CHECK(colour.image->channels == 3);
     CHECK(colour.image->width == w - colour.summary.crop.left - colour.summary.crop.right);  // less the crop (Task A2)
+    CHECK(colour.summary.crop.guard == stack::kFrameGuard);  // declared Bayer: the demosaic's border is guarded (R13)
     CHECK(std::count(colour.summary.warnings.begin(), colour.summary.warnings.end(), std::string(stack::kUndeclaredMosaicWarning)) == 0);
 }
 
@@ -1539,7 +1536,8 @@ TEST_CASE("RunStack: a frame-filling surface drifting off one edge is stacked th
     INFO("rms to the truth: left band " << edge << ", interior band " << mid << "; largest error in the band " << worst);
     // Measured at c59e9fd4 (released engine): left band 0.0249 rms against the interior's 0.0064, largest error 0.362
     // -- surface in the sky. Fixed: 0.0095 against 0.0065 (fewer frames reach the band), largest 0.120 -- the limb,
-    // blurred by the seeing in the stack and sharp in the truth.
+    // blurred by the seeing in the stack and sharp in the truth. Re-measured after Task A2 (fix round 1): 0.00951 against
+    // 0.00647, largest 0.120 -- the same, as a mono capture has no guard band and is not cropped here (Ruling R13).
     CHECK(edge < 2 * mid);
     CHECK(worst < 0.2);
 }
@@ -1726,4 +1724,28 @@ TEST_CASE("UncoveredCrop cuts the edge rows and columns no frame reached, counts
     CHECK(p.find("each frame's outer 4 pixels are not stacked") != std::string::npos);
     CHECK(p.find("1 pixel inside the image") != std::string::npos);
     CHECK_THROWS_AS(stack::UncoveredCrop(in, w, h - 1, 4), std::invalid_argument);
+    // Without a guard band (guard 0: not a declared Bayer capture, or a frame too small for it) the phrase names none.
+    stack::StackCrop bare = stack::UncoveredCrop(in, w, h, 0);
+    CHECK(bare.left == 2);
+    const std::string q = stack::CropPhrase(bare);
+    CHECK(q.find("cropped 2 px left, 1 px top") == 0);
+    CHECK(q.find("no frame reached them") != std::string::npos);
+    CHECK(q.find("outer") == std::string::npos);
+    CHECK(q.find("stacked part") == std::string::npos);
+}
+
+TEST_CASE("RunStack: a still mono capture has no guard band -- no crop, its full size (Ruling R13)", "[engine]") {
+    // The guard band guards DemosaicHQ's border (Accumulate.h, "The frame's border"); a mono frame has none, so every
+    // frame's edge pixels are stacked and a capture held still keeps every pixel. With the guard applied, every side
+    // would lose ~4 px here.
+    const int w = 112, h = 96;
+    const Capture cap = DiscCapture(w, h, 55.6, 48.3, 22, 40, 47, 0.0);  // no global drift: only the seeing's local motion
+    const StackOutcome o = stack::RunStack(cap.Factory(), 4, {});
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    INFO(o.summary.alignment);
+    CHECK(o.summary.crop.guard == 0);
+    CHECK(o.summary.crop.left + o.summary.crop.top + o.summary.crop.right + o.summary.crop.bottom == 0);
+    CHECK(o.image->width == w);
+    CHECK(o.image->height == h);
 }

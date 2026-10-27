@@ -18,10 +18,12 @@
 // AutoStakkert's P20 is the selection's breadth) measures every frame with the engine's own MeasureAll and
 // hands RunStack only the ceil(F N) frames of highest whole-frame quality, which RunStack then selects among
 // as usual -- never a product knob (the spec's anti-goals forbid a percentage). --sample X,Y (repeatable)
-// adds the stack's value at pixel (X, Y)
-// in every channel to the JSON ("samples"; the headless PixInsight probe compares PlanetaryStack's window
-// with them, test/run-probe-stack.sh), next to the image's size ("image") and the first and last frame
-// stacked ("stackedFirst", "stackedLast"). Exit 0 with an image, 2 when diagnosed, 1 on error.
+// adds the stack's value at pixel (X, Y) -- on the output's grid, after the crop -- in every channel to the
+// JSON ("samples"; the headless PixInsight probe compares PlanetaryStack's window with them,
+// test/run-probe-stack.sh), next to the image's size ("image"), the first and last frame stacked
+// ("stackedFirst", "stackedLast"), the crop (Engine.h "The crop": "crop" {left, top, right, bottom,
+// uncovered}, so output pixel (x, y) is the reference grid's (x + left, y + top)) and the frames' guard band
+// ("guard", Accumulate.h "The frame's border"; Ruling R14). Exit 0 with an image, 2 when diagnosed, 1 on error.
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -360,7 +362,10 @@ int main(int argc, char** argv) try {
             const ser::FloatImage& im = *o.image;
             j += ",\"image\":{\"width\":" + std::to_string(im.width) + ",\"height\":" + std::to_string(im.height) +
                  ",\"channels\":" + std::to_string(im.channels) + "},\"stackedFirst\":" + std::to_string(o.frames.stacked.front()) +
-                 ",\"stackedLast\":" + std::to_string(o.frames.stacked.back()) + ",\"samples\":[";
+                 ",\"stackedLast\":" + std::to_string(o.frames.stacked.back()) + ",\"crop\":{\"left\":" +
+                 std::to_string(s.crop.left) + ",\"top\":" + std::to_string(s.crop.top) + ",\"right\":" + std::to_string(s.crop.right) +
+                 ",\"bottom\":" + std::to_string(s.crop.bottom) + ",\"uncovered\":" + std::to_string(s.crop.uncovered) +
+                 "},\"guard\":" + std::to_string(s.crop.guard) + ",\"samples\":[";
             bool first = true;
             for (const auto& [x, y] : samples) {
                 if (x < 0 || y < 0 || x >= im.width || y >= im.height) throw std::invalid_argument("--sample outside the image");

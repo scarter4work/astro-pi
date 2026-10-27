@@ -1199,12 +1199,9 @@ TEST_CASE("An out-of-frame stand-in is no unsaturated presence: it does not lift
         const FloatImage out = StackShifted(frames, shifts, gains,
                                             SceneLuma([&](int x, int y) { return std::min(1.0, scene(x, y)); }, w, h, false), 1.f,
                                             ser::ColorId::Mono);
-        // Outside the frames' guard band (Accumulate.h, "The frame's border"): its rows and columns hold no in-frame sample
-        // of any frame, only stand-ins, and RunStack crops them (Engine.h, "The crop").
-        const int g = stack::FrameGuard(w, h);
         double lo = 1, hi = 0;
-        for (int y = g; y < h - g; ++y)
-            for (int x = std::max(1, g); x < 10; ++x) {
+        for (int y = 0; y < h; ++y)
+            for (int x = 1; x < 10; ++x) {
                 lo = std::min(lo, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
                 hi = std::max(hi, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
             }
