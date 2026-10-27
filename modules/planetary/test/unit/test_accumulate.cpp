@@ -500,10 +500,10 @@ TEST_CASE("Accumulator memory is bounded by one frame, not by the frames added",
     const size_t frameBytes = static_cast<size_t>(w) * h * sizeof(float);
     // Float sums of the kept samples (a value, the weight, the per-channel weight of samples with another channel
     // saturated, and the saturated values and weight: 5 per mono pixel since fix round 2 of fix/planetary-edge;
-    // Accumulate.h "Clipping") and of the rejected ones (a value and the weight: 2), a flag byte per pixel, the luma
-    // maps and the plan: a few frames' worth.
+    // Accumulate.h "Clipping") and of the rejected ones (a value and the weight: 2), a flag byte per pixel, the
+    // in-frame weight (Task A2; Accumulate.h "The frame's border"), the luma maps and the plan: a few frames' worth.
     const size_t planBytes = p.plan.frames.size() * p.plan.RegionCount() * 9 + p.plan.frames.size() * 40;
-    CHECK(held <= (5 + 2) * frameBytes + frameBytes / 4 + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
+    CHECK(held <= (5 + 2 + 1) * frameBytes + frameBytes / 4 + 2 * frameBytes + 2 * frameBytes + planBytes + 64 * 1024);
     // Adding more frames does not grow it (re-adding is refused, so build a second accumulator and
     // compare after a partial run).
     CHECK(p.acc->FramesAdded() == p.plan.stackedCount);
@@ -1199,9 +1199,12 @@ TEST_CASE("An out-of-frame stand-in is no unsaturated presence: it does not lift
         const FloatImage out = StackShifted(frames, shifts, gains,
                                             SceneLuma([&](int x, int y) { return std::min(1.0, scene(x, y)); }, w, h, false), 1.f,
                                             ser::ColorId::Mono);
+        // Outside the frames' guard band (Accumulate.h, "The frame's border"): its rows and columns hold no in-frame sample
+        // of any frame, only stand-ins, and RunStack crops them (Engine.h, "The crop").
+        const int g = stack::FrameGuard(w, h);
         double lo = 1, hi = 0;
-        for (int y = 0; y < h; ++y)
-            for (int x = 1; x < 10; ++x) {
+        for (int y = g; y < h - g; ++y)
+            for (int x = std::max(1, g); x < 10; ++x) {
                 lo = std::min(lo, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
                 hi = std::max(hi, static_cast<double>(out.data[static_cast<size_t>(y) * w + x]));
             }

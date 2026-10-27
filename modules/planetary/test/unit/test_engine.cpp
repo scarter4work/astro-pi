@@ -184,8 +184,18 @@ TEST_CASE("RunStack: an end-to-end synthetic AVI stacks closer to the truth than
 
     REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
     REQUIRE(o.image.has_value());
-    CHECK(o.image->width == w);
-    CHECK(o.image->height == h);
+    // The full frame less the crop (Engine.h, "The crop"; Task A2): only the edge pixels no frame reached inside its
+    // stacked part are cut -- the guard band, less how far the frames drifted outward (2 px rms here) -- and the
+    // alignment line says so.
+    const stack::StackCrop& crop = o.summary.crop;
+    CHECK(o.image->width == w - crop.left - crop.right);
+    CHECK(o.image->height == h - crop.top - crop.bottom);
+    for (int side : {crop.left, crop.top, crop.right, crop.bottom}) {
+        CHECK(side > 0);
+        CHECK(side <= stack::kFrameGuard);
+    }
+    CHECK(o.summary.alignment.find("cropped ") != std::string::npos);
+    CHECK(crop.uncovered == 0);
     CHECK(o.image->channels == 1);
     CHECK(o.info.colorId == ser::ColorId::Mono);
     CHECK(o.summary.measured == 60);
@@ -461,8 +471,10 @@ TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic 
     REQUIRE(raw.image.has_value());
     CHECK(stack::UndeclaredMosaic(raw.info));
     CHECK(raw.image->channels == 1);
-    CHECK(raw.image->width == w);  // full resolution: the mosaic itself, not its 2 x 2 luma
-    CHECK(raw.image->height == h);
+    // Full resolution -- the mosaic itself, not its 2 x 2 luma -- less the crop (Engine.h, "The crop"; Task A2).
+    CHECK(raw.image->width == w - raw.summary.crop.left - raw.summary.crop.right);
+    CHECK(raw.image->height == h - raw.summary.crop.top - raw.summary.crop.bottom);
+    CHECK(raw.image->width > w / 2);
     CHECK(std::count(raw.summary.warnings.begin(), raw.summary.warnings.end(), std::string(stack::kUndeclaredMosaicWarning)) == 1);
     const std::string warning = stack::kUndeclaredMosaicWarning;
     CHECK(warning.find("mono") != std::string::npos);
@@ -478,7 +490,7 @@ TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic 
     REQUIRE(colour.diagnosis.kind == DiagnosisKind::None);
     REQUIRE(colour.image.has_value());
     CHECK(colour.image->channels == 3);
-    CHECK(colour.image->width == w);
+    CHECK(colour.image->width == w - colour.summary.crop.left - colour.summary.crop.right);  // less the crop (Task A2)
     CHECK(std::count(colour.summary.warnings.begin(), colour.summary.warnings.end(), std::string(stack::kUndeclaredMosaicWarning)) == 0);
 }
 
@@ -1513,15 +1525,17 @@ TEST_CASE("RunStack: a frame-filling surface drifting off one edge is stacked th
     const double edge = testing::RmsToTruth(*o.image, s, [](int x, int) { return x < 28; });
     const double mid = testing::RmsToTruth(*o.image, s, [](int x, int) { return x >= 140 && x < 168; });
     // The largest error in the band, registered as RmsToTruth registers.
+    // The stack is cropped (Engine.h, "The crop"; Task A2): its pixel (x, y) is the reference grid's (x + left, y + top).
     const FloatImage& im = *o.image;
-    FloatImage truth{w, h, 1, std::vector<float>(static_cast<size_t>(w) * h)};
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) truth.data[static_cast<size_t>(y) * w + x] = static_cast<float>(s.Eval(x, y, 0));
+    const int iw = im.width, ih = im.height, ox = o.summary.crop.left, oy = o.summary.crop.top;
+    FloatImage truth{iw, ih, 1, std::vector<float>(static_cast<size_t>(iw) * ih)};
+    for (int y = 0; y < ih; ++y)
+        for (int x = 0; x < iw; ++x) truth.data[static_cast<size_t>(y) * iw + x] = static_cast<float>(s.Eval(x + ox, y + oy, 0));
     const stack::Shift d = stack::GlobalShift(truth, im, stack::MeasureFrame(im, 0, 1), 1);
     double worst = 0;
-    for (int y = 0; y < h; ++y)
+    for (int y = 0; y < ih; ++y)
         for (int x = 0; x < 28; ++x)
-            worst = std::max(worst, std::fabs(im.data[static_cast<size_t>(y) * w + x] - s.Eval(x - d.dx, y - d.dy, 0)));
+            worst = std::max(worst, std::fabs(im.data[static_cast<size_t>(y) * iw + x] - s.Eval(x + ox - d.dx, y + oy - d.dy, 0)));
     INFO("rms to the truth: left band " << edge << ", interior band " << mid << "; largest error in the band " << worst);
     // Measured at c59e9fd4 (released engine): left band 0.0249 rms against the interior's 0.0064, largest error 0.362
     // -- surface in the sky. Fixed: 0.0095 against 0.0065 (fewer frames reach the band), largest 0.120 -- the limb,
@@ -1669,7 +1683,9 @@ TEST_CASE("RunStack: a chroma-free capture under the 64.6F drift has no more chr
           "[engine]") {
     // Rulings R8 corrected 2 and R10: under the real drift the engine adds no edge chroma of its own. The guard band and
     // the crop (Accumulate.h, Engine.h) must keep it so: edge_chroma's bands -- the outermost 6 px against 20-40 px in,
-    // measured from the output's edges -- on every side the disc runs off.
+    // measured from the output's edges -- on every side the disc runs off. B/G left / top / bottom: 0.89x / 1.00x / 1.10x
+    // at 2c406742; 0.76x / 0.88x / 1.17x with the guard band (4 px) and the crop. The ratio follows which texture the
+    // bands land on (R8 corrected 2), so it moves by a few tenths as the crop moves the bands (guard 6: top R/G 1.69x).
     const Capture cap = ChromaFreeCapture(300, true, 0.45, 0.3);
     const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
     REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
@@ -1685,4 +1701,29 @@ TEST_CASE("RunStack: a chroma-free capture under the 64.6F drift has no more chr
         CHECK(edge.first <= 1.5 * ref.first);
         CHECK(edge.second <= 1.5 * ref.second);
     }
+}
+
+TEST_CASE("UncoveredCrop cuts the edge rows and columns no frame reached, counts a hole, and says so (Ruling R11)", "[engine]") {
+    const int w = 12, h = 9;
+    std::vector<float> in(static_cast<size_t>(w) * h, 1.f);
+    // Nothing unreached: no crop, no phrase.
+    stack::StackCrop c = stack::UncoveredCrop(in, w, h, 4);
+    CHECK(c.left + c.top + c.right + c.bottom == 0);
+    CHECK(c.uncovered == 0);
+    CHECK(stack::CropPhrase(c).empty());
+    // Columns 0-1 and row 0 unreached, plus the corner pixel (11, 8) and an interior hole at (6, 4).
+    for (int y = 0; y < h; ++y) in[static_cast<size_t>(y) * w] = in[static_cast<size_t>(y) * w + 1] = 0;
+    for (int x = 0; x < w; ++x) in[static_cast<size_t>(x)] = 0;
+    in[static_cast<size_t>(8) * w + 11] = 0;
+    in[static_cast<size_t>(4) * w + 6] = 0;
+    c = stack::UncoveredCrop(in, w, h, 4);
+    CHECK(c.left == 2);
+    CHECK(c.top == 1);
+    CHECK(c.right + c.bottom == 1);  // the corner goes with one line, whichever holds the larger share
+    CHECK(c.uncovered == 1);         // the hole: no outer line reaches it, so it is counted, not peeled
+    const std::string p = stack::CropPhrase(c);
+    CHECK(p.find("cropped 2 px left, 1 px top") == 0);
+    CHECK(p.find("each frame's outer 4 pixels are not stacked") != std::string::npos);
+    CHECK(p.find("1 pixel inside the image") != std::string::npos);
+    CHECK_THROWS_AS(stack::UncoveredCrop(in, w, h - 1, 4), std::invalid_argument);
 }

@@ -43,8 +43,21 @@ namespace planetary::stack {
 // detail at fractional ones than Catmull-Rom: amplitude kept at a half-pixel shift 0.97 vs
 // 0.88 at 0.25 cycles/px, 0.66 vs 0.45 at 0.4 cycles/px (unit test) -- lucky imaging is about that
 // detail, and a frame's softening is the worst at half a pixel. A sample whose position falls outside
-// the frame counts with weight kOutsideWeight (so an output pixel only the frames' edges reach still
-// gets a value; anywhere else such samples move it by at most 1e-6 relative).
+// the frame -- or in its guard band (below) -- counts with weight kOutsideWeight (so an output pixel only the frames'
+// edges reach still gets a value; anywhere else such samples move it by at most 1e-6 relative). Such a pixel is a
+// stand-in, not a stack, and RunStack crops it away (Engine.h, "The crop").
+//
+// The frame's border (Task A2, Rulings R9-R11): a sample whose position lies within kFrameGuard px of the frame's
+// edge pixels' centres counts as outside the frame. DemosaicHQ fills a frame's outermost sites with less information
+// than inside: on textured real frames its chroma at columns 0 / 1 / 2 departs from the same frame demosaiced whole by a
+// B/G std of 0.0155 / 0.006-0.007 / 0.004-0.005, and by 0 from column 3 (Task A1 review). A sample at position p reads
+// the frame's columns floor(p) - 1 .. floor(p) + 2 (the 4 x 4 kernel), so from p >= 4 no tap reaches columns 0-2: 4 px.
+// Measured on the still capture of test_engine "the demosaic's frame border does not reach the stack" (every frame's
+// border on the stack's edge; column 0 against 20-40 px in, B/G / R/G): no guard 2.33x / 1.62x left, 1.88x / 1.67x top,
+// 1.45x / 1.69x bottom (bar 1.5); guard 2-8 all within it (4: 0.94x / 0.97x, 1.13x / 1.16x, 1.04x / 1.01x), and the
+// drift test beside it within it at 4. Not the 64.6F's edge colour: there excluding every frame's outer 10 px moved
+// the stacked B/G by at most 0.002 rms where coverage remained (R8 corrected 2; Task A2 report, round 2).
+// InFrameWeight is each pixel's in-frame blend weight, before rejection: 0 where no frame reached it.
 //
 // Photometry: every sample is divided by the frame's gain (FrameRegions::gain), so frames chosen by
 // different regions agree in brightness (no patchwork under passing haze; unit test: a flat field
@@ -170,10 +183,10 @@ namespace planetary::stack {
 //
 // Memory (asserted by BytesHeld): per output sample five float sums (the kept value, a channel's unsaturated weight
 // from samples with another channel saturated, the saturated value and weight, the rejected value) and per pixel
-// two (the kept and the rejected weight) and a flag byte; the reference and residual scale at luma size; the plan
-// (frames x regions x 9 bytes plus ~40 bytes per frame) -- 1080p RGB: 143 MB (69 bytes x 1920 x 1080; 66 MB before
-// R2). Per Add call: the frame itself (moved in, or the caller's buffer with AddInPlace; prefiltered in place), the
-// thread's clip flags (a plane of 1 byte per pixel, kept across the thread's Adds, and the frame's clipped sites, 4 bytes
+// three (the kept and the rejected weight, the in-frame weight) and a flag byte; the reference and residual scale at
+// luma size; the plan (frames x regions x 9 bytes plus ~40 bytes per frame) -- 1080p RGB: 151 MB (73 bytes x 1920 x
+// 1080; 143 MB before Task A2, 66 MB before R2). Per Add call: the frame itself (moved in, or the caller's buffer
+// with AddInPlace; prefiltered in place), the thread's clip flags (a plane of 1 byte per pixel, kept across the thread's Adds, and the frame's clipped sites, 4 bytes
 // each: up to 5 bytes per pixel) and a ring of 2 kRejectReach + 1 luma rows of scratch -- O(one frame) per concurrent
 // Add, independent of the number of frames. (Not the O(regions x region size) of per-region stacks: the blend above
 // needs none.)
@@ -198,6 +211,11 @@ constexpr int kRejectGrow = 2;
 constexpr int kRejectReach = 4;
 // Weight of a sample whose position falls outside the frame (see "Interpolation").
 constexpr double kOutsideWeight = 1e-6;
+// The frame's guard band, sensor px (see "The frame's border"): samples within it count as outside the frame.
+constexpr int kFrameGuard = 4;
+// The guard band of a width x height frame: kFrameGuard, or less on a frame too small for it -- at most
+// (min(width, height) - 1) / 4, so at least half the frame's extent is stacked in each direction.
+int FrameGuard(int width, int height);
 // The stack where every sample a pixel's channel kept was contaminated by a clip and one of them saturated in a frame
 // no brighter than the reference (see "Clipping"): full scale, the sensor's clip on the reference's scale (the
 // reference is the frames' own scale, at gain 1), within [0, 1].
@@ -407,6 +425,11 @@ public:
     int64_t FramesAdded() const { return added_.load(); }
     // Luma cells rejected (counted once per frame and cell that had samples inside the frame).
     int64_t RejectedCells() const { return rejected_.load(); }
+    // Per pixel (full size, row-major): the blend weight its samples from inside the frames' stacked part brought, before
+    // rejection (see "The frame's border"); 0 where every frame's sample fell off the frame or in its guard band -- the
+    // pixel then holds only the out-of-frame stand-in. Callable at any time, like Finish.
+    std::vector<float> InFrameWeight() const;
+    int Guard() const { return guard_; }  // FrameGuard of the capture's frame
     // Bytes held between calls (sums, reference, residual scale, plan, tables).
     size_t BytesHeld() const;
 
@@ -423,6 +446,8 @@ private:
     std::vector<float> sum_, weight_, sat_;
     std::vector<float> sumRej_, weightRej_;  // the rejected samples (Finish's stand-in): channels per pixel; per pixel
     std::vector<uint8_t> reached_;           // per pixel: bit c + 1, channel c saturated in a frame no brighter than the reference
+    std::vector<float> covIn_;               // per pixel: the in-frame samples' blend weight, before rejection
+    int guard_ = 0;
     std::vector<int> blendRegion_;  // per region: 1 when it keeps frames
     std::vector<float> gridMask_;   // the layout's blend mask at the kWarpGrid points (empty: 1 everywhere)
     std::vector<int> cellOfX_;      // per full-resolution column: its luma cell column

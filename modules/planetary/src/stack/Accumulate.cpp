@@ -696,6 +696,8 @@ Accumulator::Accumulator(RegionPlan plan, const ser::FloatImage& reference, cons
     sumRej_.assign(sum_.size(), 0.f);
     weightRej_.assign(px, 0.f);
     reached_.assign(px, 0);
+    covIn_.assign(px, 0.f);
+    guard_ = FrameGuard(width_, height_);
     blendRegion_.resize(plan_.RegionCount());
     for (size_t r = 0; r < plan_.RegionCount(); ++r) blendRegion_[r] = plan_.detail[r].kept > 0 ? 1 : 0;
     const BlendMask& mask = plan_.layout.mask;
@@ -862,6 +864,10 @@ bool Accumulator::AddInPlace(int64_t frameIndex, ser::FloatImage& frame) {
     // the reference, kNearClipBound in a brighter one, where the clip lies under full scale (Accumulate.h, "Clipping").
     const float boundLevel = gain > 1 ? static_cast<float>(kNearClipBound) : clipLevel;
     const bool satCounts = gain <= 1;
+    // The frame's stacked part: positions at least guard_ px inside its edge pixels' centres (Accumulate.h, "The
+    // frame's border").
+    const float guardLo = static_cast<float>(guard_), guardX = static_cast<float>(W - 1 - guard_),
+                guardY = static_cast<float>(H - 1 - guard_);
 
     // Luma rows are processed in order through a ring of 2 kRejectReach + 1 rows (samples, weights,
     // deviations, dilated outlier masks): a row is added once the rows kRejectReach below it are
@@ -896,9 +902,10 @@ bool Accumulator::AddInPlace(int64_t frameIndex, ser::FloatImage& frame) {
             const float sy = static_cast<float>(y) + rY[gi] + tx * (rY[gi + 1] - rY[gi]);
             // floor without a libm call (the baseline x86-64 target has no rounding instruction).
             const int ix = FloorInt(sx), iy = FloorInt(sy);
-            // Bit 0: outside the frame; bit c + 1: channel c contaminated by a clip in the pixel cell the sample lies
-            // in (its four corners; Accumulate.h, "Clipping"); bit c + 4 (set below): and saturated itself.
-            uint8_t flags = sx < 0 || sy < 0 || sx > W - 1 || sy > H - 1 ? 1 : 0;
+            // Bit 0: outside the frame's stacked part -- off the frame, or in its guard band (Accumulate.h, "The frame's
+            // border"); bit c + 1: channel c contaminated by a clip in the pixel cell the sample lies in (its four
+            // corners; "Clipping"); bit c + 4 (set below): and saturated itself.
+            uint8_t flags = sx < guardLo || sy < guardLo || sx > guardX || sy > guardY ? 1 : 0;
             if (clipped) {
                 const bool inside = ix >= 0 && iy >= 0 && ix + 1 < W && iy + 1 < H;
                 if (!inside || (ix + 1 >= cx0 && ix < cx1 && iy + 1 >= cy0 && iy < cy1)) {  // flags exist only in the box
@@ -1064,6 +1071,8 @@ bool Accumulator::AddInPlace(int64_t frameIndex, ser::FloatImage& frame) {
                 const uint8_t fl = obase[k];
                 const float wgt = abase[k] * (fl & 1 ? static_cast<float>(kOutsideWeight) : 1.0f);
                 const size_t o = orow + x;
+                // Coverage, before rejection (Accumulate.h, "The frame's border"): the in-frame samples' blend weight.
+                if (!(fl & 1)) covIn_[o] += abase[k];
                 if (grown[static_cast<size_t>(cellOfX_[static_cast<size_t>(x)])]) {
                     // Rejected: Finish's stand-in only, saturated or not alike.
                     weightRej_[o] += wgt;
@@ -1155,9 +1164,29 @@ ser::FloatImage Accumulator::Finish() const {
     return out;
 }
 
+std::vector<float> Accumulator::InFrameWeight() const {
+    std::vector<float> out(covIn_.size(), 0.f);
+    for (size_t b = 0; b < bandLocks_.size(); ++b) {  // a chunk at a time, like Finish
+        std::lock_guard<std::mutex> lock(*bandLocks_[b]);
+        const int l0 = static_cast<int>(b) * kLockRows, l1 = std::min(lumaH_, l0 + kLockRows);
+        const size_t o0 = static_cast<size_t>(l0) * scale_ * width_;
+        const size_t o1 = (l1 >= lumaH_ ? static_cast<size_t>(height_) : static_cast<size_t>(l1) * scale_) * width_;
+        std::copy(covIn_.begin() + static_cast<std::ptrdiff_t>(o0), covIn_.begin() + static_cast<std::ptrdiff_t>(o1),
+                  out.begin() + static_cast<std::ptrdiff_t>(o0));
+    }
+    return out;
+}
+
+int FrameGuard(int width, int height) {
+    // A frame too small for the band keeps at least half its extent in each direction.
+    const int g = kFrameGuard;
+    return std::max(0, std::min(g, (std::min(width, height) - 1) / 4));
+}
+
 size_t Accumulator::BytesHeld() const {
     size_t b = sizeof(*this);
     b += (sum_.capacity() + weight_.capacity() + sat_.capacity()) * sizeof(float);
+    b += covIn_.capacity() * sizeof(float);
     b += (sumRej_.capacity() + weightRej_.capacity()) * sizeof(float) + reached_.capacity();
     b += refLuma_.capacity() * sizeof(float) + sigma_.capacity() * sizeof(float);
     b += blendRegion_.capacity() * sizeof(int) + addedFlags_.capacity();

@@ -38,7 +38,7 @@ namespace planetary::stack {
 //     One diagnosis is made here (below): Unaligned. The region-stage focus check (Rulings P4, P15, P20)
 //     reads the kFocusFrames sharpest kept frames once more and can only warn, never refuse.
 //  3. Stacking: Accumulator over every frame the plan uses (RegionPlan::Uses), each read once more,
-//     DemosaicHQ, Add; Finish is the image.
+//     DemosaicHQ, Add; Finish, cropped to the pixels some frame reached ("The crop" below), is the image.
 // So the noise model's runs are read first, once per pass (35 frames per run of 32 triples, up to
 // kNoiseResponses responses: 807 triples, 885 frames, of the 240 x 180-luma Jupiter 195830, 65 triples, 74
 // frames, of the 1080p Moon 193142, stack-region-probe's "noise" line; both passes 1.41 s of Jupiter
@@ -104,11 +104,11 @@ constexpr int kHotPixelFrames = 64;
 //    in the stacking pass the demosaic's two float planes (8 bytes per pixel), the demosaiced frame
 //    with room for its prefilter (8 bytes per output sample) and the thread's clip flags (up to 5 bytes per
 //    pixel). Workers per pass are capped so fixed + observers + workers stay within kMemoryBudget (a 4K RGB
-//    16-bit capture: 357 MB per stacking worker beside 813 MB fixed, so 8 of them -- PlanMemory at fix round 2 of
-//    fix/planetary-edge; 1080p never hits the cap).
-//  - Fixed: the Accumulator's sums (20 bytes per output sample and 9 per pixel: kept and rejected, saturated apart,
-//    Accumulate.h "Clipping" and "Memory"), the reference and residual scale at luma
-//    size, the regions' blend mask. Not planned, being
+//    16-bit capture: 357 MB per stacking worker beside 846 MB fixed, so 8 of them -- 813 MB at fix round 2 of
+//    fix/planetary-edge, before the in-frame weight of Task A2; 1080p never hits the cap).
+//  - Fixed: the Accumulator's sums (20 bytes per output sample and 13 per pixel: kept and rejected, saturated apart,
+//    and the in-frame weight, Accumulate.h "Clipping", "The frame's border" and "Memory"), the reference and
+//    residual scale at luma size, the regions' blend mask. Not planned, being
 //    transient and outside the worker passes: PlaceRegions' scratch for the mask (RegionBlendMask: the 3 x 3 means
 //    and the sky's samples, 4 + 4 bytes per luma px, and the distance transform's 8 per px of the grid's extent:
 //    ~16 bytes per luma px, ~130 MB on 4K mono), freed before the alignment pass.
@@ -396,6 +396,28 @@ std::string FocusWarning(const FocusCheck& check);
 // (RegionDetail::skyOnly) are not counted as placed on the target's detail: a last clause names them.
 std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames);
 
+// ---- The crop (Rulings R9, R11) -------------------------------------------------------------------
+//
+// The stack is cropped to the rectangle every pixel of which some frame reached inside its stacked part (Ruling R11):
+// a pixel no frame reached -- each frame's sample there fell off the frame or in its guard band (Accumulate.h, "The
+// frame's border") -- holds only the out-of-frame stand-in, a frame edge's value carried outward, which is invented
+// data, so it is cut, never filled. There is no coverage floor: a pixel a few frames reach is a stack of those frames
+// (thinner, noisier; Task A2 measured a floor on the 64.6F and found it cut through the sky's frame share, not the
+// target's -- Ruling R11 dropped it). A still capture loses about its guard band on every side (less how far the
+// jitter carries frames outward); a drifting one, where no frame's stacked part reaches.
+struct StackCrop {
+    int left = 0, top = 0, right = 0, bottom = 0;  // px removed from each side of the full-resolution stack
+    int guard = 0;                                 // the frames' guard band (Accumulator::Guard), for the phrase
+    int64_t uncovered = 0;  // pixels left inside the crop that no frame reached (a hole no outer line holds; 0 when none)
+};
+// The crop of a width x height stack from Accumulator::InFrameWeight: the outer row or column with the largest share of
+// pixels no frame reached (in-frame weight 0) is peeled, one at a time (left, top, right, bottom on a tie), while any
+// outer line holds one. guard: Accumulator::Guard. std::invalid_argument on a size mismatch.
+StackCrop UncoveredCrop(const std::vector<float>& inFrame, int width, int height, int guard);
+// The alignment line's crop clause, one ASCII phrase ("cropped 7 px left, 6 px top: no frame reached them inside its
+// stacked part ..."); empty when nothing is cropped and no pixel inside is unreached.
+std::string CropPhrase(const StackCrop& crop);
+
 // ---- The result -----------------------------------------------------------------------------------
 
 struct StackSummary {
@@ -429,6 +451,8 @@ struct StackSummary {
     // `warnings` holds FocusWarning(focus); otherwise it holds the selection's focusWarning when step 7's warn
     // band fired (Ruling P15b) -- one focus warning at most.
     FocusCheck focus;
+    // What the crop removed and why (StackCrop; CropPhrase ends the alignment line when it says anything).
+    StackCrop crop;
 };
 
 // Which frames went where (for Task 7's HISTORY and the tests).
@@ -448,8 +472,9 @@ struct StackFrames {
 
 struct StackOutcome {
     // The stack: full resolution, interleaved, linear, normalised like DemosaicHQ -- RGB for Bayer and
-    // RGB captures, 1 channel for mono and for an undeclared mosaic (Ruling P9, warned). Empty exactly
-    // when diagnosis.kind != None.
+    // RGB captures, 1 channel for mono and for an undeclared mosaic (Ruling P9, warned) -- cropped by
+    // summary.crop (its pixel (x, y) is the reference grid's (x + crop.left, y + crop.top); "The crop"). Empty
+    // exactly when diagnosis.kind != None.
     std::optional<ser::FloatImage> image;
     Diagnosis diagnosis;
     StackSummary summary;

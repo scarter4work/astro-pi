@@ -632,6 +632,69 @@ std::string FocusWarning(const FocusCheck& c) {
            Num(c.detailScale, 1) + " px (in-focus captures: up to " + Num(c.warnAbove, 1) + " px).";
 }
 
+StackCrop UncoveredCrop(const std::vector<float>& inFrame, int width, int height, int guard) {
+    if (width < 1 || height < 1 || inFrame.size() != static_cast<size_t>(width) * static_cast<size_t>(height))
+        throw std::invalid_argument("UncoveredCrop: the map must be width x height");
+    StackCrop c;
+    c.guard = guard;
+    const size_t px = inFrame.size();
+    std::vector<uint8_t> bare(px);  // no in-frame sample: the out-of-frame stand-in alone
+    int64_t total = 0;
+    for (size_t o = 0; o < px; ++o) {
+        bare[o] = !(inFrame[o] > 0);
+        total += bare[o];
+    }
+    int x0 = 0, y0 = 0, x1 = width, y1 = height;
+    auto column = [&](int x) {
+        int64_t n = 0;
+        for (int y = y0; y < y1; ++y) n += bare[static_cast<size_t>(y) * width + x];
+        return n;
+    };
+    auto row = [&](int y) {
+        int64_t n = 0;
+        for (int x = x0; x < x1; ++x) n += bare[static_cast<size_t>(y) * width + x];
+        return n;
+    };
+    // Peel the outer row or column with the largest share of such pixels (left, top, right, bottom on a tie) while one
+    // holds any; a pixel no outer line reaches (a hole) is counted, not peeled.
+    while (total > 0) {
+        const int64_t n[4] = {x1 - x0 > 1 ? column(x0) : 0, y1 - y0 > 1 ? row(y0) : 0, x1 - x0 > 1 ? column(x1 - 1) : 0,
+                              y1 - y0 > 1 ? row(y1 - 1) : 0};
+        const double len[4] = {static_cast<double>(y1 - y0), static_cast<double>(x1 - x0), static_cast<double>(y1 - y0),
+                               static_cast<double>(x1 - x0)};
+        int best = -1;
+        for (int s = 0; s < 4; ++s)
+            if (n[s] > 0 && (best < 0 || n[s] / len[s] > n[best] / len[best])) best = s;
+        if (best < 0) break;
+        total -= n[best];
+        if (best == 0) ++x0;
+        if (best == 1) ++y0;
+        if (best == 2) --x1;
+        if (best == 3) --y1;
+    }
+    c.left = x0;
+    c.top = y0;
+    c.right = width - x1;
+    c.bottom = height - y1;
+    c.uncovered = total;
+    return c;
+}
+
+std::string CropPhrase(const StackCrop& c) {
+    std::string sides;
+    const std::pair<int, const char*> s[4] = {{c.left, "left"}, {c.top, "top"}, {c.right, "right"}, {c.bottom, "bottom"}};
+    for (const auto& [n, name] : s)
+        if (n > 0) sides += (sides.empty() ? "" : ", ") + Count(n) + " px " + name;
+    std::string t;
+    if (!sides.empty())
+        t = "cropped " + sides + ": no frame reached them inside its stacked part (each frame's outer " +
+            Plural(c.guard, "pixel is", "pixels are") + " not stacked)";
+    if (c.uncovered > 0)
+        t += std::string(t.empty() ? "" : "; ") + Plural(c.uncovered, "pixel", "pixels") +
+             " inside the image hold no frame's sample, only the nearest frame edge's";
+    return t;
+}
+
 std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames) {
     if (detail.empty())
         return "no region holds detail to rank on, so the " +
@@ -716,8 +779,9 @@ MemoryPlan PlanMemory(const ser::FileInfo& info, int threads, size_t regions) {
     // shared by the layout's copies) and the Accumulator's samples of it (4 per kWarpGrid^2 px: at most 1 per luma px).
     const size_t lumaImages = 29 * lumaPx;
     // The Accumulator's sums: per output sample a kept value, a kept per-channel weight, a saturated value and weight
-    // and a rejected value (20 bytes); per pixel a kept and a rejected weight (8) and a flag byte.
-    p.fixedBytes = 20 * outSamples + 9 * px + lumaImages;
+    // and a rejected value (20 bytes); per pixel a kept and a rejected weight (8), a flag byte and the in-frame weight
+    // (4: Accumulate.h "The frame's border").
+    p.fixedBytes = 20 * outSamples + 13 * px + lumaImages;
     // Frames x regions (Engine.h). The per-frame statistics are held for the whole run.
     const size_t frames = static_cast<size_t>(std::max<int64_t>(0, info.frameCount));
     const size_t statsBytes = frames * sizeof(FrameStats);
@@ -1069,6 +1133,22 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     }
     ser::FloatImage image = acc.Finish();
     stacking.ThrowIfCancelled();
+    {
+        // The crop (Engine.h "The crop", Ruling R11): the rows and columns no frame reached inside its stacked part.
+        const int W = image.width, H = image.height;
+        sum.crop = UncoveredCrop(acc.InFrameWeight(), W, H, acc.Guard());
+        const StackCrop& c = sum.crop;
+        if (c.left + c.right + c.top + c.bottom > 0) {
+            const int cw = W - c.left - c.right, ch = H - c.top - c.bottom, C = image.channels;
+            ser::FloatImage cropped{cw, ch, C, std::vector<float>(static_cast<size_t>(cw) * ch * C)};
+            for (int y = 0; y < ch; ++y) {
+                const float* src = image.data.data() + (static_cast<size_t>(y + c.top) * W + c.left) * C;
+                std::copy(src, src + static_cast<size_t>(cw) * C,
+                          cropped.data.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * cw * C));
+            }
+            image = std::move(cropped);
+        }
+    }
     step("Stacking", t0);
 
     out.frames.stacked = stackList;
@@ -1088,6 +1168,8 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     line += "; " + Num(cells > 0 ? 100.0 * static_cast<double>(sum.rejectedCells) / cells : 0.0, 3) +
             "% of samples rejected as outliers; " + Plural(static_cast<int64_t>(sum.hotPixels), "hot pixel", "hot pixels") +
             " repaired";
+    const std::string cropText = CropPhrase(sum.crop);
+    if (!cropText.empty()) line += "; " + cropText;
     sum.alignment = line;
 
     // Only with an image: a diagnosed capture stacked nothing (Ruling P9's warning is about the result).
