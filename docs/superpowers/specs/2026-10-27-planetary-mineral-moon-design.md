@@ -166,7 +166,7 @@ On `2026-10-23/Moon/2026-10-23-203401-Moon-Bin1 Lqef 64.6F.avi`:
   mineral output's split-half chroma noise at each edge is ≤ 1.5× its interior. Real lunar colour at
   an edge is not a fringe (Ruling R12);
 - **Scott's judgement:** a side-by-side of our mineral image next to
-  `~/Desktop/Mineral_Moon_10_26_2026.png`, cropped to the same field. It should be close, with no
+  `~/Desktop/MineralMoon.png` (2026-10-27, Scott's ratio-algorithm result; supersedes the 10-26 PNG), cropped to the same field. It should be close, with no
   fringe and no blown highlands. Less sharp than BXT is acceptable.
 
 Also run on the other broadband Moon captures:
