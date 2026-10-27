@@ -329,7 +329,8 @@ constexpr const char* kPhaseMineral = "Mineral moon";
   - `ExecuteGlobal` resolves `Auto` through `ParseCaptureName(filePath)`. If `p_mineralMoon` is set and `MineralMoonRefusal` returns a reason, it throws `Error(reason)` before stacking.
   - After `OpenStackWindow`, when mineral: `MakeMineralMoon`, then `ShowNewImageWindow(..., ViewIdStem(path) + "_mineral", ...)`.
 - Modify: `src/module/StackCards.h`.
-  - `OBJECT` card = `TargetName(target)` unless `Other`.
+  - `OBJECT` card = `TargetName(target)` unless `Other`, plus a HISTORY line
+    `PlanetaryStack target: <T> (from file name|set by user)`.
   - `MineralHistory(const MineralOutcome&)` gives `HISTORY` lines prefixed `PlanetaryStack mineral: `.
   - `StackInfoLine` notes "target from file name: <T>", or "target not in file name".
 - Modify: `src/module/PlanetaryStackInterface.{h,cpp}`.
