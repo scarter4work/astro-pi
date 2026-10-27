@@ -119,7 +119,18 @@ stacked.</li>
 at sharp edges such as the limb than SERViewer's bilinear debayer, shifted onto the reference once, matched in brightness
 to the others (so frames chosen by different regions agree in brightness) and added. Samples that differ from the reference by far more than the frames normally do (a satellite or aircraft trail, a
 bird, a cosmic ray) are rejected. The <b>Alignment:</b> line ends with the share of samples rejected and the hot pixels
-repaired.</li>
+repaired.
+<br>On a Bayer capture, the outer 4 pixels of every frame are not stacked: the debayer has less to work with at a
+frame's edge, and its colour there is less accurate. The image is then cropped. First go the rows and columns at its
+edges that no frame reached once those 4 pixels are left out; nothing is filled in or invented there. Then, on each
+side, up to 4 more rows or columns go while fewer than half of the frames stacked there reached them: on a capture held
+nearly still those lines would be made of a handful of frames and be visibly noisier than the rest. A capture held
+still therefore loses about 4 or 5 pixels on each side (up to 8 where a few frames strayed further); one that drifted
+also loses the edges no frame reached. A mono or RGB capture leaves no frame border out, so only drift crops it. When
+anything is cropped, the <b>Alignment:</b>
+line ends with a clause saying how many pixels went from each side and why, for example &ldquo;cropped 8 px left, 4
+px top, 7 px right, 4 px bottom: no frame reached them inside its stacked part, except 4 px top, 4 px bottom, which
+under half of the frames stacked there reached (each frame's outer 4 pixels are not stacked)&rdquo;.</li>
 <li><b>Focus check of the stack.</b> The sharpest kept frames are split into two half-stacks; the detail the two have in
 common is free of noise, and is compared with in-focus captures. This check only warns, never refuses.</li>
 </ol>
@@ -168,7 +179,8 @@ well.</li>
 
 <h2>The image it opens</h2>
 <ul>
-<li>32-bit floating point, linear (not stretched), at the capture's full resolution: RGB for a Bayer or colour capture,
+<li>32-bit floating point, linear (not stretched), at the capture's sampling (no resizing), cropped as described under
+Stacking above, so a few pixels smaller than the capture on a Bayer capture or a drifting one: RGB for a Bayer or colour capture,
 mono for a mono one (and for a raw Bayer AVI with no known pattern, see above). Samples are normalised like SERViewer's,
 so the camera's full range maps to [0,1].</li>
 <li>Identifier: the file name with every character other than letters, digits and underscores replaced by an underscore
