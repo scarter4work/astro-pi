@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <random>
@@ -1527,4 +1528,161 @@ TEST_CASE("RunStack: a frame-filling surface drifting off one edge is stacked th
     // blurred by the seeing in the stack and sharp in the truth.
     CHECK(edge < 2 * mid);
     CHECK(worst < 0.2);
+}
+
+namespace {
+
+// The 2026-10-23 64.6F Moon's drift (Task A1): (ox, oy) of every 40th of its 2324 raw frames (scratchpad
+// raw10.bin.shifts.npy: phase correlation of every 10th raw frame against the 0.3.0.1 stack, every 4th of those kept,
+// rounded to 0.01 px); stack column d sits at frame column d + ox. The reference is at the end, so only the late
+// frames reach the stack's left and top edges.
+constexpr double kDrift646[][2] = {
+    {-55.84, -29.27}, {-54.87, -28.52}, {-54.84, -28.09}, {-54.23, -28.47}, {-53.15, -28.04}, {-52.09, -26.04},
+    {-52.00, -26.41}, {-50.20, -24.73}, {-49.41, -23.84}, {-48.48, -24.37}, {-48.04, -24.25}, {-46.28, -23.44},
+    {-46.21, -23.75}, {-44.98, -22.47}, {-44.23, -21.66}, {-43.67, -21.05}, {-44.13, -20.17}, {-41.83, -20.42},
+    {-41.40, -20.13}, {-40.27, -19.99}, {-39.87, -18.07}, {-38.19, -18.30}, {-37.63, -18.08}, {-37.54, -16.82},
+    {-35.50, -16.71}, {-33.79, -16.13}, {-32.99, -15.78}, {-30.54, -14.26}, {-29.89, -15.63}, {-29.99, -14.20},
+    {-28.90, -12.96}, {-27.51, -13.21}, {-25.64, -12.58}, {-24.94, -11.80}, {-23.99, -10.62}, {-21.87, -11.42},
+    {-21.60, -9.89},  {-20.34, -10.21}, {-19.23, -9.01},  {-17.98, -8.47},  {-17.74, -8.02},  {-15.60, -7.06},
+    {-13.90, -7.20},  {-13.58, -6.38},  {-13.26, -5.66},  {-11.66, -4.73},  {-10.26, -5.85},  {-10.37, -4.26},
+    {-7.97, -3.88},   {-6.12, -3.53},   {-4.97, -2.44},   {-4.44, -2.53},   {-3.22, -1.87},   {-3.03, -1.46},
+    {-1.81, -0.63},   {-0.04, -0.07},   {0.43, 1.16},     {1.59, 0.64},     {2.27, 1.73}};
+
+// A chroma-free, white-balanced capture (Task A2, Rulings R8 corrected 2 and R10), framed like the 64.6F Moon: a
+// MakeSurface texture L inside a disc of radius 170 centred at (100, 120) of the 320 x 240 frame at the reference --
+// it runs off the left, top and bottom edges, sky on the right (a frame-filling target, found the same in every
+// frame) -- mosaiced RGGB as R 0.93 L, G L, B 0.70 L (the Moon's colour differences, uniform, so DemosaicHQ is not
+// exact on it), plus N(0, 1.25 / 255) per site (the 64.6F's 3.5 DN, scaled to the stack noise of its 2297 frames at
+// these few). Seeing blur `blur` px, the last 4 frames `refBlur` (the sharpest, so the reference is at the end, as on
+// the 64.6F). drift: kDrift646 interpolated over the capture; else every frame at its last point. Both plus
+// N(0, 0.25 px) of jitter. Any chroma in its stack is made by the CFA sampling, the demosaic and the engine.
+Capture ChromaFreeCapture(int n, bool drift, double blur, double refBlur) {
+    const int w = 320, h = 240;
+    Scene s = testing::MakeSurface(646, w + 128, h + 72);
+    s.cx = 156;  // scene = frame + (58, 32) - the reference's (2.27, 1.73)
+    s.cy = 150;
+    s.radius = 170;
+    Capture cap = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
+    const int nd = static_cast<int>(sizeof(kDrift646) / sizeof(kDrift646[0]));
+    std::mt19937 rng(6460);
+    std::normal_distribution<double> jitter(0, 0.25);
+    std::vector<double> gx(static_cast<size_t>(n)), gy(gx.size());
+    for (int k = 0; k < n; ++k) {
+        const double t = drift ? static_cast<double>(k) * (nd - 1) / (n - 1) : nd - 1;
+        const int i = std::min(static_cast<int>(t), nd - 2);
+        const double f = t - i;
+        gx[static_cast<size_t>(k)] = kDrift646[i][0] + f * (kDrift646[i + 1][0] - kDrift646[i][0]) + jitter(rng);
+        gy[static_cast<size_t>(k)] = kDrift646[i][1] + f * (kDrift646[i + 1][1] - kDrift646[i][1]) + jitter(rng);
+    }
+    const double colour[3] = {0.93, 1.0, 0.70};  // R, G, B
+    std::vector<std::vector<float>> frames(static_cast<size_t>(n));
+    std::vector<std::thread> pool;
+    for (int t = 0; t < 16; ++t)
+        pool.emplace_back([&, t] {
+            for (int k = t; k < n; k += 16) {
+                std::mt19937 noise(64600u + k);
+                std::normal_distribution<double> nz(0, 1.25 / 255);
+                const double b = k >= n - 4 ? refBlur : blur;
+                std::vector<float>& v = frames[static_cast<size_t>(k)];
+                v.resize(static_cast<size_t>(w) * h);
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < w; ++x) {
+                        const int c = (y & 1) == 0 ? ((x & 1) == 0 ? 0 : 1) : ((x & 1) == 0 ? 1 : 2);
+                        // frame(p) = scene(p - g); the scene's origin 58 px left of and 32 px above the frame's, so
+                        // every frame of the drift sees texture.
+                        const double l = s.Eval(x - gx[static_cast<size_t>(k)] + 58, y - gy[static_cast<size_t>(k)] + 32, b);
+                        v[static_cast<size_t>(y) * w + x] = static_cast<float>(colour[c] * l + nz(noise));
+                    }
+            }
+        });
+    for (auto& th : pool) th.join();
+    for (const auto& f : frames) cap.Add(f);
+    return cap;
+}
+
+// test/edge_chroma.py's measure on an RGB stack: per pixel B/G and R/G (G >= 0.05), their std over the band [d0, d1)
+// px in from `side` (L, T, B), along the side over [t0, t1) (rows for L, columns for T and B). {B/G, R/G}.
+std::pair<double, double> BandChroma(const FloatImage& im, char side, int d0, int d1, int t0, int t1) {
+    double s[2] = {0, 0}, s2[2] = {0, 0};
+    int64_t n = 0;
+    for (int d = d0; d < d1; ++d)
+        for (int t = t0; t < t1; ++t) {
+            const int x = side == 'L' ? d : t;
+            const int y = side == 'T' ? d : side == 'B' ? im.height - 1 - d : t;
+            const float* p = im.data.data() + (static_cast<size_t>(y) * im.width + x) * 3;
+            if (!(p[1] >= 0.05f)) continue;
+            for (int c = 0; c < 2; ++c) {
+                const double v = static_cast<double>(p[c == 0 ? 2 : 0]) / p[1];
+                s[c] += v;
+                s2[c] += v * v;
+            }
+            ++n;
+        }
+    auto sd = [&](int c) {
+        const double m = s[c] / static_cast<double>(n);
+        return n < 2 ? std::numeric_limits<double>::quiet_NaN() : std::sqrt(std::max(0.0, s2[c] / static_cast<double>(n) - m * m));
+    };
+    return {sd(0), sd(1)};
+}
+
+// The sides the disc runs off, each with its span on the disc clear of the limb and the corners (the limb, in a band,
+// reads as colour: edge_chroma.py's caveat).
+struct ChromaSide {
+    char side;
+    int t0, t1;
+};
+constexpr ChromaSide kChromaSides[] = {{'L', 40, 200}, {'T', 40, 190}, {'B', 40, 190}};
+
+}  // namespace
+
+TEST_CASE("RunStack: the demosaic's frame border does not reach the stack -- a still capture's edge columns are no more "
+          "colourful than its interior (Ruling R10)",
+          "[engine]") {
+    // DemosaicHQ fills a frame's outermost sites (columns and rows 0-2) with less information than inside: on a textured
+    // frame its chroma there departs from the interior's (Task A1 review: crop vs full single real frames, B/G 0.0155 at
+    // column 0, 0.004-0.007 at 1-2, 0 from 3). A capture held still puts every frame's border on the stack's edge, so
+    // the stack kept it. The chroma-free capture held at one point: no chroma in the light, so each edge column's must
+    // be the interior's.
+    const Capture cap = ChromaFreeCapture(120, false, 0.45, 0.3);
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    REQUIRE(o.image->channels == 3);
+    const FloatImage& im = *o.image;
+    INFO(o.summary.selection << " | " << o.summary.alignment);
+    INFO("output " << im.width << " x " << im.height);
+    for (const ChromaSide& s : kChromaSides) {
+        const auto ref = BandChroma(im, s.side, 20, 40, s.t0, s.t1);
+        for (int d = 0; d < 3; ++d) {
+            const auto c = BandChroma(im, s.side, d, d + 1, s.t0, s.t1);
+            INFO("side " << s.side << ", " << d << " px in: B/G " << c.first << " vs " << ref.first << " ("
+                         << c.first / ref.first << "x), R/G " << c.second << " vs " << ref.second << " ("
+                         << c.second / ref.second << "x)");
+            CHECK(c.first <= 1.5 * ref.first);
+            CHECK(c.second <= 1.5 * ref.second);
+        }
+    }
+}
+
+TEST_CASE("RunStack: a chroma-free capture under the 64.6F drift has no more chroma at the stack's edges than inside "
+          "(Ruling R10, no regression)",
+          "[engine]") {
+    // Rulings R8 corrected 2 and R10: under the real drift the engine adds no edge chroma of its own. The guard band and
+    // the crop (Accumulate.h, Engine.h) must keep it so: edge_chroma's bands -- the outermost 6 px against 20-40 px in,
+    // measured from the output's edges -- on every side the disc runs off.
+    const Capture cap = ChromaFreeCapture(300, true, 0.45, 0.3);
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    REQUIRE(o.image->channels == 3);
+    const FloatImage& im = *o.image;
+    INFO(o.summary.selection << " | " << o.summary.alignment);
+    INFO("output " << im.width << " x " << im.height);
+    for (const ChromaSide& s : kChromaSides) {
+        const auto edge = BandChroma(im, s.side, 0, 6, s.t0, s.t1), ref = BandChroma(im, s.side, 20, 40, s.t0, s.t1);
+        INFO("side " << s.side << ": B/G " << edge.first << " / " << ref.first << " = " << edge.first / ref.first << ", R/G "
+                     << edge.second << " / " << ref.second << " = " << edge.second / ref.second);
+        CHECK(edge.first <= 1.5 * ref.first);
+        CHECK(edge.second <= 1.5 * ref.second);
+    }
 }
