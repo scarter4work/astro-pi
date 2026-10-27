@@ -38,7 +38,8 @@ namespace planetary::stack {
 //     One diagnosis is made here (below): Unaligned. The region-stage focus check (Rulings P4, P15, P20)
 //     reads the kFocusFrames sharpest kept frames once more and can only warn, never refuse.
 //  3. Stacking: Accumulator over every frame the plan uses (RegionPlan::Uses), each read once more,
-//     DemosaicHQ, Add; Finish, cropped to the pixels some frame reached ("The crop" below), is the image.
+//     DemosaicHQ, Add; Finish, cropped to the pixels some frame reached and, by at most the guard band per side,
+//     past lines too few frames reached ("The crop" below), is the image.
 // So the noise model's runs are read first, once per pass (35 frames per run of 32 triples, up to
 // kNoiseResponses responses: 807 triples, 885 frames, of the 240 x 180-luma Jupiter 195830, 65 triples, 74
 // frames, of the 1080p Moon 193142, stack-region-probe's "noise" line; both passes 1.41 s of Jupiter
@@ -396,28 +397,56 @@ std::string FocusWarning(const FocusCheck& check);
 // (RegionDetail::skyOnly) are not counted as placed on the target's detail: a last clause names them.
 std::string RegionPhrase(const std::vector<RegionDetail>& detail, int64_t alignedFrames, int64_t stackedFrames);
 
-// ---- The crop (Rulings R9, R11) -------------------------------------------------------------------
+// ---- The crop (Rulings R9, R11, R19) --------------------------------------------------------------
 //
-// The stack is cropped to the rectangle every pixel of which some frame reached inside its stacked part (Ruling R11):
-// a pixel no frame reached -- each frame's sample there fell off the frame or in its guard band (Accumulate.h, "The
-// frame's border") -- holds only the out-of-frame stand-in, a frame edge's value carried outward, which is invented
-// data, so it is cut, never filled. There is no coverage floor: a pixel a few frames reach is a stack of those frames
-// (thinner, noisier; Task A2 measured a floor on the 64.6F and found it cut through the sky's frame share, not the
-// target's -- Ruling R11 dropped it). A still Bayer capture loses about its guard band on every side (less how far
-// the jitter carries frames outward); a drifting one, where no frame's stacked part reaches. Mono, RGB and an
-// undeclared mosaic have no guard band (Ruling R13), so only drift can leave an edge unreached.
+// The stack is cropped in two steps, both from Accumulator::InFrameWeight -- per pixel, the share of its stacking
+// weight that came from inside the frames' stacked parts: the blend weights of the frames a pixel stacks sum to 1, so
+// it is 1 where every one of them reached the pixel and 0 where none did.
+//  1. Unreached lines (Ruling R11): the outer rows and columns holding pixels no frame reached -- each frame's sample
+//     there fell off the frame or in its guard band (Accumulate.h, "The frame's border") -- which hold only the
+//     out-of-frame stand-in, a frame edge's value carried outward: invented data, so they are cut, never filled. A pixel no
+//     frame reached that no outer line holds (a hole) keeps the stand-in and is reported, not cut or filled: counted
+//     (StackCrop::uncovered) and named in the phrase (final review of Part A, M3).
+//  2. Thin lines (Ruling R19; final review of Part A, I1): then, on each side, at most the guard band's width of further
+//     lines while the outer one is thin -- the median of its in-frame share under kThinLineFraction (one half) of the
+//     image's median. The guard moves every frame's stacked edge 4 px in, so on a capture held nearly still the lines
+//     just inside step 1's cut are reached only by the tail of the jitter: a handful of frames, several times noisier
+//     than the interior (2026-09-07 Saturn: the outermost 1-4 lines 2-4.5x the interior sky noise). A line at half the
+//     weight is a stack of half the frames, about 1.4x the interior's noise. The cut is bounded by the guard's width
+//     because only the guard thins those lines: an unbounded floor cut 17-26 px into a drifting capture (Task A2, the
+//     64.6F), where drift, not the guard, thins the edge; a drifting edge's thinning beyond the bound stays (a stack
+//     of the frames that saw it, field defect D1).
+// Measured with the floor at one half (Part A final fix wave; crop left / top / right / bottom px, step 1 alone in
+// brackets): 2026-09-07 Saturn 16.7F 8 / 4 / 7 / 4 (8 / 0 / 7 / 0), the outermost 4 lines' sky noise at most 1.30x the
+// interior's (step 1 alone: 4.49x; 0.3.0.1: 1.1-1.2x); 17.6F 4 / 5 / 5 / 4 (3 / 3 / 4 / 2), at most 1.22x (4.17x). A floor
+// of 0.3 leaves 16.7F at 2.14x; 0.4-0.7 all pass. The 64.6F Moon 5 / 6 / 5 / 3 (5 / 3 / 5 / 3), the 70.0F 7 / 4 / 9 / 2
+// (7 / 0 / 9 / 2). Known limit: a few frames thrown further than the guard (unit test: 6 px) and a reference off the
+// still frames' centre by a fraction of a pixel can leave a 5th thin line, which the bound keeps. Mono, RGB and an
+// undeclared mosaic have no guard band (Ruling R13), so only drift can leave an edge unreached, and step 2 cuts nothing.
 struct StackCrop {
     int left = 0, top = 0, right = 0, bottom = 0;  // px removed from each side of the full-resolution stack
     int guard = 0;                                 // the frames' guard band (Accumulator::Guard), for the phrase
     int64_t uncovered = 0;  // pixels left inside the crop that no frame reached (a hole no outer line holds; 0 when none)
+    // Of left, top, right, bottom: the lines ThinEdgeCrop cut as thin (each <= guard); the rest no frame reached.
+    int thin[4] = {0, 0, 0, 0};
 };
 // The crop of a width x height stack from Accumulator::InFrameWeight: the outer row or column with the largest share of
 // pixels no frame reached (in-frame weight 0) is peeled, one at a time (left, top, right, bottom on a tie), while any
 // outer line holds one. guard: Accumulator::Guard. std::invalid_argument on a size mismatch.
 StackCrop UncoveredCrop(const std::vector<float>& inFrame, int width, int height, int guard);
+// The thin-line floor (Ruling R19): an outer line is thin while the median of its in-frame weight is under this
+// fraction of the median in-frame weight of the image (inside the crop). Set by measurement ("The crop" above).
+constexpr double kThinLineFraction = 0.5;
+// `crop` (UncoveredCrop's) extended by the thin outer lines (Ruling R19): on each side, at most crop.guard further lines
+// are peeled, one at a time and the sides in turn (left, top, right, bottom), while that side's outer line is thin --
+// the median of its InFrameWeight along the line, inside the crop, under `fraction` of the median over the whole crop.
+// None without a guard band (guard 0) or an image median of 0; a line is never peeled below 2 px of extent.
+// `uncovered` is recounted inside the result. std::invalid_argument on a size mismatch.
+StackCrop ThinEdgeCrop(const std::vector<float>& inFrame, int width, int height, const StackCrop& crop,
+                       double fraction = kThinLineFraction);
 // The alignment line's crop clause, one ASCII phrase ("cropped 7 px left, 6 px top: no frame reached them inside its
-// stacked part ..."; without a guard band, no clause about one); empty when nothing is cropped and no pixel inside is
-// unreached.
+// stacked part ..."; with thin lines, "..., except 4 px top, which under half of the frames stacked there reached";
+// without a guard band, no clause about one); empty when nothing is cropped and no pixel inside is unreached.
 std::string CropPhrase(const StackCrop& crop);
 
 // ---- The result -----------------------------------------------------------------------------------

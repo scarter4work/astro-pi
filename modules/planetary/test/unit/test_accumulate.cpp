@@ -2046,3 +2046,21 @@ TEST_CASE("A blend mask of 1 changes nothing up to the frame's edges (E1 fix rou
         CHECK(worst < 1e-6);
     }
 }
+
+TEST_CASE("FrameGuard: kFrameGuard on a declared Bayer frame, clamped to (min(w, h) - 1) / 4 on a small one; 0 otherwise "
+          "(final review of Part A, M2)",
+          "[accumulate]") {
+    auto guard = [](int w, int h, ser::ColorId c) { return stack::FrameGuard(testing::NewCapture(w, h, c).info); };
+    const ser::ColorId rggb = ser::ColorId::BayerRGGB;
+    CHECK(guard(320, 240, rggb) == stack::kFrameGuard);
+    CHECK(guard(17, 17, rggb) == 4);   // (17 - 1) / 4: the smallest frame with the full band
+    CHECK(guard(16, 16, rggb) == 3);   // clamped from here down: at least half the extent is stacked in each direction
+    CHECK(guard(12, 12, rggb) == 2);
+    CHECK(guard(400, 12, rggb) == 2);  // the shorter side sets it
+    CHECK(guard(9, 300, rggb) == 2);
+    CHECK(guard(5, 5, rggb) == 1);
+    CHECK(guard(4, 4, rggb) == 0);
+    CHECK(guard(12, 12, ser::ColorId::Mono) == 0);  // no demosaic border (Ruling R13)
+    CHECK(guard(320, 240, ser::ColorId::Mono) == 0);
+    CHECK(guard(320, 240, ser::ColorId::RGB) == 0);
+}

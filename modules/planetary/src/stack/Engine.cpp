@@ -680,19 +680,87 @@ StackCrop UncoveredCrop(const std::vector<float>& inFrame, int width, int height
     return c;
 }
 
+StackCrop ThinEdgeCrop(const std::vector<float>& inFrame, int width, int height, const StackCrop& crop, double fraction) {
+    if (width < 1 || height < 1 || inFrame.size() != static_cast<size_t>(width) * static_cast<size_t>(height))
+        throw std::invalid_argument("ThinEdgeCrop: the map must be width x height");
+    StackCrop c = crop;
+    int x0 = c.left, y0 = c.top, x1 = width - c.right, y1 = height - c.bottom;
+    if (c.guard <= 0 || x1 - x0 < 1 || y1 - y0 < 1) return c;
+    std::vector<float> v;
+    v.reserve(static_cast<size_t>(x1 - x0) * static_cast<size_t>(y1 - y0));
+    for (int y = y0; y < y1; ++y)
+        v.insert(v.end(), inFrame.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * width + x0),
+                 inFrame.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * width + x1));
+    auto median = [](std::vector<float>& a) {
+        const size_t h = a.size() / 2;
+        std::nth_element(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(h), a.end());
+        return static_cast<double>(a[h]);
+    };
+    const double floor = fraction * median(v);
+    if (!(floor > 0)) return c;
+    // The median in-frame weight of side s's outer line, along the crop.
+    auto lineMedian = [&](int s) {
+        v.clear();
+        if (s == 0 || s == 2) {
+            const int x = s == 0 ? x0 : x1 - 1;
+            for (int y = y0; y < y1; ++y) v.push_back(inFrame[static_cast<size_t>(y) * width + x]);
+        } else {
+            const size_t o = static_cast<size_t>(s == 1 ? y0 : y1 - 1) * width;
+            v.insert(v.end(), inFrame.begin() + static_cast<std::ptrdiff_t>(o + x0),
+                     inFrame.begin() + static_cast<std::ptrdiff_t>(o + x1));
+        }
+        return median(v);
+    };
+    for (bool peeled = true; peeled;) {
+        peeled = false;
+        for (int s = 0; s < 4; ++s) {
+            if (c.thin[s] >= c.guard || (s % 2 == 0 ? x1 - x0 : y1 - y0) <= 2 || !(lineMedian(s) < floor)) continue;
+            if (s == 0) ++x0;
+            if (s == 1) ++y0;
+            if (s == 2) --x1;
+            if (s == 3) --y1;
+            ++c.thin[s];
+            peeled = true;
+        }
+    }
+    c.left = x0;
+    c.top = y0;
+    c.right = width - x1;
+    c.bottom = height - y1;
+    c.uncovered = 0;
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) c.uncovered += !(inFrame[static_cast<size_t>(y) * width + x] > 0);
+    return c;
+}
+
 std::string CropPhrase(const StackCrop& c) {
-    std::string sides;
-    const std::pair<int, const char*> s[4] = {{c.left, "left"}, {c.top, "top"}, {c.right, "right"}, {c.bottom, "bottom"}};
-    for (const auto& [n, name] : s)
-        if (n > 0) sides += (sides.empty() ? "" : ", ") + Count(n) + " px " + name;
+    // The phrase names the thin lines' floor in words; it must change with kThinLineFraction.
+    static_assert(kThinLineFraction == 0.5, "CropPhrase says \"under half\"");
+    const char* names[4] = {"left", "top", "right", "bottom"};
+    const int cut[4] = {c.left, c.top, c.right, c.bottom};
+    std::string sides, thin;
+    int thinLines = 0, unreached = 0;
+    for (int s = 0; s < 4; ++s) {
+        if (cut[s] > 0) sides += (sides.empty() ? "" : ", ") + Count(cut[s]) + " px " + names[s];
+        if (c.thin[s] > 0) thin += (thin.empty() ? "" : ", ") + Count(c.thin[s]) + " px " + names[s];
+        thinLines += c.thin[s];
+        unreached += cut[s] - c.thin[s];
+    }
     std::string t;
     // Without a guard band (not a declared Bayer capture, or a frame too small for it) the frames themselves end there:
-    // no clause about a band that does not exist.
-    if (!sides.empty())
-        t = "cropped " + sides +
-            (c.guard > 0 ? ": no frame reached them inside its stacked part (each frame's outer " +
-                               Plural(c.guard, "pixel is", "pixels are") + " not stacked)"
-                         : std::string(": no frame reached them"));
+    // no clause about a band that does not exist (and no thin lines: ThinEdgeCrop peels at most the band's width).
+    if (!sides.empty()) {
+        t = "cropped " + sides;
+        if (c.guard <= 0) t += ": no frame reached them";
+        else {
+            if (thinLines == 0) t += ": no frame reached them inside its stacked part";
+            else if (unreached == 0) t += ": under half of the frames stacked there reached them inside their stacked parts";
+            else
+                t += ": no frame reached them inside its stacked part, except " + thin +
+                     ", which under half of the frames stacked there reached";
+            t += " (each frame's outer " + Plural(c.guard, "pixel is", "pixels are") + " not stacked)";
+        }
+    }
     if (c.uncovered > 0)
         t += std::string(t.empty() ? "" : "; ") + Plural(c.uncovered, "pixel", "pixels") +
              " inside the image hold no frame's sample, only the nearest frame edge's";
@@ -1138,9 +1206,11 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
     ser::FloatImage image = acc.Finish();
     stacking.ThrowIfCancelled();
     {
-        // The crop (Engine.h "The crop", Ruling R11): the rows and columns no frame reached inside its stacked part.
+        // The crop (Engine.h "The crop", Rulings R11, R19): the rows and columns no frame reached inside its stacked part,
+        // then on each side at most the guard band's width of further lines too few frames reached.
         const int W = image.width, H = image.height;
-        sum.crop = UncoveredCrop(acc.InFrameWeight(), W, H, acc.Guard());
+        const std::vector<float> inFrame = acc.InFrameWeight();
+        sum.crop = ThinEdgeCrop(inFrame, W, H, UncoveredCrop(inFrame, W, H, acc.Guard()));
         const StackCrop& c = sum.crop;
         if (c.left + c.right + c.top + c.bottom > 0) {
             const int cw = W - c.left - c.right, ch = H - c.top - c.bottom, C = image.channels;

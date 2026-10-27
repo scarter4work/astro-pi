@@ -54,14 +54,16 @@ namespace planetary::stack {
 // the frame's columns floor(p) - 1 .. floor(p) + 2 (the 4 x 4 kernel), so from p >= 4 no tap reaches columns 0-2: 4 px.
 // Measured on the still capture of test_engine "the demosaic's frame border does not reach the stack" (every frame's
 // border on the stack's edge; column 0 against 20-40 px in, B/G / R/G): no guard 2.33x / 1.62x left, 1.88x / 1.67x top,
-// 1.45x / 1.69x bottom (bar 1.5); guard 2-8 all within it (4: 0.94x / 0.97x, 1.13x / 1.16x, 1.04x / 1.01x), and the
+// 1.45x / 1.69x bottom (bar 1.5); guard 2-8 all within it (4: 0.94x / 0.97x, 1.13x / 1.16x, 1.04x / 1.01x; with
+// Ruling R19's thin-line crop, which takes 1 more line right and bottom, the bottom 0.95x / 1.08x), and the
 // drift test beside it within it at 4. Not the 64.6F's edge colour: there excluding every frame's outer 10 px moved
 // the stacked B/G by at most 0.002 rms where coverage remained (R8 corrected 2; Task A2 report, round 2).
 // Only where the engine demosaics -- a declared Bayer capture (Ruling R13). Mono, RGB and an undeclared mosaic (stacked
 // as mono, Ruling P9) have no demosaic border: every sample is the sensor's own, and the guard would only cost each
 // frame 4 px per side (and a still capture its outer 4 px). Their guard is 0 (unit test: a mono still capture keeps
 // its full size).
-// InFrameWeight is each pixel's in-frame blend weight, before rejection: 0 where no frame reached it.
+// InFrameWeight is each pixel's in-frame blend weight, before rejection: 0 where no frame reached it, 1 where every frame it
+// stacks did (a pixel's frames' blend weights sum to 1; RunStack's crop reads it, Engine.h "The crop").
 //
 // Photometry: every sample is divided by the frame's gain (FrameRegions::gain), so frames chosen by
 // different regions agree in brightness (no patchwork under passing haze; unit test: a flat field

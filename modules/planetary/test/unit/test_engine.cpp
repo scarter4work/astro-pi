@@ -1682,8 +1682,10 @@ TEST_CASE("RunStack: a chroma-free capture under the 64.6F drift has no more chr
     // Rulings R8 corrected 2 and R10: under the real drift the engine adds no edge chroma of its own. The guard band and
     // the crop (Accumulate.h, Engine.h) must keep it so: edge_chroma's bands -- the outermost 6 px against 20-40 px in,
     // measured from the output's edges -- on every side the disc runs off. B/G left / top / bottom: 0.89x / 1.00x / 1.10x
-    // at 2c406742; 0.76x / 0.88x / 1.17x with the guard band (4 px) and the crop. The ratio follows which texture the
-    // bands land on (R8 corrected 2), so it moves by a few tenths as the crop moves the bands (guard 6: top R/G 1.69x).
+    // at 2c406742; 0.76x / 0.88x / 1.17x with the guard band (4 px) and the crop; 0.76x / 0.88x / 1.11x with the thin-line
+    // crop as well (Ruling R19: crop 3 / 3 / 7 / 6 px left / top / right / bottom, from 3 / 3 / 3 / 5). The ratio follows
+    // which texture the bands land on (R8 corrected 2), so it moves by a few tenths as the crop moves the bands (guard 6:
+    // top R/G 1.69x).
     const Capture cap = ChromaFreeCapture(300, true, 0.45, 0.3);
     const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
     REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
@@ -1736,8 +1738,12 @@ TEST_CASE("RunStack: a near-still Bayer capture keeps no outer line that only a 
     // outer lines are held by the tail of the shift distribution -- a handful of frames -- and are several times
     // noisier than the interior (2026-09-07 Saturn: the outermost 1-4 lines 2-4.5x the interior sky noise, against
     // 1.1-1.2x on 0.3.0.1). Here: a small planet on flat sky, every frame within 0.3 px rms of the reference, but 20
-    // stray frames shifted 6 px diagonally, 5 towards each corner, so each side's outer 4 lines are reached by 10 of the
-    // 160 frames.
+    // stray frames shifted 3 px diagonally, 5 towards each corner, so on each side the 3 lines past the still frames'
+    // stacked edge are reached by 10 of the 160 frames. Before Ruling R19 (crop 1 / 1 / 2 / 1 px): those lines' sky noise
+    // 3.0-6.9x the interior's; with the thin lines cut (4 / 5 / 5 / 4): at most 1.30x.
+    // Known limit (Engine.h "The crop"): with the strays at 6 px -- further than the guard -- nothing is unreached, the 4
+    // lines the bound allows go, and the reference, pulled 0.4 px off the still frames by strays among its sharpest
+    // frames, leaves the top's 5th line at 0.10 of the weight: 3.4x. The RED commit of this test had them at 6 px.
     const int w = 256, h = 192, n = 160;
     Scene s = testing::MakeDisc(1907, w / 2.0, h / 2.0, 34);
     s.sky = 0.1;  // well above 0, so the frames' noise is not clipped
@@ -1749,12 +1755,12 @@ TEST_CASE("RunStack: a near-still Bayer capture keeps no outer line that only a 
         f.gx = jitter(rng);
         f.gy = jitter(rng);
         f.noise = 0.01;
-        // frame(p) = scene(p - g): a frame shifted +6 px in x reaches 6 px further left on the reference's grid. Each
+        // frame(p) = scene(p - g): a frame shifted +3 px in x reaches 3 px further left on the reference's grid. Each
         // stray goes diagonally, so every outer line, corners included, is reached by two of the four sets (10 frames).
-        if (k % 32 == 3 || k % 32 == 19) f.gx += 6;
-        if (k % 32 == 11 || k % 32 == 27) f.gx -= 6;
-        if (k % 32 == 3 || k % 32 == 11) f.gy += 6;
-        if (k % 32 == 19 || k % 32 == 27) f.gy -= 6;
+        if (k % 32 == 3 || k % 32 == 19) f.gx += 3;
+        if (k % 32 == 11 || k % 32 == 27) f.gx -= 3;
+        if (k % 32 == 3 || k % 32 == 11) f.gy += 3;
+        if (k % 32 == 19 || k % 32 == 27) f.gy -= 3;
         return f;
     });
     const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
@@ -1766,6 +1772,12 @@ TEST_CASE("RunStack: a near-still Bayer capture keeps no outer line that only a 
     INFO("output " << im.width << " x " << im.height << ", crop " << c.left << "/" << c.top << "/" << c.right << "/"
                    << c.bottom);
     REQUIRE(o.summary.used == n);  // the strays are stacked: they are as sharp as the rest
+    // The mechanism: every side cut thin lines (at most the guard band's width), and the phrase says so.
+    for (int s4 = 0; s4 < 4; ++s4) {
+        CHECK(c.thin[s4] > 0);
+        CHECK(c.thin[s4] <= c.guard);
+    }
+    CHECK(o.summary.alignment.find("which under half of the frames stacked there reached") != std::string::npos);
     // The disc's centre on the output grid (the reference sits within a fraction of a px of the still frames), and the
     // sky clear of its limb by 16 px.
     const double cx = w / 2.0 - c.left, cy = h / 2.0 - c.top, clear = 34 + 16;
@@ -1812,6 +1824,116 @@ TEST_CASE("UncoveredCrop cuts the edge rows and columns no frame reached, counts
     CHECK(q.find("no frame reached them") != std::string::npos);
     CHECK(q.find("outer") == std::string::npos);
     CHECK(q.find("stacked part") == std::string::npos);
+}
+
+TEST_CASE("ThinEdgeCrop peels at most the guard band's width of thin outer lines per side, and says so (Ruling R19)",
+          "[engine]") {
+    const int w = 20, h = 16;
+    // In-frame share: 1 inside; on the left, columns 0-5 at 0.1 (six thin lines, more than the guard's 4); on the top,
+    // row 0 at 0.3 and row 1 at 0.6 (one thin line); the right's column 19 at 0.5 (not under half); bottom full.
+    std::vector<float> in(static_cast<size_t>(w) * h, 1.f);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < 6; ++x) in[static_cast<size_t>(y) * w + x] = 0.1f;
+    for (int x = 6; x < w; ++x) {
+        in[static_cast<size_t>(x)] = 0.3f;
+        in[static_cast<size_t>(w) + x] = 0.6f;
+    }
+    for (int y = 0; y < h; ++y) in[static_cast<size_t>(y) * w + 19] = 0.5f;
+    stack::StackCrop none;
+    none.guard = 4;
+    stack::StackCrop c = stack::ThinEdgeCrop(in, w, h, none);
+    CHECK(c.left == 4);  // the bound: columns 4-5 stay thin
+    CHECK(c.top == 1);
+    CHECK(c.right == 0);
+    CHECK(c.bottom == 0);
+    CHECK(c.thin[0] == 4);
+    CHECK(c.thin[1] == 1);
+    CHECK(c.thin[2] + c.thin[3] == 0);
+    CHECK(c.uncovered == 0);
+    std::string p = stack::CropPhrase(c);
+    CHECK(p.find("cropped 4 px left, 1 px top: under half of the frames stacked there reached them inside their stacked parts") ==
+          0);
+    CHECK(p.find("each frame's outer 4 pixels are not stacked") != std::string::npos);
+    // The bound is the guard band's width: guard 2 peels 2 left.
+    none.guard = 2;
+    CHECK(stack::ThinEdgeCrop(in, w, h, none).left == 2);
+    // No guard band: no thin lines (only the guard thins a still capture's edge; Ruling R13's captures have none).
+    none.guard = 0;
+    c = stack::ThinEdgeCrop(in, w, h, none);
+    CHECK(c.left + c.top + c.right + c.bottom == 0);
+    // After UncoveredCrop: the median and the lines are taken inside its crop, the unreached lines are kept apart from
+    // the thin ones in the phrase, and a hole the thin peel removes is no longer counted.
+    for (int y = 0; y < h; ++y) in[static_cast<size_t>(y) * w] = 0;  // column 0 unreached
+    in[static_cast<size_t>(1) * w + 10] = 0;                          // a hole in row 1 (0.6: not thin, so it stays)
+    stack::StackCrop u = stack::UncoveredCrop(in, w, h, 4);
+    REQUIRE(u.left == 1);
+    REQUIRE(u.uncovered == 1);
+    c = stack::ThinEdgeCrop(in, w, h, u);
+    CHECK(c.left == 5);  // 1 unreached + 4 thin
+    CHECK(c.thin[0] == 4);
+    CHECK(c.top == 1);   // row 1 (0.6) is not thin, so the hole in it stays and is counted
+    CHECK(c.uncovered == 1);
+    p = stack::CropPhrase(c);
+    CHECK(p.find("cropped 5 px left, 1 px top: no frame reached them inside its stacked part, except 4 px left, 1 px top, "
+                 "which under half of the frames stacked there reached (each frame's outer 4 pixels are not stacked)") == 0);
+    CHECK(p.find("1 pixel inside the image") != std::string::npos);
+    CHECK_THROWS_AS(stack::ThinEdgeCrop(in, w, h - 1, u), std::invalid_argument);
+}
+
+TEST_CASE("RunStack: the stack's pixel (x, y) is the reference grid's (x + crop.left, y + crop.top) -- no re-registration "
+          "(final review of Part A, M1)",
+          "[engine]") {
+    // The crop's offset in RunStack, pinned against the scene itself: the reference is built from the 16 sharpest
+    // frames, here the 16 still ones (g = 0, the least noise), so the reference grid is the scene's own and output
+    // (x, y) must show scene (x + left, y + top) exactly. The other 24 frames sit at g = (-6, -5): they reach the right
+    // and bottom edges but stop 10 / 9 px short of the left and top, which the still frames alone (0.4 of the weight)
+    // fill from 4 px in -- so the crop differs per side (unreached and thin on the left and top, none on the right and
+    // bottom) and an offset taken from the wrong side would show.
+    const int w = 160, h = 120, n = 40;
+    Scene s = testing::MakeDisc(1143, w / 2.0, h / 2.0, 40);  // a disc: the target stays in every frame
+    s.sky = 0.1;
+    Capture cap = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
+    RenderMosaic(cap, s, n, [&](int k) {
+        FrameSpec f;
+        f.noise = k < 16 ? 0.002 : 0.01;
+        if (k >= 16) {
+            f.gx = -6;
+            f.gy = -5;
+        }
+        return f;
+    });
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
+    REQUIRE(o.image.has_value());
+    const FloatImage& im = *o.image;
+    const stack::StackCrop& c = o.summary.crop;
+    INFO(o.summary.selection << " | " << o.summary.alignment);
+    INFO("output " << im.width << " x " << im.height << ", crop " << c.left << "/" << c.top << "/" << c.right << "/" << c.bottom);
+    REQUIRE(im.channels == 3);
+    CHECK(c.left != c.right);
+    CHECK(c.top != c.bottom);
+    CHECK(im.width == w - c.left - c.right);
+    CHECK(im.height == h - c.top - c.bottom);
+    // G (gain 0.8 in RenderMosaic) against the scene at (x + ox, y + oy), 6 px clear of the output's edges.
+    auto rms = [&](int ox, int oy) {
+        double e2 = 0;
+        int64_t m = 0;
+        for (int y = 6; y < im.height - 6; ++y)
+            for (int x = 6; x < im.width - 6; ++x) {
+                const double e = im.data[(static_cast<size_t>(y) * im.width + x) * 3 + 1] / 0.8 - s.Eval(x + ox, y + oy, 0);
+                e2 += e * e;
+                ++m;
+            }
+        return std::sqrt(e2 / static_cast<double>(m));
+    };
+    const double at = rms(c.left, c.top);
+    INFO("rms to the scene at (left, top): " << at << "; at (right, bottom): " << rms(c.right, c.bottom) << "; 1 px off: "
+                                            << rms(c.left + 1, c.top) << ", " << rms(c.left - 1, c.top) << ", "
+                                            << rms(c.left, c.top + 1) << ", " << rms(c.left, c.top - 1));
+    CHECK(at < 0.01);
+    for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}})
+        CHECK(rms(c.left + dx, c.top + dy) > 3 * at);
+    CHECK(rms(c.right, c.bottom) > 3 * at);
 }
 
 TEST_CASE("RunStack: a still mono capture has no guard band -- no crop, its full size (Ruling R13)", "[engine]") {
