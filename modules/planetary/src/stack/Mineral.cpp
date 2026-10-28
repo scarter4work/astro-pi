@@ -927,9 +927,10 @@ constexpr double kLayerGain[kSharpenLayers] = {1.5, 2.5, 1.0, 1.0};
 // MineralMoon.png (one grid; the reference's luminance quantile-mapped onto ours, starlet rms over the disc
 // interior): at a = 1 our layers 1 / 2 / 3 held 0.37 / 0.68 / 0.94 of the reference's -- the deficit is at the
 // finest scales. Scaling the gains alone (extra 0) brought layer 3 to 1.20 by the time layer 1 reached 0.54 (a 2;
-// a boost leaks into its neighbour's band); extra {3, 1, 0, 0} reaches 0.86 / 1.35 / 1.51 at a 2, and its crater
-// rims match the reference's crispness by eye. {1.5, 0.5}, {1, 1}, {2.5, 0.5} and {5, 1} lie on nearly the same
-// curve at other amounts; adding layer 3 or 4 ({0.5, 1.5, 0.5..1, 0..0.5}) only overshot layer 3 sooner.
+// a boost leaks into its neighbour's band); extra {3, 1, 0, 0} reaches 0.86 / 1.35 / 1.51 at a 2. Its crater rims
+// measure 0.77 / 1.07 / 1.38 / 1.68 of the reference's crispness at a 1 / 1.5 / 2 / 2.5 (Ruling R42: default 1.5).
+// {1.5, 0.5}, {1, 1}, {2.5, 0.5} and {5, 1} lie on nearly the same curve at other amounts; adding layer 3 or 4
+// ({0.5, 1.5, 0.5..1, 0..0.5}) only overshot layer 3 sooner.
 constexpr double kLayerExtra[kSharpenLayers] = {3.0, 1.0, 0.0, 0.0};
 std::array<double, kSharpenLayers> LayerBoost(double a) {
     std::array<double, kSharpenLayers> b{};
