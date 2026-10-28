@@ -7,7 +7,8 @@
 #
 # For each capture below: stack-probe stacks it (at the capture's Bayer pattern) and runs the mineral moon at
 # k = 8 (64.6F also at k = 5 and 12, re-run on the cached stack as the window's slider does), writing the stack,
-# the mineral image and its stages (stack-probe --mineral-stages) to <out-dir>/<id>/full/; then the even and the
+# the mineral image and its stages (stack-probe --mineral-stages) to <out-dir>/<id>/full/; then the run_probe() {  # dir video bayer parity(full|even|odd) extras sharpens
+  local dir="$1" video="$2" bayer="$3" part="$4" extras="$5" sharpens="${6:-}" and the
 # odd frames alone, the same way, to <id>/even/ and <id>/odd/ (the split-half checks), and the halves once more cut to
 # their common field before the mineral moon (stack-probe --mineral-crop, from mineral_check.py --equal-field) to
 # <id>/even_eq/ and <id>/odd_eq/, where R12 is judged. mineral_check.py then
@@ -34,6 +35,10 @@ OUT="$1"; shift
 "$PY" -I -c 'import numpy, scipy, PIL' 2>/dev/null || { echo "FAIL: $PY lacks numpy / scipy / Pillow"; exit 1; }
 mkdir -p "$OUT"
 
+# The reference capture is also coloured at these Sharpen amounts (Task SHARP; the run's own amount is the
+# default, kSharpenDefault), re-run on its cache as the window's slider does: mineral_s<A>.fits.
+REF_SHARPENS="0,2,3"
+
 # id | path under the NAS | --bayer | extra strengths (k:name,...) | role
 CAPTURES=(
   "646F|2026-10-23/Moon/2026-10-23-203401-Moon-Bin1 Lqef 64.6F.avi|auto|5,12|reference"
@@ -57,8 +62,8 @@ want() {  # is capture id $1 selected?
 }
 SELECTED=("$@")
 
-run_probe() {  # dir video bayer parity(full|even|odd) extras
-  local dir="$1" video="$2" bayer="$3" part="$4" extras="$5"
+run_probe() {  # dir video bayer parity(full|even|odd) extras sharpens
+  local dir="$1" video="$2" bayer="$3" part="$4" extras="$5" sharpens="${6:-}"
   mkdir -p "$dir/stages"
   local args=("$video" --bayer "$bayer" --threads "$THREADS" --json --target auto --mineral
               --mineral-out "$dir/mineral.fits" --mineral-stages "$dir/stages")
@@ -67,6 +72,10 @@ run_probe() {  # dir video bayer parity(full|even|odd) extras
   if [ -n "$extras" ]; then
     local k; IFS=',' read -ra ks <<< "$extras"
     for k in "${ks[@]}"; do args+=(--mineral-also "$k:$dir/mineral_k$k.fits"); done
+  fi
+  if [ -n "$sharpens" ]; then
+    local a; IFS=',' read -ra as <<< "$sharpens"
+    for a in "${as[@]}"; do args+=(--sharpen-also "$a:$dir/mineral_s$a.fits"); done
   fi
   local t0; t0=$(date +%s.%N)
   "$PROBE" "${args[@]}" > "$dir/probe.json" 2> "$dir/probe.log"
@@ -85,7 +94,8 @@ for entry in "${CAPTURES[@]}"; do
     d="$OUT/$id/$part"
     if [ -s "$d/probe.json" ] && [ "${PLANETARY_MINERAL_RESTACK:-0}" != 1 ]; then continue; fi
     echo "== $id $part ($role, --bayer $bayer)"
-    run_probe "$d" "$video" "$bayer" "$part" "$([ $part = full ] && echo "$extras")"
+    run_probe "$d" "$video" "$bayer" "$part" "$([ $part = full ] && echo "$extras")" \
+      "$([ $part = full ] && [ "$role" = reference ] && echo "$REF_SHARPENS")"
     rc=$?
     if [ $rc -ne 0 ]; then
       echo "FAIL $id $part: stack-probe exit $rc (see $d/probe.log)"; tail -3 "$d/probe.log"; fail=1

@@ -53,7 +53,13 @@ there, and the B9 dispatch):
 PNGs: <out-dir>/<id>_side.png, the display RGB (calibrated, stretched, unboosted) beside the k 8 mineral image,
 and <id>_side_view.png at half scale. For the reference capture, <id>_k{5,8,12}_vs_ref.png and
 <id>_k8_vs_ref1026.png: ours registered to Scott's PNG by phase correlation and cropped to the common field,
-with <id>_grid_view.png (k 5, k 8, k 12, reference at half scale). Writes <id>/check.json and summary.json.
+with <id>_grid_view.png (k 5, k 8, k 12, reference at half scale). Task SHARP: the reference capture's Sharpen
+series (full/mineral_s<A>.fits, stack-probe --sharpen-also, plus the run's own amount) at k 8 beside the reference:
+<id>_sharpen_crop100.png (x 820..1300, y 560..980 at 100 %, the Copernicus / ray area) and
+<id>_sharpen_view.png (the whole frame at half scale), each panel labelled, the reference last; and "sharp crisp",
+the crispness of each amount against the reference (both luminances on one grid, the reference's quantile-mapped
+onto our amount-0 output over the disc interior -- disk eroded 40 px -- so the tone curves drop out): starlet layers
+1-5 rms over the interior as a ratio to the reference's, and "rims" = layers 2-3 together. Writes <id>/check.json and summary.json.
 Exit 0 when nothing failed, 1 otherwise.
 """
 import json
@@ -66,7 +72,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.join(HERE, "bench")]
 
 import numpy as np  # noqa: E402
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
 from scipy import ndimage  # noqa: E402
 
 import edge_chroma  # noqa: E402
@@ -133,6 +139,8 @@ def load(d, full=False):
     if full:
         r["stack"] = read_fits(os.path.join(d, "stack.fits"))
         r["also"] = {a["strength"]: read_fits(a["output"]) for a in j["mineral"]["also"]}
+        r["sharpen"] = {a["sharpen"]: read_fits(a["output"]) for a in j["mineral"].get("sharpenAlso", [])}
+        r["sharpen"][j["mineral"]["sharpen"]] = r["mineral"]
     return r
 
 
@@ -396,6 +404,61 @@ def common(ours8, ref8, dy, dx):
     return ours8[y0:y1, x0:x1], ref8[y0 + dy:y1 + dy, x0 + dx:x1 + dx]
 
 
+def labelled(arr8, text):
+    im = Image.fromarray(np.ascontiguousarray(arr8))
+    d = ImageDraw.Draw(im)
+    d.rectangle([0, 0, 7 * len(text) + 8, 15], fill=(0, 0, 0))
+    d.text((4, 2), text, fill=(255, 255, 0))
+    return np.asarray(im)
+
+
+def sharpen_series(out, cid, full, ref, reg, rep):
+    """Task SHARP: the Sharpen amounts beside the reference (crops at 100 %, the frame at half scale) and their
+    crispness against it (see the module doc)."""
+    series = full.get("sharpen", {})
+    if len(series) < 2:
+        return
+    amounts = sorted(series)
+    crop = (slice(560, 980), slice(820, 1300))
+    crops, views = [], []
+    for a in amounts + ["ref"]:
+        if a == "ref":
+            o, r = common(to8(series[amounts[0]]), ref, reg[0], reg[1])
+            img, text = r, "MineralMoon.png"
+        else:
+            img, _ = common(to8(series[a]), ref, reg[0], reg[1])
+            text = "Sharpen %.2f" % a
+        crops.append(labelled(img[crop], text))
+        half = np.asarray(Image.fromarray(img).resize((img.shape[1] // 2, img.shape[0] // 2), Image.LANCZOS))
+        views.append(labelled(half, text))
+    save(os.path.join(out, "%s_sharpen_crop100.png" % cid), side_by_side(*crops))
+    save(os.path.join(out, "%s_sharpen_view.png" % cid), side_by_side(*views))
+    # Crispness: luminance on our grid; the reference (on our grid at the registration offset) quantile-mapped onto
+    # our amount-0 output over the disc interior.
+    interior = ndimage.distance_transform_edt(np.pad(full["disk"], 64, mode="edge"))[64:-64, 64:-64] > 40
+    H, W = interior.shape
+    refL = np.zeros((H, W))
+    y0, x0 = max(0, -reg[0]), max(0, -reg[1])
+    y1, x1 = min(H, ref.shape[0] - reg[0]), min(W, ref.shape[1] - reg[1])
+    refL[y0:y1, x0:x1] = ref[y0 + reg[0]:y1 + reg[0], x0 + reg[1]:x1 + reg[1]].mean(axis=2) / 255.0
+    inside = np.zeros_like(interior)
+    inside[y0:y1, x0:x1] = True
+    interior &= inside
+    base = lum(series[amounts[0]])
+    rs, bs = np.sort(refL[interior]), np.sort(base[interior])
+    q = np.linspace(0, 1, rs.size)
+    er = [float(np.sqrt((l[interior] ** 2).mean())) for l in starlet(np.interp(np.interp(refL, rs, q), q, bs), 5)]
+    rows = {}
+    for a in amounts:
+        e = [float(np.sqrt((l[interior] ** 2).mean())) for l in starlet(lum(series[a]), 5)]
+        rims = float(np.sqrt((e[1] ** 2 + e[2] ** 2) / (er[1] ** 2 + er[2] ** 2)))
+        rows["%.2f" % a] = {"layers": [x / y for x, y in zip(e, er)], "rims": rims}
+    text = "; ".join("amount %s: layers 1-5 %s, rims %.3f" % (a, " ".join("%.2f" % v for v in r["layers"]), r["rims"])
+                     for a, r in rows.items())
+    rep.add("sharp crisp", "ours / MineralMoon.png starlet rms over the disc interior (%d px): %s" % (interior.sum(), text),
+            "informational (Scott's eye picks the default)", "INFO", amounts=rows)
+
+
 def reference_pngs(out, cid, full, rep):
     ref = np.asarray(Image.open(REF).convert("RGB"))
     ks = {8.0: full["mineral"]}
@@ -418,6 +481,7 @@ def reference_pngs(out, cid, full, rep):
     rep.add("ref reg", "ours (0, 0) = MineralMoon.png (%d, %d); luminance corr %.3f over %d x %d" % (
         reg[1], reg[0], reg[2], o.shape[1], o.shape[0]), "registration sanity (corr >= 0.9)",
         "PASS" if reg[2] >= 0.9 else "FAIL", **info)
+    sharpen_series(out, cid, full, ref, reg, rep)
     if os.path.exists(REF_1026):
         r26 = np.asarray(Image.open(REF_1026).convert("RGB"))
         o8 = to8(full["mineral"])
