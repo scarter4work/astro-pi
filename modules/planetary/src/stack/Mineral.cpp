@@ -858,3 +858,131 @@ StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threa
 }
 
 }  // namespace planetary::stack
+
+namespace planetary::stack {
+
+// ---- 5-7. Chroma layer and mineral colour ----
+
+namespace {
+
+// The amendment's chroma blur default (2.5 px) is for frames 1-2k px wide; wider frames scale it with their
+// width, so the colour's resolution against the disc stays the same.
+double ResolutionScale(int width) { return std::max(1.0, width / 2000.0); }
+
+}  // namespace
+
+ser::FloatImage ChromaLayer(const ser::FloatImage& rgb, double sigma, int threads) {
+    if (rgb.channels < 1 || rgb.width <= 0 || rgb.height <= 0 || rgb.data.size() != Pixels(rgb) * rgb.channels)
+        throw std::invalid_argument("ChromaLayer: image data does not match its size");
+    if (!(sigma >= 0) || !std::isfinite(sigma)) throw std::invalid_argument("ChromaLayer: sigma must be finite and >= 0");
+    ser::FloatImage out = rgb;
+    if (sigma == 0) return out;
+    const int w = rgb.width, h = rgb.height, nc = rgb.channels;
+    const int r = static_cast<int>(std::ceil(4 * sigma));
+    std::vector<double> k(static_cast<size_t>(2 * r + 1));
+    double s = 0;
+    for (int i = -r; i <= r; ++i) s += k[static_cast<size_t>(i + r)] = std::exp(-0.5 * i * i / (sigma * sigma));
+    for (double& v : k) v /= s;
+    std::vector<float> tmp(rgb.data.size());
+    // Separable, mirrored edges: a pixel at the frame edge averages its own side's pixels twice rather than
+    // inventing any beyond the frame.
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int c = 0; c < nc; ++c) {
+                    double a = 0;
+                    for (int i = -r; i <= r; ++i)
+                        a += k[static_cast<size_t>(i + r)] * rgb.data[(static_cast<size_t>(y) * w + Mirror(x + i, w)) * nc + c];
+                    tmp[(static_cast<size_t>(y) * w + x) * nc + c] = static_cast<float>(a);
+                }
+    });
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int c = 0; c < nc; ++c) {
+                    double a = 0;
+                    for (int i = -r; i <= r; ++i)
+                        a += k[static_cast<size_t>(i + r)] * tmp[(static_cast<size_t>(Mirror(y + i, h)) * w + x) * nc + c];
+                    out.data[(static_cast<size_t>(y) * w + x) * nc + c] = static_cast<float>(a);
+                }
+    });
+    return out;
+}
+
+double AutoSatThreshold(const ser::FloatImage& rgb) {
+    RequireRgb(rgb, "AutoSatThreshold");
+    // Amendment: 0.92 x the lowest per-channel 99.99th percentile (linear interpolation between order
+    // statistics, numpy's default), over every pixel.
+    const size_t n = Pixels(rgb);
+    double lowest = std::numeric_limits<double>::infinity();
+    std::vector<float> v(n);
+    for (int c = 0; c < 3; ++c) {
+        for (size_t i = 0; i < n; ++i) v[i] = rgb.data[i * 3 + static_cast<size_t>(c)];
+        const double pos = (n - 1) * 0.9999;
+        const size_t lo = static_cast<size_t>(std::floor(pos));
+        std::nth_element(v.begin(), v.begin() + static_cast<long>(lo), v.end());
+        const double a = v[lo];
+        double b = a;
+        if (lo + 1 < n) b = *std::min_element(v.begin() + static_cast<long>(lo) + 1, v.end());
+        lowest = std::min(lowest, a + (pos - lo) * (b - a));
+    }
+    return 0.92 * lowest;
+}
+
+StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads) {
+    RequireRgb(rgb, "MineralColour");
+    if (lumSharp.channels != 1 || lumSharp.width != rgb.width || lumSharp.height != rgb.height ||
+        lumSharp.data.size() != Pixels(rgb))
+        throw std::invalid_argument("MineralColour: the luminance must be one channel of the image's size");
+    if (!(p.strength >= 0) || !(p.chromaBlurSigma >= 0) || !(p.eps >= 0) || !(p.devClamp >= 0) || !(p.satRamp > 0) ||
+        !std::isfinite(p.strength) || !std::isfinite(p.chromaBlurSigma))
+        throw std::invalid_argument("MineralColour: strength, chroma blur, eps and clamp must be >= 0 and the ramp > 0");
+    const double sigma = p.chromaBlurSigma * ResolutionScale(rgb.width);
+    const double thr = p.satThreshold >= 0 ? p.satThreshold : AutoSatThreshold(rgb);
+    // 1. C: each channel blurred (the chroma noise reduction; colour at lower resolution than L, as in LRGB).
+    const ser::FloatImage C = ChromaLayer(rgb, sigma, threads);
+    const double k = p.strength;
+    std::mutex mtx;
+    size_t faded = 0, held = 0;
+    ParallelBands(rgb.height, threads, [&](int y0, int y1) {
+        size_t f = 0, g = 0;
+        for (size_t i = static_cast<size_t>(y0) * rgb.width; i < static_cast<size_t>(y1) * rgb.width; ++i) {
+            const float* q = &C.data[i * 3];
+            // 2. d: each channel's ratio to the channels' mean, less 1, clamped (one hot or saturated sample
+            //    cannot colour its neighbourhood beyond +-devClamp; eps keeps a black sky from dividing by 0).
+            const double mean = (static_cast<double>(q[0]) + q[1] + q[2]) / 3;
+            double d[3];
+            for (int c = 0; c < 3; ++c) d[c] = std::clamp(q[c] / (mean + p.eps) - 1, -p.devClamp, p.devClamp);
+            // 3. Highlight fade (replaces step 7's clean-up): neutral at and above the threshold, R and G being
+            //    the channels that saturate first on lunar highlands.
+            double wgt = std::clamp((thr - std::max(q[0], q[1])) / p.satRamp, 0.0, 1.0);
+            if (wgt < 1) ++f;
+            // Gamut: where L (1 + k w d) would pass kCeiling in some channel, w is lowered for the whole pixel --
+            // its hue holds, its saturation gives -- so the colour never clips a sample the stack did not (spec
+            // anti-goal: no new clipping; amendment's clip is then only a guard). With k = 8, d at the 0.06 clamp,
+            // this acts only where L > 0.67 with w > 0.
+            const double L = lumSharp.data[i];
+            bool limited = false;
+            for (int c = 0; c < 3; ++c)
+                if (k * wgt * d[c] > 0 && L * (1 + k * wgt * d[c]) > kCeiling) {
+                    wgt = L < kCeiling ? std::min(wgt, (kCeiling / L - 1) / (k * d[c])) : 0.0;
+                    limited = true;
+                }
+            g += limited;
+            // 4. out = clip(L (1 + k w d)): every detail from the sharp L, the colour from the ratios.
+            float* o = &rgb.data[i * 3];
+            for (int c = 0; c < 3; ++c) o[c] = static_cast<float>(std::clamp(L * (1 + k * wgt * d[c]), 0.0, 1.0));
+        }
+        std::lock_guard<std::mutex> lock(mtx);
+        faded += f;
+        held += g;
+    });
+    const size_t n = Pixels(rgb);
+    StepRecord rec;
+    rec.history = Fmt("Mineral colour: k %.2f, chroma blur %.2f px, eps %.4f, clamp +-%.3f, highlight fade from %.4f over %.3f",
+                      k, sigma, p.eps, p.devClamp, thr, p.satRamp) +
+                  "; " + Percent(faded, n) + " of pixels faded, " + Percent(held, n) + " held in gamut";
+    return rec;
+}
+
+}  // namespace planetary::stack

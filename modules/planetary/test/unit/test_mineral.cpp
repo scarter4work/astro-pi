@@ -573,3 +573,327 @@ TEST_CASE("sharpen: chroma untouched") {
     CHECK(worst <= 1e-4);
     CHECK(sc.observed.data != before.data);  // it did sharpen
 }
+
+// ---- Step 5: chroma layer (Task B5, amended: Gaussian chroma blur) ----
+
+namespace {
+
+// RMS over the mask of the R/G and B/G differences between a and b.
+double ChromaError(const ser::FloatImage& a, const ser::FloatImage& b, const std::vector<uint8_t>& mask) {
+    double s = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (mask[i]) {
+            const float* p = &a.data[i * 3];
+            const float* q = &b.data[i * 3];
+            const double dr = p[0] / p[1] - q[0] / q[1], db = p[2] / p[1] - q[2] / q[1];
+            s += 0.5 * (dr * dr + db * db);
+            ++n;
+        }
+    return std::sqrt(s / n);
+}
+
+// Mean of B/R over the mask.
+double MeanBR(const ser::FloatImage& im, const std::vector<uint8_t>& mask) {
+    double s = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (mask[i]) {
+            s += im.data[i * 3 + 2] / im.data[i * 3];
+            ++n;
+        }
+    return s / n;
+}
+
+// edge_chroma.py's measure (Rulings R8, R12): over rows [r0, r1), the std of B/G and R/G on disc pixels
+// (G >= 0.05) in columns [e0, e1) over the same in [f0, f1); returns the larger of the two ratios.
+double EdgeChromaRatio(const ser::FloatImage& im, int r0, int r1, int e0, int e1, int f0, int f1) {
+    auto stdOf = [&](int c, int x0, int x1) {
+        double s = 0, s2 = 0;
+        size_t n = 0;
+        for (int y = r0; y < r1; ++y)
+            for (int x = x0; x < x1; ++x) {
+                const float* p = &im.data[(static_cast<size_t>(y) * im.width + x) * 3];
+                if (p[1] < 0.05f) continue;
+                const double v = p[c] / p[1];
+                s += v;
+                s2 += v * v;
+                ++n;
+            }
+        return std::sqrt(std::max(0.0, s2 / n - (s / n) * (s / n)));
+    };
+    return std::max(stdOf(2, e0, e1) / stdOf(2, f0, f1), stdOf(0, e0, e1) / stdOf(0, f0, f1));
+}
+
+// The B5 edge scene: a 1080p frame, the disc over the left edge from row 180 to 900 (and so over rows
+// 320-760, edge_chroma.py's default band), chroma noise 0.03 in columns 0-5. Highland terrain with its own
+// 1% tint structure: with maria and highlands both in the reference band (x 20-40) the true colour contrast
+// (7-9%) set its std and the unprocessed edge already read 1.40 -- a test that cannot fail.
+MoonSceneSpec EdgeScene() {
+    MoonSceneSpec s;
+    s.width = 1920;
+    s.height = 1080;
+    s.cx = 600;
+    s.cy = 540;
+    s.radius = 700;
+    s.mariaFraction = 0;
+    s.tintVariation = 0.01;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.002;
+    s.edgeChromaNoise = 0.03;
+    return s;
+}
+
+ser::FloatImage LumImage(const ser::FloatImage& rgb) {
+    ser::FloatImage L{rgb.width, rgb.height, 1, {}};
+    for (double v : testing::Lum(rgb)) L.data.push_back(static_cast<float>(v));
+    return L;
+}
+
+}  // namespace
+
+TEST_CASE("chroma: error halved") {
+    MoonSceneSpec s;
+    s.noiseStd = 0.01;  // truth plus per-channel noise
+    const MoonScene sc = MakeMoonScene(s);
+    const ser::FloatImage C = stack::ChromaLayer(sc.observed, 2.5, 4);
+    const double e0 = ChromaError(sc.observed, sc.truth, sc.diskTruth), e1 = ChromaError(C, sc.truth, sc.diskTruth);
+    INFO("chroma error vs truth: " << e0 << " -> " << e1);
+    CHECK(e1 <= 0.5 * e0);
+}
+
+TEST_CASE("chroma: luminance kept") {
+    // Chroma comes from the blurred layer, luminance from L: with no gain beyond 1, no eps, no clamp and no
+    // fade, the output's luminance is L's.
+    MoonSceneSpec s;
+    s.noiseStd = 0.01;
+    MoonScene sc = MakeMoonScene(s);
+    const std::vector<double> truth = testing::Lum(sc.truth), before = testing::Lum(sc.observed);
+    const ser::FloatImage L = LumImage(sc.observed);
+    stack::MineralParams p;
+    p.strength = 1;
+    p.eps = 0;
+    p.devClamp = 1;
+    p.satThreshold = 1e9;
+    stack::MineralColour(sc.observed, L, p, 4);
+    const double e0 = RmsOver(before, truth, sc.diskTruth), e1 = RmsOver(testing::Lum(sc.observed), truth, sc.diskTruth);
+    INFO("luminance RMS error vs truth: " << e0 << " -> " << e1);
+    CHECK(std::fabs(e1 / e0 - 1) <= 0.02);
+}
+
+TEST_CASE("chroma: edge band") {
+    const MoonScene sc = MakeMoonScene(EdgeScene());
+    const double r0 = EdgeChromaRatio(sc.observed, 320, 760, 0, 6, 20, 40);
+    REQUIRE(r0 > 1.5);  // the noise is there to remove
+    const ser::FloatImage C = stack::ChromaLayer(sc.observed, 2.5, 8);
+    const double r1 = EdgeChromaRatio(C, 320, 760, 0, 6, 20, 40);
+    INFO("edge / ref chroma std: " << r0 << " -> " << r1);
+    CHECK(r1 <= 1.5);
+}
+
+TEST_CASE("chroma: maria/highland tint survives") {
+    MoonSceneSpec s;
+    s.noiseStd = 0.005;
+    s.blurSigma = 1.0;
+    const MoonScene sc = MakeMoonScene(s);
+    const ser::FloatImage C = stack::ChromaLayer(sc.observed, 2.5, 4);
+    const double d0 = MeanBR(sc.observed, sc.mariaTruth) - MeanBR(sc.observed, sc.highlandTruth);
+    const double d1 = MeanBR(C, sc.mariaTruth) - MeanBR(C, sc.highlandTruth);
+    INFO("maria B/R - highland B/R: " << d0 << " -> " << d1);
+    REQUIRE(d0 > 0.05);
+    CHECK(d1 >= 0.9 * d0);
+}
+
+// ---- Steps 6-7: mineral colour (amendment: out = clip(L (1 + k w d))) ----
+
+namespace {
+
+// Type-7 (linear interpolation) percentile of channel c.
+double Percentile(const ser::FloatImage& im, int c, double q) {
+    std::vector<float> v;
+    for (size_t i = 0; i < im.data.size() / 3; ++i) v.push_back(im.data[i * 3 + c]);
+    std::sort(v.begin(), v.end());
+    const double h = (v.size() - 1) * q;
+    const size_t lo = static_cast<size_t>(std::floor(h));
+    return v[lo] + (h - lo) * (v[std::min(lo + 1, v.size() - 1)] - v[lo]);
+}
+
+// A display-level scene: the disc's median luminance near 0.35 (linear, like a stretched image).
+MoonScene DisplayScene(double level = 0.45) {
+    MoonSceneSpec s;
+    s.level = level;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.003;
+    return MakeMoonScene(s);
+}
+
+// out / L - 1 per sample: k w d.
+double Chroma(const ser::FloatImage& out, const ser::FloatImage& L, size_t i, int c) {
+    return out.data[i * 3 + c] / L.data[i] - 1;
+}
+
+}  // namespace
+
+TEST_CASE("colour: hue preserved") {
+    MoonScene sc = DisplayScene();
+    const ser::FloatImage L = LumImage(sc.observed);
+    ser::FloatImage out = sc.observed;
+    const stack::StepRecord rec = stack::MineralColour(out, L, stack::MineralParams{}, 4);
+    INFO(rec.history);
+    CHECK(Ascii(rec.history));
+    for (const std::vector<uint8_t>* mask : {&sc.mariaTruth, &sc.highlandTruth}) {
+        double din[3] = {0, 0, 0}, dout[3] = {0, 0, 0};
+        size_t n = 0;
+        for (size_t i = 0; i < mask->size(); ++i)
+            if ((*mask)[i]) {
+                const float* a = &sc.observed.data[i * 3];
+                const float* b = &out.data[i * 3];
+                const double ma = (a[0] + a[1] + a[2]) / 3, mb = (b[0] + b[1] + b[2]) / 3;
+                for (int c = 0; c < 3; ++c) {
+                    din[c] += a[c] / ma - 1;
+                    dout[c] += b[c] / mb - 1;
+                }
+                ++n;
+            }
+        INFO((mask == &sc.mariaTruth ? "maria" : "highlands") << ": d in R " << din[0] / n << " B " << din[2] / n
+                                                             << ", out R " << dout[0] / n << " B " << dout[2] / n);
+        for (int c : {0, 2}) {
+            CHECK((din[c] > 0) == (dout[c] > 0));
+            CHECK(std::fabs(dout[c]) > std::fabs(din[c]));  // and amplified (less on bright highlands: the fade)
+        }
+    }
+}
+
+TEST_CASE("colour: strength scales") {
+    MoonScene sc = DisplayScene();
+    const ser::FloatImage L = LumImage(sc.observed);
+    stack::MineralParams p4, p8;
+    p4.strength = 4;
+    ser::FloatImage o4 = sc.observed, o8 = sc.observed;
+    stack::MineralColour(o4, L, p4, 4);
+    stack::MineralColour(o8, L, p8, 4);
+    const double thr = stack::AutoSatThreshold(sc.observed);
+    const ser::FloatImage C = stack::ChromaLayer(sc.observed, p8.chromaBlurSigma, 4);
+    double worst = 0;
+    size_t judged = 0;
+    for (size_t i = 0; i < L.data.size(); ++i) {
+        const float* q = &C.data[i * 3];
+        const double m = (q[0] + q[1] + q[2]) / 3;
+        double dmax = 0, dabs = 0;
+        bool clamped = false;
+        for (int c = 0; c < 3; ++c) {
+            const double d = q[c] / (m + p8.eps) - 1;
+            clamped = clamped || std::fabs(d) >= 0.95 * p8.devClamp;
+            dmax = std::max(dmax, d);
+            dabs = std::max(dabs, std::fabs(d));
+        }
+        const bool faded = std::max(q[0], q[1]) > thr - p8.satRamp;
+        const bool gamut = L.data[i] * (1 + 8 * dmax) > 0.99;
+        if (clamped || faded || gamut || dabs < 0.005 || L.data[i] < 0.05) continue;
+        ++judged;
+        for (int c = 0; c < 3; ++c) {
+            const double a = Chroma(o4, L, i, c), b = Chroma(o8, L, i, c);
+            if (std::fabs(a) > 1e-3) worst = std::max(worst, std::fabs(b / a / 2 - 1));
+        }
+    }
+    INFO("judged " << judged << " px; worst |chroma(8) / (2 chroma(4)) - 1| " << worst);
+    REQUIRE(judged > 10000);
+    CHECK(worst <= 0.05);
+}
+
+TEST_CASE("colour: fade at highlights") {
+    MoonSceneSpec s;
+    s.level = 0.45;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.003;
+    MoonScene sc = MakeMoonScene(s);
+    // A saturated highland: a 40 x 40 patch on the disc at 1.0 in every channel (scattered saturated pixels
+    // never reach the threshold through the 2.5 px chroma blur).
+    for (int y = 220; y < 260; ++y)
+        for (int x = 300; x < 340; ++x)
+            for (int c = 0; c < 3; ++c) sc.observed.data[(static_cast<size_t>(y) * s.width + x) * 3 + c] = 1.0f;
+    const ser::FloatImage L = LumImage(sc.observed);
+    ser::FloatImage out = sc.observed;
+    stack::MineralParams p;
+    stack::MineralColour(out, L, p, 4);
+    const double thr = stack::AutoSatThreshold(sc.observed);
+    const ser::FloatImage C = stack::ChromaLayer(sc.observed, p.chromaBlurSigma, 4);
+    size_t judged = 0;
+    double worst = 0;
+    for (size_t i = 0; i < L.data.size(); ++i) {
+        if (std::max(C.data[i * 3], C.data[i * 3 + 1]) < thr) continue;
+        ++judged;
+        const float* o = &out.data[i * 3];
+        worst = std::max({worst, static_cast<double>(std::fabs(o[0] - o[1])), static_cast<double>(std::fabs(o[2] - o[1]))});
+    }
+    INFO("threshold " << thr << "; " << judged << " px at or above it; worst channel spread " << worst);
+    REQUIRE(judged > 100);
+    CHECK(worst <= 1e-6);
+}
+
+TEST_CASE("colour: the deviation clamp holds") {
+    // A single 1.0 blue pixel on a grey field, chroma blur at its smallest (0.5 px) so the pixel's B deviation
+    // far exceeds the clamp; no fade.
+    ser::FloatImage rgb{64, 64, 3, std::vector<float>(64 * 64 * 3, 0.1f)};
+    const size_t centre = 32 * 64 + 32;
+    rgb.data[centre * 3 + 2] = 1.0f;
+    const ser::FloatImage L = LumImage(rgb);
+    stack::MineralParams p;
+    p.chromaBlurSigma = 0.5;
+    p.satThreshold = 2.0;
+    ser::FloatImage out = rgb;
+    stack::MineralColour(out, L, p, 1);
+    double worst = 0;
+    for (size_t i = 0; i < L.data.size(); ++i)
+        for (int c = 0; c < 3; ++c) worst = std::max(worst, std::fabs(Chroma(out, L, i, c)) / p.strength);
+    const double atPixel = Chroma(out, L, centre, 2) / p.strength;
+    INFO("largest |d| " << worst << ", the blue pixel's d_B " << atPixel);
+    CHECK(worst <= 0.06 + 1e-6);
+    CHECK(atPixel >= 0.06 - 1e-6);  // the clamp engaged
+}
+
+TEST_CASE("colour: range") {
+    MoonSceneSpec s;
+    s.level = 0.7;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.01;
+    s.clipFraction = 0.02;
+    s.clipChannels = {false, false, true};
+    MoonScene sc = MakeMoonScene(s);
+    const ser::FloatImage L = LumImage(sc.observed);
+    stack::MineralParams p;
+    p.strength = 15;
+    p.chromaBlurSigma = 0.5;
+    stack::MineralColour(sc.observed, L, p, 4);
+    float lo = 1, hi = 0;
+    for (float v : sc.observed.data) {
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+    }
+    INFO("output range " << lo << " .. " << hi);
+    CHECK(lo >= 0.0f);
+    CHECK(hi <= 1.0f);
+}
+
+TEST_CASE("colour: no new clipping at full strength") {
+    // Bright terrain at k = 15: L (1 + k d) would pass 1 on the brightest positive-d pixels the fade leaves.
+    MoonScene sc = DisplayScene(0.6);
+    const ser::FloatImage L = LumImage(sc.observed);
+    size_t before = 0, after = 0;
+    for (float v : sc.observed.data) before += v >= 0.999f;
+    stack::MineralParams p;
+    p.strength = 15;
+    stack::MineralColour(sc.observed, L, p, 4);
+    for (float v : sc.observed.data) after += v >= 0.999f;
+    INFO("samples >= 0.999: " << before << " -> " << after);
+    CHECK(after <= before);
+}
+
+TEST_CASE("colour: auto saturation threshold") {
+    MoonScene sc = DisplayScene();
+    const double expect = 0.92 * std::min({Percentile(sc.observed, 0, 0.9999), Percentile(sc.observed, 1, 0.9999),
+                                           Percentile(sc.observed, 2, 0.9999)});
+    const double got = stack::AutoSatThreshold(sc.observed);
+    INFO("auto threshold " << got << ", expected " << expect);
+    CHECK(std::fabs(got - expect) <= 1e-6);
+}

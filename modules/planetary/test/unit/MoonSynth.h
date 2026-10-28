@@ -128,7 +128,10 @@ inline MoonScene MakeMoonScene(const MoonSceneSpec& s) {
     // Maria: a low-frequency field thresholded at the quantile that gives mariaFraction of the disc.
     const std::vector<Wave> mare = Waves(rng, 6, 0.6 / s.radius, 2.5 / s.radius, 1.0);
     std::array<std::vector<Wave>, 3> tint;
-    for (auto& t : tint) t = Waves(rng, 3, 0.3 / s.radius, 1.5 / s.radius, 1.0);
+    // Tint structure inside each terrain at the scales of mare units, ejecta and rays: periods R / 12 to R.
+    // (Periods of R and up only, as first written, left a 20 px band all but colour-flat -- ~0.003 B/G std,
+    // under the 0.0054-0.022 the 64.6F's reference bands carry; task ENG.)
+    for (auto& t : tint) t = Waves(rng, 6, 1.0 / s.radius, 12.0 / s.radius, 1.0);
     const int w = s.width, h = s.height;
     const size_t n = static_cast<size_t>(w) * h;
     double theta = 0;
@@ -158,7 +161,7 @@ inline MoonScene MakeMoonScene(const MoonSceneSpec& s) {
         const double m = mareW(x, y);
         const double albedo = std::max(0.0, (1 - m * (1 - s.mariaAlbedo)) * (1 + Sum(texture, x, y)));
         const double base = m * s.mariaTint[c] + (1 - m) * s.highlandTint[c];
-        const double t = base * (1 + s.tintVariation * Sum(tint[c], x, y) / std::sqrt(1.5));
+        const double t = base * (1 + s.tintVariation * Sum(tint[c], x, y));
         if (illumOut) *illumOut = illum;
         if (mOut) *mOut = m;
         return inside * illum * s.level * albedo * t;
