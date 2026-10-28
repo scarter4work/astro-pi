@@ -118,9 +118,16 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
 // layer 1 implies there; layer 1 is 1 by construction. A stack's noise is correlated (the demosaic, the warp's
 // interpolation): on real Moons layers 2-4 read 1.6-1.7x, 1.9-2.2x, 2.4-3.1x the white prediction, and the white
 // thresholds let that noise through the boost. Each factor is at least 1 (a sky smoother than white noise does not
-// lower a threshold); 1 for a layer whose eroded sky has under 1000 px, or with no sky. lum1 linear (the sky is
-// clipped after a display transfer). Throws std::invalid_argument as LuminanceNoise.
-std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads);
+// lower a threshold). A layer whose eroded sky has under 1000 px (a disc filling the frame; final review B, I1) is
+// measured the same way over the disc's flattest tenth of 16 x 16 tiles where its boost is at full weight, picked by
+// layer 1's std over `norm` (the predicted noise per pixel, when given; the coefficients are divided by it too):
+// terrain only raises the factor there, so it errs toward less boost. With under 10 such tiles, kAssumedShape (the
+// real-data range's top, 1.7 / 2.2 / 3.1). source (if given) receives where the factors came from ("the sky's",
+// "the disc's flattest tiles'", "assumed, ...", or per layer when they differ) for HISTORY. 1s with no disc. lum1
+// linear (the sky is clipped after a display transfer). Throws std::invalid_argument as LuminanceNoise, or for a
+// norm not of lum1's size.
+std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads,
+                                      const std::vector<float>* norm = nullptr, std::string* source = nullptr);
 // The same on an RGB image's luminance (the channels' mean): every channel scaled by L's own factor, so R/G and
 // B/G are unchanged (chroma untouched); a pixel that would pass 0.998 in a channel is scaled less, uniformly.
 StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads, double amount = kSharpenDefault);
@@ -200,9 +207,12 @@ struct MineralCache {
 // Usable() and of its size) and a sky of at least 1000 px: per pixel, sqrt(model(t) alpha2) (Noise.h, StackNoise)
 // scaled once so that over the sky it equals the sky's measured white-noise std on the calibrated linear
 // luminance -- the level (shot noise: real discs 7-10x their sky's noise) and the frame count come from the stack,
-// the units from the sky -- then through the display transfer's slope at each pixel. Without it (null, unusable,
-// or no sky to scale it by), the sky's (or the flattest disc tiles') noise everywhere, a lower bound on a bright
-// disc's; HISTORY's Sharpen line says which. Either way the layer shape is LayerNoiseShape's on the linear data.
+// the units from the sky -- then through the display transfer's slope at each pixel. With under 1000 px of sky (a
+// disc filling the frame; final review B, I1) it is scaled on the disc's flattest tiles instead (see LayerNoiseShape):
+// terrain only raises that, so on real Moons, textured everywhere, it errs high (64.6F cut to its disc: x8.5 against
+// the sky's x1.7) and sharpens less, never more. Without it (null or unusable), the sky's noise everywhere (or the
+// flattest disc tiles', with no sky), a lower bound on a bright disc's. HISTORY's Sharpen line says which, and where
+// the layer shape (LayerNoiseShape's on the linear data, normalised by the map when there is one) came from.
 MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress,
                             const StackNoise* noise = nullptr);
 // Step 4c on the cache: cache.lumBase sharpened by `amount` (SharpenLuminanceImage with the cache's noise and layer

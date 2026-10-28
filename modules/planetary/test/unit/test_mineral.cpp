@@ -1217,7 +1217,11 @@ double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false, dou
     const stack::StackNoise sn = SceneNoise(spec);
     const stack::StackNoise* np = stackNoise ? &sn : nullptr;
     const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, np), cb = stack::PrepareMineral(b.observed, 4, {}, np);
-    const ser::FloatImage sa1 = stack::SharpenedLuminance(ca, amount, 4), sb1 = stack::SharpenedLuminance(cb, amount, 4);
+    stack::StepRecord ra, rb;
+    const ser::FloatImage sa1 = stack::SharpenedLuminance(ca, amount, 4, &ra), sb1 = stack::SharpenedLuminance(cb, amount, 4, &rb);
+    INFO(ra.history);
+    REQUIRE(!ra.skipped);  // a skipped sharpening (no disc found) would read 1 and judge nothing
+    REQUIRE(!rb.skipped);
     const std::vector<double> la = testing::Lum(ca.display), lb = testing::Lum(cb.display);
     std::vector<double> before(la.size()), after(la.size());
     std::vector<uint8_t> interior(la.size(), 0);
@@ -1283,24 +1287,96 @@ TEST_CASE("pipeline: sharpening is noise-limited on correlated noise") {
     }
 }
 
-TEST_CASE("pipeline: noise-only gain at the Sharpen slider's top (reported)") {
-    // Task SHARP: the noise-only guarantees above are judged at the default amount; at the slider's top they are
-    // reported, not judged (the user asked for that much). White, correlated and shot noise on the flat disc.
+TEST_CASE("pipeline: noise-only gain at the default and at the Sharpen slider's top, with sky and without") {
+    // Ruling R40: hard bars at the default AND the slider's top: a flat (noise-only) disc's noise gain <= 1.5. White,
+    // correlated and shot noise on the flat disc, with sky and with a disc filling the frame (no sky: a lunar close-up).
+    // Final review B, I1: with no sky the layer shape fell back to white ratios and the stack's noise model to the
+    // flattest tiles' level, so correlated noise on layer 2 read as signal: 1.24 at the default and 1.89 at 4. Measured
+    // on the disc's flattest tiles: 1.02-1.03 / 1.09-1.14 (with sky 1.00-1.03 / 1.00-1.13).
     struct Case { const char* name; double noise, shot, corr; bool model; };
-    for (const Case& c : {Case{"white 0.005", 0.005, 0, 0, false}, Case{"correlated 0.003 / 0.6 px", 0.003, 0, 0.6, false},
-                          Case{"shot, stack noise model", 0.001, 2e-4, 0.6, true}}) {
+    for (bool sky : {true, false})
+        for (const Case& c : {Case{"white 0.005", 0.005, 0, 0, false}, Case{"correlated 0.003 / 0.6 px", 0.003, 0, 0.6, false},
+                              Case{"correlated 0.003 / 0.6 px, stack noise model", 0.003, 0, 0.6, true},
+                              Case{"shot, stack noise model", 0.001, 2e-4, 0.6, true}}) {
+            MoonSceneSpec s = StackScene();
+            s.noiseStd = c.noise;
+            s.shotNoise = c.shot;
+            s.noiseCorrelation = c.corr;
+            s.textureAmplitude = 0;
+            s.mariaFraction = 0;
+            s.tintVariation = 0;
+            if (!sky) s.radius = 395;  // the limb only touches the 640 x 480 frame's corners: no sky (900: a flat frame, no disc)
+            const double atDefault = PipelineNoiseGain(s, c.model), atMax = PipelineNoiseGain(s, c.model, stack::kSharpenMax);
+            INFO((sky ? "sky" : "no sky") << ", flat disc, " << c.name << ": noise gain " << atDefault << " at amount "
+                                          << stack::kSharpenDefault << ", " << atMax << " at amount " << stack::kSharpenMax);
+            CHECK(atDefault <= 1.5);
+            CHECK(atMax <= 1.5);
+            WARN((sky ? "sky" : "no sky") << ", flat disc, " << c.name << ": noise gain " << atDefault << " at amount "
+                                          << stack::kSharpenDefault << ", " << atMax << " at amount " << stack::kSharpenMax);
+        }
+}
+
+TEST_CASE("pipeline: with no sky the noise and its layer shape come from the disc's flattest tiles") {
+    // Final review B, I1: HISTORY said "(the sky's)" with no sky. Correlated 0.6 px noise on a flat disc filling the
+    // frame: its layer shape, measured on the sky of the same scene with a disc of radius 180, reads 2.05 / 2.39 / 2.61.
+    for (bool model : {false, true}) {
         MoonSceneSpec s = StackScene();
-        s.noiseStd = c.noise;
-        s.shotNoise = c.shot;
-        s.noiseCorrelation = c.corr;
+        s.noiseCorrelation = 0.6;
         s.textureAmplitude = 0;
         s.mariaFraction = 0;
         s.tintVariation = 0;
-        const double atDefault = PipelineNoiseGain(s, c.model), atMax = PipelineNoiseGain(s, c.model, stack::kSharpenMax);
-        WARN("flat disc, " << c.name << ": noise gain " << atDefault << " at amount " << stack::kSharpenDefault << ", "
-                           << atMax << " at amount " << stack::kSharpenMax);
-        CHECK(atDefault <= 1.5);
+        s.radius = 395;
+        const MoonScene sc = MakeMoonScene(s);
+        const stack::StackNoise sn = SceneNoise(s);
+        const stack::MineralCache c = stack::PrepareMineral(sc.observed, 4, {}, model ? &sn : nullptr);
+        REQUIRE(c.masks.diskCount > 0);
+        REQUIRE(c.masks.skyCount < 1000);
+        stack::StepRecord rec;
+        stack::SharpenedLuminance(c, stack::kSharpenDefault, 4, &rec);
+        INFO(rec.history);
+        CHECK(rec.history.find("the sky's") == std::string::npos);
+        CHECK(rec.history.find("(the disc's flattest tiles')") != std::string::npos);
+        CHECK(rec.history.find(model ? "scaled to the disc's flattest tiles' noise by" : "noise: the disc's flattest tiles'") !=
+              std::string::npos);
+        CHECK(Ascii(rec.history));
+        // Picking the tiles by layer 1 reads layer 1 low there (the factors err high: less boost), and only that much.
+        CHECK(c.layerShape[1] >= 2.05);
+        CHECK(c.layerShape[1] <= 2.05 * 1.25);
+        CHECK(c.layerShape[2] >= 2.39);
+        CHECK(c.layerShape[3] >= 2.61);
     }
+    // With sky, unchanged (Ruling R33).
+    MoonSceneSpec s = StackScene();
+    s.noiseCorrelation = 0.6;
+    const stack::MineralCache c = stack::PrepareMineral(MakeMoonScene(s).observed, 4, {});
+    stack::StepRecord rec;
+    stack::SharpenedLuminance(c, stack::kSharpenDefault, 4, &rec);
+    INFO(rec.history);
+    CHECK(rec.history.find("(the sky's)") != std::string::npos);
+    CHECK(rec.history.find("flattest tiles") == std::string::npos);
+}
+
+TEST_CASE("sharpen: layer shape with neither sky nor 10 flat disc tiles is the assumed one") {
+    // A 40 x 40 frame of disc: 4 tiles of 16 x 16, no sky. The real-data range's top, so it errs toward less boost.
+    MoonSceneSpec s;
+    s.width = s.height = 40;
+    s.noiseStd = 0.003;
+    const MoonScene sc = MakeMoonScene(s);
+    stack::LunarMasks m;
+    m.width = m.height = 40;
+    m.disk.assign(1600, 1);
+    m.sky.assign(1600, 0);
+    m.diskCount = 1600;
+    ser::FloatImage L{40, 40, 1, std::vector<float>(1600)};
+    for (size_t i = 0; i < L.data.size(); ++i) L.data[i] = sc.observed.data[i * 3 + 1];
+    std::string source;
+    const std::array<double, 4> shape = stack::LayerNoiseShape(L, m, 4, nullptr, &source);
+    INFO(source);
+    CHECK(shape[0] == 1.0);
+    CHECK(shape[1] == 1.7);
+    CHECK(shape[2] == 2.2);
+    CHECK(shape[3] == 3.1);
+    CHECK(source.find("assumed") != std::string::npos);
 }
 
 TEST_CASE("pipeline: the stack's noise model limits sharpening on a shot-noise disc") {

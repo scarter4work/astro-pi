@@ -1076,6 +1076,61 @@ double WhiteNoise(const ser::FloatImage& layer1, const DiscCore& dc, const Lunar
     return white / kStarletNoise[0];
 }
 
+// The flattest tenth (at least 10) of the 16 x 16 tiles wholly inside `region`, ranked by layer 1's robust std over
+// the tile -- over `norm`'s median there when given (the stack's predicted noise per pixel, so a dark tile, whose shot
+// noise is lower, is not taken for a flat one) -- as a pixel mask; empty under 10 tiles. Terrain only raises a tile's
+// std, so these are the tiles nearest to noise only (the smoothest mare floors). The noise estimates with no sky
+// (final review B, I1) are taken over them.
+std::vector<uint8_t> FlatTiles(const ser::FloatImage& layer1, const std::vector<uint8_t>& region, const std::vector<float>* norm) {
+    const int w = layer1.width, h = layer1.height;
+    constexpr int kTile = 16;
+    std::vector<std::pair<float, size_t>> tiles;  // (flatness, top-left pixel)
+    std::vector<float> v, nv;
+    for (int ty = 0; ty + kTile <= h; ty += kTile)
+        for (int tx = 0; tx + kTile <= w; tx += kTile) {
+            v.clear();
+            nv.clear();
+            for (int y = ty; y < ty + kTile; ++y)
+                for (int x = tx; x < tx + kTile; ++x) {
+                    const size_t i = static_cast<size_t>(y) * w + x;
+                    if (!region[i]) continue;
+                    v.push_back(layer1.data[i]);
+                    if (norm) nv.push_back((*norm)[i]);
+                }
+            if (v.size() != static_cast<size_t>(kTile * kTile)) continue;
+            double s = MadStd(v);
+            if (norm) {
+                const double d = Median(nv);
+                if (!(d > 0)) continue;
+                s /= d;
+            }
+            tiles.push_back({static_cast<float>(s), static_cast<size_t>(ty) * w + tx});
+        }
+    if (tiles.size() < 10) return {};
+    const size_t k = std::max<size_t>(10, tiles.size() / 10);
+    std::nth_element(tiles.begin(), tiles.begin() + static_cast<long>(k - 1), tiles.end());  // the k flattest first
+    std::vector<uint8_t> mask(Pixels(layer1), 0);
+    for (size_t t = 0; t < k; ++t)
+        for (int y = 0; y < kTile; ++y)
+            std::fill_n(mask.begin() + static_cast<long>(tiles[t].second + static_cast<size_t>(y) * w), kTile, uint8_t{1});
+    return mask;
+}
+
+// Robust std over the mask of layer / norm per pixel (norm null: of the layer itself).
+double NormalisedNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& mask, const std::vector<float>* norm) {
+    std::vector<float> v;
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (mask[i] && (!norm || (*norm)[i] > 0)) v.push_back(norm ? static_cast<float>(layer.data[i] / (*norm)[i]) : layer.data[i]);
+    return MadStd(v);
+}
+
+// The layer shape used when neither the sky nor the disc can measure it: the top of the real-data range (Ruling R33:
+// real Moons' sky layers 2-4 read 1.6-1.7x, 1.9-2.2x, 2.4-3.1x the white prediction), so it errs toward less boost.
+constexpr double kAssumedShape[kSharpenLayers] = {1, 1.7, 2.2, 3.1};
+constexpr const char* kShapeSky = "the sky's";
+constexpr const char* kShapeTiles = "the disc's flattest tiles'";
+constexpr const char* kShapeAssumed = "assumed, the real-data range's top";
+
 void RequireLuminance(const ser::FloatImage& lum1, const LunarMasks& m, const char* who) {
     if (lum1.channels != 1 || lum1.data.size() != Pixels(lum1) || m.width != lum1.width || m.height != lum1.height ||
         m.disk.size() != Pixels(lum1))
@@ -1090,21 +1145,50 @@ double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int thre
     return WhiteNoise(StarletLayers(lum1, 1, threads)[0], MakeDiscCore(lum1, m, threads), m);
 }
 
-std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads) {
+std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads,
+                                      const std::vector<float>* norm, std::string* source) {
     RequireLuminance(lum1, m, "LayerNoiseShape");
+    if (norm && norm->size() != Pixels(lum1)) throw std::invalid_argument("LayerNoiseShape: the noise map does not match the image");
     std::array<double, 4> shape{1, 1, 1, 1};
-    if (m.skyCount < 1000) return shape;
+    if (m.diskCount == 0) {
+        if (source) *source = "white, no disc";
+        return shape;
+    }
     const std::vector<ser::FloatImage> layers = StarletLayers(lum1, kSharpenLayers, threads);
     const std::vector<float> depth = DistanceOutside(m.sky, lum1.width, lum1.height);  // into the sky from its edge
+    DiscCore dc;  // made only when some layer has too little sky
+    std::string from[kSharpenLayers] = {kShapeSky, kShapeSky, kShapeSky, kShapeSky};
     for (int j = 1; j < kSharpenLayers; ++j) {
+        const size_t u = static_cast<size_t>(j);
         // Layer j and layer 1 over the same sky, clear of the disc by layer j's reach.
         std::vector<uint8_t> r(m.sky.size());
         size_t k = 0;
         for (size_t i = 0; i < r.size(); ++i) k += r[i] = m.sky[i] && depth[i] > kLayerReach[j];
-        if (k < 1000) continue;
-        const double white = LayerNoise(layers[0], r) / kStarletNoise[0];
-        if (!(white > 0)) continue;
-        shape[static_cast<size_t>(j)] = std::max(1.0, LayerNoise(layers[static_cast<size_t>(j)], r) / (kStarletNoise[j] * white));
+        const double white = k >= 1000 ? LayerNoise(layers[0], r) / kStarletNoise[0] : 0.0;
+        if (white > 0) {
+            shape[u] = std::max(1.0, LayerNoise(layers[u], r) / (kStarletNoise[j] * white));
+            continue;
+        }
+        // Too little sky (a disc filling the frame; final review B, I1): white ratios here let a stack's correlated
+        // noise through layer 2 as signal (flat disc, 0.6 px correlation: noise gain 1.24 at the default, 1.89 at 4).
+        // The disc's flattest tiles where layer j is at full weight measure it instead. Picking the tiles by layer 1
+        // reads layer 1 low there and terrain only adds to layer j, so the factor errs high: less boost, never more.
+        if (dc.core.empty()) dc = MakeDiscCore(lum1, m, threads);
+        const std::vector<uint8_t> tiles = FlatTiles(layers[0], LayerRegion(dc, m, j), norm);
+        const double w1 = tiles.empty() ? 0.0 : NormalisedNoise(layers[0], tiles, norm) / kStarletNoise[0];
+        if (w1 > 0) {
+            shape[u] = std::max(1.0, NormalisedNoise(layers[u], tiles, norm) / (kStarletNoise[j] * w1));
+            from[j] = kShapeTiles;
+        } else {
+            shape[u] = kAssumedShape[j];
+            from[j] = kShapeAssumed;
+        }
+    }
+    if (source) {
+        if (from[1] == from[2] && from[2] == from[3])
+            *source = from[1];
+        else
+            *source = "layer 2 " + from[1] + ", 3 " + from[2] + ", 4 " + from[3];
     }
     return shape;
 }
@@ -1114,9 +1198,14 @@ namespace {
 // Ruling R35: the per-pixel white-noise std of the calibrated linear luminance `lin` from the stack's noise
 // (PrepareMineral): sqrt(model(t) alpha2), t the luma of the stack as it came (before calibration), scaled once
 // so that its median over the sky (clear of the disc by layer 1's reach) is the sky's measured white-noise std on
-// `lin` (layer 1's robust std / 0.889). Empty, with `why` set, when it cannot be had.
+// `lin` (layer 1's robust std / 0.889). With under 1000 px of such sky (a disc filling the frame; final review B, I1)
+// it is scaled on the disc's flattest tiles instead (FlatTiles, ranked by the map itself): there `lin`'s layer 1 over
+// the map, robust std / 0.889. Terrain only raises that (less boost); picking tiles by it lowers it (the flattest
+// tenth of pure noise reads ~0.85 of it), which the layer shape, taken over tiles picked the same way, reads high
+// by as much, so a layer 2-4 threshold stays at its noise. `on` names where it was scaled. Empty, with `why` set,
+// when it cannot be had.
 std::vector<float> StackNoiseMap(const ser::FloatImage& stack, const ser::FloatImage& lin, const LunarMasks& m,
-                                 const StackNoise& sn, int threads, double& scale, std::string& why) {
+                                 const StackNoise& sn, int threads, double& scale, std::string& on, std::string& why) {
     const int w = stack.width, h = stack.height;
     if (!sn.Usable()) {
         why = "the stack's noise model is not usable (unmeasured, zero, or no frame-weight grid)";
@@ -1130,10 +1219,6 @@ std::vector<float> StackNoiseMap(const ser::FloatImage& stack, const ser::FloatI
     std::vector<uint8_t> r(m.sky.size());
     size_t k = 0;
     for (size_t i = 0; i < r.size(); ++i) k += r[i] = m.sky[i] && depth[i] > kLayerReach[0];
-    if (k < 1000) {
-        why = "under 1000 px of sky to scale the stack's noise model by";
-        return {};
-    }
     std::vector<float> map(Pixels(stack));
     ParallelBands(h, threads, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y)
@@ -1144,16 +1229,28 @@ std::vector<float> StackNoiseMap(const ser::FloatImage& stack, const ser::FloatI
                 map[i] = static_cast<float>(std::sqrt(std::max(0.0, sn.model.Lookup(t) * sn.Alpha2At(x, y))));
             }
     });
-    std::vector<float> skyPred;
-    for (size_t i = 0; i < r.size(); ++i)
-        if (r[i]) skyPred.push_back(map[i]);
-    const double pred = Median(skyPred);
-    const double measured = LayerNoise(StarletLayers(lin, 1, threads)[0], r) / kStarletNoise[0];
-    if (!(pred > 0) || !(measured > 0)) {
-        why = "the sky shows no noise to scale the stack's noise model by";
-        return {};
+    const ser::FloatImage layer1 = StarletLayers(lin, 1, threads)[0];
+    if (k >= 1000) {
+        std::vector<float> skyPred;
+        for (size_t i = 0; i < r.size(); ++i)
+            if (r[i]) skyPred.push_back(map[i]);
+        const double pred = Median(skyPred);
+        const double measured = LayerNoise(layer1, r) / kStarletNoise[0];
+        if (!(pred > 0) || !(measured > 0)) {
+            why = "the sky shows no noise to scale the stack's noise model by";
+            return {};
+        }
+        scale = measured / pred;
+        on = kShapeSky;
+    } else {
+        const std::vector<uint8_t> tiles = FlatTiles(layer1, LayerRegion(MakeDiscCore(lin, m, threads), m, 0), &map);
+        scale = tiles.empty() ? 0.0 : NormalisedNoise(layer1, tiles, &map) / kStarletNoise[0];
+        if (!(scale > 0)) {
+            why = "under 1000 px of sky and no 10 disc tiles with noise to scale the stack's noise model by";
+            return {};
+        }
+        on = kShapeTiles;
     }
-    scale = measured / pred;
     for (float& v : map) v = static_cast<float>(v * scale);
     return map;
 }
@@ -1566,21 +1663,25 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
     // On a bright disc the sky's noise is a lower bound only (shot noise: real discs 7-10x their sky's), so with the
     // stack's own noise (Ruling R35) the level and the frame count give it per pixel, scaled to the sky's; and the
     // noise's spread over the starlet layers is measured on the sky (Ruling R33: a stack's noise is correlated).
+    // With no sky (a disc filling the frame) both come from the disc's flattest tiles instead (final review B, I1).
     double linearNoise = 0, noiseScale = 0;
     std::vector<float> linearMap;
-    std::string noiseSource;
+    std::string noiseSource, shapeSource;
     std::array<double, 4> shape{1, 1, 1, 1};
     DisplayCurve curve;
     step("Display transfer", [&] {
         const ser::FloatImage linL = MeanOfChannels(rgb, threads);
         linearNoise = LuminanceNoise(linL, cache.masks, threads);
-        shape = LayerNoiseShape(linL, cache.masks, threads);
-        std::string why = "no stack noise model given";
-        if (stackNoise) linearMap = StackNoiseMap(stack, linL, cache.masks, *stackNoise, threads, noiseScale, why);
-        noiseSource = linearMap.empty()
-                          ? "noise: the sky's (" + why + "; a lower bound on a bright disc's)"
-                          : Fmt("noise: the stack's noise model per pixel (level and frame count), scaled to the sky's "
-                                "noise by %.3g", noiseScale);
+        std::string why = "no stack noise model given", scaledOn;
+        if (stackNoise) linearMap = StackNoiseMap(stack, linL, cache.masks, *stackNoise, threads, noiseScale, scaledOn, why);
+        shape = LayerNoiseShape(linL, cache.masks, threads, linearMap.empty() ? nullptr : &linearMap, &shapeSource);
+        if (!linearMap.empty())
+            noiseSource = "noise: the stack's noise model per pixel (level and frame count), scaled to " + scaledOn +
+                          Fmt(" noise by %.3g", noiseScale);
+        else if (cache.masks.skyCount >= 1000)
+            noiseSource = "noise: the sky's (" + why + "; a lower bound on a bright disc's)";
+        else
+            noiseSource = std::string("noise: ") + kShapeTiles + " (" + why + "; under 1000 px of sky)";
         return DisplayTransfer(rgb, cache.masks, clipped, &curve).history;
     });
     step("Channel alignment", [&] { return AlignChannels(rgb, threads).history; });
@@ -1601,7 +1702,8 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
         });
         cache.layerShape = shape;
         cache.sharpenNote = "; " + noiseSource +
-                            Fmt("; layer noise over white %.2f %.2f %.2f %.2f (the sky's)", shape[0], shape[1], shape[2], shape[3]);
+                            Fmt("; layer noise over white %.2f %.2f %.2f %.2f", shape[0], shape[1], shape[2], shape[3]) +
+                            " (" + shapeSource + ")";
         // The fade threshold depends on the display RGB only: measured once here, not on every slider move.
         cache.satThreshold = HighlightThreshold(rgb, cache.masks, MineralParams{}.chromaBlurSigma, threads);
     }
