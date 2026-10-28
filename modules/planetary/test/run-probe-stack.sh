@@ -53,7 +53,7 @@ while IFS= read -r c; do
    # Mineral moon (Task B8): the engine's mineral moon with the case's parameters (the process's defaults,
    # 8 and 2.5, when the case leaves them unset).
    if jq -e '.kind == "image" and .mineral != null' <<<"$c" >/dev/null; then
-      args+=( --mineral "$(jq -r '"\(.mineral.strength // 8),\(.mineral.chromaBlur // 2.5)"' <<<"$c")" )
+      args+=( --mineral --strength "$(jq -r '.mineral.strength // 8' <<<"$c")" --chroma-blur "$(jq -r '.mineral.chromaBlur // 2.5' <<<"$c")" )
    fi
    rc=0
    "$STACK_PROBE" "${args[@]}" >"$ENGINE" 2>"$PLANETARY_RUN_DIR/stack-probe.err" || rc=$?

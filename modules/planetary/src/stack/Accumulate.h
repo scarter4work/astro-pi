@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -437,6 +438,14 @@ public:
     // rejection (see "The frame's border"); 0 where every frame's sample fell off the frame or in its guard band -- the
     // pixel then holds only the out-of-frame stand-in. Callable at any time, like Finish.
     std::vector<float> InFrameWeight() const;
+    // The noise-power weight 1 / k_eff of the stack (Noise.h, StackNoise; Ruling R35): per point of a `grid` px grid over
+    // the full-size stack, gridW x gridH points, row-major, point (i, j) at pixel (i grid, j grid), the sum over the
+    // stacked frames of (alpha_f / gain_f)^2 -- each frame's blend weight evaluated from the plan exactly as Add does,
+    // summed in plan order (the same for any thread count). Not counted: rejected samples, and the out-of-frame
+    // stand-ins near the stack's edge. Independent of the frames added (the plan's), so callable at any time.
+    std::vector<float> Alpha2Grid(int grid, int threads, int& gridW, int& gridH) const;
+    // The luma the stack's level is read at: sum_c LumaWeights()[c] x channel c (the measuring luma's weights).
+    std::array<double, 3> LumaWeights() const { return {lumaWeights_[0], lumaWeights_[1], lumaWeights_[2]}; }
     int Guard() const { return guard_; }  // FrameGuard(info): 0 unless a declared Bayer capture
     // Bytes held between calls (sums, reference, residual scale, plan, tables).
     size_t BytesHeld() const;

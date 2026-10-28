@@ -162,7 +162,7 @@ MOON_JSON="$OUT/engine-$(basename "$MOON")-auto.json"
 # The large Moon: its mineral moon's steps after the first must take at least 1.2 s (the engine's own times)
 # for the Cancel to land in them (the drive waits for the bar to pass the first of its 7 steps).
 LONG_MOON_JSON="$OUT/engine-moon-long-mineral.json"
-"$STACK_PROBE" "$MOON_LONG" --json --mineral 8,2.5 >"$LONG_MOON_JSON" 2>"$PLANETARY_RUN_DIR/stack-probe.err" \
+"$STACK_PROBE" "$MOON_LONG" --json --mineral --strength 8 --chroma-blur 2.5 >"$LONG_MOON_JSON" 2>"$PLANETARY_RUN_DIR/stack-probe.err" \
    || { echo "FAIL: $(basename "$MOON_LONG") gives no image from the engine"; exit 1; }
 jq -e '.mineral.notice == "" and (.mineral.seconds - .mineral.stepSeconds["Lunar disk"]) >= 1.2' "$LONG_MOON_JSON" >/dev/null \
    || { echo "FAIL: $(basename "$MOON_LONG"): its mineral moon is too quick (or not one) for a Cancel to land in it: $(jq -c '.mineral | {seconds, stepSeconds, notice}' "$LONG_MOON_JSON")"; exit 1; }

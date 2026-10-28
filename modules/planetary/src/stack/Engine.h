@@ -12,6 +12,7 @@
 #include "Debayer.h"
 #include "FrameSource.h"
 #include "Measure.h"
+#include "Noise.h"
 #include "Select.h"
 #include "StackTypes.h"
 
@@ -511,7 +512,13 @@ struct StackOutcome {
     StackSummary summary;
     ser::FileInfo info;      // the capture as read (Bayer resolved)
     StackFrames frames;
+    // The stack's noise (Noise.h, StackNoise; Ruling R35): the capture's noise model and the frames' noise-power
+    // weights on a kStackNoiseGrid px grid, for `image` as cropped. Empty with no image, or when the capture's model
+    // is unmeasured or zero. The mineral moon's sharpening reads it (PrepareMineral).
+    std::optional<StackNoise> noise;
 };
+// The StackNoise grid's spacing (full-resolution px): alpha varies with the regions' sin^2 blends over >= 32 luma px.
+constexpr int kStackNoiseGrid = 16;
 
 // Opens `path` (ser::OpenVideo with `bayer`: AVI pattern resolution exactly as SERViewer) once per
 // worker and stacks it. Throws ser::SerError when the file cannot be opened or read, StackCancelled on

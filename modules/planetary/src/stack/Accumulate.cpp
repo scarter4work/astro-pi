@@ -7,6 +7,7 @@
 
 #include "BayerPattern.h"
 #include "Measure.h"
+#include "Parallel.h"
 #include "SerFile.h"
 
 namespace planetary::stack {
@@ -1161,6 +1162,67 @@ ser::FloatImage Accumulator::Finish() const {
                 }
             }
     }
+    return out;
+}
+
+std::vector<float> Accumulator::Alpha2Grid(int grid, int threads, int& gridW, int& gridH) const {
+    if (grid < 1) throw std::invalid_argument("Accumulator::Alpha2Grid: grid must be >= 1");
+    const RegionLayout& lay = plan_.layout;
+    const size_t nr = plan_.RegionCount();
+    const int G = grid, gw = (width_ - 1 + G - 1) / G + 1, gh = (height_ - 1 + G - 1) / G + 1;
+    gridW = gw;
+    gridH = gh;
+    const double s = scale_;
+    std::vector<AxisWeight> colW(static_cast<size_t>(gw)), rowW(static_cast<size_t>(gh));
+    for (int i = 0; i < gw; ++i) colW[static_cast<size_t>(i)] = AxisWeightAt(lay, false, (static_cast<double>(i) * G + 0.5) / s - 0.5);
+    for (int j = 0; j < gh; ++j) rowW[static_cast<size_t>(j)] = AxisWeightAt(lay, true, (static_cast<double>(j) * G + 0.5) / s - 0.5);
+    std::vector<float> mask(static_cast<size_t>(gw) * gh, 1.f);
+    if (!lay.mask.Empty())
+        for (int j = 0; j < gh; ++j)
+            for (int i = 0; i < gw; ++i)
+                mask[static_cast<size_t>(j) * gw + i] = static_cast<float>(
+                    lay.mask.At((static_cast<double>(i) * G + 0.5) / s - 0.5, (static_cast<double>(j) * G + 0.5) / s - 0.5));
+    std::vector<size_t> used;
+    for (size_t p = 0; p < plan_.frames.size(); ++p)
+        if (plan_.stacked[p]) used.push_back(p);
+    const double fallback = 1.0 / static_cast<double>(std::max<int64_t>(1, plan_.stackedCount));
+    std::vector<float> out(static_cast<size_t>(gw) * gh, 0.f);
+    ParallelBands(gh, threads, [&](int j0, int j1) {
+        std::vector<double> acc(static_cast<size_t>(j1 - j0) * gw, 0.0), mine(nr);
+        for (size_t p : used) {  // plan order, so every point's sum is the same for any banding
+            for (size_t r = 0; r < nr; ++r) {
+                const size_t k = p * nr + r;
+                mine[r] = plan_.flags[k] & RegionPlan::kKept ? 1.0 / static_cast<double>(plan_.detail[r].kept) : 0.0;
+            }
+            const double invGain = 1.0 / plan_.gain[p];
+            for (int j = j0; j < j1; ++j) {
+                const AxisWeight& ay = rowW[static_cast<size_t>(j)];
+                for (int i = 0; i < gw; ++i) {
+                    const AxisWeight& ax = colW[static_cast<size_t>(i)];
+                    const double m = mask[static_cast<size_t>(j) * gw + i];
+                    double cover = 0, a = 0;  // as Add's weightAndWarp
+                    for (int b = 0; b < 2; ++b) {
+                        const int jj = ay.i0 + b;
+                        const double wy = b ? ay.w1 : ay.w0;
+                        if (jj < 0 || jj >= lay.ny || wy == 0) continue;
+                        for (int c = 0; c < 2; ++c) {
+                            const int ii = ax.i0 + c;
+                            const double wx = c ? ax.w1 : ax.w0;
+                            if (ii < 0 || ii >= lay.nx || wx == 0) continue;
+                            const int r = lay.node[static_cast<size_t>(jj) * lay.nx + ii];
+                            if (r < 0 || !blendRegion_[static_cast<size_t>(r)]) continue;
+                            const double w = wx * wy * m;
+                            cover += w;
+                            a += w * mine[static_cast<size_t>(r)];
+                        }
+                    }
+                    const double alpha = (a + std::max(0.0, 1 - cover) * fallback) * invGain;
+                    acc[static_cast<size_t>(j - j0) * gw + i] += alpha * alpha;
+                }
+            }
+        }
+        for (size_t k = 0; k < acc.size(); ++k) out[static_cast<size_t>(j0) * gw + k] = static_cast<float>(acc[k]);
+    });
     return out;
 }
 

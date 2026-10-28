@@ -448,6 +448,44 @@ TEST_CASE("align: the result does not depend on the thread count") {
     }
 }
 
+TEST_CASE("align: the frame's edge band is aligned like its interior") {
+    // Task B9 / Ruling R32: lit disc running off every side of the frame, R and B offset by 0.5 px on both axes. At
+    // the frame's edge the shifted sample lies outside the frame; replicating the edge sample there left the outermost
+    // pixel where dispersion put it (real 64.6F: split-half edge chroma noise 3.5x in that column, 1.73x over the
+    // 6 px band, 1.01x unaligned). Each channel's rms error against the unshifted scene over the 6 px edge band must
+    // stay within 1.5x its error 10-30 px in.
+    MoonSceneSpec s;
+    s.radius = 420;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.0005;
+    const MoonScene ref = MakeMoonScene(s);  // same seed, same noise: the offset is the only difference
+    s.shiftX = {0.5, 0, -0.5};
+    s.shiftY = {-0.5, 0, 0.5};
+    MoonScene sc = MakeMoonScene(s);
+    const stack::StepRecord rec = stack::AlignChannels(sc.observed, 4);
+    INFO(rec.history);
+    REQUIRE_FALSE(rec.skipped);
+    const int w = s.width, h = s.height;
+    for (int c : {0, 2}) {
+        double e2 = 0, i2 = 0;
+        size_t ne = 0, ni = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (!ref.diskTruth[i]) continue;
+                const int d = std::min({x, y, w - 1 - x, h - 1 - y});
+                const double e = static_cast<double>(sc.observed.data[i * 3 + c]) - ref.observed.data[i * 3 + c];
+                if (d < 6) e2 += e * e, ++ne;
+                else if (d >= 10 && d < 30) i2 += e * e, ++ni;
+            }
+        REQUIRE(ne > 1000);
+        REQUIRE(ni > 1000);
+        const double edge = std::sqrt(e2 / ne), interior = std::sqrt(i2 / ni);
+        INFO((c == 0 ? "R" : "B") << ": rms error, 6 px edge band " << edge << ", 10-30 px in " << interior);
+        CHECK(edge <= 1.5 * interior);
+    }
+}
+
 // ---- Step 4: luminance wavelet sharpening (Task B4) ----
 
 namespace {
@@ -1032,6 +1070,66 @@ TEST_CASE("pipeline: display ready") {
     CHECK(med <= 0.45);
 }
 
+TEST_CASE("pipeline: sharpening never takes a lit-disc sample below black") {
+    // Task B9 (real 0201-140, a terminator: the sharpened L went below 0 on 1.59% of the disc, to -0.156, next to bright
+    // rims; the colour step's clip to [0, 1] then black-clipped it -- new clipping, and the output's luminance left L
+    // there, DAN_interior -2.12%). MoonSynth's texture is albedo, so its dark terrain has little absolute contrast;
+    // the terminator's craters are shadows beside sunlit rims: floors at 3% of the level inside rims at 1.8x, painted
+    // over the disc and blurred 1.2 px like the rest of the scene.
+    MoonSceneSpec s = StackScene();
+    MoonScene sc = MakeMoonScene(s);
+    for (int cy = 120; cy <= 360; cy += 40)
+        for (int cx = 180; cx <= 460; cx += 40)
+            for (int y = cy - 9; y <= cy + 9; ++y)
+                for (int x = cx - 9; x <= cx + 9; ++x) {
+                    const double r = std::hypot(x - cx, y - cy);
+                    const double f = r <= 6 ? 0.03 : (r <= 8 ? 1.8 : 1.0);
+                    for (int c = 0; c < 3; ++c) sc.observed.data[(static_cast<size_t>(y) * s.width + x) * 3 + c] *= static_cast<float>(f);
+                }
+    testing::moon_detail::Blur(sc.observed, 1.2);
+    const stack::MineralCache cache = stack::PrepareMineral(sc.observed, 4, {});
+    size_t below = 0, lit = 0;
+    float lowest = 1;
+    for (size_t i = 0; i < sc.diskTruth.size(); ++i)
+        if (cache.masks.disk[i]) {
+            ++lit;
+            below += cache.lum.data[i] < 0;
+            lowest = std::min(lowest, cache.lum.data[i]);
+        }
+    INFO(cache.history[5] << "; disc px " << lit << ", sharpened L < 0 on " << below << ", lowest " << lowest);
+    CHECK(below == 0);
+}
+
+TEST_CASE("pipeline: no cyan cast in the brightest highlands") {
+    // Task B9 (real 0528a/b: the brightest 1% of the disc came out cyan 0.048, from 0.024 before the colour step). The
+    // highlands are the brightest terrain and carry a bluish tint; the frame's channel extremes sit close together, so
+    // 0.92 x their lowest 99.99th percentile lands above most of the disc's brightest 1%, which then keep their colour
+    // boost (spec step 7: no saturated cyan cast in the brightest 1% of disk pixels). A cast is a region's colour, so
+    // the brightest 1% is taken on the output's luminance at the chroma layer's scale (2.5 px): MoonSynth's highlands
+    // are one tint with texture to 1/4 cycle/px, and by pixel their brightest 1% are texture peaks that carry their
+    // region's colour (real 0528a, capped: by pixel 0.008, by region 0.0003).
+    MoonSceneSpec s = StackScene();
+    s.highlandTint = {0.95, 1.00, 1.05};
+    s.mariaTint = {1.04, 1.00, 0.96};
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {});
+    const std::vector<double> L = testing::Lum(stack::ChromaLayer(out.image, 2.5, 4));
+    std::vector<double> lit;
+    for (size_t i = 0; i < L.size(); ++i)
+        if (sc.diskTruth[i]) lit.push_back(L[i]);
+    std::sort(lit.begin(), lit.end());
+    const double p99 = lit[lit.size() * 99 / 100];
+    double cyan = 0, lum = 0;
+    for (size_t i = 0; i < L.size(); ++i)
+        if (sc.diskTruth[i] && L[i] >= p99) {
+            const float* p = &out.image.data[i * 3];
+            cyan += std::min(p[1], p[2]) - p[0];
+            lum += L[i];
+        }
+    INFO(out.history.back() << "; brightest 1% (L >= " << p99 << ") cyan " << cyan / lum);
+    CHECK(cyan / lum <= 0.02);
+}
+
 TEST_CASE("pipeline: no new clipping") {
     MoonSceneSpec s = StackScene();
     s.level = 0.7;          // bright: the highlands near full scale
@@ -1081,12 +1179,30 @@ namespace {
 // their sharp L over the std of the difference of their display L before sharpening. (Against the noise-free
 // scene instead, the difference would also hold the texture times the gain the Wiener factor rightly withholds
 // from the noisy one: on the textured disc at noise 0.002 / 0.005 that read x2.00 / x1.75, this x1.39 / x1.22.)
-double PipelineNoiseGain(const MoonSceneSpec& spec) {
+// The stack's noise as RunStack reports it (Noise.h, StackNoise) for a MoonSynth scene taken as a 1-frame stack: the
+// luma is the channels' mean, so its variance is (noiseStd^2 + shotNoise t) / 3 at luma t; alpha2 = 1 everywhere.
+stack::StackNoise SceneNoise(const MoonSceneSpec& spec) {
+    stack::StackNoise sn;
+    sn.model.a = spec.noiseStd * spec.noiseStd / 3;
+    sn.model.b = spec.shotNoise / 3;
+    sn.model.Tabulate();
+    sn.lumaWeights = {1.0 / 3, 1.0 / 3, 1.0 / 3};
+    sn.width = spec.width;
+    sn.height = spec.height;
+    sn.grid = std::max(spec.width, spec.height);
+    sn.gridW = sn.gridH = 2;
+    sn.alpha2.assign(4, 1.0f);
+    return sn;
+}
+
+double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false) {
     MoonSceneSpec sa = spec, sb = spec;
     sa.noiseSeed = 101;
     sb.noiseSeed = 202;
     const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
-    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}), cb = stack::PrepareMineral(b.observed, 4, {});
+    const stack::StackNoise sn = SceneNoise(spec);
+    const stack::StackNoise* np = stackNoise ? &sn : nullptr;
+    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, np), cb = stack::PrepareMineral(b.observed, 4, {}, np);
     const std::vector<double> la = testing::Lum(ca.display), lb = testing::Lum(cb.display);
     std::vector<double> before(la.size()), after(la.size());
     std::vector<uint8_t> interior(la.size(), 0);
@@ -1119,6 +1235,106 @@ TEST_CASE("pipeline: sharpening is noise-limited in the shipped order") {
             CHECK(g <= 1.5);
         }
 }
+
+TEST_CASE("pipeline: sharpening is noise-limited on correlated noise") {
+    // Ruling R33 (Task B9): a stack's noise is correlated by the demosaic and the warp's interpolation; real Moons' sky
+    // layers 2-4 hold 1.6-1.7x, 1.9-2.2x and 2.4-3.1x the white-noise prediction from layer 1, so white thresholds let
+    // it through the boost. Noise blurred by 0.6 px and rescaled to its std reads 2.05 / 2.39 / 2.61 here (0.5 px:
+    // 1.53 / 1.67 / 1.79). A noise-only disc must get next to no boost: with white thresholds the flat disc read 1.118
+    // (textured 1.476); at 0.8 px correlation, 1.57 textured.
+    for (bool flat : {false, true}) {
+        MoonSceneSpec s = StackScene();
+        s.noiseStd = 0.003;
+        s.noiseCorrelation = 0.6;
+        if (flat) {
+            s.textureAmplitude = 0;
+            s.mariaFraction = 0;
+            s.tintVariation = 0;
+        }
+        const double g = PipelineNoiseGain(s);
+        INFO((flat ? "flat" : "textured") << " gain " << g);
+        CHECK(g <= (flat ? 1.05 : 1.5));
+    }
+}
+
+TEST_CASE("pipeline: the stack's noise model limits sharpening on a shot-noise disc") {
+    // Ruling R35 (Task B9): var = a + b I, the disc's noise ~7x the sky's (real Moons 7.2-10.6x). The sky's noise
+    // under-reads the disc's; RunStack's StackNoise gives it per pixel. Correlated as a real stack's (0.6 px, as the
+    // test above): with white noise the unthresholded boost itself stays under 1.5 (white noise lives in layer 1, gain
+    // 1.5; the sky's-noise path read 1.44 / 1.31 here), so only correlated noise, as on real data, shows the under-read.
+    // Before Rulings R33 / R35: textured 1.592, flat 1.469. The sky's-noise path with R33's layer shape alone still
+    // reads 1.57 textured: the shape cannot see the disc's shot noise.
+    for (bool flat : {false, true}) {
+        MoonSceneSpec s = StackScene();
+        s.noiseStd = 0.001;
+        s.shotNoise = 2e-4;  // disc (~0.25): sd ~0.0071 against the sky's 0.001
+        s.noiseCorrelation = 0.6;
+        if (flat) {
+            s.textureAmplitude = 0;
+            s.mariaFraction = 0;
+            s.tintVariation = 0;
+        }
+        const double old = PipelineNoiseGain(s, false), now = PipelineNoiseGain(s, true);
+        INFO((flat ? "flat" : "textured") << " sky " << old << " model " << now);
+        CHECK(now <= (flat ? 1.05 : 1.5));
+        if (!flat) CHECK(old > 1.5);  // what the model fixes; the sky's-noise path stays as the fallback
+    }
+}
+
+TEST_CASE("pipeline: the stack's noise model, scaled on the sky, reads the disc's own noise") {
+    // Ruling R37: the model is per-frame measurement luma (real Bayer: the 2 x 2 cell's mean, half resolution) and the
+    // sharpening reads the calibrated, demosaiced full-resolution L, whose noise the demosaic, the warp and the
+    // calibration gains rescale and correlate; so PrepareMineral scales the model once, on the sky, to that L's
+    // white-noise-equivalent std (real 64.6F: x1.72). Here the model is exact up to that scale (luma = the channels'
+    // mean, var (a + b t) / 3, one frame; correlated 0.6 px, calibration gains from the cast), so the scaled map must
+    // read the disc's own white-noise-equivalent std, measured from two noise realisations of the same scene.
+    MoonSceneSpec s = StackScene();
+    s.textureAmplitude = 0;
+    s.mariaFraction = 0;
+    s.tintVariation = 0;
+    s.noiseStd = 0.001;
+    s.shotNoise = 2e-4;
+    s.noiseCorrelation = 0.6;
+    MoonSceneSpec sa = s, sb = s;
+    sa.noiseSeed = 101;
+    sb.noiseSeed = 202;
+    const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
+    const stack::StackNoise sn = SceneNoise(s);
+    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, &sn);
+    const std::string& h = ca.history[5];
+    const size_t at = h.find("noise by ");
+    REQUIRE(at != std::string::npos);
+    const double scale = std::stod(h.substr(at + 9));
+    // The disc's calibrated linear L in both realisations (steps 1-3, as PrepareMineral runs them).
+    auto linearL = [&](const MoonScene& sc) {
+        ser::FloatImage rgb = sc.observed;
+        stack::CalibrateColour(rgb, ca.masks);
+        stack::NeutraliseBackground(rgb, ca.masks);
+        ser::FloatImage L{rgb.width, rgb.height, 1, std::vector<float>(rgb.data.size() / 3)};
+        for (size_t i = 0; i < L.data.size(); ++i) L.data[i] = (rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3;
+        return L;
+    };
+    const ser::FloatImage la = linearL(a), lb = linearL(b);
+    ser::FloatImage diff = la;
+    for (size_t i = 0; i < diff.data.size(); ++i) diff.data[i] = static_cast<float>((la.data[i] - lb.data[i]) / std::sqrt(2.0));
+    std::vector<uint8_t> interior(diff.data.size(), 0);
+    std::vector<float> pred;
+    for (int y = 0; y < s.height; ++y)
+        for (int x = 0; x < s.width; ++x) {
+            const size_t i = static_cast<size_t>(y) * s.width + x;
+            if (!(a.diskTruth[i] && std::hypot(x - s.cx, y - s.cy) <= s.radius - 30)) continue;
+            interior[i] = 1;
+            double t = 0;
+            for (int c = 0; c < 3; ++c) t += a.observed.data[i * 3 + c] / 3.0;
+            pred.push_back(static_cast<float>(scale * std::sqrt(sn.model.Lookup(t))));
+        }
+    std::nth_element(pred.begin(), pred.begin() + static_cast<long>(pred.size() / 2), pred.end());
+    const double predicted = pred[pred.size() / 2];
+    const double measured = stack::LayerNoise(stack::StarletLayers(diff, 1, 4)[0], interior) / 0.889;
+    INFO("scale " << scale << "; disc white-noise std: map " << predicted << ", measured " << measured);
+    CHECK(predicted == Catch::Approx(measured).epsilon(0.10));
+}
+
 
 TEST_CASE("pipeline: a small disc in a big frame is found, not the whole frame") {
     // A 1080p frame with a 20 px disc (0.06% of it; task ENG review I2: it read "disk 100%", the sky was grey).
@@ -1261,11 +1477,15 @@ TEST_CASE("pipeline: re-running the colour on the cache") {
     CHECK(a.data == full.image.data);
     CHECK(rec.history == full.history.back());
     CHECK(cache.history.size() == 6);
-    // The fade threshold is measured once, in the cache (task ENG review M8), and is the one MineralColour would
-    // measure on the display RGB itself: the colour on the cache equals MineralColour run directly.
-    CHECK(cache.satThreshold == stack::AutoSatThreshold(cache.display));
+    // The fade threshold is measured once, in the cache (task ENG review M8): HighlightThreshold on the display RGB at
+    // the default chroma blur (Task B9), whatever the slider's blur; the colour on the cache equals MineralColour run
+    // directly with that threshold.
+    CHECK(cache.satThreshold == stack::HighlightThreshold(cache.display, cache.masks, stack::MineralParams{}.chromaBlurSigma, 4));
+    CHECK(cache.satThreshold <= stack::AutoSatThreshold(cache.display));
     ser::FloatImage direct = cache.display;
-    stack::MineralColour(direct, cache.lum, p5, 4);
+    stack::MineralParams pd = p5;
+    pd.satThreshold = cache.satThreshold;
+    stack::MineralColour(direct, cache.lum, pd, 4);
     CHECK(a.data == direct.data);
     const ser::FloatImage b = stack::ApplyMineralColour(cache, stack::MineralParams{}, 4);
     CHECK(a.data != b.data);
