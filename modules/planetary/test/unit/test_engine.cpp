@@ -1913,28 +1913,40 @@ TEST_CASE("ThinEdgeCrop peels at most the guard band's width of thin outer lines
     CHECK_THROWS_AS(stack::ThinEdgeCrop(in, w, h - 1, u), std::invalid_argument);
 }
 
-TEST_CASE("RunStack: the stack's pixel (x, y) is the reference grid's (x + crop.left, y + crop.top) -- no re-registration "
-          "(final review of Part A, M1)",
-          "[engine]") {
-    // The crop's offset in RunStack, pinned against the scene itself: the reference is built from the 16 sharpest
-    // frames, here the 16 still ones (g = 0, the least noise), so the reference grid is the scene's own and output
-    // (x, y) must show scene (x + left, y + top) exactly. The other 24 frames sit at g = (-6, -5): they reach the right
-    // and bottom edges but stop 10 / 9 px short of the left and top, which the still frames alone (0.4 of the weight)
-    // fill from 4 px in -- so the crop differs per side (unreached and thin on the left and top, none on the right and
-    // bottom) and an offset taken from the wrong side would show.
+namespace {
+
+// A 160 x 120 RGGB capture of a disc whose crop differs per side: the reference is built from the 16 sharpest frames,
+// here the 16 still ones (g = 0, the least noise), so the reference grid is the scene's own. The other 24 frames sit
+// at g = (gx, gy), by default (-6, -5): they reach the right and bottom edges but stop 10 / 9 px short of the left and
+// top, which the still frames alone (0.4 of the weight) fill from 4 px in -- so the crop is unreached and thin on the
+// left and top and none on the right and bottom, and an offset taken from the wrong side would show.
+Capture CropOffsetCapture(Scene& s, double gx = -6, double gy = -5) {
     const int w = 160, h = 120, n = 40;
-    Scene s = testing::MakeDisc(1143, w / 2.0, h / 2.0, 40);  // a disc: the target stays in every frame
+    s = testing::MakeDisc(1143, w / 2.0, h / 2.0, 40);  // a disc: the target stays in every frame
     s.sky = 0.1;
     Capture cap = testing::NewCapture(w, h, ser::ColorId::BayerRGGB);
     RenderMosaic(cap, s, n, [&](int k) {
         FrameSpec f;
         f.noise = k < 16 ? 0.002 : 0.01;
         if (k >= 16) {
-            f.gx = -6;
-            f.gy = -5;
+            f.gx = gx;
+            f.gy = gy;
         }
         return f;
     });
+    return cap;
+}
+
+}  // namespace
+
+TEST_CASE("RunStack: the stack's pixel (x, y) is the reference grid's (x + crop.left, y + crop.top) -- no re-registration "
+          "(final review of Part A, M1)",
+          "[engine]") {
+    // The crop's offset in RunStack, pinned against the scene itself: output (x, y) must show scene (x + left, y + top)
+    // exactly (CropOffsetCapture: the reference grid is the scene's own, the crop differs per side).
+    const int w = 160, h = 120;
+    Scene s;
+    const Capture cap = CropOffsetCapture(s);
     const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
     REQUIRE(o.diagnosis.kind == DiagnosisKind::None);
     REQUIRE(o.image.has_value());
@@ -1967,6 +1979,48 @@ TEST_CASE("RunStack: the stack's pixel (x, y) is the reference grid's (x + crop.
     for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}})
         CHECK(rms(c.left + dx, c.top + dy) > 3 * at);
     CHECK(rms(c.right, c.bottom) > 3 * at);
+}
+
+TEST_CASE("RunStack: the stack's noise grid is read at the reference pixel (x + crop.left, y + crop.top) (Ruling R35)",
+          "[engine]") {
+    // Final review B, m2: StackNoise's alpha2 grid covers the uncropped reference grid, so the stack's pixel (x, y)
+    // reads it at (x + left, y + top). Pinned on a capture whose crop is non-zero and differs per side and per axis
+    // (CropOffsetCapture): with the zero crop of the R35 test above, originX = right, swapped axes or no origin passed.
+    Scene s;
+    const Capture cap = CropOffsetCapture(s, -6, 5);  // crop 8 / 4 / 4 / 8 (left, top, right, bottom)
+    const StackOutcome o = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(o.image.has_value());
+    REQUIRE(o.noise.has_value());
+    const stack::StackNoise& sn = *o.noise;
+    const stack::StackCrop& c = o.summary.crop;
+    INFO("crop " << c.left << "/" << c.top << "/" << c.right << "/" << c.bottom << ", grid " << sn.grid << " px, " << sn.gridW
+                 << " x " << sn.gridH << ", origin " << sn.originX << ", " << sn.originY);
+    REQUIRE(sn.Usable());
+    REQUIRE(c.left != c.right);
+    REQUIRE(c.top != c.bottom);
+    REQUIRE(c.left != c.top);
+    CHECK(sn.width == o.image->width);
+    CHECK(sn.height == o.image->height);
+    CHECK(sn.originX == c.left);
+    CHECK(sn.originY == c.top);
+    // Alpha2At against the grid read directly, bilinear, at the reference pixel.
+    auto grid = [&](double rx, double ry) {
+        const double gx = rx / sn.grid, gy = ry / sn.grid;
+        const int i = std::min(static_cast<int>(gx), sn.gridW - 2), j = std::min(static_cast<int>(gy), sn.gridH - 2);
+        const double tx = gx - i, ty = gy - j;
+        auto at = [&](int u, int v) { return static_cast<double>(sn.alpha2[static_cast<size_t>(v) * sn.gridW + u]); };
+        return (1 - ty) * ((1 - tx) * at(i, j) + tx * at(i + 1, j)) + ty * ((1 - tx) * at(i, j + 1) + tx * at(i + 1, j + 1));
+    };
+    double worst = 0, spread = 0;
+    for (int y = 0; y < sn.height; ++y)
+        for (int x = 0; x < sn.width; ++x) {
+            const double want = grid(x + c.left, y + c.top);
+            worst = std::max(worst, std::abs(sn.Alpha2At(x, y) - want) / want);
+            spread = std::max(spread, std::abs(grid(x, y) - want) / want);
+        }
+    INFO("worst relative error " << worst << "; read without the origin it would be " << spread);
+    CHECK(worst < 1e-9);
+    CHECK(spread > 0.01);  // the grid is not flat here: an origin error would show
 }
 
 TEST_CASE("RunStack: a still mono capture has no guard band -- no crop, its full size (Ruling R13)", "[engine]") {
