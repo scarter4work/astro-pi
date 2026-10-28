@@ -3,6 +3,8 @@
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -896,4 +898,173 @@ TEST_CASE("colour: auto saturation threshold") {
     const double got = stack::AutoSatThreshold(sc.observed);
     INFO("auto threshold " << got << ", expected " << expect);
     CHECK(std::fabs(got - expect) <= 1e-6);
+}
+
+// ---- Step 8 and the pipeline (Task B7, amended order) ----
+
+namespace {
+
+// A stack-like input: linear, cast, pedestal, gradient, seeing, noise.
+MoonSceneSpec StackScene() {
+    MoonSceneSpec s;
+    s.level = 0.25;
+    s.cast = {1.15, 1.0, 0.85};
+    s.pedestal = {0.012, 0.010, 0.014};
+    s.gradientX = 0.006;
+    s.blurSigma = 1.2;
+    s.noiseStd = 0.003;
+    return s;
+}
+
+double DiskMedianLum(const ser::FloatImage& im, const std::vector<uint8_t>& disk) {
+    std::vector<double> v;
+    const std::vector<double> L = testing::Lum(im);
+    for (size_t i = 0; i < disk.size(); ++i)
+        if (disk[i]) v.push_back(L[i]);
+    std::nth_element(v.begin(), v.begin() + static_cast<long>(v.size() / 2), v.end());
+    return v[v.size() / 2];
+}
+
+size_t ClippedSamples(const ser::FloatImage& im) {
+    size_t n = 0;
+    for (float v : im.data) n += v >= 0.999f;
+    return n;
+}
+
+void CheckValidOutput(const stack::MineralOutcome& out, const ser::FloatImage& in) {
+    REQUIRE(out.image.width == in.width);
+    REQUIRE(out.image.height == in.height);
+    REQUIRE(out.image.channels == 3);
+    REQUIRE(out.image.data.size() == in.data.size());
+    size_t bad = 0;
+    for (float v : out.image.data) bad += !(std::isfinite(v) && v >= 0.0f && v <= 1.0f);
+    CHECK(bad == 0);  // every sample finite and in [0, 1]
+}
+
+}  // namespace
+
+TEST_CASE("pipeline: display ready") {
+    const MoonScene sc = MakeMoonScene(StackScene());
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {});
+    CheckValidOutput(out, sc.observed);
+    const double med = DiskMedianLum(out.image, sc.diskTruth);
+    INFO("input disk median " << DiskMedianLum(sc.observed, sc.diskTruth) << ", output " << med);
+    CHECK(med >= 0.25);
+    CHECK(med <= 0.45);
+}
+
+TEST_CASE("pipeline: no new clipping") {
+    MoonSceneSpec s = StackScene();
+    s.level = 0.7;          // bright: the highlands near full scale
+    s.clipFraction = 0.005;  // and some saturated in the stack
+    const MoonScene sc = MakeMoonScene(s);
+    const size_t before = ClippedSamples(sc.observed);
+    REQUIRE(before > 0);
+    for (double k : {8.0, 15.0}) {
+        stack::MineralParams p;
+        p.strength = k;
+        const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {}, p);
+        CheckValidOutput(out, sc.observed);
+        const size_t after = ClippedSamples(out.image);
+        INFO("k " << k << ": samples >= 0.999 " << before << " -> " << after);
+        CHECK(after <= before);
+    }
+}
+
+TEST_CASE("pipeline: edge chroma survives the pipeline") {
+    MoonSceneSpec s = EdgeScene();
+    s.level = 0.25;
+    s.cast = {1.15, 1.0, 0.85};
+    s.pedestal = {0.01, 0.01, 0.01};
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 8, {});
+    CheckValidOutput(out, sc.observed);
+    const double r = EdgeChromaRatio(out.image, 320, 760, 0, 6, 20, 40);
+    INFO("edge / ref chroma std on the mineral output: " << r);
+    CHECK(r <= 1.5);
+}
+
+TEST_CASE("pipeline: small disc completes") {
+    MoonSceneSpec s = StackScene();
+    s.radius = 60;
+    const MoonScene sc = MakeMoonScene(s);
+    stack::MineralOutcome out;
+    REQUIRE_NOTHROW(out = stack::MakeMineralMoon(sc.observed, 4, {}));
+    CheckValidOutput(out, sc.observed);
+    CHECK(out.history.size() == 7);
+}
+
+TEST_CASE("pipeline: cancel throws StackCancelled") {
+    const MoonScene sc = MakeMoonScene(StackScene());
+    bool seen = false;
+    stack::Progress pr;
+    pr.report = [&](const std::string& phase, int64_t, int64_t) { seen = seen || phase == stack::kPhaseMineral; };
+    pr.cancelled = [&] { return seen; };
+    stack::MineralOutcome out;
+    CHECK_THROWS_AS(out = stack::MakeMineralMoon(sc.observed, 4, pr), stack::StackCancelled);
+    CHECK(seen);
+    CHECK(out.image.data.empty());
+    CHECK_THROWS_AS(stack::PrepareMineral(sc.observed, 4, pr), stack::StackCancelled);
+}
+
+TEST_CASE("pipeline: mono refused") {
+    ser::FloatImage mono{64, 48, 1, std::vector<float>(64 * 48, 0.3f)};
+    CHECK_THROWS_AS(stack::MakeMineralMoon(mono, 2, {}), std::invalid_argument);
+    CHECK_THROWS_AS(stack::PrepareMineral(mono, 2, {}), std::invalid_argument);
+}
+
+TEST_CASE("pipeline: history order") {
+    const MoonScene sc = MakeMoonScene(StackScene());
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {});
+    // Amendment order: Segment, Calibrate, Background, Display transfer, AlignChannels, SharpenLuminance,
+    // MineralColour -- seven lines (B7's eight were for the pre-amendment steps).
+    const std::vector<std::string> prefix = {"Lunar disk", "Colour calibration", "Background", "Display transfer",
+                                             "Channel alignment", "Sharpen", "Mineral colour"};
+    REQUIRE(out.history.size() == prefix.size());
+    REQUIRE(out.stepSeconds.size() == prefix.size());
+    for (size_t k = 0; k < prefix.size(); ++k) {
+        INFO(out.history[k]);
+        CHECK(out.history[k].rfind(prefix[k], 0) == 0);
+        CHECK(Ascii(out.history[k]));
+        CHECK(out.stepSeconds[k].second >= 0);
+    }
+}
+
+TEST_CASE("pipeline: re-running the colour on the cache") {
+    // Increment 2 / B8's sliders: PrepareMineral once, ApplyMineralColour per setting; the same result as
+    // MakeMineralMoon with that setting, and the luminance detail does not move with k.
+    const MoonScene sc = MakeMoonScene(StackScene());
+    const stack::MineralCache cache = stack::PrepareMineral(sc.observed, 4, {});
+    stack::MineralParams p5;
+    p5.strength = 5;
+    p5.chromaBlurSigma = 3.5;
+    stack::StepRecord rec;
+    const ser::FloatImage a = stack::ApplyMineralColour(cache, p5, 4, &rec);
+    const stack::MineralOutcome full = stack::MakeMineralMoon(sc.observed, 4, {}, p5);
+    CHECK(a.data == full.image.data);
+    CHECK(rec.history == full.history.back());
+    CHECK(cache.history.size() == 6);
+    const ser::FloatImage b = stack::ApplyMineralColour(cache, stack::MineralParams{}, 4);
+    CHECK(a.data != b.data);
+}
+
+TEST_CASE("pipeline: 1080p within the time budget") {
+    // Spec: the mineral steps add <= 5 s to a 1920 x 1080 stack on 32 threads (CPU only).
+    MoonSceneSpec s = StackScene();
+    s.width = 1920;
+    s.height = 1080;
+    s.cx = 960;
+    s.cy = 540;
+    s.radius = 700;
+    const MoonScene sc = MakeMoonScene(s);
+    const int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    const auto t0 = std::chrono::steady_clock::now();
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, threads, {});
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::string steps;
+    for (const auto& st : out.stepSeconds) steps += st.first + " " + std::to_string(st.second) + " s; ";
+    INFO(threads << " threads: " << secs << " s (" << steps << ")");
+    CheckValidOutput(out, sc.observed);
+    if (threads >= 32) CHECK(secs <= 5.0);
+    else WARN("fewer than 32 threads here: " << secs << " s, not judged");
 }

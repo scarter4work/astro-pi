@@ -1,6 +1,7 @@
 #include "Mineral.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -983,6 +984,161 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
                       k, sigma, p.eps, p.devClamp, thr, p.satRamp) +
                   "; " + Percent(faded, n) + " of pixels faded, " + Percent(held, n) + " held in gamut";
     return rec;
+}
+
+}  // namespace planetary::stack
+
+namespace planetary::stack {
+
+// ---- 8. Display transfer and the pipeline ----
+
+namespace {
+
+// PixInsight's midtones transfer function: MTF(0) = 0, MTF(m) = 0.5, MTF(1) = 1, monotone for m in (0, 1).
+double Mtf(double x, double m) {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    return (m - 1) * x / ((2 * m - 1) * x - m);
+}
+// The midtones balance m that sends x to t (0 < x < 1, 0 < t < 1).
+double MtfBalance(double x, double t) { return x * (1 - t) / (x - 2 * x * t + t); }
+
+// Spec step 8: the disc's median at a normal display level, and headroom for sharpening and colour above the
+// brightest unsaturated sample.
+constexpr double kDisplayMedian = 0.35, kDisplayHeadroom = 0.95;
+
+}  // namespace
+
+StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped) {
+    RequireMasks(rgb, m, "DisplayTransfer");
+    if (!stackClipped.empty() && stackClipped.size() != rgb.data.size())
+        throw std::invalid_argument("DisplayTransfer: clipped flags do not match the image");
+    const size_t n = Pixels(rgb);
+    StepRecord rec;
+    // The disc's median luminance (the whole frame's without a disc), and the brightest sample the stack did
+    // not saturate.
+    std::vector<float> lum;
+    for (size_t i = 0; i < n; ++i)
+        if (m.diskCount == 0 || m.disk[i]) lum.push_back((rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3);
+    const double med = Median(lum);
+    double top = 0;
+    for (size_t k = 0; k < rgb.data.size(); ++k)
+        if (stackClipped.empty() || !stackClipped[k]) top = std::max(top, static_cast<double>(rgb.data[k]));
+    if (!(med > 0) || !(top > med)) {
+        rec.skipped = true;
+        rec.history = Fmt("Display transfer skipped: no usable signal (disk median %.3g, brightest unsaturated sample %.3g); "
+                          "samples clipped to [0, 1]",
+                          med, top);
+        for (float& v : rgb.data) v = std::clamp(v, 0.0f, 1.0f);
+        return rec;
+    }
+    // One curve for all three channels (a linked stretch, as an STF or HistogramTransformation applies it):
+    // x = v / W clipped to [0, 1], then the MTF whose balance puts the disc's median at kDisplayMedian. W is
+    // the smallest white point >= the brightest unsaturated sample at which that sample lands at or under
+    // kDisplayHeadroom: the transfer clips nothing the stack did not, and the colour step and the sharpening
+    // keep their room. As W grows (the median held), the brightest sample's level falls monotonically toward
+    // rho / (rho + (1 - t) / t), rho = its ratio to the median -- under 1 always, so W exists whenever that
+    // limit is under the headroom (rho < ~35); otherwise W = 1e4 x the brightest and it sits at the limit.
+    auto levelOfTop = [&](double W) { return Mtf(top / W, MtfBalance(med / W, kDisplayMedian)); };
+    double lo = std::log(top), hi = std::log(top * 1e4);
+    if (levelOfTop(std::exp(hi)) > kDisplayHeadroom) {
+        lo = hi;
+    } else {
+        for (int it = 0; it < 60; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            (levelOfTop(std::exp(mid)) > kDisplayHeadroom ? lo : hi) = mid;
+        }
+        lo = hi;
+    }
+    const double W = std::exp(lo), bal = MtfBalance(med / W, kDisplayMedian);
+    for (float& v : rgb.data) v = static_cast<float>(Mtf(v / W, bal));
+    rec.history = Fmt("Display transfer: linked midtones %.5f, white point %.5f; disk median %.4f -> %.2f, "
+                      "brightest unsaturated sample %.4f -> %.3f",
+                      bal, W, med, kDisplayMedian, top, Mtf(top / W, bal));
+    return rec;
+}
+
+namespace {
+
+// Runs the cached steps 1-6, timing each and reporting (kPhaseMineral, step, total); a cancel seen at any
+// report throws StackCancelled before any image is returned.
+class MineralSteps {
+public:
+    MineralSteps(const Progress& progress, int total) : progress_(progress), total_(total) {}
+    template <class Fn>
+    void Run(const std::string& name, std::vector<std::pair<std::string, double>>& seconds, Fn fn) {
+        Tick();
+        const auto t0 = std::chrono::steady_clock::now();
+        fn();
+        seconds.push_back({name, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()});
+        ++done_;
+    }
+    void Tick() {
+        if (progress_.report) progress_.report(kPhaseMineral, done_, total_);
+        if (progress_.cancelled && progress_.cancelled()) throw StackCancelled("Mineral moon cancelled");
+    }
+
+private:
+    const Progress& progress_;
+    int total_, done_ = 0;
+};
+
+constexpr int kMineralSteps = 7;
+
+}  // namespace
+
+MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress) {
+    if (stack.channels != 3 || stack.width <= 0 || stack.height <= 0 || stack.data.size() != Pixels(stack) * 3)
+        throw std::invalid_argument("Mineral moon needs a 3-channel colour stack (this one has " +
+                                    std::to_string(stack.channels) + " channel(s))");
+    MineralCache cache;
+    MineralSteps steps(progress, kMineralSteps);
+    ser::FloatImage rgb = stack;
+    std::vector<uint8_t> clipped(stack.data.size());
+    for (size_t k = 0; k < stack.data.size(); ++k) clipped[k] = stack.data[k] >= kClippedLuma;
+    const size_t n = Pixels(stack);
+    steps.Run("Lunar disk", cache.stepSeconds, [&] {
+        cache.masks = SegmentLunar(rgb, threads);
+        cache.history.push_back("Lunar disk: " + Percent(cache.masks.diskCount, n) + " of the frame, sky " +
+                                Percent(cache.masks.skyCount, n));
+    });
+    steps.Run("Colour calibration", cache.stepSeconds,
+              [&] { cache.history.push_back(CalibrateColour(rgb, cache.masks).history); });
+    steps.Run("Background", cache.stepSeconds, [&] { cache.history.push_back(NeutraliseBackground(rgb, cache.masks).history); });
+    steps.Run("Display transfer", cache.stepSeconds,
+              [&] { cache.history.push_back(DisplayTransfer(rgb, cache.masks, clipped).history); });
+    steps.Run("Channel alignment", cache.stepSeconds, [&] { cache.history.push_back(AlignChannels(rgb, threads).history); });
+    steps.Run("Sharpen", cache.stepSeconds, [&] {
+        cache.lum = MeanOfChannels(rgb, threads);
+        cache.history.push_back(SharpenLuminanceImage(cache.lum, cache.masks, threads).history);
+    });
+    steps.Tick();
+    cache.display = std::move(rgb);
+    return cache;
+}
+
+ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParams& p, int threads, StepRecord* record) {
+    ser::FloatImage out = cache.display;
+    StepRecord rec = MineralColour(out, cache.lum, p, threads);
+    if (record) *record = std::move(rec);
+    return out;
+}
+
+MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress, const MineralParams& params) {
+    MineralCache cache = PrepareMineral(stack, threads, progress);
+    MineralOutcome out;
+    StepRecord rec;
+    const auto t0 = std::chrono::steady_clock::now();
+    ser::FloatImage image = ApplyMineralColour(cache, params, threads, &rec);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (progress.report) progress.report(kPhaseMineral, kMineralSteps, kMineralSteps);
+    if (progress.cancelled && progress.cancelled()) throw StackCancelled("Mineral moon cancelled");
+    out.image = std::move(image);
+    out.history = std::move(cache.history);
+    out.history.push_back(rec.history);
+    out.stepSeconds = std::move(cache.stepSeconds);
+    out.stepSeconds.push_back({"Mineral colour", secs});
+    return out;
 }
 
 }  // namespace planetary::stack
