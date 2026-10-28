@@ -1191,13 +1191,17 @@ stack::StackNoise SceneNoise(const MoonSceneSpec& spec) {
     return sn;
 }
 
-double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false, double amount = stack::kSharpenDefault) {
+// unusable: the stack's noise is passed but not Usable() (no frame-weight grid), as RunStack may report it.
+double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false, double amount = stack::kSharpenDefault,
+                         bool unusable = false) {
     MoonSceneSpec sa = spec, sb = spec;
     sa.noiseSeed = 101;
     sb.noiseSeed = 202;
     const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
-    const stack::StackNoise sn = SceneNoise(spec);
-    const stack::StackNoise* np = stackNoise ? &sn : nullptr;
+    stack::StackNoise sn = SceneNoise(spec);
+    if (unusable) sn.alpha2.clear();
+    REQUIRE(sn.Usable() != unusable);
+    const stack::StackNoise* np = stackNoise || unusable ? &sn : nullptr;
     const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, np), cb = stack::PrepareMineral(b.observed, 4, {}, np);
     stack::StepRecord ra, rb;
     const ser::FloatImage sa1 = stack::SharpenedLuminance(ca, amount, 4, &ra), sb1 = stack::SharpenedLuminance(cb, amount, 4, &rb);
@@ -1275,11 +1279,15 @@ TEST_CASE("pipeline: noise-only gain at the default and at the Sharpen slider's 
     // Final review B, I1: with no sky the layer shape fell back to white ratios and the stack's noise model to the
     // flattest tiles' level, so correlated noise on layer 2 read as signal: 1.24 at the default and 1.89 at 4. Measured
     // on the disc's flattest tiles: 1.02-1.03 / 1.09-1.14 (with sky 1.00-1.03 / 1.00-1.13).
-    struct Case { const char* name; double noise, shot, corr; bool model; };
+    // Ruling R43: a shot-noise disc with sky and no usable stack noise model took the sky's level, a lower bound on a
+    // bright disc's noise: 2.15 at the default, 5.74 at 4. Now the higher of the sky's and the disc's flattest tiles'.
+    struct Case { const char* name; double noise, shot, corr; bool model, unusable = false; };
     for (bool sky : {true, false})
         for (const Case& c : {Case{"white 0.005", 0.005, 0, 0, false}, Case{"correlated 0.003 / 0.6 px", 0.003, 0, 0.6, false},
                               Case{"correlated 0.003 / 0.6 px, stack noise model", 0.003, 0, 0.6, true},
-                              Case{"shot, stack noise model", 0.001, 2e-4, 0.6, true}}) {
+                              Case{"shot, stack noise model", 0.001, 2e-4, 0.6, true},
+                              Case{"shot, no stack noise model", 0.001, 2e-4, 0.6, false},
+                              Case{"shot, stack noise model not usable", 0.001, 2e-4, 0.6, false, true}}) {
             MoonSceneSpec s = StackScene();
             s.noiseStd = c.noise;
             s.shotNoise = c.shot;
@@ -1288,7 +1296,8 @@ TEST_CASE("pipeline: noise-only gain at the default and at the Sharpen slider's 
             s.mariaFraction = 0;
             s.tintVariation = 0;
             if (!sky) s.radius = 395;  // the limb only touches the 640 x 480 frame's corners: no sky (900: a flat frame, no disc)
-            const double atDefault = PipelineNoiseGain(s, c.model), atMax = PipelineNoiseGain(s, c.model, stack::kSharpenMax);
+            const double atDefault = PipelineNoiseGain(s, c.model, stack::kSharpenDefault, c.unusable),
+                         atMax = PipelineNoiseGain(s, c.model, stack::kSharpenMax, c.unusable);
             INFO((sky ? "sky" : "no sky") << ", flat disc, " << c.name << ": noise gain " << atDefault << " at amount "
                                           << stack::kSharpenDefault << ", " << atMax << " at amount " << stack::kSharpenMax);
             CHECK(atDefault <= 1.5);
@@ -1334,8 +1343,33 @@ TEST_CASE("pipeline: with no sky the noise and its layer shape come from the dis
     stack::StepRecord rec;
     stack::SharpenedLuminance(c, stack::kSharpenDefault, 4, &rec);
     INFO(rec.history);
-    CHECK(rec.history.find("(the sky's)") != std::string::npos);
-    CHECK(rec.history.find("flattest tiles") == std::string::npos);
+    // The layer shape's source (the noise level's, with no model, is Ruling R43's higher of the sky and the tiles).
+    const size_t at = rec.history.find("layer noise over white");
+    REQUIRE(at != std::string::npos);
+    CHECK(rec.history.find("(the sky's)", at) != std::string::npos);
+    CHECK(rec.history.find("flattest tiles", at) == std::string::npos);
+}
+
+TEST_CASE("pipeline: without a usable stack noise model the higher of the sky's and the tiles' noise is used and named") {
+    // Ruling R43. A shot-noise disc's noise is above its sky's (the tiles win); white noise is the same on both, where
+    // the tiles' flattest tenth reads a little low (the sky wins).
+    for (bool shot : {true, false}) {
+        MoonSceneSpec s = StackScene();
+        s.noiseStd = shot ? 0.001 : 0.005;
+        s.shotNoise = shot ? 2e-4 : 0;
+        s.textureAmplitude = 0;
+        s.mariaFraction = 0;
+        s.tintVariation = 0;
+        const stack::MineralCache c = stack::PrepareMineral(MakeMoonScene(s).observed, 4, {});
+        stack::StepRecord rec;
+        stack::SharpenedLuminance(c, stack::kSharpenDefault, 4, &rec);
+        INFO(rec.history);
+        const std::string winner = shot ? "the disc's flattest tiles', the higher of" : "the sky's, the higher of";
+        CHECK(rec.history.find(winner) != std::string::npos);
+        CHECK(rec.history.find("(no stack noise model given)") != std::string::npos);
+        CHECK(rec.history.find("lower bound") == std::string::npos);
+        CHECK(Ascii(rec.history));
+    }
 }
 
 TEST_CASE("sharpen: layer shape with neither sky nor 10 flat disc tiles is the assumed one") {
@@ -1381,10 +1415,13 @@ TEST_CASE("pipeline: the stack's noise model limits sharpening on a shot-noise d
         // Ruling R40: flat (noise only) at the default, textured at amount 1 and reported at the default.
         const double amount = flat ? stack::kSharpenDefault : 1.0;
         const double old = PipelineNoiseGain(s, false, amount), now = PipelineNoiseGain(s, true, amount);
-        INFO((flat ? "flat" : "textured") << " sky " << old << " model " << now);
+        INFO((flat ? "flat" : "textured") << " no model " << old << " model " << now);
         CHECK(now <= (flat ? 1.05 : 1.5));
         if (!flat) {
-            CHECK(old > 1.5);  // what the model fixes; the sky's-noise path stays as the fallback
+            // Without the model: the sky's level alone read 1.59 here (what R35 fixes); Ruling R43's fallback, the
+            // higher of the sky's and the disc's flattest tiles', holds too (1.25).
+            CHECK(old <= 1.5);
+            WARN("shot noise, textured, no model (R43 fallback): gain " << old << " at amount 1");
             WARN("shot noise, textured, stack noise model: gain " << now << " at amount 1, "
                                                                  << PipelineNoiseGain(s, true, stack::kSharpenDefault)
                                                                  << " at the default (reported, Ruling R40)");

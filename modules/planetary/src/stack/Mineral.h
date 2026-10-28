@@ -83,20 +83,17 @@ std::vector<ser::FloatImage> StarletLayers(const ser::FloatImage& lum1, int laye
 // Robust std (1.4826 x MAD) of a layer's first channel over the region's pixels (empty region: all). 0 for
 // fewer than 2 pixels.
 double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& region);              // robust (MAD) std
-// The white-noise std of a 1-channel luminance: the lower of the sky's and the flattest disc tiles' layer-1 MAD,
-// / 0.889. Fair only where the sky's noise is the disc's, i.e. on linear data (after a display transfer the sky is
-// clipped at 0 and the curve is steeper on the disc: it read ~7x low there). 0 with no disc. Throws
-// std::invalid_argument unless lum1 is 1 channel and the masks are of its size.
-double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int threads);
 // Sharpens a 1-channel luminance in place: layers 1-4, nominal gains {1.5, 2.5, 1, 1} at amount 1, each times its Wiener
 // factor (the share of the layer's energy over the disc that is not noise), applied to the part of each
 // coefficient beyond 2 sigma of that layer's noise at the pixel. The noise: `noise`, the white-noise std per
-// pixel when given (PrepareMineral: LuminanceNoise on the linear data times the display transfer's slope there),
-// else LuminanceNoise(lum1) everywhere (right for linear input). The boost is 0 off the disc and fades in from one
+// pixel when given (PrepareMineral: the linear data's, Rulings R35 / R43, times the display transfer's slope there),
+// else one level measured on lum1 everywhere, the lower of the sky's and the flattest disc tiles' layer-1 robust std
+// / 0.889 (right for linear input only). The boost is 0 off the disc and fades in from one
 // to two layer reaches inside the limb's and terminator's half-contrast line (no halo, no rim). Above 0.9 a
 // smooth shoulder keeps L under 0.998, and below a quarter of a pixel's unsharpened value a smooth toe keeps it above
 // 0 (shadows beside sunlit rims), so sharpening never clips a sample the stack did not, at either end. Skipped (unchanged)
-// when there is no disc. Throws std::invalid_argument as LuminanceNoise, or for a noise map not of lum1's size.
+// when there is no disc. Throws std::invalid_argument unless lum1 is 1 channel and the masks are of its size, or for a
+// noise map not of lum1's size.
 // layerShape (optional; Ruling R33): per layer, its noise over the white-noise prediction (LayerNoiseShape); null:
 // white noise (1 for every layer).
 // amount (the Sharpen slider, Task SHARP): 0 leaves lum1 exactly as it is (the step is skipped, HISTORY says so);
@@ -125,7 +122,7 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
 // terrain only raises the factor there, so it errs toward less boost. With under 10 such tiles, kAssumedShape (the
 // real-data range's top, 1.7 / 2.2 / 3.1). source (if given) receives where the factors came from ("the sky's",
 // "the disc's flattest tiles'", "assumed, ...", or per layer when they differ) for HISTORY. 1s with no disc. lum1
-// linear (the sky is clipped after a display transfer). Throws std::invalid_argument as LuminanceNoise, or for a
+// linear (the sky is clipped after a display transfer). Throws std::invalid_argument as SharpenLuminanceImage, or for a
 // norm not of lum1's size.
 std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads,
                                       const std::vector<float>* norm = nullptr, std::string* source = nullptr);
@@ -208,9 +205,10 @@ struct MineralCache {
 // the units from the sky -- then through the display transfer's slope at each pixel. With under 1000 px of sky (a
 // disc filling the frame; final review B, I1) it is scaled on the disc's flattest tiles instead (see LayerNoiseShape):
 // terrain only raises that, so on real Moons, textured everywhere, it errs high (64.6F cut to its disc: x8.5 against
-// the sky's x1.7) and sharpens less, never more. Without it (null or unusable), the sky's noise everywhere (or the
-// flattest disc tiles', with no sky), a lower bound on a bright disc's. HISTORY's Sharpen line says which, and where
-// the layer shape (LayerNoiseShape's on the linear data, normalised by the map when there is one) came from.
+// the sky's x1.7) and sharpens less, never more. Without it (null or unusable; Ruling R43), one level everywhere: the
+// higher of the sky's (a lower bound on a bright disc's) and the flattest disc tiles' (which terrain only raises), the
+// tiles' alone with no sky. HISTORY's Sharpen line says which, and where the layer shape (LayerNoiseShape's on
+// the linear data, normalised by the map when there is one) came from.
 MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress,
                             const StackNoise* noise = nullptr);
 // Step 4c on the cache: cache.lumBase sharpened by `amount` (SharpenLuminanceImage with the cache's noise and layer

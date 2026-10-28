@@ -1050,7 +1050,9 @@ std::vector<uint8_t> LayerRegion(const DiscCore& dc, const LunarMasks& m, int j)
 // on the disc), which is why PrepareMineral measures it before the transfer. Limit: where shot noise makes a
 // linear stack's disc noise exceed its sky's, the sky's lower value lets more disc noise through the threshold;
 // the gains stay bounded by kLayerGain and the Wiener factor.
-double WhiteNoise(const ser::FloatImage& layer1, const DiscCore& dc, const LunarMasks& m) {
+// The two estimates WhiteNoise takes the lower of: `tiles` from the disc's flattest tiles, `sky` from the sky (0 under
+// 1000 px of sky). Both already / 0.889.
+void WhiteNoiseParts(const ser::FloatImage& layer1, const DiscCore& dc, const LunarMasks& m, double& tiles, double& sky) {
     const int w = layer1.width, h = layer1.height;
     const std::vector<uint8_t> r = LayerRegion(dc, m, 0);
     constexpr int kTile = 16;
@@ -1073,8 +1075,14 @@ double WhiteNoise(const ser::FloatImage& layer1, const DiscCore& dc, const Lunar
     } else {
         white = LayerNoise(layer1, r);
     }
-    if (m.skyCount >= 1000) white = std::min(white, LayerNoise(layer1, m.sky));
-    return white / kStarletNoise[0];
+    tiles = white / kStarletNoise[0];
+    sky = m.skyCount >= 1000 ? LayerNoise(layer1, m.sky) / kStarletNoise[0] : 0.0;
+}
+
+double WhiteNoise(const ser::FloatImage& layer1, const DiscCore& dc, const LunarMasks& m) {
+    double tiles = 0, sky = 0;
+    WhiteNoiseParts(layer1, dc, m, tiles, sky);
+    return sky > 0 ? std::min(tiles, sky) : tiles;
 }
 
 // The flattest tenth (at least 10) of the 16 x 16 tiles wholly inside `region`, ranked by layer 1's robust std over
@@ -1139,12 +1147,6 @@ void RequireLuminance(const ser::FloatImage& lum1, const LunarMasks& m, const ch
 }
 
 }  // namespace
-
-double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int threads) {
-    RequireLuminance(lum1, m, "LuminanceNoise");
-    if (m.diskCount == 0) return 0;
-    return WhiteNoise(StarletLayers(lum1, 1, threads)[0], MakeDiscCore(lum1, m, threads), m);
-}
 
 std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads,
                                       const std::vector<float>* norm, std::string* source) {
@@ -1650,17 +1652,27 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
     DisplayCurve curve;
     step("Display transfer", [&] {
         const ser::FloatImage linL = MeanOfChannels(rgb, threads);
-        linearNoise = LuminanceNoise(linL, cache.masks, threads);
         std::string why = "no stack noise model given", scaledOn;
         if (stackNoise) linearMap = StackNoiseMap(stack, linL, cache.masks, *stackNoise, threads, noiseScale, scaledOn, why);
         shape = LayerNoiseShape(linL, cache.masks, threads, linearMap.empty() ? nullptr : &linearMap, &shapeSource);
-        if (!linearMap.empty())
+        if (!linearMap.empty()) {
             noiseSource = "noise: the stack's noise model per pixel (level and frame count), scaled to " + scaledOn +
                           Fmt(" noise by %.3g", noiseScale);
-        else if (cache.masks.skyCount >= 1000)
-            noiseSource = "noise: the sky's (" + why + "; a lower bound on a bright disc's)";
-        else
-            noiseSource = std::string("noise: ") + kShapeTiles + " (" + why + "; under 1000 px of sky)";
+        } else {
+            // Without the stack's model, one level everywhere (Ruling R43): the higher of the sky's, a lower bound on
+            // a bright disc's (shot noise: a flat shot-noise disc's noise gain read 2.15 at the default and 5.74 at 4
+            // on it), and the disc's flattest tiles', which terrain only raises. Erring high sharpens less, never more.
+            double tiles = 0, sky = 0;
+            WhiteNoiseParts(StarletLayers(linL, 1, threads)[0], MakeDiscCore(linL, cache.masks, threads), cache.masks,
+                            tiles, sky);
+            linearNoise = std::max(tiles, sky);
+            if (sky <= 0)
+                noiseSource = std::string("noise: ") + kShapeTiles + " (" + why + "; under 1000 px of sky)";
+            else
+                noiseSource = Fmt("noise: %.3g, ", linearNoise) + (sky >= tiles ? kShapeSky : kShapeTiles) +
+                              Fmt(", the higher of the sky's (%.3g) and the disc's flattest tiles' (%.3g) (", sky, tiles) +
+                              why + ")";
+        }
         return DisplayTransfer(rgb, cache.masks, clipped, &curve).history;
     });
     step("Channel alignment", [&] { return AlignChannels(rgb, threads).history; });
