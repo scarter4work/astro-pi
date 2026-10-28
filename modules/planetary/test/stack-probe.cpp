@@ -1,9 +1,11 @@
 // Test-only CLI over RunStack (Task 6), for real-data smoke runs and the benchmark harness (Task 9).
-// Never shipped, not a ctest case. Reads the video only; writes only --out.
+// Never shipped, not a ctest case. Reads the video only; writes only --out and the --mineral-* files.
 //
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
 //               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
 //               [--cancel-at measuring|aligning|stacking,F] [--parity even|odd]
+//               [--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--mineral-out x.fits]
+//               [--mineral-also K:y.fits]... [--mineral-stages DIR]
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -29,7 +31,22 @@
 // engine only the even- or the odd-numbered frames of the capture (after --frames), as frames 0..n-1: two
 // independent half-stacks for the split-half chroma noise check (edge_chroma.py --noise); the JSON names it
 // ("parity"). Each half is a run of its own, with its own reference and so its own grid: edge_chroma.py
-// registers the halves before it compares them. Exit 0 with an image, 2 when diagnosed, 1 on error.
+// registers the halves before it compares them.
+// Mineral moon (Task B9, real-data acceptance). --target auto (default) takes the target from the capture's name
+// (CaptureName.h), or names it (Moon, Jupiter, ..., Other). --mineral applies the window's gate first
+// (MineralMoonRefusal on that target, the name's filter and the resolved pattern): refused, it prints the reason
+// and exits 4 without stacking. Otherwise it runs PrepareMineral + ApplyMineralColour on the stack at --strength
+// (default 8) and --chroma-blur (default 2.5) -- MakeMineralMoon's own two halves, kept apart so the cache can be
+// reused -- and the JSON gains "mineral": the seven HISTORY lines, the step times, the notice, the fade threshold
+// and the display curve. --mineral-out writes the mineral image (FITS); --mineral-also K:PATH (repeatable) re-runs
+// only the colour on the same cache at strength K, as the window's slider does, and writes it. --mineral-stages DIR
+// writes, as FITS: display.fits (the cache's display RGB: calibrated, background-neutral, display-transferred,
+// channel-aligned, unsharpened), lum_sharp.fits (the sharpened L), lin_unsharp.fits and lin_sharp.fits (the
+// channels' mean of display.fits and the sharpened L, each taken back through the inverse display transfer
+// pointwise -- one map for both, so their DAN_interior compare like for like), calibrated.fits (the linear RGB
+// after Colour calibration and Background, from a replica of steps 1-4 that also gives the exact display curve;
+// its masks are checked equal to the cache's) and masks.fits (plane 0 disk, plane 1 sky, 0/1).
+// Exit 0 with an image, 2 when diagnosed, 1 on error, 4 when --mineral is refused.
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -41,14 +58,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <random>
 #include <thread>
 #include <vector>
 
+#include "CaptureName.h"
 #include "Engine.h"
 #include "Measure.h"
+#include "Mineral.h"
 #include "Noise.h"
 #include "ProbeFits.h"
 #include "ProbeSource.h"
@@ -163,6 +183,44 @@ void WriteTiff(const std::string& path, const ser::FloatImage& im, int bits) {
     if (std::fclose(f) != 0 || !written) throw std::runtime_error("cannot write " + path + " (disk full?)");
 }
 
+ser::Target ParseTarget(const std::string& s) {
+    for (ser::Target t : {ser::Target::Other, ser::Target::Moon, ser::Target::Mercury, ser::Target::Venus, ser::Target::Mars,
+                          ser::Target::Jupiter, ser::Target::Saturn, ser::Target::Uranus, ser::Target::Neptune})
+        if (s == ser::TargetName(t)) return t;
+    throw std::invalid_argument("--target: auto, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune or Other");
+}
+
+const char* FilterName(ser::FilterClass f) {
+    switch (f) {
+        case ser::FilterClass::Broadband: return "Broadband";
+        case ser::FilterClass::Narrowband: return "Narrowband";
+        case ser::FilterClass::Unknown: break;
+    }
+    return "Unknown";
+}
+
+// The channels' mean, one channel.
+ser::FloatImage Mean3(const ser::FloatImage& rgb) {
+    ser::FloatImage l;
+    l.width = rgb.width;
+    l.height = rgb.height;
+    l.channels = 1;
+    l.data.resize(rgb.data.size() / 3);
+    for (size_t i = 0; i < l.data.size(); ++i) l.data[i] = (rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3.0f;
+    return l;
+}
+
+// The display transfer undone, pointwise: MTF(., m) is inverted by MTF(., 1 - m), then times the white point.
+ser::FloatImage UnDisplay(ser::FloatImage l, const stack::DisplayCurve& c) {
+    const double m = 1 - c.balance;
+    for (float& v : l.data) {
+        const double y = std::clamp(static_cast<double>(v), 0.0, 1.0);
+        const double x = y <= 0 ? 0 : y >= 1 ? 1 : (m - 1) * y / ((2 * m - 1) * y - m);
+        v = static_cast<float>(c.white * x);
+    }
+    return l;
+}
+
 bool EndsWith(const std::string& s, const std::string& t) { return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0; }
 
 // --keep-best F, --parity: the engine sees only these frames of the source (ascending), as frames 0..n-1.
@@ -191,7 +249,9 @@ private:
 int main(int argc, char** argv) try {
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
-                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd]\n");
+                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd] "
+                             "[--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--mineral-out x.fits] "
+                             "[--mineral-also K:y.fits]... [--mineral-stages DIR]\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -205,6 +265,11 @@ int main(int argc, char** argv) try {
     double keepBest = 0;
     int parity = -1;  // --parity: 0 even, 1 odd, -1 every frame
     std::vector<std::pair<int, int>> samples;
+    std::string targetArg = "auto";
+    bool mineral = false;
+    double strength = 8.0, chromaBlur = 2.5;
+    std::string mineralOut, mineralStages;
+    std::vector<std::pair<double, std::string>> mineralAlso;
     // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
     // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
     // take it. Exit 3 when RunStack throws StackCancelled.
@@ -239,6 +304,18 @@ int main(int argc, char** argv) try {
             if (comma == std::string::npos) throw std::invalid_argument("--sample: X,Y");
             samples.emplace_back(std::stoi(v.substr(0, comma)), std::stoi(v.substr(comma + 1)));
         }
+        else if (a == "--target") targetArg = next();
+        else if (a == "--mineral") mineral = true;
+        else if (a == "--strength") strength = std::stod(next());
+        else if (a == "--chroma-blur") chromaBlur = std::stod(next());
+        else if (a == "--mineral-out") mineralOut = next();
+        else if (a == "--mineral-stages") mineralStages = next();
+        else if (a == "--mineral-also") {
+            const std::string v = next();
+            const size_t colon = v.find(':');
+            if (colon == std::string::npos) throw std::invalid_argument("--mineral-also: K:PATH");
+            mineralAlso.emplace_back(std::stod(v.substr(0, colon)), v.substr(colon + 1));
+        }
         else if (a == "--cancel-at") {
             const std::string v = next();
             const size_t comma = v.find(',');
@@ -254,6 +331,14 @@ int main(int argc, char** argv) try {
     }
     if (bits != 16 && bits != 32) throw std::invalid_argument("--bits: 16 or 32");
     if (parity >= 0 && keepBest > 0) throw std::invalid_argument("--parity and --keep-best do not combine");
+    if (!mineral && (!mineralOut.empty() || !mineralStages.empty() || !mineralAlso.empty()))
+        throw std::invalid_argument("--mineral-out, --mineral-also and --mineral-stages need --mineral");
+    for (const auto& f : mineralAlso)
+        if (!EndsWith(f.second, ".fits") && !EndsWith(f.second, ".fit")) throw std::invalid_argument("--mineral-also: K:PATH.fits");
+    if (!mineralOut.empty() && !EndsWith(mineralOut, ".fits") && !EndsWith(mineralOut, ".fit"))
+        throw std::invalid_argument("--mineral-out: a .fits/.fit path");
+    const ser::CaptureName name = ser::ParseCaptureName(path);
+    const ser::Target target = targetArg == "auto" ? name.target : ParseTarget(targetArg);
 
     stack::Progress progress;
     auto lastPrint = std::chrono::steady_clock::now();
@@ -318,6 +403,20 @@ int main(int argc, char** argv) try {
         std::shared_ptr<const std::vector<int64_t>> k = keep;
         factory = [probeFactory, k]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<SubsetSource>(probeFactory(), k); };
     }
+    // --mineral: the window's gate, before any stacking (the option is disabled there, so nothing is stacked).
+    if (mineral) {
+        const std::optional<std::string> refusal =
+            ser::MineralMoonRefusal(target, name.filter, probeFactory()->Info(), name.filterToken);
+        if (refusal) {
+            if (json)
+                std::printf("{\"capture\":%s,\"target\":%s,\"filter\":%s,\"mineral\":{\"refusal\":%s}}\n", Json(path).c_str(),
+                            Json(ser::TargetName(target)).c_str(), Json(FilterName(name.filter)).c_str(), Json(*refusal).c_str());
+            else
+                std::printf("mineral   refused: %s\n", refusal->c_str());
+            if (std::fflush(stdout) != 0) throw std::runtime_error("cannot write the refusal to standard output");
+            return 4;
+        }
+    }
     progress.cancelled = [&] { return cancelNow.load(); };
     stack::StackOutcome o;
     try {
@@ -341,6 +440,62 @@ int main(int argc, char** argv) try {
         if (EndsWith(out, ".fits") || EndsWith(out, ".fit")) WriteFits(out, *o.image);
         else if (EndsWith(out, ".tif") || EndsWith(out, ".tiff")) WriteTiff(out, *o.image, bits);
         else throw std::invalid_argument("--out: .fits/.fit or .tif/.tiff");
+    }
+    // --mineral: MakeMineralMoon's two halves (PrepareMineral, then ApplyMineralColour), timed as it times them.
+    std::optional<stack::MineralCache> mcache;
+    std::vector<std::string> mHistory;
+    std::vector<std::pair<std::string, double>> mSeconds;
+    stack::DisplayCurve mCurve;
+    if (mineral && o.image) {
+        mcache = stack::PrepareMineral(*o.image, threads, progress);
+        stack::MineralParams p;
+        p.strength = strength;
+        p.chromaBlurSigma = chromaBlur;
+        stack::StepRecord rec;
+        const auto t0 = std::chrono::steady_clock::now();
+        const ser::FloatImage img = stack::ApplyMineralColour(*mcache, p, threads, &rec);
+        mHistory = mcache->history;
+        mHistory.push_back(rec.history);
+        mSeconds = mcache->stepSeconds;
+        mSeconds.push_back({"Mineral colour", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()});
+        if (!mineralOut.empty()) WriteFits(mineralOut, img);
+        for (const auto& [k, file] : mineralAlso) {
+            stack::MineralParams q = p;
+            q.strength = k;
+            WriteFits(file, stack::ApplyMineralColour(*mcache, q, threads));
+        }
+        // Steps 1-4 again on a copy (deterministic; the masks are checked equal), for the exact display curve and the
+        // linear calibrated RGB, which the cache does not keep.
+        ser::FloatImage lin = *o.image;
+        std::vector<uint8_t> clipped(lin.data.size());
+        for (size_t k = 0; k < lin.data.size(); ++k) clipped[k] = lin.data[k] >= stack::kClippedLuma;
+        const stack::LunarMasks m = stack::SegmentLunar(lin, threads);
+        if (m.disk != mcache->masks.disk || m.sky != mcache->masks.sky)
+            throw std::runtime_error("--mineral: the replica's masks differ from PrepareMineral's");
+        if (m.diskCount > 0) {
+            stack::CalibrateColour(lin, m);
+            stack::NeutraliseBackground(lin, m);
+            ser::FloatImage disp = lin;
+            stack::DisplayTransfer(disp, m, clipped, &mCurve);
+        }
+        if (!mineralStages.empty()) {
+            const std::string d = mineralStages + "/";
+            WriteFits(d + "display.fits", mcache->display);
+            WriteFits(d + "lum_sharp.fits", mcache->lum);
+            WriteFits(d + "lin_unsharp.fits", UnDisplay(Mean3(mcache->display), mCurve));
+            WriteFits(d + "lin_sharp.fits", UnDisplay(mcache->lum, mCurve));
+            WriteFits(d + "calibrated.fits", lin);
+            ser::FloatImage masks;
+            masks.width = lin.width;
+            masks.height = lin.height;
+            masks.channels = 2;
+            masks.data.resize(m.disk.size() * 2);
+            for (size_t i = 0; i < m.disk.size(); ++i) {
+                masks.data[i * 2] = m.disk[i];
+                masks.data[i * 2 + 1] = m.sky[i];
+            }
+            WriteFits(d + "masks.fits", masks);
+        }
     }
 
 
@@ -407,6 +562,25 @@ int main(int argc, char** argv) try {
             }
             j += "]";
         }
+        j += ",\"target\":" + Json(ser::TargetName(target)) + ",\"filter\":" + Json(FilterName(name.filter));
+        if (mcache) {
+            double total = 0;
+            j += ",\"mineral\":{\"refusal\":null,\"notice\":" + Json(mcache->notice) + ",\"strength\":" + Fmt(strength, 2) +
+                 ",\"chromaBlur\":" + Fmt(chromaBlur, 2) + ",\"satThreshold\":" + Fmt(mcache->satThreshold, 6) +
+                 ",\"curve\":{\"white\":" + Fmt(mCurve.white, 8) + ",\"balance\":" + Fmt(mCurve.balance, 8) + "},\"history\":[";
+            for (size_t i = 0; i < mHistory.size(); ++i) j += (i ? "," : "") + Json(mHistory[i]);
+            j += "],\"stepSeconds\":{";
+            for (size_t i = 0; i < mSeconds.size(); ++i) {
+                j += (i ? "," : "") + Json(mSeconds[i].first) + ":" + Fmt(mSeconds[i].second, 4);
+                total += mSeconds[i].second;
+            }
+            j += "},\"seconds\":" + Fmt(total, 4) + ",\"output\":" + (mineralOut.empty() ? std::string("null") : Json(mineralOut)) +
+                 ",\"also\":[";
+            for (size_t i = 0; i < mineralAlso.size(); ++i)
+                j += std::string(i ? "," : "") + "{\"strength\":" + Fmt(mineralAlso[i].first, 2) + ",\"output\":" +
+                     Json(mineralAlso[i].second) + "}";
+            j += "],\"stages\":" + (mineralStages.empty() ? std::string("null") : Json(mineralStages)) + "}";
+        }
         j += ",\"output\":" + (o.image && !out.empty() ? Json(out) : std::string("null")) + "}";
         std::printf("%s\n", j.c_str());
     } else {
@@ -434,6 +608,19 @@ int main(int argc, char** argv) try {
                     s.memory.stackWorkers, s.memory.observers);
         for (const auto& w : s.warnings) std::printf("warning   %s\n", w.c_str());
         if (o.image && !out.empty()) std::printf("wrote     %s\n", out.c_str());
+        std::printf("target    %s, filter %s\n", ser::TargetName(target), FilterName(name.filter));
+        if (mcache) {
+            for (const auto& h : mHistory) std::printf("mineral   %s\n", h.c_str());
+            double total = 0;
+            std::printf("mineral   time:");
+            for (const auto& p : mSeconds) {
+                std::printf(" %s %.3f;", p.first.c_str(), p.second);
+                total += p.second;
+            }
+            std::printf(" total %.3f s\n", total);
+            if (!mcache->notice.empty()) std::printf("mineral   NOTICE: %s\n", mcache->notice.c_str());
+            if (!mineralOut.empty()) std::printf("wrote     %s\n", mineralOut.c_str());
+        }
         // Focus profiles pooled over the windows judged: the share of the signal power at periods under
         // P sensor px, for a few P.
         {
