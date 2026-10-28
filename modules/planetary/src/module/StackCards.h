@@ -306,10 +306,12 @@ inline std::string MineralResultText( const stack::MineralOutcome& mineral )
 // "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar RG), target
 // not in file name": an AVI's pattern with its source (BayerText); a SER's
 // colour from its header; then the target an ASIAIR capture name gives
-// ("target from file name: Moon", an unknown one "Other (Betelgeuse)").
-inline std::string StackInfoLine( const std::string& fileNameUtf8, const ser::FileInfo& info )
+// ("target from file name: Moon", an unknown one "Other (Betelgeuse)"), read
+// from `pathUtf8`, the full path ResolveTarget reads, so the two always agree
+// (B8 review M5).
+inline std::string StackInfoLine( const std::string& fileNameUtf8, const ser::FileInfo& info, const std::string& pathUtf8 )
 {
-   const ser::CaptureName name = ser::ParseCaptureName( fileNameUtf8 );
+   const ser::CaptureName name = ser::ParseCaptureName( pathUtf8 );
    std::string target = "target not in file name";
    if ( name.parsed )
       target = std::string( "target from file name: " ) + ser::TargetName( name.target ) +

@@ -399,7 +399,7 @@ bool PlanetaryStackInterface::ReadInfo( bool interactive )
    if ( m_outcome )
       m_outcomePattern = instance.p_bayerPattern;
    m_info = info;
-   m_infoLine = stackcards::StackInfoLine( ToUtf8( fileName ), info );
+   m_infoLine = stackcards::StackInfoLine( ToUtf8( fileName ), info, ToUtf8( path ) );
    m_warnings.clear();
    for ( const std::string& w : info.warnings )
       m_warnings += "\nWarning: " + planetary::preview::StackWindowWarning( w );
@@ -464,9 +464,19 @@ stack::MineralOutcome PlanetaryStackInterface::CurrentMineral() const
 
 void PlanetaryStackInterface::OpenWindows()
 {
-   OpenStackWindow( m_outcomePath, *m_outcome, m_times, Target() );
+   // Both or none (B8 review M2): the mineral moon at the current parameters (possibly coloured now) and its
+   // window's contents are made before the stack window is shown.
+   const TargetChoice target = Target();
+   std::optional<stack::MineralOutcome> mineral;
+   std::optional<MineralWindow> mineralWindow;
    if ( instance.p_mineralMoon && m_mineral )
-      OpenMineralWindow( m_outcomePath, *m_outcome, m_times, Target(), CurrentMineral() );
+   {
+      mineral = CurrentMineral();
+      mineralWindow = MakeMineralWindow( m_outcomePath, *m_outcome, m_times, target, *mineral );
+   }
+   OpenStackWindow( m_outcomePath, *m_outcome, m_times, target );
+   if ( mineralWindow )
+      ShowMineralWindow( m_outcomePath, *mineralWindow, *mineral );
 }
 
 void PlanetaryStackInterface::RequestColour()
@@ -519,9 +529,13 @@ void PlanetaryStackInterface::PollColour()
       return;
    m_colourWorker.join();
    std::unique_ptr<ColourRun> run = std::move( m_colour );
-   // A result for a stack since dropped or replaced is nobody's.
+   // A result for a stack since dropped or replaced is nobody's, and so is a request queued behind it: the
+   // new stack's mineral moon is coloured at the parameters current then (B8 review M4).
    if ( run->cache != m_mineral )
+   {
+      m_colourPending = false;
       return;
+   }
    if ( !run->error.empty() )
    {
       m_error = "PlanetaryStack: mineral moon: " + run->error;

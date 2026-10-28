@@ -186,16 +186,23 @@ IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcom
    return viewId;
 }
 
-IsoString OpenMineralWindow( const String& path, const stack::StackOutcome& outcome, const StackTimes& times,
-                             const TargetChoice& target, const stack::MineralOutcome& mineral )
+MineralWindow MakeMineralWindow( const String& path, const stack::StackOutcome& outcome, const StackTimes& times,
+                                 const TargetChoice& target, const stack::MineralOutcome& mineral )
+{
+   if ( mineral.image.channels != 3 )
+      throw Error( "PlanetaryStack: internal error - the mineral moon of " + File::ExtractNameAndExtension( path ) +
+                   " is not RGB" );
+   MineralWindow w;
+   w.keywords = StackKeywords( path, outcome, times, target );
+   for ( const std::string& text : stackcards::MineralHistory( mineral ) )
+      AddHistory( w.keywords, text );
+   w.image = ImageOf( mineral.image );
+   return w;
+}
+
+IsoString ShowMineralWindow( const String& path, const MineralWindow& window, const stack::MineralOutcome& mineral )
 {
    const String fileName = File::ExtractNameAndExtension( path );
-   if ( mineral.image.channels != 3 )
-      throw Error( "PlanetaryStack: internal error - the mineral moon of " + fileName + " is not RGB" );
-   FITSKeywordArray keywords = StackKeywords( path, outcome, times, target );
-   for ( const std::string& text : stackcards::MineralHistory( mineral ) )
-      AddHistory( keywords, text );
-   const Image image = ImageOf( mineral.image );
    Console console;
    double seconds = 0;
    String steps;
@@ -211,7 +218,8 @@ IsoString OpenMineralWindow( const String& path, const stack::StackOutcome& outc
       console.WriteLn( "PlanetaryStack: " + Html( mineral.history.back() ) );
    if ( !mineral.notice.empty() )
       console.WarningLn( "PlanetaryStack warning: " + Html( stackcards::MineralNoticeText( mineral.notice ) ) );
-   const IsoString viewId = ShowNewImageWindow( image, ViewIdStem( path ) + "_mineral", keywords, "PlanetaryStack: " + fileName );
+   const IsoString viewId = ShowNewImageWindow( window.image, ViewIdStem( path ) + "_mineral", window.keywords,
+                                                "PlanetaryStack: " + fileName );
    console.WriteLn( "PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + " -> " + String( viewId ) + " (" +
                     Num( mineral.image.width ) + "x" + Num( mineral.image.height ) + ", RGB, 32-bit float, " +
                     (mineral.notice.empty() ? String( "mineral moon, display-ready)" )
@@ -429,9 +437,14 @@ bool PlanetaryStackInstance::ExecuteGlobal()
       honourAbort();
    }
 
-   OpenStackWindow( path, outcome, times, target );
+   // Both or none: everything that can fail for the mineral window (its checks, keywords and pixel copy) is done
+   // before the stack window is shown; what is left are the two windows themselves (B8 review M1).
+   std::optional<MineralWindow> mineralWindow;
    if ( mineral )
-      OpenMineralWindow( path, outcome, times, target, *mineral );
+      mineralWindow = MakeMineralWindow( path, outcome, times, target, *mineral );
+   OpenStackWindow( path, outcome, times, target );
+   if ( mineralWindow )
+      ShowMineralWindow( path, *mineralWindow, *mineral );
    return true;
 }
 

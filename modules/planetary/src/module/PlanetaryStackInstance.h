@@ -5,6 +5,7 @@
 #define __PlanetaryStackInstance_h
 
 #include <pcl/FITSHeaderKeyword.h>
+#include <pcl/Image.h>
 #include <pcl/MetaParameter.h> // pcl_enum
 #include <pcl/ProcessImplementation.h>
 
@@ -71,13 +72,24 @@ void WriteStackResult( const String& path, const planetary::stack::StackOutcome&
 IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
                            const TargetChoice& target );
 
-// The mineral moon made from outcome's stack, opened as a new, shown 32-bit
-// float RGB window "<file stem>_mineral": the stack's keywords (StackKeywords)
-// and then stackcards::MineralHistory's seven lines as HISTORY. A notice (no
-// disc: the image is the stack clipped) is written to the console as a warning
-// first, so the result line is never read alone. Returns the new view's id.
-IsoString OpenMineralWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
-                             const TargetChoice& target, const planetary::stack::MineralOutcome& mineral );
+// The mineral moon's window, made in two steps so that a caller opening it
+// beside the stack window can build everything that can fail before either
+// window is shown (both or none; B8 review M1, M2):
+// MakeMineralWindow: the 32-bit float RGB image and its keywords -- the stack's
+// (StackKeywords), then stackcards::MineralHistory's seven lines as HISTORY.
+// Throws pcl::Error for an image that is not RGB.
+// ShowMineralWindow: shows it as "<file stem>_mineral" (ShowNewImageWindow) and
+// says so on the console; a notice (no disc: the image is the stack clipped) is
+// written as a warning first, so the result line is never read alone. Returns
+// the new view's id.
+struct MineralWindow
+{
+   Image            image;
+   FITSKeywordArray keywords;
+};
+MineralWindow MakeMineralWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
+                                 const TargetChoice& target, const planetary::stack::MineralOutcome& mineral );
+IsoString ShowMineralWindow( const String& path, const MineralWindow& window, const planetary::stack::MineralOutcome& mineral );
 
 // A MineralOutcome from the interface's parts: PrepareMineral's cache (steps
 // 1-6: history, times, notice), the image ApplyMineralColour made from it and

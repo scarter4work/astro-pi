@@ -112,7 +112,7 @@ function historyText( kws )
 
 // The mineral moon's window (Task B8): the stack's size, RGB 32-bit float, every
 // sample within [0, 1], the engine's mineral samples, its keywords, and the
-// engine's seven step lines in HISTORY, in order, each once, after the stack's.
+// engine's seven step lines in HISTORY, in order, each once, after every line of the stack's.
 function checkMineralWindow( c, stackImage, r )
 {
    var mw = ImageWindow.windowById( c.expectMineralId );
@@ -152,7 +152,14 @@ function checkMineralWindow( c, stackImage, r )
    var text = historyText( kws );
    if ( c.mineralHistory.length != 7 )
       r.errors.push( "the engine gave " + c.mineralHistory.length + " mineral HISTORY lines, expected 7" );
-   var stackLine = text.indexOf( "PlanetaryStack: " );
+   // The stack's own lines end with its counts line ("... frames measured, ...") and any warnings: its last
+   // "PlanetaryStack: " or "PlanetaryStack warning: " line. Every mineral line comes after that one (B8 review M3).
+   var lastStack = Math.max( text.lastIndexOf( "PlanetaryStack: " ), text.lastIndexOf( "PlanetaryStack warning: " ) );
+   if ( lastStack < 0 || text.indexOf( " frames measured, " ) < 0 )
+      r.errors.push( "the mineral moon window lacks the stack's HISTORY lines: " + text );
+   var firstMineral = text.indexOf( "PlanetaryStack mineral: " );
+   if ( firstMineral >= 0 && firstMineral < lastStack )
+      r.errors.push( "a mineral HISTORY line comes before the stack's last line: " + text );
    var pos = 0;
    for ( var k = 0; k < c.mineralHistory.length; ++k )
    {
@@ -163,8 +170,6 @@ function checkMineralWindow( c, stackImage, r )
          r.errors.push( "mineral HISTORY lacks, in order, '" + line + "': " + text );
          break;
       }
-      if ( at < stackLine )
-         r.errors.push( "mineral HISTORY line before the stack's: '" + line + "'" );
       pos = at + line.length;
    }
    var count = text.split( "PlanetaryStack mineral: " ).length - 1;

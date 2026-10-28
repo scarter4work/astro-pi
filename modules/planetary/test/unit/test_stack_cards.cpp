@@ -128,11 +128,11 @@ TEST_CASE("the window's info line: file, frames, size, depth and colour; an AVI'
     ser.header.depth = 16;
     ser.frameCount = 60;
     ser.colorId = ser::ColorId::Mono;
-    CHECK(stackcards::StackInfoLine("Saturn.ser", ser) == "Saturn.ser: 60 frames, 128 x 112, 16-bit, mono, target not in file name");
+    CHECK(stackcards::StackInfoLine("Saturn.ser", ser, "Saturn.ser") == "Saturn.ser: 60 frames, 128 x 112, 16-bit, mono, target not in file name");
     ser.colorId = ser::ColorId::BayerGRBG;
-    CHECK(stackcards::StackInfoLine("Saturn.ser", ser) == "Saturn.ser: 60 frames, 128 x 112, 16-bit, Bayer GRBG, target not in file name");
+    CHECK(stackcards::StackInfoLine("Saturn.ser", ser, "Saturn.ser") == "Saturn.ser: 60 frames, 128 x 112, 16-bit, Bayer GRBG, target not in file name");
     ser.colorId = ser::ColorId::BGR;
-    CHECK(stackcards::StackInfoLine("Saturn.ser", ser) == "Saturn.ser: 60 frames, 128 x 112, 16-bit, RGB, target not in file name");
+    CHECK(stackcards::StackInfoLine("Saturn.ser", ser, "Saturn.ser") == "Saturn.ser: 60 frames, 128 x 112, 16-bit, RGB, target not in file name");
 
     const stack::StackOutcome avi = Stacked(ser::Container::Avi);
     ser::FileInfo a = avi.info;
@@ -140,7 +140,7 @@ TEST_CASE("the window's info line: file, frames, size, depth and colour; an AVI'
     a.header.height = 768;
     a.header.depth = 8;
     a.frameCount = 1500;
-    CHECK(stackcards::StackInfoLine("Jupiter.avi", a) == "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar), target not in file name");
+    CHECK(stackcards::StackInfoLine("Jupiter.avi", a, "Jupiter.avi") == "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar), target not in file name");
 }
 
 TEST_CASE("the window's result: counts and time, each warning, the selection and alignment lines", "[stackcards][window]") {
@@ -251,7 +251,7 @@ TEST_CASE("an undeclared mosaic's result, console and HISTORY text carry its war
     info.header.width = 192;
     info.header.height = 160;
     info.header.depth = 8;
-    CHECK(stackcards::StackInfoLine("m.avi", info) == "m.avi: 40 frames, 192 x 160, 8-bit, no Bayer pattern known (raw CFA), target not in file name");
+    CHECK(stackcards::StackInfoLine("m.avi", info, "m.avi") == "m.avi: 40 frames, 192 x 160, 8-bit, no Bayer pattern known (raw CFA), target not in file name");
 }
 
 TEST_CASE("other warnings pass through, reworded for the context; a diagnosed mosaic keeps the reader's", "[stackcards]") {
@@ -378,10 +378,10 @@ TEST_CASE("the window's info line notes the target from the file name, or that i
     i.header.height = 1096;
     i.header.depth = 16;
     i.frameCount = 500;
-    CHECK(stackcards::StackInfoLine(kMoonName, i) ==
+    CHECK(stackcards::StackInfoLine(kMoonName, i, kMoonName) ==
           kMoonName + ": 500 frames, 1936 x 1096, 16-bit, Bayer RGGB, target from file name: Moon");
     const std::string betelgeuse = "2026-02-10-215957-Betelgeuse-Bin1 Lqef -4.0F.ser";
-    CHECK(stackcards::StackInfoLine(betelgeuse, i) ==
+    CHECK(stackcards::StackInfoLine(betelgeuse, i, betelgeuse) ==
           betelgeuse + ": 500 frames, 1936 x 1096, 16-bit, Bayer RGGB, target from file name: Other (Betelgeuse)");
 }
 
@@ -438,4 +438,17 @@ TEST_CASE("the progress text counts four steps when the mineral moon follows the
     CHECK(stackcards::ProgressText(stack::kPhaseMineral, 3, 7, 1500, 4) == "Step 4 of 4: Mineral moon 3/7");
     // The mineral moon of a stack already shown: its one step, unnumbered.
     CHECK(stackcards::ProgressText(stack::kPhaseMineral, 7, 7, 1500, 1) == "Mineral moon 7/7");
+}
+
+TEST_CASE("the info line reads the target from the same full path as the target itself (B8 review M5)", "[stackcards][window][target]") {
+    ser::FileInfo i = BayerSer();
+    i.header.width = 640;
+    i.header.height = 480;
+    i.header.depth = 16;
+    i.frameCount = 24;
+    // A directory named like a capture: ParseCaptureName on the full path reads its target, as ResolveTarget does.
+    const std::string path = "/captures/2026-10-23-030000-Moon-Bin1 Lqef 64.6F.d/stack.ser";
+    REQUIRE(stackcards::ResolveTarget(std::nullopt, path).target == ser::Target::Moon);
+    CHECK(stackcards::StackInfoLine("stack.ser", i, path) ==
+          "stack.ser: 24 frames, 640 x 480, 16-bit, Bayer RGGB, target from file name: Moon");
 }
