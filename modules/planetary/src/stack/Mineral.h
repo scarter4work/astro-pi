@@ -118,15 +118,25 @@ StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threa
 ser::FloatImage ChromaLayer(const ser::FloatImage& rgb, double sigma, int threads);
 // strength: k, the colour gain (the module's mineralStrength, 0-15, default 8). chromaBlurSigma: px at frames up
 // to 2000 px wide, scaled by width / 2000 above (the module's chromaBlur, 0.5-6, default 2.5). eps, devClamp and
-// satRamp are internal (amendment). satThreshold < 0 means AutoSatThreshold, the only value the module uses; the
-// tests set it to switch the fade off.
+// satRamp are internal (amendment). satThreshold < 0 means automatic: AutoSatThreshold in MineralColour itself, the
+// cache's HighlightThreshold in ApplyMineralColour (the module's only path); the tests set it to switch the fade off.
 struct MineralParams {
     double strength = 8.0, chromaBlurSigma = 2.5, eps = 0.002, devClamp = 0.06, satRamp = 0.12;
-    double satThreshold = -1;  // < 0: AutoSatThreshold
+    double satThreshold = -1;  // < 0: automatic (see above)
 };
 // 0.92 x the lowest, over R, G and B, of the channel's 99.99th percentile (linear interpolation between order
 // statistics, numpy's default) over every pixel.
 double AutoSatThreshold(const ser::FloatImage& rgb);
+// The fade threshold the pipeline uses (Task B9; spec step 7, no cyan cast in the brightest 1% of the disc):
+// AutoSatThreshold, capped at the disc's 99th percentile of the fade's own variable, max(C_R, C_G) of the chroma
+// layer at chromaBlurSigma (scaled as MineralColour scales it), so the disc's brightest 1% always fade to neutral.
+// AutoSatThreshold alone follows the frame's channel extremes: where R's sits low (64.6F, 700F) it is under the
+// disc's 99th percentile already (0.59 against 0.66); where the three sit close (0528a/b: 0.73-0.78) it landed above
+// it (0.67 against 0.60), the brightest highlands kept 0.41-0.46 of their colour boost and their bluish tint came
+// out cyan 0.048 (0.024 before the colour step; capped: 0.008). The disc's own value only ever lowers it.
+// PrepareMineral measures it once, at the default chroma blur (MineralParams{}); a slider's other blur moves the
+// fade variable's 99th percentile only slightly.
+double HighlightThreshold(const ser::FloatImage& rgb, const LunarMasks& m, double chromaBlurSigma, int threads);
 // In place: C = ChromaLayer(rgb, sigma); d_c = clamp((C_c - mean(C)) / (mean(C) + eps), +-devClamp); w =
 // clamp((threshold - max(C_R, C_G)) / satRamp, 0, 1); out_c = clip(L (1 + k w d_c), 0, 1), L = lumSharp. Hue
 // follows the sign of d, all detail comes from L. eps only keeps a black sky from dividing by 0 (Ruling R26): a
@@ -163,7 +173,7 @@ struct MineralCache {
     std::vector<std::string> history;  // steps 1-6 (Lunar disk .. Sharpen)
     std::vector<std::pair<std::string, double>> stepSeconds;
     std::string notice;                // as MineralOutcome::notice
-    double satThreshold = -1;          // AutoSatThreshold(display): the fade threshold, measured once
+    double satThreshold = -1;          // HighlightThreshold(display, masks): the fade threshold, measured once
 };
 // Steps 1 - 4c. Throws std::invalid_argument for a stack that is not 3 channels (mono is refused: the spec's
 // anti-goal) or that holds NaN samples (the message gives their count; +-Inf is taken as a saturated or empty

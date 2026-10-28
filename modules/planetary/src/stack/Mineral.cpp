@@ -1293,6 +1293,21 @@ double AutoSatThreshold(const ser::FloatImage& rgb) {
     return 0.92 * lowest;
 }
 
+double HighlightThreshold(const ser::FloatImage& rgb, const LunarMasks& m, double chromaBlurSigma, int threads) {
+    RequireRgb(rgb, "HighlightThreshold");
+    if (m.disk.size() != Pixels(rgb)) throw std::invalid_argument("HighlightThreshold: the masks must be the image's size");
+    const double scott = AutoSatThreshold(rgb);
+    // The fade's own variable: max(C_R, C_G) of the chroma layer, as MineralColour forms it.
+    const ser::FloatImage C = ChromaLayer(rgb, chromaBlurSigma * ResolutionScale(rgb.width), threads);
+    std::vector<float> v;
+    for (size_t i = 0; i < m.disk.size(); ++i)
+        if (m.disk[i]) v.push_back(std::max(C.data[i * 3], C.data[i * 3 + 1]));
+    if (v.empty()) return scott;
+    const size_t k = static_cast<size_t>(0.99 * static_cast<double>(v.size() - 1));
+    std::nth_element(v.begin(), v.begin() + static_cast<long>(k), v.end());
+    return std::min(scott, static_cast<double>(v[k]));
+}
+
 StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads) {
     RequireRgb(rgb, "MineralColour");
     if (lumSharp.channels != 1 || lumSharp.width != rgb.width || lumSharp.height != rgb.height ||
@@ -1548,7 +1563,7 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
     });
     if (noDisk) cache.lum = MeanOfChannels(rgb, threads);
     // The fade threshold depends on the display RGB only: measured once here, not on every slider move.
-    else cache.satThreshold = AutoSatThreshold(rgb);
+    else cache.satThreshold = HighlightThreshold(rgb, cache.masks, MineralParams{}.chromaBlurSigma, threads);
     steps.Tick();
     cache.display = std::move(rgb);
     return cache;

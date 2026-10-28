@@ -1070,6 +1070,36 @@ TEST_CASE("pipeline: display ready") {
     CHECK(med <= 0.45);
 }
 
+TEST_CASE("pipeline: no cyan cast in the brightest highlands") {
+    // Task B9 (real 0528a/b: the brightest 1% of the disc came out cyan 0.048, from 0.024 before the colour step). The
+    // highlands are the brightest terrain and carry a bluish tint; the frame's channel extremes sit close together, so
+    // 0.92 x their lowest 99.99th percentile lands above most of the disc's brightest 1%, which then keep their colour
+    // boost (spec step 7: no saturated cyan cast in the brightest 1% of disk pixels). A cast is a region's colour, so
+    // the brightest 1% is taken on the output's luminance at the chroma layer's scale (2.5 px): MoonSynth's highlands
+    // are one tint with texture to 1/4 cycle/px, and by pixel their brightest 1% are texture peaks that carry their
+    // region's colour (real 0528a, capped: by pixel 0.008, by region 0.0003).
+    MoonSceneSpec s = StackScene();
+    s.highlandTint = {0.95, 1.00, 1.05};
+    s.mariaTint = {1.04, 1.00, 0.96};
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {});
+    const std::vector<double> L = testing::Lum(stack::ChromaLayer(out.image, 2.5, 4));
+    std::vector<double> lit;
+    for (size_t i = 0; i < L.size(); ++i)
+        if (sc.diskTruth[i]) lit.push_back(L[i]);
+    std::sort(lit.begin(), lit.end());
+    const double p99 = lit[lit.size() * 99 / 100];
+    double cyan = 0, lum = 0;
+    for (size_t i = 0; i < L.size(); ++i)
+        if (sc.diskTruth[i] && L[i] >= p99) {
+            const float* p = &out.image.data[i * 3];
+            cyan += std::min(p[1], p[2]) - p[0];
+            lum += L[i];
+        }
+    INFO(out.history.back() << "; brightest 1% (L >= " << p99 << ") cyan " << cyan / lum);
+    CHECK(cyan / lum <= 0.02);
+}
+
 TEST_CASE("pipeline: no new clipping") {
     MoonSceneSpec s = StackScene();
     s.level = 0.7;          // bright: the highlands near full scale
@@ -1362,11 +1392,15 @@ TEST_CASE("pipeline: re-running the colour on the cache") {
     CHECK(a.data == full.image.data);
     CHECK(rec.history == full.history.back());
     CHECK(cache.history.size() == 6);
-    // The fade threshold is measured once, in the cache (task ENG review M8), and is the one MineralColour would
-    // measure on the display RGB itself: the colour on the cache equals MineralColour run directly.
-    CHECK(cache.satThreshold == stack::AutoSatThreshold(cache.display));
+    // The fade threshold is measured once, in the cache (task ENG review M8): HighlightThreshold on the display RGB at
+    // the default chroma blur (Task B9), whatever the slider's blur; the colour on the cache equals MineralColour run
+    // directly with that threshold.
+    CHECK(cache.satThreshold == stack::HighlightThreshold(cache.display, cache.masks, stack::MineralParams{}.chromaBlurSigma, 4));
+    CHECK(cache.satThreshold <= stack::AutoSatThreshold(cache.display));
     ser::FloatImage direct = cache.display;
-    stack::MineralColour(direct, cache.lum, p5, 4);
+    stack::MineralParams pd = p5;
+    pd.satThreshold = cache.satThreshold;
+    stack::MineralColour(direct, cache.lum, pd, 4);
     CHECK(a.data == direct.data);
     const ser::FloatImage b = stack::ApplyMineralColour(cache, stack::MineralParams{}, 4);
     CHECK(a.data != b.data);
