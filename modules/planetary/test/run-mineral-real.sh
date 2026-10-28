@@ -8,7 +8,9 @@
 # For each capture below: stack-probe stacks it (at the capture's Bayer pattern) and runs the mineral moon at
 # k = 8 (64.6F also at k = 5 and 12, re-run on the cached stack as the window's slider does), writing the stack,
 # the mineral image and its stages (stack-probe --mineral-stages) to <out-dir>/<id>/full/; then the even and the
-# odd frames alone, the same way, to <id>/even/ and <id>/odd/ (the split-half checks). mineral_check.py then
+# odd frames alone, the same way, to <id>/even/ and <id>/odd/ (the split-half checks), and the halves once more cut to
+# their common field before the mineral moon (stack-probe --mineral-crop, from mineral_check.py --equal-field) to
+# <id>/even_eq/ and <id>/odd_eq/, where R12 is judged. mineral_check.py then
 # prints every requirement's number with PASS / FAIL / NOT JUDGED, writes <id>/check.json and the side-by-side
 # PNGs, and one <out-dir>/summary.json. The gating run (HaO3) must be refused, exit 4, with the narrowband text.
 # capture-id ... restricts the run to those captures (the gating run always runs); an id whose three probe
@@ -89,6 +91,22 @@ for entry in "${CAPTURES[@]}"; do
       echo "FAIL $id $part: stack-probe exit $rc (see $d/probe.log)"; tail -3 "$d/probe.log"; fail=1
     fi
   done
+  # The halves again, each cut to their common field before the mineral moon (R12's equal-field check).
+  if [ ! -s "$OUT/$id/even_eq/probe.json" ] || [ "${PLANETARY_MINERAL_RESTACK:-0}" = 1 ]; then
+    if crops=$("$PY" -I "$HERE/mineral_check.py" --equal-field "$OUT/$id"); then
+      read -r ce co <<< "$crops"
+      for part in even odd; do
+        d="$OUT/$id/${part}_eq"; mkdir -p "$d/stages"
+        crop=$([ $part = even ] && echo "$ce" || echo "$co")
+        echo "== $id ${part}_eq (--mineral-crop $crop)"
+        "$PROBE" "$video" --bayer "$bayer" --threads "$THREADS" --json --target auto --mineral --parity "$part" \
+          --mineral-crop "$crop" --mineral-out "$d/mineral.fits" --mineral-stages "$d/stages" > "$d/probe.json" 2> "$d/probe.log" \
+          || { echo "FAIL $id ${part}_eq: stack-probe exit $? (see $d/probe.log)"; fail=1; }
+      done
+    else
+      echo "FAIL $id: no common field for the halves"; fail=1
+    fi
+  fi
 done
 
 # The gating run: HaO3 with the RGGB pattern set (Auto resolves it mono, refused first for that) -> exit 4,

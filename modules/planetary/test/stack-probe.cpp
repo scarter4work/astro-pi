@@ -5,7 +5,7 @@
 //               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
 //               [--cancel-at measuring|aligning|stacking,F] [--parity even|odd]
 //               [--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--mineral-out x.fits]
-//               [--mineral-also K:y.fits]... [--mineral-stages DIR]
+//               [--mineral-also K:y.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B]
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -45,7 +45,10 @@
 // channels' mean of display.fits and the sharpened L, each taken back through the inverse display transfer
 // pointwise -- one map for both, so their DAN_interior compare like for like), calibrated.fits (the linear RGB
 // after Colour calibration and Background, from a replica of steps 1-4 that also gives the exact display curve;
-// its masks are checked equal to the cache's) and masks.fits (plane 0 disk, plane 1 sky, 0/1).
+// its masks are checked equal to the cache's) and masks.fits (plane 0 disk, plane 1 sky, 0/1). The stack's noise
+// (StackOutcome::noise, Ruling R35) goes to PrepareMineral, and the JSON's "stackNoise" gives its model line and the
+// frame count k_eff over its grid. --mineral-crop L,T,R,B cuts the stack (and its noise) by those px before the
+// mineral moon, which then runs on that field (--out still writes the whole stack): B9's equal-field split-half check.
 // Exit 0 with an image, 2 when diagnosed, 1 on error, 4 when --mineral is refused.
 #include <sys/resource.h>
 
@@ -251,7 +254,7 @@ int main(int argc, char** argv) try {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
                              "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd] "
                              "[--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--mineral-out x.fits] "
-                             "[--mineral-also K:y.fits]... [--mineral-stages DIR]\n");
+                             "[--mineral-also K:y.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B]\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -270,6 +273,7 @@ int main(int argc, char** argv) try {
     double strength = 8.0, chromaBlur = 2.5;
     std::string mineralOut, mineralStages;
     std::vector<std::pair<double, std::string>> mineralAlso;
+    int mineralCrop[4] = {0, 0, 0, 0};  // --mineral-crop L,T,R,B
     // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
     // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
     // take it. Exit 3 when RunStack throws StackCancelled.
@@ -310,6 +314,12 @@ int main(int argc, char** argv) try {
         else if (a == "--chroma-blur") chromaBlur = std::stod(next());
         else if (a == "--mineral-out") mineralOut = next();
         else if (a == "--mineral-stages") mineralStages = next();
+        else if (a == "--mineral-crop") {
+            const std::string v = next();
+            if (std::sscanf(v.c_str(), "%d,%d,%d,%d", &mineralCrop[0], &mineralCrop[1], &mineralCrop[2], &mineralCrop[3]) != 4 ||
+                *std::min_element(mineralCrop, mineralCrop + 4) < 0)
+                throw std::invalid_argument("--mineral-crop: L,T,R,B (px, >= 0)");
+        }
         else if (a == "--mineral-also") {
             const std::string v = next();
             const size_t colon = v.find(':');
@@ -446,8 +456,29 @@ int main(int argc, char** argv) try {
     std::vector<std::string> mHistory;
     std::vector<std::pair<std::string, double>> mSeconds;
     stack::DisplayCurve mCurve;
+    if (mineral && o.image && (mineralCrop[0] | mineralCrop[1] | mineralCrop[2] | mineralCrop[3])) {
+        // --mineral-crop: the mineral moon on the stack cut to a field (B9's equal-field split-half check: the halves'
+        // stacks reach 1-4 px apart on each side, and a chroma blur at a frame's edge sees only its own field). The
+        // stack's noise is cut with it.
+        const auto [L, T, R, B] = std::array<int, 4>{mineralCrop[0], mineralCrop[1], mineralCrop[2], mineralCrop[3]};
+        ser::FloatImage& im = *o.image;
+        const int cw = im.width - L - R, ch = im.height - T - B;
+        if (cw < 16 || ch < 16) throw std::invalid_argument("--mineral-crop leaves under 16 x 16 px");
+        ser::FloatImage cut{cw, ch, im.channels, std::vector<float>(static_cast<size_t>(cw) * ch * im.channels)};
+        for (int y = 0; y < ch; ++y)
+            std::copy_n(im.data.begin() + static_cast<std::ptrdiff_t>((static_cast<size_t>(y + T) * im.width + L) * im.channels),
+                        static_cast<size_t>(cw) * im.channels,
+                        cut.data.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * cw * im.channels));
+        im = std::move(cut);
+        if (o.noise) {
+            o.noise->width = cw;
+            o.noise->height = ch;
+            o.noise->originX += L;
+            o.noise->originY += T;
+        }
+    }
     if (mineral && o.image) {
-        mcache = stack::PrepareMineral(*o.image, threads, progress);
+        mcache = stack::PrepareMineral(*o.image, threads, progress, o.noise ? &*o.noise : nullptr);
         stack::MineralParams p;
         p.strength = strength;
         p.chromaBlurSigma = chromaBlur;
@@ -580,6 +611,16 @@ int main(int argc, char** argv) try {
                 j += std::string(i ? "," : "") + "{\"strength\":" + Fmt(mineralAlso[i].first, 2) + ",\"output\":" +
                      Json(mineralAlso[i].second) + "}";
             j += "],\"stages\":" + (mineralStages.empty() ? std::string("null") : Json(mineralStages)) + "}";
+        }
+        // The stack's noise (Ruling R35): the model's line and the noise-power frame count k_eff = 1 / alpha2 over the grid.
+        if (o.noise) {
+            std::vector<float> a2 = o.noise->alpha2;
+            std::sort(a2.begin(), a2.end());
+            const double med = a2.empty() ? 0 : a2[a2.size() / 2], lo = a2.empty() ? 0 : a2.front(), hi = a2.empty() ? 0 : a2.back();
+            j += ",\"stackNoise\":{\"a\":" + Fmt(o.noise->model.a, 10) + ",\"b\":" + Fmt(o.noise->model.b, 10) + ",\"knots\":" +
+                 std::to_string(o.noise->model.knots.size()) + ",\"grid\":" + std::to_string(o.noise->grid) + ",\"keffMedian\":" +
+                 Fmt(med > 0 ? 1 / med : 0, 1) + ",\"keffMin\":" + Fmt(hi > 0 ? 1 / hi : 0, 1) + ",\"keffMax\":" +
+                 Fmt(lo > 0 ? 1 / lo : 0, 1) + ",\"usable\":" + (o.noise->Usable() ? "true" : "false") + "}";
         }
         j += ",\"output\":" + (o.image && !out.empty() ? Json(out) : std::string("null")) + "}";
         std::printf("%s\n", j.c_str());

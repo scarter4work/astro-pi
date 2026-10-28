@@ -217,10 +217,10 @@ def fmt_ratio(a, b):
     return "n/a" if a is None or not b else "%.1f" % (a / b)
 
 
-def split_half_edges(rep, even, odd, reg):
+def split_half_edges(rep, even, odd, reg, req="R12 edge", info=False):
     """R12 on the mineral images, and the same on the display RGB (before the colour step) as the stage of origin."""
     if "why" in reg:
-        rep.add("R12 edge", "halves do not register: " + reg["why"], "each judgeable side <= 1.5x", "FAIL")
+        rep.add(req, "halves do not register: " + reg["why"], "each judgeable side <= 1.5x", "INFO" if info else "FAIL")
         return
     p0, p1 = even["mineral"], odd["mineral"]
     _, _, (y0, x0) = edge_chroma.overlap(p0, p1, reg["dy"], reg["dx"])
@@ -252,9 +252,10 @@ def split_half_edges(rep, even, odd, reg):
     judged = {s: r for s, r in results.items() if r["verdict"] != "not judged"}
     value = "B/G / R/G edge/interior noise: " + ", ".join(parts) + ("; " + "; ".join(origin) if origin else "")
     if not judged:
-        rep.add("R12 edge", value + " (no side judgeable)", "each judgeable side <= 1.5x", "NOT JUDGED", sides=results)
+        rep.add(req, value + " (no side judgeable)", "each judgeable side <= 1.5x", "NOT JUDGED", sides=results)
     else:
-        rep.judge("R12 edge", value, "each judgeable side <= 1.5x", all(r["verdict"] == "pass" for r in judged.values()),
+        ok = all(r["verdict"] == "pass" for r in judged.values())
+        rep.add(req, value, "each judgeable side <= 1.5x", "INFO" if info else ("PASS" if ok else "FAIL"),
                   sides=results)
 
 
@@ -519,7 +520,18 @@ def check(out, cid, role):
     rep.judge("8 median", "%.3f" % med, "0.25-0.45", 0.25 <= med <= 0.45)
 
     # R12, R31
-    split_half_edges(rep, even, odd, reg)
+    # R12 is judged on the halves cut to their common field (even_eq / odd_eq, stack-probe --mineral-crop): the halves'
+    # stacks reach 1-4 px apart on each side, and a chroma blur at a frame's edge sees only its own field, so on the
+    # whole fields the halves differ by the colour beyond the nearer edge -- 64.6F with no channel alignment at all
+    # read left 6.37/10.95, bottom 2.11/3.00 there, against 1.17/1.08 and 1.02/0.96 before the colour step. The
+    # whole-field figure is kept, as INFO.
+    eq = [os.path.join(base, p, "probe.json") for p in ("even_eq", "odd_eq")]
+    if all(os.path.exists(p) for p in eq):
+        ev_eq, od_eq = load(os.path.join(base, "even_eq")), load(os.path.join(base, "odd_eq"))
+        split_half_edges(rep, ev_eq, od_eq, register_halves(ev_eq, od_eq))
+        split_half_edges(rep, even, odd, reg, "R12 full", info=True)
+    else:
+        split_half_edges(rep, even, odd, reg)
     noise_gain(rep, even, odd, reg)
 
     # M3, M4
@@ -566,7 +578,25 @@ def gate(out):
     return ok
 
 
+def equal_field(cdir):
+    """The --mineral-crop of the even and the odd half (L,T,R,B each) that cuts both to their common field, from their
+    mineral images' whole-pixel registration (the sub-pixel residual, under 1 px, stays)."""
+    p0, p1 = (read_fits(os.path.join(cdir, p, "mineral.fits")) for p in ("even", "odd"))
+    reg = edge_chroma.register(p0[1], p1[1])
+    if "why" in reg:
+        raise ValueError("%s: the halves do not register: %s" % (cdir, reg["why"]))
+    dy, dx = reg["dy"], reg["dx"]
+    (h0, w0), (h1, w1) = p0.shape[1:], p1.shape[1:]
+    x0, x1, y0, y1 = max(0, dx), min(w0, w1 + dx), max(0, dy), min(h0, h1 + dy)
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        raise ValueError("%s: the halves share under 16 x 16 px" % cdir)
+    return "%d,%d,%d,%d" % (x0, y0, w0 - x1, h0 - y1), "%d,%d,%d,%d" % (x0 - dx, y0 - dy, w1 - (x1 - dx), h1 - (y1 - dy))
+
+
 def main(argv):
+    if len(argv) == 3 and argv[1] == "--equal-field":
+        print(" ".join(equal_field(argv[2])))
+        return 0
     if len(argv) < 2:
         print(__doc__)
         return 1
