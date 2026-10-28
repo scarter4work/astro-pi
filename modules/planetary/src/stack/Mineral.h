@@ -23,4 +23,13 @@ struct StepRecord { std::string history; bool skipped = false; };
 StepRecord CalibrateColour(ser::FloatImage& rgb, const LunarMasks& m);
 StepRecord NeutraliseBackground(ser::FloatImage& rgb, const LunarMasks& m);
 
+// ---- 4b. Channel alignment ----
+StepRecord AlignChannels(ser::FloatImage& rgb, int threads);
+
+// ---- 4. Luminance sharpening ----
+std::vector<ser::FloatImage> StarletLayers(const ser::FloatImage& lum1, int layers, int threads);  // last = residual
+double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& region);              // robust (MAD) std
+StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads);
+StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads);
+
 }  // namespace planetary::stack

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 
 #include "Measure.h"
@@ -136,6 +137,25 @@ std::vector<int> Components(const std::vector<uint8_t>& mask, int w, int h, std:
     return label;
 }
 
+// Sets every pixel of a non-member region that does not reach the frame border (it is enclosed by members).
+void FillHoles(std::vector<uint8_t>& mask, int w, int h) {
+    std::vector<uint8_t> outside(mask.size());
+    for (size_t i = 0; i < mask.size(); ++i) outside[i] = !mask[i];
+    std::vector<size_t> hs;
+    const std::vector<int> hl = Components(outside, w, h, hs);
+    std::vector<uint8_t> touches(hs.size(), 0);
+    for (int x = 0; x < w; ++x) {
+        touches[static_cast<size_t>(hl[static_cast<size_t>(x)])] = 1;
+        touches[static_cast<size_t>(hl[static_cast<size_t>(h - 1) * w + x])] = 1;
+    }
+    for (int y = 0; y < h; ++y) {
+        touches[static_cast<size_t>(hl[static_cast<size_t>(y) * w])] = 1;
+        touches[static_cast<size_t>(hl[static_cast<size_t>(y) * w + w - 1])] = 1;
+    }
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (hl[i] && !touches[static_cast<size_t>(hl[i])]) mask[i] = 1;
+}
+
 // Chebyshev dilation of `mask` by r px (separable max), in place.
 void Dilate(std::vector<uint8_t>& mask, int w, int h, int r) {
     if (r <= 0) return;
@@ -230,23 +250,7 @@ LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads) {
     for (size_t i = 0; i < n; ++i) m.disk[i] = label[i] && sizes[static_cast<size_t>(label[i])] >= keep;
     // Fill holes: a dark region (crater shadow, deep mare) that does not reach the frame border is enclosed by
     // the disc and is disc.
-    {
-        std::vector<uint8_t> outside(n);
-        for (size_t i = 0; i < n; ++i) outside[i] = !m.disk[i];
-        std::vector<size_t> hs;
-        std::vector<int> hl = Components(outside, w, h, hs);
-        std::vector<uint8_t> touches(hs.size(), 0);
-        for (int x = 0; x < w; ++x) {
-            touches[static_cast<size_t>(hl[static_cast<size_t>(x)])] = 1;
-            touches[static_cast<size_t>(hl[static_cast<size_t>(h - 1) * w + x])] = 1;
-        }
-        for (int y = 0; y < h; ++y) {
-            touches[static_cast<size_t>(hl[static_cast<size_t>(y) * w])] = 1;
-            touches[static_cast<size_t>(hl[static_cast<size_t>(y) * w + w - 1])] = 1;
-        }
-        for (size_t i = 0; i < n; ++i)
-            if (hl[i] && !touches[static_cast<size_t>(hl[i])]) m.disk[i] = 1;
-    }
+    FillHoles(m.disk, w, h);
     // Sky: below the disc threshold and more than kLimbMargin px from the disc (the blurred limb and its
     // transition are neither). With no sky candidates there is no sky.
     constexpr int kLimbMargin = 4;
@@ -272,9 +276,11 @@ void RequireMasks(const ser::FloatImage& rgb, const LunarMasks& m, const char* w
         throw std::invalid_argument(std::string(who) + ": masks do not match the image");
 }
 
-std::string Fmt(const char* format, double a, double b = 0, double c = 0, double d = 0) {
-    char buf[160];
-    std::snprintf(buf, sizeof buf, format, a, b, c, d);
+// printf-style formatting of numbers into a HISTORY fragment (ASCII: the formats are).
+template <class... A>
+std::string Fmt(const char* format, A... args) {
+    char buf[256];
+    std::snprintf(buf, sizeof buf, format, static_cast<double>(args)...);
     return buf;
 }
 
@@ -441,6 +447,413 @@ StepRecord NeutraliseBackground(ser::FloatImage& rgb, const LunarMasks& m) {
                   Fmt("; level R %.5f G %.5f B %.5f", p[0].a, p[1].a, p[2].a) +
                   Fmt(", rise across the frame R %.5f G %.5f B %.5f", std::hypot(p[0].b, p[0].c), std::hypot(p[1].b, p[1].c),
                       std::hypot(p[2].b, p[2].c));
+    return rec;
+}
+
+}  // namespace planetary::stack
+
+namespace planetary::stack {
+
+// ---- 4b. Channel alignment ----
+
+namespace {
+
+// Solves the n x n system A x = b in place (Gaussian elimination, partial pivoting). False when singular.
+bool Solve(int n, double* A, double* b, double* x) {
+    for (int col = 0; col < n; ++col) {
+        int piv = col;
+        for (int r = col + 1; r < n; ++r)
+            if (std::fabs(A[r * n + col]) > std::fabs(A[piv * n + col])) piv = r;
+        if (!(std::fabs(A[piv * n + col]) > 1e-300)) return false;
+        if (piv != col) {
+            for (int k = 0; k < n; ++k) std::swap(A[piv * n + k], A[col * n + k]);
+            std::swap(b[piv], b[col]);
+        }
+        for (int r = col + 1; r < n; ++r) {
+            const double f = A[r * n + col] / A[col * n + col];
+            for (int k = col; k < n; ++k) A[r * n + k] -= f * A[col * n + k];
+            b[r] -= f * b[col];
+        }
+    }
+    for (int r = n - 1; r >= 0; --r) {
+        double s = b[r];
+        for (int k = r + 1; k < n; ++k) s -= A[r * n + k] * x[k];
+        x[r] = s / A[r * n + r];
+    }
+    return true;
+}
+
+// Catmull-Rom (Keys a = -0.5) weights for a fractional offset f in [0, 1), taps at -1, 0, 1, 2: the engine's
+// own interpolator (Accumulate's bicubic samples). It interpolates (f = 0 is the identity).
+void CubicWeights(double f, double wt[4]) {
+    const double f2 = f * f, f3 = f2 * f;
+    wt[0] = -0.5 * f3 + f2 - 0.5 * f;
+    wt[1] = 1.5 * f3 - 2.5 * f2 + 1;
+    wt[2] = -1.5 * f3 + 2 * f2 + 0.5 * f;
+    wt[3] = 0.5 * f3 - 0.5 * f2;
+}
+
+// Channel c of `src` sampled at (x + sx, y + sy) at every pixel, edges replicated: a 1-channel plane.
+std::vector<float> ShiftedPlane(const ser::FloatImage& src, int c, double sx, double sy, int threads) {
+    const int w = src.width, h = src.height, nc = src.channels;
+    const int ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
+    double wx[4], wy[4];
+    CubicWeights(sx - ix, wx);
+    CubicWeights(sy - iy, wy);
+    const size_t n = Pixels(src);
+    std::vector<float> tmp(n), out(n);
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                double s = 0;
+                for (int k = 0; k < 4; ++k)
+                    s += wx[k] * src.data[(static_cast<size_t>(y) * w + std::clamp(x + ix - 1 + k, 0, w - 1)) * nc + c];
+                tmp[static_cast<size_t>(y) * w + x] = static_cast<float>(s);
+            }
+    });
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                double s = 0;
+                for (int k = 0; k < 4; ++k) s += wy[k] * tmp[static_cast<size_t>(std::clamp(y + iy - 1 + k, 0, h - 1)) * w + x];
+                out[static_cast<size_t>(y) * w + x] = static_cast<float>(s);
+            }
+    });
+    return out;
+}
+
+struct ChannelShift {
+    double dx = 0, dy = 0;
+    bool converged = false;
+};
+
+// Where channel c's content sits against G: G(x) ~ a C(x + s) + b over the frame less an 8 px border
+// (the gain and offset absorb what calibration left; the limb and the terrain carry the position).
+// Gauss-Newton (Lucas-Kanade) from s = 0, each round on C resampled at the current s, to a step under
+// 1e-4 px. Capture range: a few px (the limb is a large, smooth edge); dispersion is well under that.
+ChannelShift MeasureShift(const ser::FloatImage& rgb, int c, int threads) {
+    constexpr int kBorder = 8, kRounds = 30;
+    const int w = rgb.width, h = rgb.height;
+    ChannelShift s;
+    if (w <= 2 * kBorder + 2 || h <= 2 * kBorder + 2) return s;
+    double a = 1, b = 0;
+    std::mutex mtx;
+    for (int round = 0; round < kRounds; ++round) {
+        const std::vector<float> C = ShiftedPlane(rgb, c, s.dx, s.dy, threads);
+        double H[16] = {}, g[4] = {};
+        ParallelBands(h - 2 * kBorder, threads, [&](int r0, int r1) {
+            double Hl[16] = {}, gl[4] = {};
+            for (int y = r0 + kBorder; y < r1 + kBorder; ++y)
+                for (int x = kBorder; x < w - kBorder; ++x) {
+                    const size_t i = static_cast<size_t>(y) * w + x;
+                    const double gx = 0.5 * (C[i + 1] - C[i - 1]), gy = 0.5 * (C[i + w] - C[i - w]);
+                    const double J[4] = {a * gx, a * gy, C[i], 1.0};
+                    const double r = rgb.data[i * 3 + 1] - (a * C[i] + b);
+                    for (int p = 0; p < 4; ++p) {
+                        gl[p] += J[p] * r;
+                        for (int q = 0; q < 4; ++q) Hl[p * 4 + q] += J[p] * J[q];
+                    }
+                }
+            std::lock_guard<std::mutex> lock(mtx);
+            for (int k = 0; k < 16; ++k) H[k] += Hl[k];
+            for (int k = 0; k < 4; ++k) g[k] += gl[k];
+        });
+        double d[4];
+        if (!Solve(4, H, g, d)) return s;
+        s.dx += d[0];
+        s.dy += d[1];
+        a += d[2];
+        b += d[3];
+        if (!std::isfinite(s.dx) || !std::isfinite(s.dy) || std::hypot(s.dx, s.dy) > 8) return {};
+        if (std::hypot(d[0], d[1]) < 1e-4) {
+            s.converged = true;
+            return s;
+        }
+    }
+    return s;
+}
+
+// Amendment step 4b: a measured R or B shift against G above this is corrected; at or below it, nothing is
+// resampled (resampling costs a little sharpness for nothing).
+constexpr double kAlignMin = 0.1;
+
+}  // namespace
+
+StepRecord AlignChannels(ser::FloatImage& rgb, int threads) {
+    RequireRgb(rgb, "AlignChannels");
+    const ChannelShift r = MeasureShift(rgb, 0, threads), b = MeasureShift(rgb, 2, threads);
+    StepRecord rec;
+    if (!r.converged || !b.converged) {
+        rec.skipped = true;
+        rec.history = std::string("Channel alignment skipped: the ") + (!r.converged ? "R" : "B") +
+                      " shift against G could not be measured (no convergence within 8 px); nothing resampled";
+        return rec;
+    }
+    const double worst = std::max(std::hypot(r.dx, r.dy), std::hypot(b.dx, b.dy));
+    rec.history = Fmt("Channel alignment: R %+.3f, %+.3f px, B %+.3f, %+.3f px against G", r.dx, r.dy, b.dx, b.dy);
+    if (worst <= kAlignMin) {
+        rec.skipped = true;
+        rec.history += "; within 0.1 px, not applied";
+        return rec;
+    }
+    const std::vector<float> R = ShiftedPlane(rgb, 0, r.dx, r.dy, threads), B = ShiftedPlane(rgb, 2, b.dx, b.dy, threads);
+    for (size_t i = 0; i < R.size(); ++i) {
+        rgb.data[i * 3] = R[i];
+        rgb.data[i * 3 + 2] = B[i];
+    }
+    rec.history += "; R and B resampled onto G (Catmull-Rom)";
+    return rec;
+}
+
+// ---- 4. Luminance sharpening ----
+
+namespace {
+
+int Mirror(int i, int n) {
+    if (n == 1) return 0;
+    while (i < 0 || i >= n) i = i < 0 ? -i : 2 * (n - 1) - i;
+    return i;
+}
+
+// One B3-spline a trous smoothing ([1 4 6 4 1] / 16 with holes of `step` px, separable), mirrored edges.
+std::vector<float> AtrousSmooth(const std::vector<float>& in, int w, int h, int step, int threads) {
+    constexpr double k[5] = {1.0 / 16, 4.0 / 16, 6.0 / 16, 4.0 / 16, 1.0 / 16};
+    std::vector<float> tmp(in.size()), out(in.size());
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                double s = 0;
+                for (int t = 0; t < 5; ++t) s += k[t] * in[static_cast<size_t>(y) * w + Mirror(x + (t - 2) * step, w)];
+                tmp[static_cast<size_t>(y) * w + x] = static_cast<float>(s);
+            }
+    });
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                double s = 0;
+                for (int t = 0; t < 5; ++t) s += k[t] * tmp[static_cast<size_t>(Mirror(y + (t - 2) * step, h)) * w + x];
+                out[static_cast<size_t>(y) * w + x] = static_cast<float>(s);
+            }
+    });
+    return out;
+}
+
+// Approximate Euclidean distance (two-pass chamfer, steps 1 and sqrt 2) from each pixel to the nearest pixel
+// outside `mask`; +inf everywhere when every pixel is in it (a disc filling the frame has no limb in view).
+std::vector<float> DistanceOutside(const std::vector<uint8_t>& mask, int w, int h) {
+    const float inf = std::numeric_limits<float>::infinity(), d1 = 1.0f, d2 = 1.41421356f;
+    std::vector<float> d(mask.size());
+    for (size_t i = 0; i < mask.size(); ++i) d[i] = mask[i] ? inf : 0.0f;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            float& v = d[static_cast<size_t>(y) * w + x];
+            if (x > 0) v = std::min(v, d[static_cast<size_t>(y) * w + x - 1] + d1);
+            if (y > 0) {
+                v = std::min(v, d[static_cast<size_t>(y - 1) * w + x] + d1);
+                if (x > 0) v = std::min(v, d[static_cast<size_t>(y - 1) * w + x - 1] + d2);
+                if (x + 1 < w) v = std::min(v, d[static_cast<size_t>(y - 1) * w + x + 1] + d2);
+            }
+        }
+    for (int y = h - 1; y >= 0; --y)
+        for (int x = w - 1; x >= 0; --x) {
+            float& v = d[static_cast<size_t>(y) * w + x];
+            if (x + 1 < w) v = std::min(v, d[static_cast<size_t>(y) * w + x + 1] + d1);
+            if (y + 1 < h) {
+                v = std::min(v, d[static_cast<size_t>(y + 1) * w + x] + d1);
+                if (x + 1 < w) v = std::min(v, d[static_cast<size_t>(y + 1) * w + x + 1] + d2);
+                if (x > 0) v = std::min(v, d[static_cast<size_t>(y + 1) * w + x - 1] + d2);
+            }
+        }
+    return d;
+}
+
+constexpr int kSharpenLayers = 4;
+// Std of each starlet layer of unit white noise (B3 spline; Starck, Murtagh & Fadili 2010, table 6.1).
+constexpr double kStarletNoise[kSharpenLayers] = {0.889, 0.200, 0.086, 0.041};
+// Nominal gains of layers 1-4 before the noise limit. Seeing of 1-1.5 px takes detail at layer 2's scale (4-8 px
+// periods) most; layers 3-4 (16 px and up) keep >= 0.84 of theirs, and their 14-30 px reach rings at the limb.
+// Chosen by measurement on MoonSynth (truth detail to 1/4 cycle/px, noise 0.005, 2 sigma threshold), disc RMS
+// error against the truth: {1.5, 2.5, 1, 1} 18.2% / 14.3% lower at blur 1.0 / 1.5 px; {1.5, 2.2, 1.6, 1.25}
+// -13.7% / +3.4% (over-boosts the coarse layers); {1.5, 2.0, 1.2, 1.05} 16.8% / 10.7%; {1.6, 3.0, 1, 1} 3.3% /
+// 15.1% (too strong for the lighter blur).
+constexpr double kLayerGain[kSharpenLayers] = {1.5, 2.5, 1.0, 1.0};
+// Only a coefficient's part beyond this many layer-noise sigmas is boosted (soft threshold), so noise that
+// survives the per-layer limit is not amplified pixel by pixel.
+constexpr double kBoostThreshold = 2.0;
+// Half-width of layer j's reach (the a trous kernels of layers 1..j stacked: 2 (2^j - 1) px = 2, 6, 14, 30).
+// A layer's coefficients feel the disc's edge (limb or terminator) that far in. Its boost is 0 outside the disc
+// (no ringing into the sky: spec step 4, no halo) and, inside, fades in from one reach to two reaches from the
+// edge's HALF-contrast line (no bright rim inside the limb). Measured from there because that line stays on the
+// limb whatever the seeing, while the disc mask's own edge (4% of the contrast) moves out with the blur: ramps
+// from the mask edge left a rim of 0.043 (one 8 px ramp for every layer) and 0.017 (per-layer ramps, half a reach
+// to 1.5 reaches) over a flat disc's 0.30, blur 1.5 px (test "sharpen: no bright rim inside the limb"). From the
+// half line, a blurred step's layer-2 coefficient at full weight is under 0.5% of the contrast up to blur 3 px.
+constexpr double kLayerReach[kSharpenLayers] = {2, 6, 14, 30};
+double EdgeWeight(double dist, int j) { return std::clamp((dist - kLayerReach[j]) / kLayerReach[j], 0.0, 1.0); }
+// Highlight shoulder: above kKnee the sharpened luminance is rolled off smoothly toward kCeiling, so sharpening
+// never clips a sample the stack did not (kCeiling sits under kClippedLuma, the clip count's level).
+constexpr double kKnee = 0.9, kCeiling = 0.998;
+
+double Shoulder(double x) {
+    if (x <= kKnee) return x;
+    return kKnee + (kCeiling - kKnee) * std::tanh((x - kKnee) / (kCeiling - kKnee));
+}
+
+double Soft(double v, double t) { return v > t ? v - t : (v < -t ? v + t : 0.0); }
+
+}  // namespace
+
+std::vector<ser::FloatImage> StarletLayers(const ser::FloatImage& lum1, int layers, int threads) {
+    if (lum1.channels != 1 || lum1.width <= 0 || lum1.height <= 0 || lum1.data.size() != Pixels(lum1))
+        throw std::invalid_argument("StarletLayers: needs a 1-channel image whose data matches its size");
+    if (layers < 1) throw std::invalid_argument("StarletLayers: needs at least one layer");
+    std::vector<ser::FloatImage> out;
+    std::vector<float> c = lum1.data;
+    for (int j = 0; j < layers; ++j) {
+        std::vector<float> next = AtrousSmooth(c, lum1.width, lum1.height, 1 << j, threads);
+        ser::FloatImage layer{lum1.width, lum1.height, 1, std::vector<float>(c.size())};
+        for (size_t i = 0; i < c.size(); ++i) layer.data[i] = c[i] - next[i];
+        out.push_back(std::move(layer));
+        c = std::move(next);
+    }
+    out.push_back(ser::FloatImage{lum1.width, lum1.height, 1, std::move(c)});
+    return out;
+}
+
+double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& region) {
+    if (!region.empty() && region.size() != Pixels(layer))
+        throw std::invalid_argument("LayerNoise: region does not match the layer");
+    std::vector<float> v;
+    for (size_t i = 0; i < Pixels(layer); ++i)
+        if (region.empty() || region[i]) v.push_back(layer.data[i * static_cast<size_t>(layer.channels)]);
+    return MadStd(v);
+}
+
+StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads) {
+    if (lum1.channels != 1 || lum1.data.size() != Pixels(lum1) || m.width != lum1.width || m.height != lum1.height ||
+        m.disk.size() != Pixels(lum1))
+        throw std::invalid_argument("SharpenLuminanceImage: needs a 1-channel image and masks of its size");
+    const int w = lum1.width, h = lum1.height;
+    const size_t n = Pixels(lum1);
+    StepRecord rec;
+    if (m.diskCount == 0) {
+        rec.skipped = true;
+        rec.history = "Sharpen skipped: no lunar disk found to sharpen";
+        return rec;
+    }
+    // The disc's core: disc pixels at or above half the contrast between the sky (its median; 0 without sky)
+    // and the disc's median, on the 3 x 3 mean, enclosed holes filled (craters, dark mare floors). Maria sit at
+    // 0.5-0.7 of the highlands on the real Moon and above half the disc median; the limb's and the terminator's
+    // half-contrast lines are its edge. Distance into the core from that edge (+inf when nothing in view is
+    // outside it: a disc filling the frame).
+    std::vector<uint8_t> core(n, 0);
+    {
+        std::vector<float> d, s;
+        for (size_t i = 0; i < n; ++i) {
+            if (m.disk[i]) d.push_back(lum1.data[i]);
+            if (!m.sky.empty() && m.sky[i]) s.push_back(lum1.data[i]);
+        }
+        const double half = 0.5 * (Median(d) + (s.empty() ? 0.0 : Median(s)));
+        const ser::FloatImage Ls = Box3(lum1, threads);
+        for (size_t i = 0; i < n; ++i) core[i] = m.disk[i] && Ls.data[i] >= half;
+        FillHoles(core, w, h);
+    }
+    const std::vector<float> dist = DistanceOutside(core, w, h);
+    // Where a layer's boost is at full weight; the statistics of layer j are taken there (its coefficients clear
+    // of the edge), or over the whole disc when that leaves under 1000 px (a small disc).
+    auto region = [&](int j) {
+        std::vector<uint8_t> r(n);
+        size_t k = 0;
+        for (size_t i = 0; i < n; ++i) k += r[i] = core[i] && EdgeWeight(dist[i], j) >= 1.0;
+        return k >= 1000 ? r : m.disk;
+    };
+    const std::vector<ser::FloatImage> layers = StarletLayers(lum1, kSharpenLayers, threads);
+    // Noise (white-noise std, from layer 1, which keeps 0.889 of it): the lower of the sky's and the disc's
+    // flattest tiles'. Terrain only ever inflates a layer-1 estimate -- taken over the whole disc of a scene with
+    // detail out to 1/4 cycle/px it read 1.5-2.4x the true noise and held the gains near 1 (measured on
+    // MoonSynth, blur 1.0-1.5 px) -- so the disc's value is the 10th percentile over 16 x 16 tiles clear of the
+    // edge (the smoothest terrain, maria floors), and the sky, which is noise only, caps it. Limit: where a
+    // stack's disc noise exceeds its sky's (shot noise; in display units the transfer's slope works the other
+    // way), the sky's lower value lets more disc noise through the threshold; the gains stay bounded by
+    // kLayerGain and the Wiener factor below.
+    double white;
+    {
+        const std::vector<uint8_t> r = region(0);
+        constexpr int kTile = 16;
+        std::vector<float> tileNoise;
+        std::vector<float> v;
+        for (int ty = 0; ty + kTile <= h; ty += kTile)
+            for (int tx = 0; tx + kTile <= w; tx += kTile) {
+                v.clear();
+                for (int y = ty; y < ty + kTile; ++y)
+                    for (int x = tx; x < tx + kTile; ++x) {
+                        const size_t i = static_cast<size_t>(y) * w + x;
+                        if (r[i]) v.push_back(layers[0].data[i]);
+                    }
+                if (v.size() == static_cast<size_t>(kTile * kTile)) tileNoise.push_back(static_cast<float>(MadStd(v)));
+            }
+        double disc;
+        if (tileNoise.size() >= 10) {
+            const size_t k = tileNoise.size() / 10;
+            std::nth_element(tileNoise.begin(), tileNoise.begin() + static_cast<long>(k), tileNoise.end());
+            disc = tileNoise[k];
+        } else {
+            disc = LayerNoise(layers[0], r);
+        }
+        white = disc;
+        if (m.skyCount >= 1000) white = std::min(white, LayerNoise(layers[0], m.sky));
+        white /= kStarletNoise[0];
+    }
+    double gain[kSharpenLayers];
+    for (int j = 0; j < kSharpenLayers; ++j) {
+        // The layer's own noise limit: a Wiener factor, the share of the layer's energy over the disc that is not
+        // noise. A layer that is noise only gets gain 1 (spec step 4: a noise-only gain fails).
+        const std::vector<uint8_t> r = region(j);
+        const double sj = white * kStarletNoise[j];
+        double e = 0;
+        size_t k = 0;
+        for (size_t i = 0; i < n; ++i)
+            if (r[i]) {
+                e += static_cast<double>(layers[static_cast<size_t>(j)].data[i]) * layers[static_cast<size_t>(j)].data[i];
+                ++k;
+            }
+        e /= std::max<size_t>(1, k);
+        const double rho = e > 0 ? std::max(0.0, 1 - sj * sj / e) : 0.0;
+        gain[j] = 1 + (kLayerGain[j] - 1) * rho;
+    }
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
+            double v = lum1.data[i];
+            if (core[i])
+                for (int j = 0; j < kSharpenLayers; ++j)
+                    v += (gain[j] - 1) * EdgeWeight(dist[i], j) *
+                         Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * white * kStarletNoise[j]);
+            lum1.data[i] = static_cast<float>(Shoulder(v));
+        }
+    });
+    rec.history = Fmt("Sharpen (luminance): starlet layers 1-4, noise %.3g; gains %.2f %.2f %.2f %.2f (noise-limited)",
+                      white, gain[0], gain[1], gain[2], gain[3]);
+    return rec;
+}
+
+StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads) {
+    RequireMasks(rgb, m, "SharpenLuminance");
+    const ser::FloatImage L0 = MeanOfChannels(rgb, threads);
+    ser::FloatImage L = L0;
+    StepRecord rec = SharpenLuminanceImage(L, m, threads);
+    if (rec.skipped) return rec;
+    // Every channel scaled by the luminance's own factor: R/G and B/G stay as they were (chroma untouched); a
+    // pixel whose largest channel would pass kCeiling is scaled less, uniformly, so its hue holds too.
+    ParallelBands(rgb.height, threads, [&](int y0, int y1) {
+        for (size_t i = static_cast<size_t>(y0) * rgb.width; i < static_cast<size_t>(y1) * rgb.width; ++i) {
+            if (L.data[i] == L0.data[i] || !(L0.data[i] > 1e-6f)) continue;
+            float* p = &rgb.data[i * 3];
+            double f = std::max(0.0f, L.data[i]) / static_cast<double>(L0.data[i]);
+            const double top = std::max({p[0], p[1], p[2]});
+            if (top * f > kCeiling) f = std::min(f, std::max(1.0, kCeiling / top));
+            for (int c = 0; c < 3; ++c) p[c] = static_cast<float>(p[c] * f);
+        }
+    });
     return rec;
 }
 

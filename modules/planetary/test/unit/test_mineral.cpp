@@ -304,3 +304,272 @@ TEST_CASE("history ASCII") {
         CHECK(Ascii(h));
     }
 }
+
+// ---- Step 4b: channel alignment (amendment) ----
+
+namespace {
+
+// Shift s of channel c of `im` against channel c of `ref` (im(x) ~ ref(x - s)), first order, over the
+// interior 10 px in from every edge: s = -(sum g g^T)^-1 sum g (im - ref), g = ref's central gradient.
+// Independent of the engine's estimator; good to a few % for |s| <~ 0.3 px (it reads low at 0.5 px).
+std::pair<double, double> ResidualShift(const ser::FloatImage& im, const ser::FloatImage& ref, int c) {
+    double sxx = 0, sxy = 0, syy = 0, bx = 0, by = 0;
+    const int w = ref.width;
+    auto at = [&](const ser::FloatImage& f, int x, int y) { return static_cast<double>(f.data[(static_cast<size_t>(y) * w + x) * 3 + c]); };
+    for (int y = 10; y < ref.height - 10; ++y)
+        for (int x = 10; x < w - 10; ++x) {
+            const double gx = 0.5 * (at(ref, x + 1, y) - at(ref, x - 1, y)), gy = 0.5 * (at(ref, x, y + 1) - at(ref, x, y - 1));
+            const double d = at(im, x, y) - at(ref, x, y);
+            sxx += gx * gx;
+            sxy += gx * gy;
+            syy += gy * gy;
+            bx += gx * d;
+            by += gy * d;
+        }
+    const double det = sxx * syy - sxy * sxy;
+    return {-(syy * bx - sxy * by) / det, -(sxx * by - sxy * bx) / det};
+}
+
+}  // namespace
+
+TEST_CASE("align: a 0.5 px vertical R/B offset is corrected") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.001;
+    const MoonScene ref = MakeMoonScene(s);  // same seed, same noise: the offset is the only difference
+    s.shiftY = {0.5, 0, -0.5};
+    MoonScene sc = MakeMoonScene(s);
+    const auto r0 = ResidualShift(sc.observed, ref.observed, 0), b0 = ResidualShift(sc.observed, ref.observed, 2);
+    INFO("before: R (" << r0.first << ", " << r0.second << "), B (" << b0.first << ", " << b0.second << ")");
+    REQUIRE(r0.second > 0.3);
+    REQUIRE(b0.second < -0.3);
+    const stack::StepRecord rec = stack::AlignChannels(sc.observed, 4);
+    const auto r1 = ResidualShift(sc.observed, ref.observed, 0), b1 = ResidualShift(sc.observed, ref.observed, 2);
+    INFO(rec.history);
+    INFO("after: R (" << r1.first << ", " << r1.second << "), B (" << b1.first << ", " << b1.second << ")");
+    CHECK_FALSE(rec.skipped);
+    CHECK(std::hypot(r1.first, r1.second) <= 0.05);
+    CHECK(std::hypot(b1.first, b1.second) <= 0.05);
+    CHECK(Ascii(rec.history));
+}
+
+TEST_CASE("align: a 0.02 px offset is a no-op with a HISTORY line") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.001;
+    s.shiftY = {0.02, 0, -0.02};
+    MoonScene sc = MakeMoonScene(s);
+    const std::vector<float> before = sc.observed.data;
+    const stack::StepRecord rec = stack::AlignChannels(sc.observed, 4);
+    INFO(rec.history);
+    CHECK(rec.skipped);
+    CHECK(rec.history.find("0.1 px") != std::string::npos);
+    CHECK(Ascii(rec.history));
+    CHECK(sc.observed.data == before);
+}
+
+// ---- Step 4: luminance wavelet sharpening (Task B4) ----
+
+namespace {
+
+double RmsOver(const std::vector<double>& a, const std::vector<double>& b, const std::vector<uint8_t>& mask) {
+    double s = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (mask[i]) {
+            s += (a[i] - b[i]) * (a[i] - b[i]);
+            ++n;
+        }
+    return std::sqrt(s / n);
+}
+
+double StdOver(const std::vector<double>& a, const std::vector<uint8_t>& mask) {
+    double s = 0, s2 = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (mask[i]) {
+            s += a[i];
+            s2 += a[i] * a[i];
+            ++n;
+        }
+    return std::sqrt(std::max(0.0, s2 / n - (s / n) * (s / n)));
+}
+
+// Azimuthal mean of v in 0.5 px rings, r from r0 to r1.
+std::vector<double> RadialProfile(const std::vector<double>& v, const MoonSceneSpec& s, double r0, double r1) {
+    const int bins = static_cast<int>((r1 - r0) / 0.5);
+    std::vector<double> sum(bins, 0), cnt(bins, 0);
+    for (int y = 0; y < s.height; ++y)
+        for (int x = 0; x < s.width; ++x) {
+            const int b = static_cast<int>((std::hypot(x - s.cx, y - s.cy) - r0) / 0.5);
+            if (b < 0 || b >= bins) continue;
+            sum[b] += v[static_cast<size_t>(y) * s.width + x];
+            cnt[b] += 1;
+        }
+    for (int b = 0; b < bins; ++b) sum[b] /= std::max(1.0, cnt[b]);
+    return sum;
+}
+
+}  // namespace
+
+TEST_CASE("starlet: layers sum to the input") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.005;
+    const MoonScene sc = MakeMoonScene(s);
+    ser::FloatImage L;
+    L.width = s.width;
+    L.height = s.height;
+    L.channels = 1;
+    for (double v : testing::Lum(sc.observed)) L.data.push_back(static_cast<float>(v));
+    const std::vector<ser::FloatImage> layers = stack::StarletLayers(L, 4, 4);
+    REQUIRE(layers.size() == 5);
+    double worst = 0;
+    for (size_t i = 0; i < L.data.size(); ++i) {
+        double sum = 0;
+        for (const ser::FloatImage& l : layers) sum += l.data[i];
+        worst = std::max(worst, std::fabs(sum - L.data[i]));
+    }
+    INFO("max |sum - input| " << worst);
+    CHECK(worst <= 1e-5);
+    // LayerNoise on the sky (white noise of std 0.005 / sqrt 3 in the luminance): the B3-spline starlet's
+    // first layer keeps 0.889 of white noise's std (Starck, Murtagh & Fadili 2010, table 6.1).
+    const double expect = 0.889 * 0.005 / std::sqrt(3.0), got = stack::LayerNoise(layers[0], sc.skyTruth);
+    INFO("layer 1 noise on the sky " << got << ", expected " << expect);
+    CHECK(std::fabs(got / expect - 1) <= 0.05);
+}
+
+TEST_CASE("sharpen: closer to the truth") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.5;
+    s.noiseStd = 0.005;
+    MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const std::vector<double> truth = testing::Lum(sc.truth), before = testing::Lum(sc.observed);
+    const stack::StepRecord rec = stack::SharpenLuminance(sc.observed, m, 4);
+    const std::vector<double> after = testing::Lum(sc.observed);
+    const double e0 = RmsOver(before, truth, sc.diskTruth), e1 = RmsOver(after, truth, sc.diskTruth);
+    INFO(rec.history);
+    INFO("disk RMS error vs truth: before " << e0 << ", after " << e1 << " (" << 100 * (1 - e1 / e0) << "% lower)");
+    CHECK_FALSE(rec.skipped);
+    CHECK(e1 <= 0.9 * e0);
+    CHECK(Ascii(rec.history));
+}
+
+TEST_CASE("sharpen: noise-only gain fails") {
+    // The textured scene: the sky is noise only.
+    {
+        MoonSceneSpec s;
+        s.blurSigma = 1.5;
+        s.noiseStd = 0.005;
+        MoonScene sc = MakeMoonScene(s);
+        const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+        const double n0 = StdOver(testing::Lum(sc.observed), sc.skyTruth);
+        stack::SharpenLuminance(sc.observed, m, 4);
+        const double n1 = StdOver(testing::Lum(sc.observed), sc.skyTruth);
+        INFO("sky noise std " << n0 << " -> " << n1);
+        CHECK(n1 <= 1.5 * n0);
+    }
+    // A flat disc (no texture, no maria, no tint structure) plus noise: every layer's content is noise.
+    {
+        MoonSceneSpec s;
+        s.textureAmplitude = 0;
+        s.mariaFraction = 0;
+        s.tintVariation = 0;
+        s.blurSigma = 1.5;
+        s.noiseStd = 0.005;
+        MoonScene sc = MakeMoonScene(s);
+        const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+        const double n0 = StdOver(testing::Lum(sc.observed), sc.diskTruth);
+        stack::SharpenLuminance(sc.observed, m, 4);
+        const double n1 = StdOver(testing::Lum(sc.observed), sc.diskTruth);
+        INFO("flat disc noise std " << n0 << " -> " << n1);
+        CHECK(n1 <= 1.5 * n0);
+    }
+}
+
+TEST_CASE("sharpen: no limb halo") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.5;
+    s.noiseStd = 0.002;
+    MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const std::vector<double> before = testing::Lum(sc.observed);
+    stack::SharpenLuminance(sc.observed, m, 4);
+    const std::vector<double> after = testing::Lum(sc.observed);
+    double diskMean = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < after.size(); ++i)
+        if (sc.diskTruth[i]) {
+            diskMean += after[i];
+            ++n;
+        }
+    diskMean /= n;
+    const std::vector<double> p0 = RadialProfile(before, s, s.radius, s.radius + 20),
+                              p1 = RadialProfile(after, s, s.radius, s.radius + 20);
+    double sky = 0;
+    for (size_t b = 20; b < p1.size(); ++b) sky += p1[b];  // r >= R + 10
+    sky /= static_cast<double>(p1.size() - 20);
+    double under = 0, over = 0;
+    for (size_t b = 0; b < p1.size(); ++b) {
+        under = std::max(under, sky - p1[b]);
+        over = std::max(over, p1[b] - p0[b]);
+    }
+    INFO("disk mean " << diskMean << "; sky-side undershoot " << under << ", brightening " << over);
+    CHECK(under <= 0.02 * diskMean);
+    CHECK(over <= 0.02 * diskMean);
+}
+
+TEST_CASE("sharpen: no bright rim inside the limb") {
+    // A flat disc: its true profile inside the limb is flat, so any rise there is ringing from the limb edge.
+    MoonSceneSpec s;
+    s.textureAmplitude = 0;
+    s.mariaFraction = 0;
+    s.tintVariation = 0;
+    s.blurSigma = 1.5;
+    s.noiseStd = 0.002;
+    MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const std::vector<double> before = testing::Lum(sc.observed);
+    stack::SharpenLuminance(sc.observed, m, 4);
+    const std::vector<double> after = testing::Lum(sc.observed);
+    const std::vector<double> p0 = RadialProfile(before, s, s.radius - 60, s.radius),
+                              p1 = RadialProfile(after, s, s.radius - 60, s.radius);
+    double level = 0;
+    for (size_t b = 0; b < 40; ++b) level += p0[b];  // R - 60 .. R - 40
+    level /= 40;
+    // Above the flat level anywhere inside the limb (a bright rim); below it clear of the blurred edge, which
+    // is r <= R - 4 sigma (a dark ring).
+    double rim = 0, ring = 0;
+    for (size_t b = 0; b < p1.size(); ++b) {
+        rim = std::max(rim, p1[b] - level);
+        if (s.radius - 60 + 0.5 * b <= s.radius - 4 * s.blurSigma) ring = std::max(ring, level - p1[b]);
+    }
+    INFO("disc level " << level << "; bright rim " << rim << ", dark ring " << ring);
+    CHECK(rim <= 0.02 * level);
+    CHECK(ring <= 0.02 * level);
+}
+
+TEST_CASE("sharpen: chroma untouched") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.5;
+    s.noiseStd = 0.005;
+    MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const ser::FloatImage before = sc.observed;
+    stack::SharpenLuminance(sc.observed, m, 4);
+    double worst = 0;
+    size_t judged = 0;
+    for (size_t i = 0; i < m.disk.size(); ++i) {
+        const float* a = &before.data[i * 3];
+        const float* b = &sc.observed.data[i * 3];
+        if (a[1] < 0.05 || b[1] < 0.05) continue;
+        ++judged;
+        worst = std::max({worst, static_cast<double>(std::fabs(b[0] / b[1] - a[0] / a[1])),
+                          static_cast<double>(std::fabs(b[2] / b[1] - a[2] / a[1]))});
+    }
+    INFO("judged " << judged << " px; worst ratio change " << worst);
+    REQUIRE(judged > 10000);
+    CHECK(worst <= 1e-4);
+    CHECK(sc.observed.data != before.data);  // it did sharpen
+}
