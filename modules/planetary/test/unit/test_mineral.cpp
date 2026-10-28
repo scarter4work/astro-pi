@@ -883,11 +883,16 @@ TEST_CASE("colour: fade at highlights") {
     s.blurSigma = 1.0;
     s.noiseStd = 0.003;
     MoonScene sc = MakeMoonScene(s);
-    // A saturated highland: a 40 x 40 patch on the disc at 1.0 in every channel (scattered saturated pixels
-    // never reach the threshold through the 2.5 px chroma blur).
+    // A saturated highland of the cyan-highland kind (Scott): a 40 x 40 patch on the disc with R at 1.0 and G and B
+    // lower, so its deviation is far from 0 and only the fade makes it neutral (scattered saturated pixels never
+    // reach the threshold through the 2.5 px chroma blur).
     for (int y = 220; y < 260; ++y)
-        for (int x = 300; x < 340; ++x)
-            for (int c = 0; c < 3; ++c) sc.observed.data[(static_cast<size_t>(y) * s.width + x) * 3 + c] = 1.0f;
+        for (int x = 300; x < 340; ++x) {
+            float* p = &sc.observed.data[(static_cast<size_t>(y) * s.width + x) * 3];
+            p[0] = 1.0f;
+            p[1] = 0.88f;
+            p[2] = 0.80f;
+        }
     const ser::FloatImage L = LumImage(sc.observed);
     ser::FloatImage out = sc.observed;
     stack::MineralParams p;
@@ -1051,6 +1056,7 @@ TEST_CASE("pipeline: edge chroma survives the pipeline") {
     s.cast = {1.15, 1.0, 0.85};
     s.pedestal = {0.01, 0.01, 0.01};
     const MoonScene sc = MakeMoonScene(s);
+    REQUIRE(EdgeChromaRatio(sc.observed, 320, 760, 0, 6, 20, 40) > 1.5);  // the input fails: there is noise to remove
     const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 8, {});
     CheckValidOutput(out, sc.observed);
     const double r = EdgeChromaRatio(out.image, 320, 760, 0, 6, 20, 40);
@@ -1196,6 +1202,26 @@ TEST_CASE("pipeline: cancel throws StackCancelled") {
     CHECK(seen);
     CHECK(out.image.data.empty());
     CHECK_THROWS_AS(stack::PrepareMineral(sc.observed, 4, pr), stack::StackCancelled);
+    // Cancelled later: at the report before step 6 (Sharpen), and at MakeMineralMoon's final check (7 of 7),
+    // after the colour step (task ENG review M5: a cancel polled only at the first report passed the test above).
+    for (int64_t at : {int64_t(5), int64_t(7)}) {
+        int64_t last = -1;
+        stack::Progress later;
+        later.report = [&](const std::string& phase, int64_t done, int64_t) {
+            if (phase == stack::kPhaseMineral) last = done;
+        };
+        later.cancelled = [&] { return last == at; };
+        stack::MineralOutcome o;
+        INFO("cancel at " << at << ", last report " << last);
+        CHECK_THROWS_AS(o = stack::MakeMineralMoon(sc.observed, 4, later), stack::StackCancelled);
+        CHECK(last == at);
+        CHECK(o.image.data.empty());
+        if (at < 7) {
+            last = -1;
+            CHECK_THROWS_AS(stack::PrepareMineral(sc.observed, 4, later), stack::StackCancelled);
+            CHECK(last == at);
+        }
+    }
 }
 
 TEST_CASE("pipeline: mono refused") {
