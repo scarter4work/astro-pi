@@ -13,7 +13,7 @@ by subproject) -- never a new per-folder memory directory. No CLAUDE.md below th
 - `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
 - `modules/planetary/` → `Planetary-pxm` module, processes `SERViewer` and `PlanetaryStack` (docs deploy as
   `doc/tools/SERViewer/` and `doc/tools/PlanetaryStack/`).
-  0.3.0.2 (released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
+  0.4.0.0 (released 2026-10-28: Target from the ASIAIR name + mineral moon with Strength/Chroma blur/Sharpen sliders; 0.3.0.2 released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
 - `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
 Everything in `tools/` and `archive/` is NOT shipped.
