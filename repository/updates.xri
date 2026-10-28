@@ -36,13 +36,13 @@
             <p>Delivered by PixInsight&apos;s update system (earlier versions were downloaded by the script). It runs on any Linux that runs PixInsight with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
          </description>
       </package>
-      <package fileName="20261028-linux-x64-Planetary-0.4.0.0.tar.gz" sha1="f1460b497ac1d3a59133e30edee3374b7139afd8" type="module" releaseDate="20261028">
+      <package fileName="20261028-linux-x64-Planetary-0.4.0.1.tar.gz" sha1="65f6363f17608adf29b697522b4968bee6e34431" type="module" releaseDate="20261028">
          <title>Planetary</title>
          <description>
             <p>
-               <b>Planetary 0.4.0.0</b>
+               <b>Planetary 0.4.0.1</b>
             </p>
-            <p>Planetary imaging for PixInsight, with two processes. SERViewer opens SER video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview, opens it as a PixInsight image, and can save an AVI as a SER file. PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest frames and aligns them, region by region, with nothing to set, previews the stack with zoom, and opens it as a new image, or says why a capture gives none. New in 0.4: the target is read from the ASIAIR file name, and for a broadband colour capture of the Moon PlanetaryStack can also make a mineral moon (calibrated, sharpened, with the Moon&apos;s true colour differences amplified), tuned live with Strength, Chroma blur and Sharpen sliders.</p>
+            <p>Planetary imaging for PixInsight, with two processes. SERViewer opens SER video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview, opens it as a PixInsight image, and can save an AVI as a SER file. PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest frames and aligns them, region by region, with nothing to set, previews the stack with zoom, and opens it as a new image, or says why a capture gives none. New in 0.4: the target is read from the ASIAIR file name, and for a colour capture of the Moon not taken through a narrowband or IR-pass filter PlanetaryStack can also make a mineral moon (calibrated, sharpened, with the Moon&apos;s true colour differences amplified), tuned live with Strength, Chroma blur and Sharpen sliders.</p>
             <p>Both read only the video file you choose and an AVI&apos;s .txt sidecar. SERViewer writes only the SER file you choose; either process writes, if you click Save pattern..., the .txt sidecar next to the AVI. Neither uses the network or runs external programs. Documentation: doc/tools/SERViewer/SERViewer.html and doc/tools/PlanetaryStack/PlanetaryStack.html.</p>
          </description>
       </package>
@@ -88,4 +88,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-10-28T20:17:25.141Z" encoding="Base64">ReJk0ZKxIzOWIrAAs4RMYkYLWfjbrE/aajSceqrpOgWY7ugMOZiabnTMjIHuE17wIrW83agDqh8OHSpecHuKDA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-10-28T21:19:42.900Z" encoding="Base64">s8XhHYz4/1z9f98y7Nn8Zw7KjIxOtuALajpzszT4VHgYv7T4scxCw3FcrqMcXqfzJpLNVmW9ANHrEgTe1ZrtDQ==</Signature>
