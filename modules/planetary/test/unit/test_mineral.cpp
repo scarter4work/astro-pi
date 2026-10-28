@@ -1281,6 +1281,61 @@ TEST_CASE("pipeline: the stack's noise model limits sharpening on a shot-noise d
     }
 }
 
+TEST_CASE("pipeline: the stack's noise model, scaled on the sky, reads the disc's own noise") {
+    // Ruling R37: the model is per-frame measurement luma (real Bayer: the 2 x 2 cell's mean, half resolution) and the
+    // sharpening reads the calibrated, demosaiced full-resolution L, whose noise the demosaic, the warp and the
+    // calibration gains rescale and correlate; so PrepareMineral scales the model once, on the sky, to that L's
+    // white-noise-equivalent std (real 64.6F: x1.72). Here the model is exact up to that scale (luma = the channels'
+    // mean, var (a + b t) / 3, one frame; correlated 0.6 px, calibration gains from the cast), so the scaled map must
+    // read the disc's own white-noise-equivalent std, measured from two noise realisations of the same scene.
+    MoonSceneSpec s = StackScene();
+    s.textureAmplitude = 0;
+    s.mariaFraction = 0;
+    s.tintVariation = 0;
+    s.noiseStd = 0.001;
+    s.shotNoise = 2e-4;
+    s.noiseCorrelation = 0.6;
+    MoonSceneSpec sa = s, sb = s;
+    sa.noiseSeed = 101;
+    sb.noiseSeed = 202;
+    const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
+    const stack::StackNoise sn = SceneNoise(s);
+    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, &sn);
+    const std::string& h = ca.history[5];
+    const size_t at = h.find("noise by ");
+    REQUIRE(at != std::string::npos);
+    const double scale = std::stod(h.substr(at + 9));
+    // The disc's calibrated linear L in both realisations (steps 1-3, as PrepareMineral runs them).
+    auto linearL = [&](const MoonScene& sc) {
+        ser::FloatImage rgb = sc.observed;
+        stack::CalibrateColour(rgb, ca.masks);
+        stack::NeutraliseBackground(rgb, ca.masks);
+        ser::FloatImage L{rgb.width, rgb.height, 1, std::vector<float>(rgb.data.size() / 3)};
+        for (size_t i = 0; i < L.data.size(); ++i) L.data[i] = (rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3;
+        return L;
+    };
+    const ser::FloatImage la = linearL(a), lb = linearL(b);
+    ser::FloatImage diff = la;
+    for (size_t i = 0; i < diff.data.size(); ++i) diff.data[i] = static_cast<float>((la.data[i] - lb.data[i]) / std::sqrt(2.0));
+    std::vector<uint8_t> interior(diff.data.size(), 0);
+    std::vector<float> pred;
+    for (int y = 0; y < s.height; ++y)
+        for (int x = 0; x < s.width; ++x) {
+            const size_t i = static_cast<size_t>(y) * s.width + x;
+            if (!(a.diskTruth[i] && std::hypot(x - s.cx, y - s.cy) <= s.radius - 30)) continue;
+            interior[i] = 1;
+            double t = 0;
+            for (int c = 0; c < 3; ++c) t += a.observed.data[i * 3 + c] / 3.0;
+            pred.push_back(static_cast<float>(scale * std::sqrt(sn.model.Lookup(t))));
+        }
+    std::nth_element(pred.begin(), pred.begin() + static_cast<long>(pred.size() / 2), pred.end());
+    const double predicted = pred[pred.size() / 2];
+    const double measured = stack::LayerNoise(stack::StarletLayers(diff, 1, 4)[0], interior) / 0.889;
+    INFO("scale " << scale << "; disc white-noise std: map " << predicted << ", measured " << measured);
+    CHECK(predicted == Catch::Approx(measured).epsilon(0.10));
+}
+
+
 TEST_CASE("pipeline: a small disc in a big frame is found, not the whole frame") {
     // A 1080p frame with a 20 px disc (0.06% of it; task ENG review I2: it read "disk 100%", the sky was grey).
     MoonSceneSpec s = StackScene();

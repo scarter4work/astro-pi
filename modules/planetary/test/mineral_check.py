@@ -40,9 +40,11 @@ there, and the B9 dispatch):
   R31 gain    sharpening's noise gain on the disc: the halves registered (on the mineral images' G; every stage
               is on that grid; edge_chroma.register, both resampled half-way), half 1 fitted to half 0 by a gain
               and offset over the interior (disk in both, 24 px from its edge), then std(s0 - s1') / std(u0 - u1')
-              over the interior, s = sharpened L, u = unsharpened display L: <= 1.5. Also over the flattest 10 %
-              of the interior. The difference of the halves carries their seeing difference as well as noise
-              (texture the sharpening also boosts), so the whole-interior figure reads high, never low.
+              over the interior, s = sharpened L, u = unsharpened display L; also over the flattest 10 % of the
+              interior. Ruling R37: on real data even the flattest decile is texture, so the difference is noise
+              riding boosted texture and scales with the gain; the bar is noise gain <= detail gain, the rms of the
+              sharpened bands (starlet layers 1-4) of the halves' mean, sharpened over unsharpened (the limiter
+              failing would boost noise beyond the detail). The noise-only guarantee is the unit tests' (flat disc).
   M3 align    the Channel alignment HISTORY line of the full stack and both halves (shift +- uncertainty,
               applied or not); a channel resampled at |shift| < 0.2 px is flagged LOOK (a limb-fringe look).
   M4 stretch  the Display transfer line, and the disk's top / median (99.99th percentile of unsaturated / median
@@ -312,10 +314,40 @@ def noise_gain(rep, even, odd, reg):
     tex = ndimage.gaussian_gradient_magnitude(0.5 * (o0[0] + o1[0]), 2.0)
     flat = interior & (tex <= np.percentile(tex[interior], 10))
     gf = float(np.std(ds[flat[interior]]) / np.std(du[flat[interior]]))
-    rep.judge("R31 gain", "%.3f (robust %.3f, flattest 10%% %.3f; diff std unsharp %.5f, sharp %.5f; %d px; halves at "
-              "(%d, %d) + (%.2f, %.2f), G match %.3f)" % (g, gr, gf, np.std(du), np.std(ds), interior.sum(), reg["dx"], reg["dy"],
-                                                          reg["rx"], reg["ry"], reg["match"]), "<= 1.5", g <= 1.5,
-              gain=g, robust=gr, flat=gf)
+    # Ruling R37: on real data even the flattest decile is texture, so the halves' difference is noise riding boosted
+    # texture and grows with the gain by construction. The limiter fails only when the noise is boosted more than the
+    # detail: the detail gain is the rms of the sharpened bands (starlet layers 1-4) of the halves' mean, sharpened over
+    # unsharpened, over the same interior.
+    mu = 0.5 * (o0[0] + a * o1[0] + b)
+    ms = 0.5 * (o0[1] + a * o1[1] + b)
+    lu, ls = starlet(mu), starlet(ms)
+    per = [float(np.sqrt((s_[interior] ** 2).mean() / (u_[interior] ** 2).mean())) for u_, s_ in zip(lu, ls)]
+    detail = float(np.sqrt(sum((s_[interior] ** 2).mean() for s_ in ls) / sum((u_[interior] ** 2).mean() for u_ in lu)))
+    # Per band: the difference's own layers, sharpened over unsharpened. The whole-image detail gain weighs the layers
+    # by the detail's energy, which sits in the coarse layers 3-4 (nominal gain 1), the noise's in layers 1-2 (1.5, 2.5).
+    nu = starlet(o0[0] - (a * o1[0] + b))
+    ns = starlet(o0[1] - (a * o1[1] + b))
+    pern = [float(np.sqrt((s_[interior] ** 2).mean() / (u_[interior] ** 2).mean())) for u_, s_ in zip(nu, ns)]
+    ok = all(n <= d for n, d in zip(pern, per))
+    rep.judge("R31 gain", "noise gain %.3f (robust %.3f, flattest 10%% %.3f) vs detail gain %.3f; per layer 1-4 noise / detail: "
+              "%s; diff std unsharp %.5f, sharp %.5f; %d px; halves at (%d, %d) + (%.2f, %.2f), G match %.3f" % (
+                  g, gr, gf, detail, " ".join("%.2f/%.2f" % nd for nd in zip(pern, per)), np.std(du), np.std(ds),
+                  interior.sum(), reg["dx"], reg["dy"], reg["rx"], reg["ry"], reg["match"]),
+              "per layer, noise gain <= detail gain (R37)", ok, gain=g, robust=gr, flat=gf, detail=detail, layers=per,
+              noiseLayers=pern, wholeImagePass=g <= detail)
+
+
+def starlet(x, n=4):
+    """The B3-spline starlet's detail layers 1..n of a 2-D image (a trous, mirrored edges), as the engine's."""
+    k = np.array([1, 4, 6, 4, 1]) / 16.0
+    c, out = x, []
+    for j in range(n):
+        kk = np.zeros(4 * 2 ** j + 1)
+        kk[::2 ** j] = k
+        cn = ndimage.convolve1d(ndimage.convolve1d(c, kk, axis=0, mode="mirror"), kk, axis=1, mode="mirror")
+        out.append(c - cn)
+        c = cn
+    return out
 
 
 def to8(rgb):
