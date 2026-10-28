@@ -36,13 +36,13 @@ struct LunarMasks {
 };
 // On the 3 x 3 mean of the channels' mean: the disc's level D is the median of Otsu's brighter class (histogram
 // over the full finite range, so a disc of a few hundred px in a 1080p frame is its own class); D must clear the
-// frame's median by 5 sigma of the noise, or there is no disc (empty masks, reason set: a frame of sky). Sky
+// darker class's median by 5 sigma of the noise, or there is no disc (empty masks, reason set: a frame of sky). Sky
 // candidates are darker than D / 4 (maria, 0.5-0.7 of the highlands, are not); the threshold is the sky level
 // plus 5 sigma of its pixel noise, kept within 4-15% of the contrast (a lit terminator at 10% of the lit median
 // is disc). Pieces under 1% of the largest, or under 16 px, are dropped (stars, specks). Under 0.1% of the frame
 // in sky candidates there is no sky. Limits: a sky brighter than D / 4 (a twilight Moon) reads as "no sky"; a
-// frame of sky whose gradient spans many noise sigma is not told from a disc filling the frame. NaN samples are
-// left out of the levels.
+// frame of sky whose gradient lifts its brighter half 5 noise sigma over its darker half is not told from a disc
+// filling the frame (HISTORY then reads "100% of the frame"). NaN samples are left out of the levels.
 // Throws std::invalid_argument unless rgb is 3 channels whose data matches its size.
 LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads);
 
@@ -80,13 +80,21 @@ std::vector<ser::FloatImage> StarletLayers(const ser::FloatImage& lum1, int laye
 // Robust std (1.4826 x MAD) of a layer's first channel over the region's pixels (empty region: all). 0 for
 // fewer than 2 pixels.
 double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& region);              // robust (MAD) std
+// The white-noise std of a 1-channel luminance: the lower of the sky's and the flattest disc tiles' layer-1 MAD,
+// / 0.889. Fair only where the sky's noise is the disc's, i.e. on linear data (after a display transfer the sky is
+// clipped at 0 and the curve is steeper on the disc: it read ~7x low there). 0 with no disc. Throws
+// std::invalid_argument unless lum1 is 1 channel and the masks are of its size.
+double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int threads);
 // Sharpens a 1-channel luminance in place: layers 1-4, nominal gains {1.5, 2.5, 1, 1}, each times its Wiener
-// factor (the share of the layer's energy over the disc that is not noise; the noise is the lower of the sky's
-// and the flattest disc tiles' layer-1 MAD), applied to the part of each coefficient beyond 2 sigma of that
-// layer's noise. The boost is 0 off the disc and fades in from one to two layer reaches inside the limb's and
-// terminator's half-contrast line (no halo, no rim). Above 0.9 a smooth shoulder keeps L under 0.998, so
-// sharpening never clips a sample the stack did not. Skipped (unchanged) when there is no disc.
-StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads);
+// factor (the share of the layer's energy over the disc that is not noise), applied to the part of each
+// coefficient beyond 2 sigma of that layer's noise at the pixel. The noise: `noise`, the white-noise std per
+// pixel when given (PrepareMineral: LuminanceNoise on the linear data times the display transfer's slope there),
+// else LuminanceNoise(lum1) everywhere (right for linear input). The boost is 0 off the disc and fades in from one
+// to two layer reaches inside the limb's and terminator's half-contrast line (no halo, no rim). Above 0.9 a
+// smooth shoulder keeps L under 0.998, so sharpening never clips a sample the stack did not. Skipped (unchanged)
+// when there is no disc. Throws std::invalid_argument as LuminanceNoise, or for a noise map not of lum1's size.
+StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads,
+                                 const std::vector<float>* noise = nullptr);
 // The same on an RGB image's luminance (the channels' mean): every channel scaled by L's own factor, so R/G and
 // B/G are unchanged (chroma untouched); a pixel that would pass 0.998 in a channel is scaled less, uniformly.
 StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads);
@@ -121,8 +129,13 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
 // A linked midtones (MTF) stretch of x = v / W clipped to [0, 1]: the balance puts the disc's median luminance
 // (the frame's without a disc) at 0.35, and the white point W is the smallest at or above the brightest sample
 // not flagged in stackClipped (one flag per sample, as rgb.data; empty: none) that lands it at or under 0.95.
-// Flagged samples may reach 1.0; no other does. Skipped (samples only clipped to [0, 1]) without signal.
-StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped);
+// Flagged samples may reach 1.0; no other does. Skipped (samples only clipped to [0, 1]) without signal. curve
+// (if given) receives the transfer applied, the default (identity on [0, 1]) when it skipped.
+struct DisplayCurve {
+    double white = 1, balance = 0.5;  // y = MTF(clamp(v / white, 0, 1), balance)
+};
+StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped,
+                           DisplayCurve* curve = nullptr);
 
 // Progress phase of PrepareMineral and MakeMineralMoon: report(kPhaseMineral, step, 7) before each step (and
 // (7, 7) at the end of MakeMineralMoon); cancelled() is polled at each report and a true result throws

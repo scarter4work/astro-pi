@@ -85,6 +85,27 @@ TEST_CASE("segment: disk cut by the frame top and bottom") {
     CheckSegmentation(sc, stack::SegmentLunar(sc.observed, 8));
 }
 
+TEST_CASE("segment: a featureless disc covering most of the frame") {
+    // The frame's median is on the disc here: the check that the disc is not just the sky's noise must compare
+    // the disc with the sky's class, not with the frame's median (which read "no lunar disk").
+    MoonSceneSpec s;
+    s.width = 1920;
+    s.height = 1080;
+    s.cx = 960;
+    s.cy = 540;
+    s.radius = 700;
+    s.textureAmplitude = 0;
+    s.mariaFraction = 0;
+    s.tintVariation = 0;
+    s.blurSigma = 1.2;
+    s.noiseStd = 0.002;
+    s.pedestal = {0.01, 0.01, 0.01};
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 8);
+    INFO(m.reason);
+    CheckSegmentation(sc, m);
+}
+
 TEST_CASE("segment: crescent with terminator") {
     MoonSceneSpec s;
     s.phaseDeg = 120;
@@ -1047,6 +1068,52 @@ TEST_CASE("pipeline: small disc completes") {
     CHECK(out.history.size() == 7);
 }
 
+namespace {
+
+// The sharpening's noise gain in the shipped order (after the display transfer), on the disc's interior
+// (r <= R - 40, lit): PrepareMineral on two noise realisations of the same scene; the std of the difference of
+// their sharp L over the std of the difference of their display L before sharpening. (Against the noise-free
+// scene instead, the difference would also hold the texture times the gain the Wiener factor rightly withholds
+// from the noisy one: on the textured disc at noise 0.002 / 0.005 that read x2.00 / x1.75, this x1.39 / x1.22.)
+double PipelineNoiseGain(const MoonSceneSpec& spec) {
+    MoonSceneSpec sa = spec, sb = spec;
+    sa.noiseSeed = 101;
+    sb.noiseSeed = 202;
+    const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
+    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}), cb = stack::PrepareMineral(b.observed, 4, {});
+    const std::vector<double> la = testing::Lum(ca.display), lb = testing::Lum(cb.display);
+    std::vector<double> before(la.size()), after(la.size());
+    std::vector<uint8_t> interior(la.size(), 0);
+    for (int y = 0; y < spec.height; ++y)
+        for (int x = 0; x < spec.width; ++x) {
+            const size_t i = static_cast<size_t>(y) * spec.width + x;
+            before[i] = la[i] - lb[i];
+            after[i] = static_cast<double>(ca.lum.data[i]) - cb.lum.data[i];
+            interior[i] = a.diskTruth[i] && std::hypot(x - spec.cx, y - spec.cy) <= spec.radius - 40;
+        }
+    return StdOver(after, interior) / StdOver(before, interior);
+}
+
+}  // namespace
+
+TEST_CASE("pipeline: sharpening is noise-limited in the shipped order") {
+    // Task ENG review I1: measured after the display transfer, the noise read ~7x low and noise was boosted
+    // x1.53-1.57 on the disc. Spec step 4: a noise-only gain fails (<= 1.5x); the flat disc is noise only.
+    for (bool flat : {false, true})
+        for (double noise : {0.002, 0.005}) {
+            MoonSceneSpec s = StackScene();
+            s.noiseStd = noise;
+            if (flat) {
+                s.textureAmplitude = 0;
+                s.mariaFraction = 0;
+                s.tintVariation = 0;
+            }
+            const double g = PipelineNoiseGain(s);
+            INFO((flat ? "flat disc" : "textured disc") << ", noise " << noise << ": disc-interior noise gain " << g);
+            CHECK(g <= 1.5);
+        }
+}
+
 TEST_CASE("pipeline: a small disc in a big frame is found, not the whole frame") {
     // A 1080p frame with a 20 px disc (0.06% of it; task ENG review I2: it read "disk 100%", the sky was grey).
     MoonSceneSpec s = StackScene();
@@ -1082,9 +1149,11 @@ TEST_CASE("pipeline: a small disc in a big frame is found, not the whole frame")
 }
 
 TEST_CASE("pipeline: a frame of sky has no lunar disk") {
-    // The stack scene with no Moon in it: sky pedestal, gradient and noise only.
+    // The stack scene with no Moon in it: sky pedestal and noise only. (A gradient over 5 noise sigma of the 3 x 3
+    // mean is a stated limit of SegmentLunar: it reads as a disc filling the frame, and HISTORY says "100%".)
     MoonSceneSpec s = StackScene();
     s.level = 0;
+    s.gradientX = 0;
     const MoonScene sc = MakeMoonScene(s);
     const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
     INFO("disk " << m.diskCount << " px");

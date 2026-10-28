@@ -233,23 +233,24 @@ LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads) {
         return m;
     }
     const double D = Median(upper);
-    // D must clear the frame's median by kDiscSigmas sigma of the 3 x 3 mean's noise; otherwise Otsu has only
-    // split the sky's noise (task ENG review I2) and there is no disc to find. Noise from neighbour differences
-    // over the whole frame (blind to gradients), / sqrt 2, then / 3 for the 3 x 3 mean.
+    // D must clear the level of the darker class (its median) by kDiscSigmas sigma of the 3 x 3 mean's noise;
+    // otherwise Otsu has only split the sky's noise (task ENG review I2) and there is no disc to find. Not the
+    // frame's median: a disc covering most of the frame puts that on the disc. Noise from neighbour differences over
+    // the whole frame (blind to gradients), / sqrt 2, then / 3 for the 3 x 3 mean.
     {
         constexpr double kDiscSigmas = 5;
-        std::vector<float> all, diff;
-        all.reserve(n);
+        std::vector<float> lower, diff;
+        lower.reserve(n - upper.size());
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x) {
                 const size_t i = static_cast<size_t>(y) * w + x;
-                if (!std::isnan(Ls.data[i])) all.push_back(Ls.data[i]);
+                if (Ls.data[i] <= t0) lower.push_back(Ls.data[i]);
                 if (x + 1 < w && std::isfinite(L.data[i]) && std::isfinite(L.data[i + 1])) diff.push_back(L.data[i + 1] - L.data[i]);
             }
-        const double med = Median(all), sigma = MadStd(diff) / std::sqrt(2.0) / 3;
-        if (!(D > 0) || !(D - med > kDiscSigmas * sigma)) {
-            m.reason = Fmt("the brightest class's level %.4g is not %.0f noise sigma (%.2g) above the frame's median %.4g",
-                           D, kDiscSigmas, sigma, med);
+        const double low = Median(lower), sigma = MadStd(diff) / std::sqrt(2.0) / 3;
+        if (!(D > 0) || !(D - low > kDiscSigmas * sigma)) {
+            m.reason = Fmt("the brightest class's level %.4g is not %.0f noise sigma (%.2g) above the darker class's %.4g",
+                           D, kDiscSigmas, sigma, low);
             return m;
         }
     }
@@ -924,10 +925,99 @@ double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& regi
     return MadStd(v);
 }
 
-StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads) {
+namespace {
+
+// The disc's core: disc pixels at or above half the contrast between the sky (its median; 0 without sky) and the
+// disc's median, on the 3 x 3 mean, enclosed holes filled (craters, dark mare floors). Maria sit at 0.5-0.7 of the
+// highlands on the real Moon and above half the disc median; the limb's and the terminator's half-contrast lines
+// are its edge. dist: distance into the core from that edge (+inf when nothing in view is outside it: a disc
+// filling the frame).
+struct DiscCore {
+    std::vector<uint8_t> core;
+    std::vector<float> dist;
+};
+
+DiscCore MakeDiscCore(const ser::FloatImage& lum1, const LunarMasks& m, int threads) {
+    const int w = lum1.width, h = lum1.height;
+    const size_t n = Pixels(lum1);
+    DiscCore dc;
+    dc.core.assign(n, 0);
+    std::vector<float> d, s;
+    for (size_t i = 0; i < n; ++i) {
+        if (m.disk[i]) d.push_back(lum1.data[i]);
+        if (!m.sky.empty() && m.sky[i]) s.push_back(lum1.data[i]);
+    }
+    const double half = 0.5 * (Median(d) + (s.empty() ? 0.0 : Median(s)));
+    const ser::FloatImage Ls = Box3(lum1, threads);
+    for (size_t i = 0; i < n; ++i) dc.core[i] = m.disk[i] && Ls.data[i] >= half;
+    FillHoles(dc.core, w, h);
+    dc.dist = DistanceOutside(dc.core, w, h);
+    return dc;
+}
+
+// Where layer j's boost is at full weight; the statistics of layer j are taken there (its coefficients clear of
+// the edge), or over the whole disc when that leaves under 1000 px (a small disc).
+std::vector<uint8_t> LayerRegion(const DiscCore& dc, const LunarMasks& m, int j) {
+    std::vector<uint8_t> r(dc.core.size());
+    size_t k = 0;
+    for (size_t i = 0; i < r.size(); ++i) k += r[i] = dc.core[i] && EdgeWeight(dc.dist[i], j) >= 1.0;
+    return k >= 1000 ? r : m.disk;
+}
+
+// White-noise std from layer 1 (which keeps 0.889 of it): the lower of the sky's and the disc's flattest tiles'.
+// Terrain only ever inflates a layer-1 estimate -- taken over the whole disc of a scene with detail out to 1/4
+// cycle/px it read 1.5-2.4x the true noise and held the gains near 1 (measured on MoonSynth, blur 1.0-1.5 px) --
+// so the disc's value is the 10th percentile over 16 x 16 tiles clear of the edge (the smoothest terrain, maria
+// floors), and the sky, which is noise only, caps it. Fair only where the sky's noise is the disc's: on linear
+// data with additive noise. After a display transfer it is not (the transfer clips the sky at 0 and is steeper
+// on the disc), which is why PrepareMineral measures it before the transfer. Limit: where shot noise makes a
+// linear stack's disc noise exceed its sky's, the sky's lower value lets more disc noise through the threshold;
+// the gains stay bounded by kLayerGain and the Wiener factor.
+double WhiteNoise(const ser::FloatImage& layer1, const DiscCore& dc, const LunarMasks& m) {
+    const int w = layer1.width, h = layer1.height;
+    const std::vector<uint8_t> r = LayerRegion(dc, m, 0);
+    constexpr int kTile = 16;
+    std::vector<float> tileNoise, v;
+    for (int ty = 0; ty + kTile <= h; ty += kTile)
+        for (int tx = 0; tx + kTile <= w; tx += kTile) {
+            v.clear();
+            for (int y = ty; y < ty + kTile; ++y)
+                for (int x = tx; x < tx + kTile; ++x) {
+                    const size_t i = static_cast<size_t>(y) * w + x;
+                    if (r[i]) v.push_back(layer1.data[i]);
+                }
+            if (v.size() == static_cast<size_t>(kTile * kTile)) tileNoise.push_back(static_cast<float>(MadStd(v)));
+        }
+    double white;
+    if (tileNoise.size() >= 10) {
+        const size_t k = tileNoise.size() / 10;
+        std::nth_element(tileNoise.begin(), tileNoise.begin() + static_cast<long>(k), tileNoise.end());
+        white = tileNoise[k];
+    } else {
+        white = LayerNoise(layer1, r);
+    }
+    if (m.skyCount >= 1000) white = std::min(white, LayerNoise(layer1, m.sky));
+    return white / kStarletNoise[0];
+}
+
+void RequireLuminance(const ser::FloatImage& lum1, const LunarMasks& m, const char* who) {
     if (lum1.channels != 1 || lum1.data.size() != Pixels(lum1) || m.width != lum1.width || m.height != lum1.height ||
         m.disk.size() != Pixels(lum1))
-        throw std::invalid_argument("SharpenLuminanceImage: needs a 1-channel image and masks of its size");
+        throw std::invalid_argument(std::string(who) + ": needs a 1-channel image and masks of its size");
+}
+
+}  // namespace
+
+double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int threads) {
+    RequireLuminance(lum1, m, "LuminanceNoise");
+    if (m.diskCount == 0) return 0;
+    return WhiteNoise(StarletLayers(lum1, 1, threads)[0], MakeDiscCore(lum1, m, threads), m);
+}
+
+StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads, const std::vector<float>* noise) {
+    RequireLuminance(lum1, m, "SharpenLuminanceImage");
+    if (noise && noise->size() != Pixels(lum1))
+        throw std::invalid_argument("SharpenLuminanceImage: the noise map does not match the image");
     const int w = lum1.width, h = lum1.height;
     const size_t n = Pixels(lum1);
     StepRecord rec;
@@ -936,98 +1026,50 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
         rec.history = "Sharpen skipped: no lunar disk found to sharpen";
         return rec;
     }
-    // The disc's core: disc pixels at or above half the contrast between the sky (its median; 0 without sky)
-    // and the disc's median, on the 3 x 3 mean, enclosed holes filled (craters, dark mare floors). Maria sit at
-    // 0.5-0.7 of the highlands on the real Moon and above half the disc median; the limb's and the terminator's
-    // half-contrast lines are its edge. Distance into the core from that edge (+inf when nothing in view is
-    // outside it: a disc filling the frame).
-    std::vector<uint8_t> core(n, 0);
-    {
-        std::vector<float> d, s;
-        for (size_t i = 0; i < n; ++i) {
-            if (m.disk[i]) d.push_back(lum1.data[i]);
-            if (!m.sky.empty() && m.sky[i]) s.push_back(lum1.data[i]);
-        }
-        const double half = 0.5 * (Median(d) + (s.empty() ? 0.0 : Median(s)));
-        const ser::FloatImage Ls = Box3(lum1, threads);
-        for (size_t i = 0; i < n; ++i) core[i] = m.disk[i] && Ls.data[i] >= half;
-        FillHoles(core, w, h);
-    }
-    const std::vector<float> dist = DistanceOutside(core, w, h);
-    // Where a layer's boost is at full weight; the statistics of layer j are taken there (its coefficients clear
-    // of the edge), or over the whole disc when that leaves under 1000 px (a small disc).
-    auto region = [&](int j) {
-        std::vector<uint8_t> r(n);
-        size_t k = 0;
-        for (size_t i = 0; i < n; ++i) k += r[i] = core[i] && EdgeWeight(dist[i], j) >= 1.0;
-        return k >= 1000 ? r : m.disk;
-    };
+    const DiscCore dc = MakeDiscCore(lum1, m, threads);
     const std::vector<ser::FloatImage> layers = StarletLayers(lum1, kSharpenLayers, threads);
-    // Noise (white-noise std, from layer 1, which keeps 0.889 of it): the lower of the sky's and the disc's
-    // flattest tiles'. Terrain only ever inflates a layer-1 estimate -- taken over the whole disc of a scene with
-    // detail out to 1/4 cycle/px it read 1.5-2.4x the true noise and held the gains near 1 (measured on
-    // MoonSynth, blur 1.0-1.5 px) -- so the disc's value is the 10th percentile over 16 x 16 tiles clear of the
-    // edge (the smoothest terrain, maria floors), and the sky, which is noise only, caps it. Limit: where a
-    // stack's disc noise exceeds its sky's (shot noise; in display units the transfer's slope works the other
-    // way), the sky's lower value lets more disc noise through the threshold; the gains stay bounded by
-    // kLayerGain and the Wiener factor below.
-    double white;
-    {
-        const std::vector<uint8_t> r = region(0);
-        constexpr int kTile = 16;
-        std::vector<float> tileNoise;
-        std::vector<float> v;
-        for (int ty = 0; ty + kTile <= h; ty += kTile)
-            for (int tx = 0; tx + kTile <= w; tx += kTile) {
-                v.clear();
-                for (int y = ty; y < ty + kTile; ++y)
-                    for (int x = tx; x < tx + kTile; ++x) {
-                        const size_t i = static_cast<size_t>(y) * w + x;
-                        if (r[i]) v.push_back(layers[0].data[i]);
-                    }
-                if (v.size() == static_cast<size_t>(kTile * kTile)) tileNoise.push_back(static_cast<float>(MadStd(v)));
-            }
-        double disc;
-        if (tileNoise.size() >= 10) {
-            const size_t k = tileNoise.size() / 10;
-            std::nth_element(tileNoise.begin(), tileNoise.begin() + static_cast<long>(k), tileNoise.end());
-            disc = tileNoise[k];
-        } else {
-            disc = LayerNoise(layers[0], r);
-        }
-        white = disc;
-        if (m.skyCount >= 1000) white = std::min(white, LayerNoise(layers[0], m.sky));
-        white /= kStarletNoise[0];
-    }
+    // The white-noise std at each pixel: the given map, or one value measured on lum1 itself.
+    const double white = noise ? 0.0 : WhiteNoise(layers[0], dc, m);
+    auto sigma = [&](size_t i) { return noise ? static_cast<double>((*noise)[i]) : white; };
     double gain[kSharpenLayers];
     for (int j = 0; j < kSharpenLayers; ++j) {
         // The layer's own noise limit: a Wiener factor, the share of the layer's energy over the disc that is not
         // noise. A layer that is noise only gets gain 1 (spec step 4: a noise-only gain fails).
-        const std::vector<uint8_t> r = region(j);
-        const double sj = white * kStarletNoise[j];
-        double e = 0;
+        const std::vector<uint8_t> r = LayerRegion(dc, m, j);
+        double e = 0, nv = 0;
         size_t k = 0;
         for (size_t i = 0; i < n; ++i)
             if (r[i]) {
                 e += static_cast<double>(layers[static_cast<size_t>(j)].data[i]) * layers[static_cast<size_t>(j)].data[i];
+                nv += sigma(i) * sigma(i);
                 ++k;
             }
         e /= std::max<size_t>(1, k);
-        const double rho = e > 0 ? std::max(0.0, 1 - sj * sj / e) : 0.0;
+        nv *= kStarletNoise[j] * kStarletNoise[j] / std::max<size_t>(1, k);
+        const double rho = e > 0 ? std::max(0.0, 1 - nv / e) : 0.0;
         gain[j] = 1 + (kLayerGain[j] - 1) * rho;
     }
     ParallelBands(h, threads, [&](int y0, int y1) {
         for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
             double v = lum1.data[i];
-            if (core[i])
+            if (dc.core[i])
                 for (int j = 0; j < kSharpenLayers; ++j)
-                    v += (gain[j] - 1) * EdgeWeight(dist[i], j) *
-                         Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * white * kStarletNoise[j]);
+                    v += (gain[j] - 1) * EdgeWeight(dc.dist[i], j) *
+                         Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * sigma(i) * kStarletNoise[j]);
             lum1.data[i] = static_cast<float>(Shoulder(v));
         }
     });
-    rec.history = Fmt("Sharpen (luminance): starlet layers 1-4, noise %.3g; gains %.2f %.2f %.2f %.2f (noise-limited)",
-                      white, gain[0], gain[1], gain[2], gain[3]);
+    if (noise) {
+        std::vector<float> d;
+        for (size_t i = 0; i < n; ++i)
+            if (m.disk[i]) d.push_back((*noise)[i]);
+        rec.history = Fmt("Sharpen (luminance): starlet layers 1-4, noise %.3g (disk median, measured before the display "
+                          "transfer); gains %.2f %.2f %.2f %.2f (noise-limited)",
+                          Median(d), gain[0], gain[1], gain[2], gain[3]);
+    } else {
+        rec.history = Fmt("Sharpen (luminance): starlet layers 1-4, noise %.3g; gains %.2f %.2f %.2f %.2f (noise-limited)",
+                          white, gain[0], gain[1], gain[2], gain[3]);
+    }
     return rec;
 }
 
@@ -1198,14 +1240,28 @@ double Mtf(double x, double m) {
 }
 // The midtones balance m that sends x to t (0 < x < 1, 0 < t < 1).
 double MtfBalance(double x, double t) { return x * (1 - t) / (x - 2 * x * t + t); }
+// dMTF(x, m) / dx = m (1 - m) / ((2m - 1) x - m)^2.
+double MtfSlope(double x, double m) {
+    const double q = (2 * m - 1) * x - m;
+    return m * (1 - m) / (q * q);
+}
 
 // Spec step 8: the disc's median at a normal display level, and headroom for sharpening and colour above the
 // brightest unsaturated sample.
 constexpr double kDisplayMedian = 0.35, kDisplayHeadroom = 0.95;
 
+// The transfer's slope dy/dv at a displayed sample y: 0 where y is clipped (at or beyond 0 or 1), else the MTF's
+// slope at v / W (recovered by the inverse MTF, balance 1 - m), / W.
+double DisplaySlope(double y, const DisplayCurve& c) {
+    if (!(y > 0 && y < 1)) return 0;
+    return MtfSlope(Mtf(y, 1 - c.balance), c.balance) / c.white;
+}
+
 }  // namespace
 
-StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped) {
+StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped,
+                           DisplayCurve* curve) {
+    if (curve) *curve = DisplayCurve{};
     RequireMasks(rgb, m, "DisplayTransfer");
     if (!stackClipped.empty() && stackClipped.size() != rgb.data.size())
         throw std::invalid_argument("DisplayTransfer: clipped flags do not match the image");
@@ -1248,6 +1304,7 @@ StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std:
     }
     const double W = std::exp(lo), bal = MtfBalance(med / W, kDisplayMedian);
     for (float& v : rgb.data) v = static_cast<float>(Mtf(v / W, bal));
+    if (curve) *curve = {W, bal};
     rec.history = Fmt("Display transfer: linked midtones %.5f, white point %.5f; disk median %.4f -> %.2f, "
                       "brightest unsaturated sample %.4f -> %.3f",
                       bal, W, med, kDisplayMedian, top, Mtf(top / W, bal));
@@ -1323,11 +1380,33 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
     }
     step("Colour calibration", [&] { return CalibrateColour(rgb, cache.masks).history; });
     step("Background", [&] { return NeutraliseBackground(rgb, cache.masks).history; });
-    step("Display transfer", [&] { return DisplayTransfer(rgb, cache.masks, clipped).history; });
+    // The sharpening's noise is measured here, on the linear data, where the sky is a fair reference for the
+    // disc's noise, and carried through the display transfer's slope at each pixel (task ENG review I1: measured
+    // after the transfer, which clips the sky at 0 and is steeper on the disc, it read ~7x low and the disc's
+    // noise was boosted x1.53-1.57).
+    double linearNoise = 0;
+    DisplayCurve curve;
+    step("Display transfer", [&] {
+        linearNoise = LuminanceNoise(MeanOfChannels(rgb, threads), cache.masks, threads);
+        return DisplayTransfer(rgb, cache.masks, clipped, &curve).history;
+    });
     step("Channel alignment", [&] { return AlignChannels(rgb, threads).history; });
     step("Sharpen", [&] {
         cache.lum = MeanOfChannels(rgb, threads);
-        return SharpenLuminanceImage(cache.lum, cache.masks, threads).history;
+        // L is the channels' mean, so with equal per-channel noise its display noise is the linear L's times the
+        // rms of the three channels' slopes.
+        std::vector<float> noise(n);
+        ParallelBands(rgb.height, threads, [&](int y0, int y1) {
+            for (size_t i = static_cast<size_t>(y0) * rgb.width; i < static_cast<size_t>(y1) * rgb.width; ++i) {
+                double s2 = 0;
+                for (int c = 0; c < 3; ++c) {
+                    const double s = DisplaySlope(rgb.data[i * 3 + c], curve);
+                    s2 += s * s;
+                }
+                noise[i] = static_cast<float>(linearNoise * std::sqrt(s2 / 3));
+            }
+        });
+        return SharpenLuminanceImage(cache.lum, cache.masks, threads, &noise).history;
     });
     if (noDisk) cache.lum = MeanOfChannels(rgb, threads);
     steps.Tick();

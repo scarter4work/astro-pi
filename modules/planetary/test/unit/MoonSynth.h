@@ -49,6 +49,9 @@ struct MoonSceneSpec {
     // Per-channel offset of the observed light (px; +y = down): the scene is evaluated at (x - sx, y - sy).
     std::array<double, 3> shiftX{0, 0, 0}, shiftY{0, 0, 0};
     unsigned seed = 1;
+    // 0: the noise is drawn from `seed`'s stream after the scene; else from its own stream, so two specs that
+    // differ only here have the same scene and independent noise.
+    unsigned noiseSeed = 0;
 };
 
 struct MoonScene {
@@ -201,6 +204,7 @@ inline MoonScene MakeMoonScene(const MoonSceneSpec& s) {
     });
     Blur(sc.observed, s.blurSigma);
     std::normal_distribution<double> nd(0, 1);
+    if (s.noiseSeed != 0) rng.seed(s.noiseSeed);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             const size_t i = static_cast<size_t>(y) * w + x;
