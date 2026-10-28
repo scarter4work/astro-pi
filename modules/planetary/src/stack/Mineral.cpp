@@ -1409,6 +1409,8 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
         return SharpenLuminanceImage(cache.lum, cache.masks, threads, &noise).history;
     });
     if (noDisk) cache.lum = MeanOfChannels(rgb, threads);
+    // The fade threshold depends on the display RGB only: measured once here, not on every slider move.
+    else cache.satThreshold = AutoSatThreshold(rgb);
     steps.Tick();
     cache.display = std::move(rgb);
     return cache;
@@ -1422,7 +1424,9 @@ ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParam
         rec.skipped = true;
         rec.history = std::string("Mineral colour skipped: ") + kNoDisk + "; nothing done";
     } else {
-        rec = MineralColour(out, cache.lum, p, threads);
+        MineralParams q = p;
+        if (q.satThreshold < 0 && cache.satThreshold >= 0) q.satThreshold = cache.satThreshold;
+        rec = MineralColour(out, cache.lum, q, threads);
     }
     if (record) *record = std::move(rec);
     return out;

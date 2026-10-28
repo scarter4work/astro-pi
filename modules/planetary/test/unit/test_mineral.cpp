@@ -1261,6 +1261,12 @@ TEST_CASE("pipeline: re-running the colour on the cache") {
     CHECK(a.data == full.image.data);
     CHECK(rec.history == full.history.back());
     CHECK(cache.history.size() == 6);
+    // The fade threshold is measured once, in the cache (task ENG review M8), and is the one MineralColour would
+    // measure on the display RGB itself: the colour on the cache equals MineralColour run directly.
+    CHECK(cache.satThreshold == stack::AutoSatThreshold(cache.display));
+    ser::FloatImage direct = cache.display;
+    stack::MineralColour(direct, cache.lum, p5, 4);
+    CHECK(a.data == direct.data);
     const ser::FloatImage b = stack::ApplyMineralColour(cache, stack::MineralParams{}, 4);
     CHECK(a.data != b.data);
 }

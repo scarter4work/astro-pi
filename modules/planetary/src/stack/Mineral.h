@@ -150,15 +150,19 @@ struct MineralCache {
     std::vector<std::string> history;  // steps 1-6 (Lunar disk .. Sharpen)
     std::vector<std::pair<std::string, double>> stepSeconds;
     std::string notice;                // as MineralOutcome::notice
+    double satThreshold = -1;          // AutoSatThreshold(display): the fade threshold, measured once
 };
 // Steps 1 - 4c. Throws std::invalid_argument for a stack that is not 3 channels (mono is refused: the spec's
 // anti-goal) or that holds NaN samples (the message gives their count; +-Inf is taken as a saturated or empty
 // sample), StackCancelled on a cancel. With no disc found, every later step skips (see MineralOutcome::notice).
-// Memory: the cache holds 4 floats per pixel, plus the input's copy.
+// Memory: the cache holds 18 bytes per pixel (display 12, lum 4, masks 2: 37 MB at 1920 x 1080); the working
+// copy of the stack becomes cache.display (moved, not copied).
 MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress);
 // Steps 5-7 only, on a copy of cache.display; record (if given) receives the colour step's HISTORY line. Cheap: a
-// chroma blur and one pass (1080p, 32 threads: well under a second). Exceptions as MineralColour's. With no disc
-// in the cache, the colour step skips (record says why) and the copy is returned as it is.
+// chroma blur and one pass (1080p, 32 threads: well under a second); it allocates 24 bytes per pixel (the output
+// copy and the chroma layer: 50 MB at 1920 x 1080). p.satThreshold < 0 takes cache.satThreshold (the same value
+// MineralColour would measure on cache.display). Exceptions as MineralColour's. With no disc in the cache, the
+// colour step skips (record says why) and the copy is returned as it is.
 ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParams& p, int threads,
                                    StepRecord* record = nullptr);
 
