@@ -1372,7 +1372,7 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Sharpen_NumericControl.SetPrecision( 2 );
    Sharpen_NumericControl.EnableFixedPrecision();
    Sharpen_NumericControl.edit.SetFixedWidth( editWidth );
-   Sharpen_NumericControl.SetToolTip( "<p>How much the luminance is sharpened: 0 is none, 1 the default, 4 the most. "
+   Sharpen_NumericControl.SetToolTip( "<p>How much the luminance is sharpened: 0 is none, 2 the default, 4 the most. "
                                       "Above 1 the finest detail (crater rims) gains most. Noise is held back at every "
                                       "amount, but noise riding on texture grows with it. Only the sharpening and the "
                                       "colour are computed again.</p>" );

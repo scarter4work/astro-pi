@@ -37,7 +37,7 @@ mkdir -p "$OUT"
 
 # The reference capture is also coloured at these Sharpen amounts (Task SHARP; the run's own amount is the
 # default, kSharpenDefault), re-run on its cache as the window's slider does: mineral_s<A>.fits.
-REF_SHARPENS="0,2,3"
+REF_SHARPENS="1,1.5,2.5"
 
 # id | path under the NAS | --bayer | extra strengths (k:name,...) | role
 CAPTURES=(

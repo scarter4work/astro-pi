@@ -561,17 +561,26 @@ TEST_CASE("sharpen: closer to the truth") {
     MoonSceneSpec s;
     s.blurSigma = 1.5;
     s.noiseStd = 0.005;
-    MoonScene sc = MakeMoonScene(s);
+    const MoonScene sc = MakeMoonScene(s);
     const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
     const std::vector<double> truth = testing::Lum(sc.truth), before = testing::Lum(sc.observed);
-    const stack::StepRecord rec = stack::SharpenLuminance(sc.observed, m, 4);
-    const std::vector<double> after = testing::Lum(sc.observed);
-    const double e0 = RmsOver(before, truth, sc.diskTruth), e1 = RmsOver(after, truth, sc.diskTruth);
-    INFO(rec.history);
-    INFO("disk RMS error vs truth: before " << e0 << ", after " << e1 << " (" << 100 * (1 - e1 / e0) << "% lower)");
-    CHECK_FALSE(rec.skipped);
-    CHECK(e1 <= 0.9 * e0);
-    CHECK(Ascii(rec.history));
+    const double e0 = RmsOver(before, truth, sc.diskTruth);
+    // Ruling R40: judged at amount 1, the engine's nominal gains (the limiter's reference point); reported at the
+    // default, which on this scene sharpens past the truth (the default is set on real data against Scott's
+    // reference, Task SHARP).
+    for (double amount : {1.0, stack::kSharpenDefault}) {
+        ser::FloatImage im = sc.observed;
+        const stack::StepRecord rec = stack::SharpenLuminance(im, m, 4, amount);
+        const double e1 = RmsOver(testing::Lum(im), truth, sc.diskTruth);
+        INFO(rec.history);
+        INFO("amount " << amount << ": disk RMS error vs truth: before " << e0 << ", after " << e1 << " ("
+                       << 100 * (1 - e1 / e0) << "% lower)");
+        CHECK_FALSE(rec.skipped);
+        CHECK(Ascii(rec.history));
+        if (amount == 1.0) CHECK(e1 <= 0.9 * e0);
+        else WARN("amount " << amount << " (the default): disk RMS error vs truth " << e0 << " -> " << e1 << " ("
+                            << 100 * (1 - e1 / e0) << "% lower; judged at amount 1, Ruling R40)");
+    }
 }
 
 TEST_CASE("sharpen: noise-only gain fails") {
@@ -1227,6 +1236,9 @@ double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false, dou
 TEST_CASE("pipeline: sharpening is noise-limited in the shipped order") {
     // Task ENG review I1: measured after the display transfer, the noise read ~7x low and noise was boosted
     // x1.53-1.57 on the disc. Spec step 4: a noise-only gain fails (<= 1.5x); the flat disc is noise only.
+    // Ruling R40: the flat (noise-only) disc is judged at the default amount; the textured disc, where noise riding
+    // texture above the threshold takes the full gain, at amount 1 (the engine's nominal gains), and reported at the
+    // default.
     for (bool flat : {false, true})
         for (double noise : {0.002, 0.005}) {
             MoonSceneSpec s = StackScene();
@@ -1236,9 +1248,13 @@ TEST_CASE("pipeline: sharpening is noise-limited in the shipped order") {
                 s.mariaFraction = 0;
                 s.tintVariation = 0;
             }
-            const double g = PipelineNoiseGain(s);
+            const double g = PipelineNoiseGain(s, false, flat ? stack::kSharpenDefault : 1.0);
             INFO((flat ? "flat disc" : "textured disc") << ", noise " << noise << ": disc-interior noise gain " << g);
             CHECK(g <= 1.5);
+            if (!flat)
+                WARN("textured disc, noise " << noise << ": noise gain " << g << " at amount 1, "
+                                             << PipelineNoiseGain(s, false, stack::kSharpenDefault) << " at the default "
+                                             << stack::kSharpenDefault << " (reported, Ruling R40)");
         }
 }
 
@@ -1257,9 +1273,13 @@ TEST_CASE("pipeline: sharpening is noise-limited on correlated noise") {
             s.mariaFraction = 0;
             s.tintVariation = 0;
         }
-        const double g = PipelineNoiseGain(s);
+        // Ruling R40: flat (noise only) at the default, textured at amount 1 and reported at the default.
+        const double g = PipelineNoiseGain(s, false, flat ? stack::kSharpenDefault : 1.0);
         INFO((flat ? "flat" : "textured") << " gain " << g);
         CHECK(g <= (flat ? 1.05 : 1.5));
+        if (!flat)
+            WARN("correlated noise, textured: gain " << g << " at amount 1, " << PipelineNoiseGain(s, false, stack::kSharpenDefault)
+                                                     << " at the default (reported, Ruling R40)");
     }
 }
 
@@ -1300,10 +1320,17 @@ TEST_CASE("pipeline: the stack's noise model limits sharpening on a shot-noise d
             s.mariaFraction = 0;
             s.tintVariation = 0;
         }
-        const double old = PipelineNoiseGain(s, false), now = PipelineNoiseGain(s, true);
+        // Ruling R40: flat (noise only) at the default, textured at amount 1 and reported at the default.
+        const double amount = flat ? stack::kSharpenDefault : 1.0;
+        const double old = PipelineNoiseGain(s, false, amount), now = PipelineNoiseGain(s, true, amount);
         INFO((flat ? "flat" : "textured") << " sky " << old << " model " << now);
         CHECK(now <= (flat ? 1.05 : 1.5));
-        if (!flat) CHECK(old > 1.5);  // what the model fixes; the sky's-noise path stays as the fallback
+        if (!flat) {
+            CHECK(old > 1.5);  // what the model fixes; the sky's-noise path stays as the fallback
+            WARN("shot noise, textured, stack noise model: gain " << now << " at amount 1, "
+                                                                 << PipelineNoiseGain(s, true, stack::kSharpenDefault)
+                                                                 << " at the default (reported, Ruling R40)");
+        }
     }
 }
 
