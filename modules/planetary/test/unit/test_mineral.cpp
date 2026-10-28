@@ -1088,16 +1088,21 @@ TEST_CASE("pipeline: sharpening never takes a lit-disc sample below black") {
                 }
     testing::moon_detail::Blur(sc.observed, 1.2);
     const stack::MineralCache cache = stack::PrepareMineral(sc.observed, 4, {});
-    size_t below = 0, lit = 0;
-    float lowest = 1;
-    for (size_t i = 0; i < sc.diskTruth.size(); ++i)
-        if (cache.masks.disk[i]) {
-            ++lit;
-            below += cache.lum.data[i] < 0;
-            lowest = std::min(lowest, cache.lum.data[i]);
-        }
-    INFO(cache.history[5] << "; disc px " << lit << ", sharpened L < 0 on " << below << ", lowest " << lowest);
-    CHECK(below == 0);
+    // At the default amount and at the Sharpen slider's top (Task SHARP): the toe holds at any amount.
+    for (double amount : {stack::kSharpenDefault, stack::kSharpenMax}) {
+        stack::StepRecord rec;
+        const ser::FloatImage L = stack::SharpenedLuminance(cache, amount, 4, &rec);
+        size_t below = 0, lit = 0;
+        float lowest = 1;
+        for (size_t i = 0; i < sc.diskTruth.size(); ++i)
+            if (cache.masks.disk[i]) {
+                ++lit;
+                below += L.data[i] < 0;
+                lowest = std::min(lowest, L.data[i]);
+            }
+        INFO(rec.history << "; disc px " << lit << ", sharpened L < 0 on " << below << ", lowest " << lowest);
+        CHECK(below == 0);
+    }
 }
 
 TEST_CASE("pipeline: no cyan cast in the brightest highlands") {
@@ -1195,7 +1200,7 @@ stack::StackNoise SceneNoise(const MoonSceneSpec& spec) {
     return sn;
 }
 
-double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false) {
+double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false, double amount = stack::kSharpenDefault) {
     MoonSceneSpec sa = spec, sb = spec;
     sa.noiseSeed = 101;
     sb.noiseSeed = 202;
@@ -1203,6 +1208,7 @@ double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false) {
     const stack::StackNoise sn = SceneNoise(spec);
     const stack::StackNoise* np = stackNoise ? &sn : nullptr;
     const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, np), cb = stack::PrepareMineral(b.observed, 4, {}, np);
+    const ser::FloatImage sa1 = stack::SharpenedLuminance(ca, amount, 4), sb1 = stack::SharpenedLuminance(cb, amount, 4);
     const std::vector<double> la = testing::Lum(ca.display), lb = testing::Lum(cb.display);
     std::vector<double> before(la.size()), after(la.size());
     std::vector<uint8_t> interior(la.size(), 0);
@@ -1210,7 +1216,7 @@ double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false) {
         for (int x = 0; x < spec.width; ++x) {
             const size_t i = static_cast<size_t>(y) * spec.width + x;
             before[i] = la[i] - lb[i];
-            after[i] = static_cast<double>(ca.lum.data[i]) - cb.lum.data[i];
+            after[i] = static_cast<double>(sa1.data[i]) - sb1.data[i];
             interior[i] = a.diskTruth[i] && std::hypot(x - spec.cx, y - spec.cy) <= spec.radius - 40;
         }
     return StdOver(after, interior) / StdOver(before, interior);
@@ -1254,6 +1260,26 @@ TEST_CASE("pipeline: sharpening is noise-limited on correlated noise") {
         const double g = PipelineNoiseGain(s);
         INFO((flat ? "flat" : "textured") << " gain " << g);
         CHECK(g <= (flat ? 1.05 : 1.5));
+    }
+}
+
+TEST_CASE("pipeline: noise-only gain at the Sharpen slider's top (reported)") {
+    // Task SHARP: the noise-only guarantees above are judged at the default amount; at the slider's top they are
+    // reported, not judged (the user asked for that much). White, correlated and shot noise on the flat disc.
+    struct Case { const char* name; double noise, shot, corr; bool model; };
+    for (const Case& c : {Case{"white 0.005", 0.005, 0, 0, false}, Case{"correlated 0.003 / 0.6 px", 0.003, 0, 0.6, false},
+                          Case{"shot, stack noise model", 0.001, 2e-4, 0.6, true}}) {
+        MoonSceneSpec s = StackScene();
+        s.noiseStd = c.noise;
+        s.shotNoise = c.shot;
+        s.noiseCorrelation = c.corr;
+        s.textureAmplitude = 0;
+        s.mariaFraction = 0;
+        s.tintVariation = 0;
+        const double atDefault = PipelineNoiseGain(s, c.model), atMax = PipelineNoiseGain(s, c.model, stack::kSharpenMax);
+        WARN("flat disc, " << c.name << ": noise gain " << atDefault << " at amount " << stack::kSharpenDefault << ", "
+                           << atMax << " at amount " << stack::kSharpenMax);
+        CHECK(atDefault <= 1.5);
     }
 }
 
@@ -1301,7 +1327,9 @@ TEST_CASE("pipeline: the stack's noise model, scaled on the sky, reads the disc'
     const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
     const stack::StackNoise sn = SceneNoise(s);
     const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, &sn);
-    const std::string& h = ca.history[5];
+    stack::StepRecord sharpen;
+    stack::SharpenedLuminance(ca, stack::kSharpenDefault, 4, &sharpen);
+    const std::string& h = sharpen.history;
     const size_t at = h.find("noise by ");
     REQUIRE(at != std::string::npos);
     const double scale = std::stod(h.substr(at + 9));
@@ -1418,8 +1446,8 @@ TEST_CASE("pipeline: cancel throws StackCancelled") {
     CHECK(seen);
     CHECK(out.image.data.empty());
     CHECK_THROWS_AS(stack::PrepareMineral(sc.observed, 4, pr), stack::StackCancelled);
-    // Cancelled later: at the report before step 6 (Sharpen), and at MakeMineralMoon's final check (7 of 7),
-    // after the colour step (task ENG review M5: a cancel polled only at the first report passed the test above).
+    // Cancelled later: at PrepareMineral's last report (5 of 7, before the Sharpen step), and at the final check (7 of
+    // 7), after the colour step (task ENG review M5: a cancel polled only at the first report passed the test above).
     for (int64_t at : {int64_t(5), int64_t(7)}) {
         int64_t last = -1;
         stack::Progress later;
@@ -1476,7 +1504,7 @@ TEST_CASE("pipeline: re-running the colour on the cache") {
     const stack::MineralOutcome full = stack::MakeMineralMoon(sc.observed, 4, {}, p5);
     CHECK(a.data == full.image.data);
     CHECK(rec.history == full.history.back());
-    CHECK(cache.history.size() == 6);
+    CHECK(cache.history.size() == 5);  // the Sharpen line is the slider's, made with the colour (Task SHARP)
     // The fade threshold is measured once, in the cache (task ENG review M8): HighlightThreshold on the display RGB at
     // the default chroma blur (Task B9), whatever the slider's blur; the colour on the cache equals MineralColour run
     // directly with that threshold.
@@ -1485,10 +1513,110 @@ TEST_CASE("pipeline: re-running the colour on the cache") {
     ser::FloatImage direct = cache.display;
     stack::MineralParams pd = p5;
     pd.satThreshold = cache.satThreshold;
-    stack::MineralColour(direct, cache.lum, pd, 4);
+    stack::MineralColour(direct, stack::SharpenedLuminance(cache, p5.sharpen, 4), pd, 4);
     CHECK(a.data == direct.data);
     const ser::FloatImage b = stack::ApplyMineralColour(cache, stack::MineralParams{}, 4);
     CHECK(a.data != b.data);
+}
+
+// ---- The Sharpen slider (Task SHARP): the sharpening's amount, re-run on the cache like the colour ----
+
+namespace {
+
+// The detail gain of a sharpening: the rms of starlet layers 1-4 of `after` over that of `before`, over `region`.
+double DetailGain(const ser::FloatImage& before, const ser::FloatImage& after, const std::vector<uint8_t>& region) {
+    const std::vector<ser::FloatImage> lb = stack::StarletLayers(before, 4, 4), la = stack::StarletLayers(after, 4, 4);
+    double eb = 0, ea = 0;
+    for (int j = 0; j < 4; ++j)
+        for (size_t i = 0; i < region.size(); ++i)
+            if (region[i]) {
+                eb += static_cast<double>(lb[static_cast<size_t>(j)].data[i]) * lb[static_cast<size_t>(j)].data[i];
+                ea += static_cast<double>(la[static_cast<size_t>(j)].data[i]) * la[static_cast<size_t>(j)].data[i];
+            }
+    return std::sqrt(ea / eb);
+}
+
+// The scene's lit disc at least `margin` px inside the limb.
+std::vector<uint8_t> DiscInterior(const MoonScene& sc, const MoonSceneSpec& s, double margin) {
+    std::vector<uint8_t> r(sc.diskTruth.size(), 0);
+    for (int y = 0; y < s.height; ++y)
+        for (int x = 0; x < s.width; ++x) {
+            const size_t i = static_cast<size_t>(y) * s.width + x;
+            r[i] = sc.diskTruth[i] && std::hypot(x - s.cx, y - s.cy) <= s.radius - margin;
+        }
+    return r;
+}
+
+}  // namespace
+
+TEST_CASE("sharpen: amount 0 leaves the luminance unchanged") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.5;
+    s.noiseStd = 0.005;
+    s.level = 0.6;  // highlands above the shoulder's knee: an amount of 0 must not roll them off either
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const ser::FloatImage L = LumImage(sc.observed);
+    ser::FloatImage a = L;
+    const stack::StepRecord rec = stack::SharpenLuminanceImage(a, m, 4, nullptr, nullptr, 0.0);
+    INFO(rec.history);
+    CHECK(a.data == L.data);
+    CHECK(rec.history.find("amount 0.00") != std::string::npos);
+    // The same through the cache: the window's slider at 0 shows the display luminance as it is.
+    const MoonScene st = MakeMoonScene(StackScene());
+    const stack::MineralCache cache = stack::PrepareMineral(st.observed, 4, {});
+    stack::StepRecord r0;
+    const ser::FloatImage l0 = stack::SharpenedLuminance(cache, 0.0, 4, &r0);
+    INFO(r0.history);
+    CHECK(l0.data == LumImage(cache.display).data);
+}
+
+TEST_CASE("sharpen: the amount raises the detail gain monotonically") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.5;
+    s.noiseStd = 0.002;
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const ser::FloatImage L = LumImage(sc.observed);
+    const std::vector<uint8_t> interior = DiscInterior(sc, s, 40);
+    std::vector<double> amounts = {0.0, 0.25, 0.5, 1.0, stack::kSharpenDefault,
+                                   0.5 * (stack::kSharpenDefault + stack::kSharpenMax), stack::kSharpenMax};
+    std::sort(amounts.begin(), amounts.end());
+    amounts.erase(std::unique(amounts.begin(), amounts.end()), amounts.end());
+    double last = 0;
+    for (double amount : amounts) {
+        ser::FloatImage a = L;
+        const stack::StepRecord rec = stack::SharpenLuminanceImage(a, m, 4, nullptr, nullptr, amount);
+        const double g = DetailGain(L, a, interior);
+        INFO("amount " << amount << ": detail gain " << g << "; " << rec.history);
+        if (amount == 0) CHECK(g == 1.0);
+        else CHECK(g > last);
+        last = g;
+    }
+}
+
+TEST_CASE("pipeline: sharpening and colour re-run on the cache equal MakeMineralMoon") {
+    // Task SHARP: the Sharpen slider re-runs the sharpening and the colour on PrepareMineral's cache; at any amount the
+    // result is MakeMineralMoon's with that amount, bit for bit, and the Sharpen line names the amount.
+    const MoonScene sc = MakeMoonScene(StackScene());
+    const stack::MineralCache cache = stack::PrepareMineral(sc.observed, 4, {});
+    std::vector<ser::FloatImage> seen;
+    for (double amount : {0.0, stack::kSharpenDefault, stack::kSharpenMax}) {
+        stack::MineralParams p;
+        p.strength = 6;
+        p.sharpen = amount;
+        const stack::MineralOutcome a = stack::FinishMineral(cache, p, 4), full = stack::MakeMineralMoon(sc.observed, 4, {}, p);
+        INFO("amount " << amount << ": " << full.history[5]);
+        CHECK(a.image.data == full.image.data);
+        CHECK(a.history == full.history);
+        REQUIRE(full.history.size() == 7);
+        CHECK(full.history[5].rfind("Sharpen", 0) == 0);
+        char named[32];
+        std::snprintf(named, sizeof named, "amount %.2f", amount);
+        CHECK(full.history[5].find(named) != std::string::npos);
+        for (const ser::FloatImage& other : seen) CHECK(other.data != a.image.data);
+        seen.push_back(a.image);
+    }
 }
 
 TEST_CASE("pipeline: 1080p within the time budget") {
@@ -1510,4 +1638,17 @@ TEST_CASE("pipeline: 1080p within the time budget") {
     CheckValidOutput(out, sc.observed);
     if (threads >= 32) CHECK(secs <= 5.0);
     else WARN("fewer than 32 threads here: " << secs << " s, not judged");
+    // A slider move (Strength, Chroma blur, Sharpen: Task SHARP) re-runs only the sharpening and the colour on the
+    // cache; the window stays live while it is well under half a second. Best of three (a cold first pass).
+    const stack::MineralCache cache = stack::PrepareMineral(sc.observed, threads, {});
+    double slider = 1e9;
+    for (double amount : {stack::kSharpenMax, 1.0, stack::kSharpenDefault}) {
+        stack::MineralParams p;
+        p.sharpen = amount;
+        const auto s0 = std::chrono::steady_clock::now();
+        stack::FinishMineral(cache, p, threads);
+        slider = std::min(slider, std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count());
+    }
+    WARN(threads << " threads: a slider move (FinishMineral) " << slider << " s at 1920 x 1080");
+    if (threads >= 32) CHECK(slider <= 0.25);
 }

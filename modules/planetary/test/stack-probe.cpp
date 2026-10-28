@@ -4,8 +4,9 @@
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
 //               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
 //               [--cancel-at measuring|aligning|stacking,F] [--parity even|odd]
-//               [--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--mineral-out x.fits]
-//               [--mineral-also K:y.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B]
+//               [--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--sharpen A]
+//               [--mineral-out x.fits] [--mineral-also K:y.fits]... [--sharpen-also A:z.fits]...
+//               [--mineral-stages DIR] [--mineral-crop L,T,R,B]
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -35,13 +36,15 @@
 // Mineral moon (Task B9, real-data acceptance). --target auto (default) takes the target from the capture's name
 // (CaptureName.h), or names it (Moon, Jupiter, ..., Other). --mineral applies the window's gate first
 // (MineralMoonRefusal on that target, the name's filter and the resolved pattern): refused, it prints the reason
-// and exits 4 without stacking. Otherwise it runs PrepareMineral + ApplyMineralColour on the stack at --strength
-// (default 8) and --chroma-blur (default 2.5) -- MakeMineralMoon's own two halves, kept apart so the cache can be
-// reused -- and the JSON gains "mineral": the seven HISTORY lines, the step times, the notice, the fade threshold
-// and the display curve. --mineral-out writes the mineral image (FITS); --mineral-also K:PATH (repeatable) re-runs
-// only the colour on the same cache at strength K, as the window's slider does, and writes it. --mineral-stages DIR
+// and exits 4 without stacking. Otherwise it runs PrepareMineral + FinishMineral on the stack at --strength
+// (default 8), --chroma-blur (default 2.5) and --sharpen (default kSharpenDefault) -- MakeMineralMoon's own two
+// halves, kept apart so the cache can be reused -- and the JSON gains "mineral": the seven HISTORY lines, the step
+// times, FinishMineral's own time ("sliderSeconds": what a slider move costs), the notice, the fade threshold and
+// the display curve. --mineral-out writes the mineral image (FITS); --mineral-also K:PATH (repeatable) re-runs only
+// the sharpening and the colour on the same cache at strength K, as the window's sliders do, and writes it;
+// --sharpen-also A:PATH the same at Sharpen amount A (Task SHARP). --mineral-stages DIR
 // writes, as FITS: display.fits (the cache's display RGB: calibrated, background-neutral, display-transferred,
-// channel-aligned, unsharpened), lum_sharp.fits (the sharpened L), lin_unsharp.fits and lin_sharp.fits (the
+// channel-aligned, unsharpened), lum_sharp.fits (the L sharpened at --sharpen), lin_unsharp.fits and lin_sharp.fits (the
 // channels' mean of display.fits and the sharpened L, each taken back through the inverse display transfer
 // pointwise -- one map for both, so their DAN_interior compare like for like), calibrated.fits (the linear RGB
 // after Colour calibration and Background, from a replica of steps 1-4 that also gives the exact display curve;
@@ -253,8 +256,8 @@ int main(int argc, char** argv) try {
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
                              "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd] "
-                             "[--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--mineral-out x.fits] "
-                             "[--mineral-also K:y.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B]\n");
+                             "[--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--sharpen A] [--mineral-out x.fits] "
+                             "[--mineral-also K:y.fits]... [--sharpen-also A:z.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B]\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -270,9 +273,9 @@ int main(int argc, char** argv) try {
     std::vector<std::pair<int, int>> samples;
     std::string targetArg = "auto";
     bool mineral = false;
-    double strength = 8.0, chromaBlur = 2.5;
+    double strength = 8.0, chromaBlur = 2.5, sharpen = stack::kSharpenDefault;
     std::string mineralOut, mineralStages;
-    std::vector<std::pair<double, std::string>> mineralAlso;
+    std::vector<std::pair<double, std::string>> mineralAlso, sharpenAlso;
     int mineralCrop[4] = {0, 0, 0, 0};  // --mineral-crop L,T,R,B
     // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
     // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
@@ -312,6 +315,7 @@ int main(int argc, char** argv) try {
         else if (a == "--mineral") mineral = true;
         else if (a == "--strength") strength = std::stod(next());
         else if (a == "--chroma-blur") chromaBlur = std::stod(next());
+        else if (a == "--sharpen") sharpen = std::stod(next());
         else if (a == "--mineral-out") mineralOut = next();
         else if (a == "--mineral-stages") mineralStages = next();
         else if (a == "--mineral-crop") {
@@ -325,6 +329,12 @@ int main(int argc, char** argv) try {
             const size_t colon = v.find(':');
             if (colon == std::string::npos) throw std::invalid_argument("--mineral-also: K:PATH");
             mineralAlso.emplace_back(std::stod(v.substr(0, colon)), v.substr(colon + 1));
+        }
+        else if (a == "--sharpen-also") {
+            const std::string v = next();
+            const size_t colon = v.find(':');
+            if (colon == std::string::npos) throw std::invalid_argument("--sharpen-also: A:PATH");
+            sharpenAlso.emplace_back(std::stod(v.substr(0, colon)), v.substr(colon + 1));
         }
         else if (a == "--cancel-at") {
             const std::string v = next();
@@ -341,10 +351,12 @@ int main(int argc, char** argv) try {
     }
     if (bits != 16 && bits != 32) throw std::invalid_argument("--bits: 16 or 32");
     if (parity >= 0 && keepBest > 0) throw std::invalid_argument("--parity and --keep-best do not combine");
-    if (!mineral && (!mineralOut.empty() || !mineralStages.empty() || !mineralAlso.empty()))
-        throw std::invalid_argument("--mineral-out, --mineral-also and --mineral-stages need --mineral");
+    if (!mineral && (!mineralOut.empty() || !mineralStages.empty() || !mineralAlso.empty() || !sharpenAlso.empty()))
+        throw std::invalid_argument("--mineral-out, --mineral-also, --sharpen-also and --mineral-stages need --mineral");
     for (const auto& f : mineralAlso)
         if (!EndsWith(f.second, ".fits") && !EndsWith(f.second, ".fit")) throw std::invalid_argument("--mineral-also: K:PATH.fits");
+    for (const auto& f : sharpenAlso)
+        if (!EndsWith(f.second, ".fits") && !EndsWith(f.second, ".fit")) throw std::invalid_argument("--sharpen-also: A:PATH.fits");
     if (!mineralOut.empty() && !EndsWith(mineralOut, ".fits") && !EndsWith(mineralOut, ".fit"))
         throw std::invalid_argument("--mineral-out: a .fits/.fit path");
     const ser::CaptureName name = ser::ParseCaptureName(path);
@@ -451,12 +463,13 @@ int main(int argc, char** argv) try {
         else if (EndsWith(out, ".tif") || EndsWith(out, ".tiff")) WriteTiff(out, *o.image, bits);
         else throw std::invalid_argument("--out: .fits/.fit or .tif/.tiff");
     }
-    // --mineral: MakeMineralMoon's two halves (PrepareMineral, then ApplyMineralColour), timed as it times them.
+    // --mineral: MakeMineralMoon's two halves (PrepareMineral, then FinishMineral), timed as it times them.
     std::optional<stack::MineralCache> mcache;
     std::vector<std::string> mHistory;
     std::vector<std::pair<std::string, double>> mSeconds;
     stack::DisplayCurve mCurve;
-    std::optional<ser::FloatImage> mImage;  // the mineral image at --strength / --chroma-blur
+    std::optional<ser::FloatImage> mImage;  // the mineral image at --strength / --chroma-blur / --sharpen
+    double sliderSeconds = 0;               // FinishMineral alone: what a slider move costs
     if (mineral && o.image && (mineralCrop[0] | mineralCrop[1] | mineralCrop[2] | mineralCrop[3])) {
         // --mineral-crop: the mineral moon on the stack cut to a field (B9's equal-field split-half check: the halves'
         // stacks reach 1-4 px apart on each side, and a chroma blur at a frame's edge sees only its own field). The
@@ -483,17 +496,22 @@ int main(int argc, char** argv) try {
         stack::MineralParams p;
         p.strength = strength;
         p.chromaBlurSigma = chromaBlur;
-        stack::StepRecord rec;
+        p.sharpen = sharpen;
         const auto t0 = std::chrono::steady_clock::now();
-        const ser::FloatImage& img = mImage.emplace(stack::ApplyMineralColour(*mcache, p, threads, &rec));
-        mHistory = mcache->history;
-        mHistory.push_back(rec.history);
-        mSeconds = mcache->stepSeconds;
-        mSeconds.push_back({"Mineral colour", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()});
+        stack::MineralOutcome finished = stack::FinishMineral(*mcache, p, threads);
+        sliderSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const ser::FloatImage& img = mImage.emplace(std::move(finished.image));
+        mHistory = std::move(finished.history);
+        mSeconds = std::move(finished.stepSeconds);
         if (!mineralOut.empty()) WriteFits(mineralOut, img);
         for (const auto& [k, file] : mineralAlso) {
             stack::MineralParams q = p;
             q.strength = k;
+            WriteFits(file, stack::ApplyMineralColour(*mcache, q, threads));
+        }
+        for (const auto& [a, file] : sharpenAlso) {
+            stack::MineralParams q = p;
+            q.sharpen = a;
             WriteFits(file, stack::ApplyMineralColour(*mcache, q, threads));
         }
         // Steps 1-4 again on a copy (deterministic; the masks are checked equal), for the exact display curve and the
@@ -513,9 +531,10 @@ int main(int argc, char** argv) try {
         if (!mineralStages.empty()) {
             const std::string d = mineralStages + "/";
             WriteFits(d + "display.fits", mcache->display);
-            WriteFits(d + "lum_sharp.fits", mcache->lum);
+            const ser::FloatImage lumSharp = stack::SharpenedLuminance(*mcache, sharpen, threads);
+            WriteFits(d + "lum_sharp.fits", lumSharp);
             WriteFits(d + "lin_unsharp.fits", UnDisplay(Mean3(mcache->display), mCurve));
-            WriteFits(d + "lin_sharp.fits", UnDisplay(mcache->lum, mCurve));
+            WriteFits(d + "lin_sharp.fits", UnDisplay(lumSharp, mCurve));
             WriteFits(d + "calibrated.fits", lin);
             ser::FloatImage masks;
             masks.width = lin.width;
@@ -598,7 +617,8 @@ int main(int argc, char** argv) try {
         if (mcache) {
             double total = 0;
             j += ",\"mineral\":{\"refusal\":null,\"notice\":" + Json(mcache->notice) + ",\"strength\":" + Fmt(strength, 2) +
-                 ",\"chromaBlur\":" + Fmt(chromaBlur, 2) + ",\"satThreshold\":" + Fmt(mcache->satThreshold, 6) +
+                 ",\"chromaBlur\":" + Fmt(chromaBlur, 2) + ",\"sharpen\":" + Fmt(sharpen, 2) + ",\"sliderSeconds\":" +
+                 Fmt(sliderSeconds, 4) + ",\"satThreshold\":" + Fmt(mcache->satThreshold, 6) +
                  ",\"curve\":{\"white\":" + Fmt(mCurve.white, 8) + ",\"balance\":" + Fmt(mCurve.balance, 8) + "},\"history\":[";
             for (size_t i = 0; i < mHistory.size(); ++i) j += (i ? "," : "") + Json(mHistory[i]);
             j += "],\"stepSeconds\":{";
@@ -611,6 +631,10 @@ int main(int argc, char** argv) try {
             for (size_t i = 0; i < mineralAlso.size(); ++i)
                 j += std::string(i ? "," : "") + "{\"strength\":" + Fmt(mineralAlso[i].first, 2) + ",\"output\":" +
                      Json(mineralAlso[i].second) + "}";
+            j += "],\"sharpenAlso\":[";
+            for (size_t i = 0; i < sharpenAlso.size(); ++i)
+                j += std::string(i ? "," : "") + "{\"sharpen\":" + Fmt(sharpenAlso[i].first, 2) + ",\"output\":" +
+                     Json(sharpenAlso[i].second) + "}";
             j += "],\"stages\":" + (mineralStages.empty() ? std::string("null") : Json(mineralStages));
             // Its smallest and largest sample and its value at every --sample point (Task B8: the headless probe
             // compares PlanetaryStack's _mineral window with them; --mineral-crop shifts the grid by L, T).

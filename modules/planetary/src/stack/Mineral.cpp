@@ -922,6 +922,21 @@ constexpr double kStarletNoise[kSharpenLayers] = {0.889, 0.200, 0.086, 0.041};
 // -13.7% / +3.4% (over-boosts the coarse layers); {1.5, 2.0, 1.2, 1.05} 16.8% / 10.7%; {1.6, 3.0, 1, 1} 3.3% /
 // 15.1% (too strong for the lighter blur).
 constexpr double kLayerGain[kSharpenLayers] = {1.5, 2.5, 1.0, 1.0};
+// The Sharpen amount a (Task SHARP): each layer's boost (nominal gain - 1) is a x kLayerGain's up to a = 1 (the
+// gains above, B9's sharpening), plus (a - 1) x kLayerExtra beyond it. Measured on real 64.6F against Scott's
+// MineralMoon.png (one grid; the reference's luminance quantile-mapped onto ours, starlet rms over the disc
+// interior): at a = 1 our layers 1 / 2 / 3 held 0.37 / 0.68 / 0.94 of the reference's -- the deficit is at the
+// finest scales. Scaling the gains alone (extra 0) brought layer 3 to 1.20 by the time layer 1 reached 0.54 (a 2;
+// a boost leaks into its neighbour's band); extra {3, 1, 0, 0} reaches 0.86 / 1.35 / 1.51 at a 2, and its crater
+// rims match the reference's crispness by eye. {1.5, 0.5}, {1, 1}, {2.5, 0.5} and {5, 1} lie on nearly the same
+// curve at other amounts; adding layer 3 or 4 ({0.5, 1.5, 0.5..1, 0..0.5}) only overshot layer 3 sooner.
+constexpr double kLayerExtra[kSharpenLayers] = {3.0, 1.0, 0.0, 0.0};
+std::array<double, kSharpenLayers> LayerBoost(double a) {
+    std::array<double, kSharpenLayers> b{};
+    for (int j = 0; j < kSharpenLayers; ++j)
+        b[static_cast<size_t>(j)] = a * (kLayerGain[j] - 1) + std::max(0.0, a - 1) * kLayerExtra[j];
+    return b;
+}
 // Only a coefficient's part beyond this many layer-noise sigmas is boosted (soft threshold), so noise that
 // survives the per-layer limit is not amplified pixel by pixel.
 constexpr double kBoostThreshold = 2.0;
@@ -1146,10 +1161,12 @@ std::vector<float> StackNoiseMap(const ser::FloatImage& stack, const ser::FloatI
 }  // namespace
 
 StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads, const std::vector<float>* noise,
-                                 const std::array<double, 4>* layerShape) {
+                                 const std::array<double, 4>* layerShape, double amount) {
     RequireLuminance(lum1, m, "SharpenLuminanceImage");
     if (noise && noise->size() != Pixels(lum1))
         throw std::invalid_argument("SharpenLuminanceImage: the noise map does not match the image");
+    if (!(amount >= 0) || !std::isfinite(amount))
+        throw std::invalid_argument("SharpenLuminanceImage: the amount must be finite and >= 0");
     const int w = lum1.width, h = lum1.height;
     const size_t n = Pixels(lum1);
     StepRecord rec;
@@ -1158,6 +1175,12 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
         rec.history = "Sharpen skipped: no lunar disk found to sharpen";
         return rec;
     }
+    if (amount == 0) {
+        rec.skipped = true;
+        rec.history = "Sharpen (luminance): amount 0.00, nothing sharpened (L unchanged)";
+        return rec;
+    }
+    const std::array<double, kSharpenLayers> boost = LayerBoost(amount);
     const DiscCore dc = MakeDiscCore(lum1, m, threads);
     const std::vector<ser::FloatImage> layers = StarletLayers(lum1, kSharpenLayers, threads);
     // The white-noise std at each pixel: the given map, or one value measured on lum1 itself.
@@ -1182,7 +1205,7 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
         e /= std::max<size_t>(1, k);
         nv *= kn[j] * kn[j] / std::max<size_t>(1, k);
         const double rho = e > 0 ? std::max(0.0, 1 - nv / e) : 0.0;
-        gain[j] = 1 + (kLayerGain[j] - 1) * rho;
+        gain[j] = 1 + boost[static_cast<size_t>(j)] * rho;
     }
     ParallelBands(h, threads, [&](int y0, int y1) {
         for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
@@ -1199,21 +1222,22 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
         std::vector<float> d;
         for (size_t i = 0; i < n; ++i)
             if (m.disk[i]) d.push_back((*noise)[i]);
-        rec.history = Fmt("Sharpen (luminance): starlet layers 1-4, noise %.3g (disk median, measured before the display "
-                          "transfer); gains %.2f %.2f %.2f %.2f (noise-limited)",
-                          Median(d), gain[0], gain[1], gain[2], gain[3]);
+        rec.history = Fmt("Sharpen (luminance): amount %.2f, starlet layers 1-4, noise %.3g (disk median, measured before the "
+                          "display transfer); gains %.2f %.2f %.2f %.2f (noise-limited)",
+                          amount, Median(d), gain[0], gain[1], gain[2], gain[3]);
     } else {
-        rec.history = Fmt("Sharpen (luminance): starlet layers 1-4, noise %.3g; gains %.2f %.2f %.2f %.2f (noise-limited)",
-                          white, gain[0], gain[1], gain[2], gain[3]);
+        rec.history = Fmt("Sharpen (luminance): amount %.2f, starlet layers 1-4, noise %.3g; gains %.2f %.2f %.2f %.2f "
+                          "(noise-limited)",
+                          amount, white, gain[0], gain[1], gain[2], gain[3]);
     }
     return rec;
 }
 
-StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads) {
+StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads, double amount) {
     RequireMasks(rgb, m, "SharpenLuminance");
     const ser::FloatImage L0 = MeanOfChannels(rgb, threads);
     ser::FloatImage L = L0;
-    StepRecord rec = SharpenLuminanceImage(L, m, threads);
+    StepRecord rec = SharpenLuminanceImage(L, m, threads, nullptr, nullptr, amount);
     if (rec.skipped) return rec;
     // Every channel scaled by the luminance's own factor: R/G and B/G stay as they were (chroma untouched); a
     // pixel whose largest channel would pass kCeiling is scaled less, uniformly, so its hue holds too.
@@ -1241,9 +1265,9 @@ namespace {
 double ResolutionScale(int width) { return std::max(1.0, width / 2000.0); }
 
 void RequireParams(const MineralParams& p) {
-    if (!(p.strength >= 0) || !(p.chromaBlurSigma >= 0) || !(p.eps >= 0) || !(p.devClamp >= 0) || !(p.satRamp > 0) ||
-        !std::isfinite(p.strength) || !std::isfinite(p.chromaBlurSigma))
-        throw std::invalid_argument("MineralColour: strength, chroma blur, eps and clamp must be >= 0 and the ramp > 0");
+    if (!(p.strength >= 0) || !(p.chromaBlurSigma >= 0) || !(p.sharpen >= 0) || !(p.eps >= 0) || !(p.devClamp >= 0) ||
+        !(p.satRamp > 0) || !std::isfinite(p.strength) || !std::isfinite(p.chromaBlurSigma) || !std::isfinite(p.sharpen))
+        throw std::invalid_argument("MineralColour: strength, chroma blur, sharpen, eps and clamp must be >= 0 and the ramp > 0");
 }
 
 }  // namespace
@@ -1464,7 +1488,7 @@ StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std:
 
 namespace {
 
-// Runs the cached steps 1-6, timing each and reporting (kPhaseMineral, step, total); a cancel seen at any
+// Runs the cached steps 1-5, timing each and reporting (kPhaseMineral, step, total); a cancel seen at any
 // report throws StackCancelled before any image is returned.
 class MineralSteps {
 public:
@@ -1480,6 +1504,10 @@ public:
     void Tick() {
         if (progress_.report) progress_.report(kPhaseMineral, done_, total_);
         if (progress_.cancelled && progress_.cancelled()) throw StackCancelled("Mineral moon cancelled");
+    }
+    void Report(int done) {
+        done_ = done;
+        Tick();
     }
 
 private:
@@ -1556,11 +1584,11 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
         return DisplayTransfer(rgb, cache.masks, clipped, &curve).history;
     });
     step("Channel alignment", [&] { return AlignChannels(rgb, threads).history; });
-    step("Sharpen", [&] {
-        cache.lum = MeanOfChannels(rgb, threads);
-        // L is the channels' mean, so with equal per-channel noise its display noise is the linear L's times the
-        // rms of the three channels' slopes.
-        std::vector<float> noise(n);
+    cache.lumBase = MeanOfChannels(rgb, threads);
+    if (!noDisk) {
+        // The sharpening's noise at display scale, kept for the Sharpen slider: L is the channels' mean, so with equal
+        // per-channel noise its display noise is the linear L's times the rms of the three channels' slopes.
+        cache.noise.resize(n);
         ParallelBands(rgb.height, threads, [&](int y0, int y1) {
             for (size_t i = static_cast<size_t>(y0) * rgb.width; i < static_cast<size_t>(y1) * rgb.width; ++i) {
                 double s2 = 0;
@@ -1568,53 +1596,88 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
                     const double s = DisplaySlope(rgb.data[i * 3 + c], curve);
                     s2 += s * s;
                 }
-                noise[i] = static_cast<float>((linearMap.empty() ? linearNoise : linearMap[i]) * std::sqrt(s2 / 3));
+                cache.noise[i] = static_cast<float>((linearMap.empty() ? linearNoise : linearMap[i]) * std::sqrt(s2 / 3));
             }
         });
-        return SharpenLuminanceImage(cache.lum, cache.masks, threads, &noise, &shape).history + "; " + noiseSource +
-               Fmt("; layer noise over white %.2f %.2f %.2f %.2f (the sky's)", shape[0], shape[1], shape[2], shape[3]);
-    });
-    if (noDisk) cache.lum = MeanOfChannels(rgb, threads);
-    // The fade threshold depends on the display RGB only: measured once here, not on every slider move.
-    else cache.satThreshold = HighlightThreshold(rgb, cache.masks, MineralParams{}.chromaBlurSigma, threads);
+        cache.layerShape = shape;
+        cache.sharpenNote = "; " + noiseSource +
+                            Fmt("; layer noise over white %.2f %.2f %.2f %.2f (the sky's)", shape[0], shape[1], shape[2], shape[3]);
+        // The fade threshold depends on the display RGB only: measured once here, not on every slider move.
+        cache.satThreshold = HighlightThreshold(rgb, cache.masks, MineralParams{}.chromaBlurSigma, threads);
+    }
     steps.Tick();
     cache.display = std::move(rgb);
     return cache;
 }
 
-ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParams& p, int threads, StepRecord* record) {
-    RequireParams(p);
-    ser::FloatImage out = cache.display;
+ser::FloatImage SharpenedLuminance(const MineralCache& cache, double amount, int threads, StepRecord* record) {
+    ser::FloatImage L = cache.lumBase;
     StepRecord rec;
+    if (cache.masks.diskCount == 0) {
+        rec.skipped = true;
+        rec.history = std::string("Sharpen skipped: ") + kNoDisk + "; nothing done";
+    } else {
+        rec = SharpenLuminanceImage(L, cache.masks, threads, &cache.noise, &cache.layerShape, amount);
+        if (!rec.skipped) rec.history += cache.sharpenNote;
+    }
+    if (record) *record = std::move(rec);
+    return L;
+}
+
+namespace {
+
+// Steps 5-7 on a copy of cache.display with the sharp luminance L (ApplyMineralColour and FinishMineral alike).
+ser::FloatImage ColourOn(const MineralCache& cache, const ser::FloatImage& L, const MineralParams& p, int threads,
+                         StepRecord& rec) {
+    ser::FloatImage out = cache.display;
     if (cache.masks.diskCount == 0) {
         rec.skipped = true;
         rec.history = std::string("Mineral colour skipped: ") + kNoDisk + "; nothing done";
     } else {
         MineralParams q = p;
         if (q.satThreshold < 0 && cache.satThreshold >= 0) q.satThreshold = cache.satThreshold;
-        rec = MineralColour(out, cache.lum, q, threads);
+        rec = MineralColour(out, L, q, threads);
     }
+    return out;
+}
+
+}  // namespace
+
+ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParams& p, int threads, StepRecord* record,
+                                   StepRecord* sharpenRecord) {
+    RequireParams(p);
+    StepRecord rec;
+    ser::FloatImage out = ColourOn(cache, SharpenedLuminance(cache, p.sharpen, threads, sharpenRecord), p, threads, rec);
     if (record) *record = std::move(rec);
+    return out;
+}
+
+MineralOutcome FinishMineral(const MineralCache& cache, const MineralParams& params, int threads, const Progress& progress) {
+    RequireParams(params);
+    MineralOutcome out;
+    StepRecord sharpen, colour;
+    auto t0 = std::chrono::steady_clock::now();
+    const ser::FloatImage L = SharpenedLuminance(cache, params.sharpen, threads, &sharpen);
+    const double sharpenSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    MineralSteps(progress, kMineralSteps).Report(kMineralSteps - 1);
+    t0 = std::chrono::steady_clock::now();
+    out.image = ColourOn(cache, L, params, threads, colour);
+    const double colourSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    MineralSteps(progress, kMineralSteps).Report(kMineralSteps);
+    out.history = cache.history;
+    out.history.push_back(sharpen.history);
+    out.history.push_back(colour.history);
+    out.stepSeconds = cache.stepSeconds;
+    out.stepSeconds.push_back({"Sharpen", sharpenSecs});
+    out.stepSeconds.push_back({"Mineral colour", colourSecs});
+    out.notice = cache.notice;
     return out;
 }
 
 MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress, const MineralParams& params,
                                const StackNoise* stackNoise) {
-    MineralCache cache = PrepareMineral(stack, threads, progress, stackNoise);
-    MineralOutcome out;
-    StepRecord rec;
-    const auto t0 = std::chrono::steady_clock::now();
-    ser::FloatImage image = ApplyMineralColour(cache, params, threads, &rec);
-    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (progress.report) progress.report(kPhaseMineral, kMineralSteps, kMineralSteps);
-    if (progress.cancelled && progress.cancelled()) throw StackCancelled("Mineral moon cancelled");
-    out.image = std::move(image);
-    out.history = std::move(cache.history);
-    out.history.push_back(rec.history);
-    out.stepSeconds = std::move(cache.stepSeconds);
-    out.stepSeconds.push_back({"Mineral colour", secs});
-    out.notice = std::move(cache.notice);
-    return out;
+    RequireParams(params);
+    return FinishMineral(PrepareMineral(stack, threads, progress, stackNoise), params, threads, progress);
 }
 
 }  // namespace planetary::stack
