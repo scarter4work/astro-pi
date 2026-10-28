@@ -129,9 +129,6 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
 // norm not of lum1's size.
 std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads,
                                       const std::vector<float>* norm = nullptr, std::string* source = nullptr);
-// The same on an RGB image's luminance (the channels' mean): every channel scaled by L's own factor, so R/G and
-// B/G are unchanged (chroma untouched); a pixel that would pass 0.998 in a channel is scaled less, uniformly.
-StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads, double amount = kSharpenDefault);
 
 // ---- 5-7. Chroma layer and mineral colour (amendment) ----
 // Each channel Gaussian-blurred by sigma px (separable, radius 4 sigma, mirrored edges): the chroma noise

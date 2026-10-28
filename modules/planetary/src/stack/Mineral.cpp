@@ -1331,29 +1331,6 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
     return rec;
 }
 
-StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads, double amount) {
-    RequireMasks(rgb, m, "SharpenLuminance");
-    const ser::FloatImage L0 = MeanOfChannels(rgb, threads);
-    ser::FloatImage L = L0;
-    StepRecord rec = SharpenLuminanceImage(L, m, threads, nullptr, nullptr, amount);
-    if (rec.skipped) return rec;
-    // Every channel scaled by the luminance's own factor: R/G and B/G stay as they were (chroma untouched); a
-    // pixel whose largest channel would pass kCeiling is scaled less, uniformly, so its hue holds too.
-    ParallelBands(rgb.height, threads, [&](int y0, int y1) {
-        for (size_t i = static_cast<size_t>(y0) * rgb.width; i < static_cast<size_t>(y1) * rgb.width; ++i) {
-            if (L.data[i] == L0.data[i] || !(L0.data[i] > 1e-6f)) continue;
-            float* p = &rgb.data[i * 3];
-            double f = std::max(0.0f, L.data[i]) / static_cast<double>(L0.data[i]);
-            const double top = std::max({p[0], p[1], p[2]});
-            if (top * f > kCeiling) f = std::min(f, std::max(1.0, kCeiling / top));
-            for (int c = 0; c < 3; ++c) p[c] = static_cast<float>(p[c] * f);
-        }
-    });
-    return rec;
-}
-
-
-
 // ---- 5-7. Chroma layer and mineral colour ----
 
 namespace {

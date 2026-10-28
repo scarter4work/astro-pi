@@ -528,6 +528,17 @@ std::vector<double> RadialProfile(const std::vector<double>& v, const MoonSceneS
     return sum;
 }
 
+// SharpenLuminanceImage on an RGB image's luminance (the channels' mean, as PrepareMineral takes it), with no noise
+// map or layer shape given: the noise measured on that L itself (right for these linear scenes), white shape.
+std::vector<double> SharpL(const ser::FloatImage& rgb, const stack::LunarMasks& m, double amount = stack::kSharpenDefault,
+                           stack::StepRecord* rec = nullptr) {
+    ser::FloatImage L{rgb.width, rgb.height, 1, {}};
+    for (double v : testing::Lum(rgb)) L.data.push_back(static_cast<float>(v));
+    const stack::StepRecord r = stack::SharpenLuminanceImage(L, m, 4, nullptr, nullptr, amount);
+    if (rec) *rec = r;
+    return std::vector<double>(L.data.begin(), L.data.end());
+}
+
 }  // namespace
 
 TEST_CASE("starlet: layers sum to the input") {
@@ -569,9 +580,8 @@ TEST_CASE("sharpen: closer to the truth") {
     // default, which on this scene sharpens past the truth (the default is set on real data against Scott's
     // reference, Task SHARP).
     for (double amount : {1.0, stack::kSharpenDefault}) {
-        ser::FloatImage im = sc.observed;
-        const stack::StepRecord rec = stack::SharpenLuminance(im, m, 4, amount);
-        const double e1 = RmsOver(testing::Lum(im), truth, sc.diskTruth);
+        stack::StepRecord rec;
+        const double e1 = RmsOver(SharpL(sc.observed, m, amount, &rec), truth, sc.diskTruth);
         INFO(rec.history);
         INFO("amount " << amount << ": disk RMS error vs truth: before " << e0 << ", after " << e1 << " ("
                        << 100 * (1 - e1 / e0) << "% lower)");
@@ -592,8 +602,7 @@ TEST_CASE("sharpen: noise-only gain fails") {
         MoonScene sc = MakeMoonScene(s);
         const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
         const double n0 = StdOver(testing::Lum(sc.observed), sc.skyTruth);
-        stack::SharpenLuminance(sc.observed, m, 4);
-        const double n1 = StdOver(testing::Lum(sc.observed), sc.skyTruth);
+        const double n1 = StdOver(SharpL(sc.observed, m), sc.skyTruth);
         INFO("sky noise std " << n0 << " -> " << n1);
         CHECK(n1 <= 1.5 * n0);
     }
@@ -608,8 +617,7 @@ TEST_CASE("sharpen: noise-only gain fails") {
         MoonScene sc = MakeMoonScene(s);
         const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
         const double n0 = StdOver(testing::Lum(sc.observed), sc.diskTruth);
-        stack::SharpenLuminance(sc.observed, m, 4);
-        const double n1 = StdOver(testing::Lum(sc.observed), sc.diskTruth);
+        const double n1 = StdOver(SharpL(sc.observed, m), sc.diskTruth);
         INFO("flat disc noise std " << n0 << " -> " << n1);
         CHECK(n1 <= 1.5 * n0);
     }
@@ -622,8 +630,7 @@ TEST_CASE("sharpen: no limb halo") {
     MoonScene sc = MakeMoonScene(s);
     const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
     const std::vector<double> before = testing::Lum(sc.observed);
-    stack::SharpenLuminance(sc.observed, m, 4);
-    const std::vector<double> after = testing::Lum(sc.observed);
+    const std::vector<double> after = SharpL(sc.observed, m);
     double diskMean = 0;
     size_t n = 0;
     for (size_t i = 0; i < after.size(); ++i)
@@ -658,8 +665,7 @@ TEST_CASE("sharpen: no bright rim inside the limb") {
     MoonScene sc = MakeMoonScene(s);
     const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
     const std::vector<double> before = testing::Lum(sc.observed);
-    stack::SharpenLuminance(sc.observed, m, 4);
-    const std::vector<double> after = testing::Lum(sc.observed);
+    const std::vector<double> after = SharpL(sc.observed, m);
     const std::vector<double> p0 = RadialProfile(before, s, s.radius - 60, s.radius),
                               p1 = RadialProfile(after, s, s.radius - 60, s.radius);
     double level = 0;
@@ -675,30 +681,6 @@ TEST_CASE("sharpen: no bright rim inside the limb") {
     INFO("disc level " << level << "; bright rim " << rim << ", dark ring " << ring);
     CHECK(rim <= 0.02 * level);
     CHECK(ring <= 0.02 * level);
-}
-
-TEST_CASE("sharpen: chroma untouched") {
-    MoonSceneSpec s;
-    s.blurSigma = 1.5;
-    s.noiseStd = 0.005;
-    MoonScene sc = MakeMoonScene(s);
-    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
-    const ser::FloatImage before = sc.observed;
-    stack::SharpenLuminance(sc.observed, m, 4);
-    double worst = 0;
-    size_t judged = 0;
-    for (size_t i = 0; i < m.disk.size(); ++i) {
-        const float* a = &before.data[i * 3];
-        const float* b = &sc.observed.data[i * 3];
-        if (a[1] < 0.05 || b[1] < 0.05) continue;
-        ++judged;
-        worst = std::max({worst, static_cast<double>(std::fabs(b[0] / b[1] - a[0] / a[1])),
-                          static_cast<double>(std::fabs(b[2] / b[1] - a[2] / a[1]))});
-    }
-    INFO("judged " << judged << " px; worst ratio change " << worst);
-    REQUIRE(judged > 10000);
-    CHECK(worst <= 1e-4);
-    CHECK(sc.observed.data != before.data);  // it did sharpen
 }
 
 // ---- Step 5: chroma layer (Task B5, amended: Gaussian chroma blur) ----
