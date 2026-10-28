@@ -163,8 +163,8 @@ void Dilate(std::vector<uint8_t>& mask, int w, int h, int r) {
     std::vector<uint8_t> tmp(mask.size(), 0);
     for (int y = 0; y < h; ++y) {
         const uint8_t* row = &mask[static_cast<size_t>(y) * w];
-        int last = -1 - r;  // most recent member at or left of x + r
-        // two sweeps: nearest member to the left and to the right within r
+        int last = -1 - r;  // the most recent member at or left of x (none yet: further than r)
+        // two sweeps: a member within r to the left, then to the right
         for (int x = 0; x < w; ++x) {
             if (row[x]) last = x;
             if (x - last <= r) tmp[static_cast<size_t>(y) * w + x] = 1;
@@ -451,9 +451,7 @@ StepRecord NeutraliseBackground(ser::FloatImage& rgb, const LunarMasks& m) {
     return rec;
 }
 
-}  // namespace planetary::stack
 
-namespace planetary::stack {
 
 // ---- 4b. Channel alignment ----
 
@@ -858,9 +856,7 @@ StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threa
     return rec;
 }
 
-}  // namespace planetary::stack
 
-namespace planetary::stack {
 
 // ---- 5-7. Chroma layer and mineral colour ----
 
@@ -986,9 +982,7 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
     return rec;
 }
 
-}  // namespace planetary::stack
 
-namespace planetary::stack {
 
 // ---- 8. Display transfer and the pipeline ----
 

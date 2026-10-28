@@ -30,7 +30,7 @@ struct MoonSceneSpec {
     double textureAmplitude = 0.12;  // relative std of the fine albedo texture
     // Its highest frequency (cycles/px). The truth is the image the optics deliver, which is band-limited: lucky
     // imaging samples at about twice the optics' Nyquist, so 1/4 cycle/px. Detail at 1/4 - 1/2 cycle/px under
-    // seeing blur of 1.5 px keeps under 6% of its amplitude, below the noise, and no sharpener restores it.
+    // seeing blur of 1.5 px keeps at most 6% of its amplitude, below the noise, and no sharpener restores it.
     double textureMaxFreq = 0.25;
     double level = 0.30;           // highland G at full illumination (linear)
     std::array<double, 3> cast{1, 1, 1};      // multiplies the scene light per channel
@@ -123,7 +123,7 @@ inline void Blur(ser::FloatImage& img, double sigma) {
 inline MoonScene MakeMoonScene(const MoonSceneSpec& s) {
     using namespace moon_detail;
     std::mt19937 rng(s.seed);
-    // Fine albedo texture: 24 waves from 1/64 to 1/3 cycle/px, equal power per octave.
+    // Fine albedo texture: 24 waves from 1/64 to textureMaxFreq cycle/px, equal power per octave.
     const std::vector<Wave> texture = Waves(rng, 24, 1.0 / 64, s.textureMaxFreq, s.textureAmplitude);
     // Maria: a low-frequency field thresholded at the quantile that gives mariaFraction of the disc.
     const std::vector<Wave> mare = Waves(rng, 6, 0.6 / s.radius, 2.5 / s.radius, 1.0);
