@@ -1624,12 +1624,13 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
     if (stack.channels != 3 || stack.width <= 0 || stack.height <= 0 || stack.data.size() != Pixels(stack) * 3)
         throw std::invalid_argument("Mineral moon needs a 3-channel colour stack (this one has " +
                                     std::to_string(stack.channels) + " channel(s))");
-    // NaN is no level at all (an Inf is a saturated sample and is handled as one): refused, with the count, rather
-    // than spread by every blur into the output (task ENG review M1).
-    const size_t nans = static_cast<size_t>(std::count_if(stack.data.begin(), stack.data.end(), [](float v) { return std::isnan(v); }));
-    if (nans > 0)
-        throw std::invalid_argument("Mineral moon needs a stack of defined samples (this one has " + std::to_string(nans) +
-                                    " NaN sample(s))");
+    // A NaN or an infinite sample is no level at all: refused, with the count, rather than spread by every blur into
+    // the output (task ENG review M1; final review B, m1: one -Inf in the sky went into the sky plane's sums and made
+    // every output sample NaN). RunStack's stacks hold none (a weighted mean of normalised samples).
+    const size_t bad = static_cast<size_t>(std::count_if(stack.data.begin(), stack.data.end(), [](float v) { return !std::isfinite(v); }));
+    if (bad > 0)
+        throw std::invalid_argument("Mineral moon needs a stack of finite samples (this one has " + std::to_string(bad) +
+                                    " NaN or infinite sample(s))");
     MineralCache cache;
     MineralSteps steps(progress, kMineralSteps);
     ser::FloatImage rgb = stack;

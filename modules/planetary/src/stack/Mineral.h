@@ -199,8 +199,8 @@ struct MineralCache {
     double satThreshold = -1;          // HighlightThreshold(display, masks): the fade threshold, measured once
 };
 // Steps 1 - 4b and the sharpening's noise. Throws std::invalid_argument for a stack that is not 3 channels (mono is
-// refused: the spec's anti-goal) or that holds NaN samples (the message gives their count; +-Inf is taken as a
-// saturated or empty sample), StackCancelled on a cancel. With no disc found, every later step skips (see
+// refused: the spec's anti-goal) or that holds NaN or infinite samples (the message gives their count; none is
+// guessed at), StackCancelled on a cancel. With no disc found, every later step skips (see
 // MineralOutcome::notice). Memory: the cache holds 22 bytes per pixel (display 12, lumBase 4, noise 4, masks 2:
 // 46 MB at 1920 x 1080); the working copy of the stack becomes cache.display (moved, not copied).
 // The sharpening's noise (Ruling R35). With `noise` (the stack's: RunStack's StackOutcome::noise, for this stack;
@@ -244,8 +244,8 @@ struct MineralOutcome {
 MineralOutcome FinishMineral(const MineralCache& cache, const MineralParams& params, int threads, const Progress& progress = {});
 // PrepareMineral + FinishMineral: seven HISTORY lines and step times, in the amendment's order (Lunar disk,
 // Colour calibration, Background, Display transfer, Channel alignment, Sharpen, Mineral colour). Throws
-// std::invalid_argument for a non-3-channel image, NaN samples or parameters out of range; StackCancelled when
-// progress cancels (no image is returned).
+// std::invalid_argument for a non-3-channel image, NaN or infinite samples or parameters out of range;
+// StackCancelled when progress cancels (no image is returned).
 MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress,
                                const MineralParams& params = {}, const StackNoise* noise = nullptr);
 

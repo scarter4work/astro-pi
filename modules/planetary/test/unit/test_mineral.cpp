@@ -1522,20 +1522,27 @@ TEST_CASE("pipeline: a frame of sky has no lunar disk") {
     CHECK(out.notice.find("no lunar disk distinguished from the sky") != std::string::npos);
 }
 
-TEST_CASE("pipeline: NaN in the stack is refused, Inf is not") {
+TEST_CASE("pipeline: NaN and Inf in the stack are refused") {
+    // Final review B, m1: one -Inf in the sky went into the sky plane's sums and turned all 921600 output samples NaN.
+    // No stack RunStack makes holds a non-finite sample (a weighted mean of normalised samples), so none is guessed at.
     const MoonScene sc = MakeMoonScene(StackScene());
-    ser::FloatImage nan1 = sc.observed, nan3 = sc.observed, inf1 = sc.observed;
-    nan1.data[(240 * 640 + 320) * 3 + 1] = std::numeric_limits<float>::quiet_NaN();
-    for (size_t k : {size_t(7), size_t(100000), size_t(500001)}) nan3.data[k] = std::numeric_limits<float>::quiet_NaN();
-    inf1.data[(240 * 640 + 320) * 3 + 1] = std::numeric_limits<float>::infinity();
-    CHECK_THROWS_MATCHES(stack::PrepareMineral(nan1, 4, {}), std::invalid_argument,
-                         Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("1 NaN sample")));
-    CHECK_THROWS_MATCHES(stack::MakeMineralMoon(nan3, 4, {}), std::invalid_argument,
-                         Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("3 NaN sample")));
-    stack::MineralOutcome out;
-    REQUIRE_NOTHROW(out = stack::MakeMineralMoon(inf1, 4, {}));
-    CheckValidOutput(out, inf1);
-    CHECK(out.notice.empty());
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    const size_t disc = (240 * 640 + 320) * 3 + 1, sky = (10 * 640 + 10) * 3 + 1;
+    struct Case { const char* what; std::vector<std::pair<size_t, float>> at; const char* count; };
+    for (const Case& c : {Case{"NaN on the disc", {{disc, nan}}, "1 NaN or infinite sample"},
+                          Case{"3 NaN", {{7, nan}, {100000, nan}, {500001, nan}}, "3 NaN or infinite sample"},
+                          Case{"+Inf on the disc", {{disc, inf}}, "1 NaN or infinite sample"},
+                          Case{"-Inf in the sky", {{sky, -inf}}, "1 NaN or infinite sample"},
+                          Case{"+Inf in the sky, -Inf on the disc", {{sky, inf}, {disc, -inf}}, "2 NaN or infinite sample"}}) {
+        INFO(c.what);
+        REQUIRE(sc.skyTruth[sky / 3]);
+        ser::FloatImage im = sc.observed;
+        for (const auto& [k, v] : c.at) im.data[k] = v;
+        CHECK_THROWS_MATCHES(stack::PrepareMineral(im, 4, {}), std::invalid_argument,
+                             Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring(c.count)));
+        CHECK_THROWS_MATCHES(stack::MakeMineralMoon(im, 4, {}), std::invalid_argument,
+                             Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring(c.count)));
+    }
 }
 
 TEST_CASE("pipeline: cancel throws StackCancelled") {

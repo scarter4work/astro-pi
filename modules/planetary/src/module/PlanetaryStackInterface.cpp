@@ -776,7 +776,7 @@ void PlanetaryStackInterface::StartWorker( bool openWhenDone )
                stacked = &*r->input;
             if ( stacked != nullptr )
             {
-               // A stack the mineral moon refuses (NaN samples) stands: the reason is shown.
+               // A stack the mineral moon refuses (NaN or infinite samples) stands: the reason is shown.
                try
                {
                   // The stack's own noise drives the sharpening's noise limit (Ruling R35): a Stack run's from
