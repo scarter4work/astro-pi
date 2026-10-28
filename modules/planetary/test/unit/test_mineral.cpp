@@ -370,6 +370,62 @@ TEST_CASE("align: a 0.02 px offset is a no-op with a HISTORY line") {
     CHECK(sc.observed.data == before);
 }
 
+TEST_CASE("align: a tiny disc is not resampled") {
+    // A 24 x 24 frame with an 8 px disc and no true offset: too few windows of structure to tell a dispersion
+    // shift from the channels' own colour (task ENG review M3: a false B shift of 0.23 px was applied).
+    for (unsigned seed = 1; seed <= 5; ++seed) {
+        MoonSceneSpec s;
+        s.width = s.height = 24;
+        s.cx = s.cy = 12;
+        s.radius = 8;
+        s.blurSigma = 1.0;
+        s.noiseStd = 0.002;
+        s.seed = seed;
+        MoonScene sc = MakeMoonScene(s);
+        const std::vector<float> before = sc.observed.data;
+        const stack::StepRecord rec = stack::AlignChannels(sc.observed, 4);
+        INFO("seed " << seed << ": " << rec.history);
+        CHECK(rec.skipped);
+        CHECK(sc.observed.data == before);
+    }
+}
+
+TEST_CASE("align: no false shift on a quarter Moon without sky") {
+    // The disc fills the frame, half of it unlit; no true offset (review M3 measured 0.081 px here).
+    for (unsigned seed = 1; seed <= 3; ++seed) {
+        MoonSceneSpec s;
+        s.radius = 600;
+        s.phaseDeg = 90;
+        s.blurSigma = 1.0;
+        s.noiseStd = 0.003;
+        s.seed = seed;
+        MoonScene sc = MakeMoonScene(s);
+        const std::vector<float> before = sc.observed.data;
+        const stack::StepRecord rec = stack::AlignChannels(sc.observed, 4);
+        INFO("seed " << seed << ": " << rec.history);
+        CHECK(rec.skipped);
+        CHECK(sc.observed.data == before);
+    }
+}
+
+TEST_CASE("align: the result does not depend on the thread count") {
+    MoonSceneSpec s;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.002;
+    s.shiftY = {0.4, 0, -0.3};
+    const MoonScene sc = MakeMoonScene(s);
+    ser::FloatImage ref = sc.observed;
+    const stack::StepRecord r1 = stack::AlignChannels(ref, 1);
+    REQUIRE_FALSE(r1.skipped);
+    for (int threads : {2, 3, 7, 16, 32}) {
+        ser::FloatImage im = sc.observed;
+        const stack::StepRecord rec = stack::AlignChannels(im, threads);
+        INFO(threads << " threads: " << rec.history);
+        CHECK(rec.history == r1.history);
+        CHECK(im.data == ref.data);
+    }
+}
+
 // ---- Step 4: luminance wavelet sharpening (Task B4) ----
 
 namespace {

@@ -750,8 +750,9 @@ StepRecord AlignChannels(ser::FloatImage& rgb, int threads) {
     }
     const double mr = std::hypot(r.dx, r.dy), mb = std::hypot(b.dx, b.dy);
     const double ur = std::hypot(r.ux, r.uy), ub = std::hypot(b.ux, b.uy);
-    rec.history = Fmt("Channel alignment: R %+.3f, %+.3f px (+-%.3f), B %+.3f, %+.3f px (+-%.3f) against G, from %.0f windows",
-                      r.dx, r.dy, ur, b.dx, b.dy, ub, std::min(r.windows, b.windows));
+    rec.history = Fmt("Channel alignment: R %+.3f, %+.3f px (+-%.3f), B %+.3f, %+.3f px (+-%.3f) against G, from ", r.dx,
+                      r.dy, ur, b.dx, b.dy, ub) +
+                  std::to_string(std::min(r.windows, b.windows)) + " windows";
     // Each channel on its own: corrected when its shift exceeds 0.1 px and 3 x its uncertainty.
     const bool fixR = mr > kAlignMin && mr > kAlignSigmas * ur, fixB = mb > kAlignMin && mb > kAlignSigmas * ub;
     if (!fixR && !fixB) {

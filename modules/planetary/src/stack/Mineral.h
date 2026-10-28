@@ -55,10 +55,16 @@ StepRecord CalibrateColour(ser::FloatImage& rgb, const LunarMasks& m);
 StepRecord NeutraliseBackground(ser::FloatImage& rgb, const LunarMasks& m);
 
 // ---- 4b. Channel alignment (amendment) ----
-// Measures R's and B's shift against G (Gauss-Newton on G ~ a C(x + s) + b, Catmull-Rom resampling, 8 px border
-// left out) and, when either exceeds 0.1 px, resamples R and B onto G. At or under 0.1 px, or when the
-// measurement does not converge within 8 px, nothing changes (skipped) and HISTORY gives the shifts or the
-// reason. Measured bias on synthetic discs: up to 0.04 px (the channels' terrain differs in colour).
+// Measures R's and B's shift against G on a 1 px Gaussian-smoothed copy: one shift s per channel, Gauss-Newton on
+// G ~ a_k C(x + s) + b_k with a gain and offset per 16 px window k (lunar colour varies across the disc), over
+// the windows where C and G share structure (8 px border left out), with its 1-sigma uncertainty. A channel is
+// resampled onto G (Catmull-Rom) when its shift exceeds 0.1 px AND 3 times that uncertainty. Nothing changes
+// (skipped; HISTORY gives the shifts or the reason) otherwise, when the measurement does not converge within
+// 8 px, or under 16 informative windows (a disc under about 60 px across: its colour cannot be told from a
+// shift). Measured on MoonSynth with no true shift (tints +-4%, tint structure 0.8%): a no-sky quarter Moon
+// 0.003-0.016 px (6 seeds; 0.047 px with one gain per frame); a 24 x 24 frame with an 8 px disc is skipped
+// (one gain per frame applied false shifts of 0.10-0.24 px there). A 0.5 px shift leaves a residual of 0.010 px.
+// The result does not depend on the thread count (per-window sums added in window order).
 StepRecord AlignChannels(ser::FloatImage& rgb, int threads);
 
 // ---- 4. Luminance sharpening (spec step 4) ----
