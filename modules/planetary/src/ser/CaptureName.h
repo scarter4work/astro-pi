@@ -7,7 +7,9 @@
 namespace planetary::ser {
 
 enum class Target { Other, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune };
-enum class FilterClass { Unknown, Broadband, Narrowband };
+// IrPass: an infrared-pass filter (IR642 .. IR850, IRPass, ProPlanet): a colour camera behind one records only its
+// Bayer dyes' infrared response.
+enum class FilterClass { Unknown, Broadband, Narrowband, IrPass };
 
 struct CaptureName {
     bool parsed = false;          // the ASIAIR pattern matched
@@ -27,7 +29,9 @@ CaptureName ParseCaptureName(const std::string& fileName);
 const char* TargetName(Target);
 
 // nullopt when Mineral moon may run; else the ASCII reason shown in the tooltip and the failure.
-// `filterToken` (CaptureName::filterToken) names the filter in the narrowband reason; empty says "the filter".
+// Refused: a target other than the Moon, a mono capture, a narrowband or an IR-pass filter (an unrecognised or missing
+// filter token is allowed). `filterToken` (CaptureName::filterToken) names the filter in the narrowband and IR-pass
+// reasons; empty says "the filter".
 std::optional<std::string> MineralMoonRefusal(Target target, FilterClass filter, const FileInfo& info,
                                               const std::string& filterToken);
 

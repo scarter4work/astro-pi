@@ -62,7 +62,8 @@ private:
 // and waits for it.
 //
 // Target names what the capture is of (Auto: the ASIAIR capture name's,
-// shown in the combo). Mineral moon is enabled only for a broadband colour Moon
+// shown in the combo). Mineral moon is enabled only for a colour Moon (not
+// through a narrowband or IR-pass filter)
 // (stackcards::MineralRefusalFor; its tooltip says why not, and a choice that
 // stops it turns it off, saying so). Checked, Stack! makes the mineral moon
 // after the stack (a fourth step, Cancel stops it and keeps no image) and the

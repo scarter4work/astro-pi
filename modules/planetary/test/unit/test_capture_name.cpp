@@ -73,6 +73,28 @@ TEST_CASE("MineralMoonRefusal", "[capture_name]") {
           "Mineral moon needs a colour capture; this one is mono (set the Bayer pattern if it is a colour camera).");
 }
 
+TEST_CASE("ParseCaptureName: IR-pass filters are a class of their own, and Mineral moon refuses them (final review B, m4)",
+          "[capture_name]") {
+    // Lunar imagers use IR-pass filters against seeing; a colour camera behind one records the Bayer dyes' infrared
+    // response, near-monochrome, which the colour step would amplify into false colour.
+    for (const char* f : {"IR685", "IR850", "IR642", "IR742", "IR807", "ir850", "IR-685", "IR_850", "IR685nm", "IRPass",
+                          "IR-Pass", "IRPass685", "PP642", "ProPlanet742", "ProPlanet-807", "IR1000"})
+        Expect(("2026-10-23-203401-Moon-Bin1 " + std::string(f) + " 64.6F.avi").c_str(), Target::Moon, f, FilterClass::IrPass);
+    // IR-cut filters stay broadband; a methane band is narrowband; "IR" alone (cut or pass?) and a wavelength outside
+    // the near infrared are not named.
+    for (const char* f : {"UVIR", "UV/IR", "IRCut"})
+        Expect(("2026-10-23-203401-Moon-Bin1 " + std::string(f) + " 64.6F.avi").c_str(), Target::Moon, f, FilterClass::Broadband);
+    for (const char* f : {"CH4", "Methane"})
+        Expect(("2026-10-23-203401-Moon-Bin1 " + std::string(f) + " 64.6F.avi").c_str(), Target::Moon, f, FilterClass::Narrowband);
+    for (const char* f : {"IR", "IR450", "IR85", "PP", "IRX685"})
+        Expect(("2026-10-23-203401-Moon-Bin1 " + std::string(f) + " 64.6F.avi").c_str(), Target::Moon, f, FilterClass::Unknown);
+    const FileInfo bayer = Info(ColorId::BayerRGGB, 1);
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::IrPass, bayer, "IR685") ==
+          "Mineral moon needs a broadband filter; IR685 is IR-pass, so its colours come from the filter.");
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::IrPass, bayer, "") ==
+          "Mineral moon needs a broadband filter; the filter is IR-pass, so its colours come from the filter.");
+}
+
 TEST_CASE("ParseCaptureName: a filter holding a separator, Windows paths, any case (B1 review m3)", "[capture_name]") {
     // UV/IR holds a '/': in a full path the base name still starts at the timestamp.
     Expect("/mnt/qnap/astro_data/2026-10-23/2026-10-23-203401-Moon-Bin1 UV/IR 5.0F.avi", Target::Moon, "UV/IR",

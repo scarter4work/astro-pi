@@ -423,6 +423,14 @@ TEST_CASE("Mineral moon is refused from the capture's name, the target and the r
     const auto saturn = stackcards::MineralRefusalFor(kMoonName, bayer, stackcards::ResolveTarget(ser::Target::Saturn, kMoonName));
     REQUIRE(saturn);
     CHECK(*saturn == "Mineral moon is for the Moon; the target is Saturn.");
+    // An IR-pass filter, as named by the file (final review B, m4).
+    const std::string ir = "2026-10-23-030000-Moon-Bin1 IR685 16.2F.ser";
+    const auto irp = stackcards::MineralRefusalFor(ir, bayer, stackcards::ResolveTarget(std::nullopt, ir));
+    REQUIRE(irp);
+    CHECK(*irp == "Mineral moon needs a broadband filter; IR685 is IR-pass, so its colours come from the filter.");
+    // An unrecognised filter token: allowed, as is a name without one.
+    const std::string odd = "2026-10-23-030000-Moon-Bin1 Weird 16.2F.ser";
+    CHECK_FALSE(stackcards::MineralRefusalFor(odd, bayer, stackcards::ResolveTarget(std::nullopt, odd)));
     // The Moon chosen by the user for a name without one: allowed (no filter known).
     CHECK_FALSE(stackcards::MineralRefusalFor("moon.ser", bayer, stackcards::ResolveTarget(ser::Target::Moon, "moon.ser")));
     // B1 m2: an AVI is Mono until OpenVideo resolves its Bayer pattern -- the info after resolution is a Bayer

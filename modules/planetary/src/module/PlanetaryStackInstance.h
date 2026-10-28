@@ -109,7 +109,8 @@ public:
    // for Auto the capture name's (stackcards::ResolveTarget). With
    // p_mineralMoon: refused before stacking (pcl::Error with
    // stackcards::MineralRefusalFor's reason, from the reader's info after the
-   // Bayer pattern is resolved) unless the capture is a broadband colour Moon;
+   // Bayer pattern is resolved) unless the capture is a colour Moon not taken
+   // through a narrowband or IR-pass filter;
    // else the mineral moon (stack::MakeMineralMoon, p_mineralStrength,
    // p_chromaBlur, p_mineralSharpen; the stack's own noise, StackOutcome::noise)
    // is made after the stack, with the same progress and Abort,

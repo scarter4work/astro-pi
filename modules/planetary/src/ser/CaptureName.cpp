@@ -22,12 +22,33 @@ bool IsOneOf(const std::string& token, std::initializer_list<const char*> list) 
     return false;
 }
 
+// An infrared-pass filter: "IR" and a near-infrared cut-on in nm (IR642, IR-685, IR_850, IR685nm, IR1000), "IRPass"
+// with or without one, or Astronomik's ProPlanet (PP642, ProPlanet-742). Case, '-' and '_' are ignored.
+bool IsIrPass(const std::string& token) {
+    std::string t;
+    for (char c : Lower(token))
+        if (c != '-' && c != '_') t += c;
+    if (t.size() > 2 && t.compare(t.size() - 2, 2, "nm") == 0) t.resize(t.size() - 2);
+    auto cutOn = [&](size_t at) {  // the rest is a wavelength of 600 - 1100 nm
+        if (at >= t.size() || t.size() - at > 4 ||
+            !std::all_of(t.begin() + static_cast<long>(at), t.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); }))
+            return false;
+        const int nm = std::stoi(t.substr(at));
+        return nm >= 600 && nm <= 1100;
+    };
+    if (t.rfind("irpass", 0) == 0) return t.size() == 6 || cutOn(6);
+    if (t.rfind("proplanet", 0) == 0) return cutOn(9);
+    if (t.rfind("pp", 0) == 0) return cutOn(2);
+    return t.rfind("ir", 0) == 0 && cutOn(2);
+}
+
 FilterClass Classify(const std::string& token) {
     if (IsOneOf(token, {"HaO3", "S2O3", "Ha", "OIII", "O3", "SII", "S2", "Hb", "D1", "D2", "Duo", "NBZ",
-                        "ALP-T", "L-eNhance", "L-eXtreme", "L-Ultimate"}))
+                        "ALP-T", "L-eNhance", "L-eXtreme", "L-Ultimate", "CH4", "Methane"}))
         return FilterClass::Narrowband;
     if (IsOneOf(token, {"Lqef", "LPro", "L-Pro", "L", "UVIR", "UV/IR", "IRCut", "None", "Clear"}))
         return FilterClass::Broadband;
+    if (IsIrPass(token)) return FilterClass::IrPass;
     return FilterClass::Unknown;
 }
 
@@ -121,10 +142,11 @@ std::optional<std::string> MineralMoonRefusal(Target target, FilterClass filter,
         return std::string(
             "Mineral moon needs a colour capture; this one is mono (set the Bayer pattern if it is a "
             "colour camera).");
-    if (filter == FilterClass::Narrowband)
+    if (filter == FilterClass::Narrowband || filter == FilterClass::IrPass)
         return "Mineral moon needs a broadband filter; " +
                (filterToken.empty() ? std::string("the filter") : filterToken) +
-               " is narrowband, so its colours come from the filter.";
+               (filter == FilterClass::Narrowband ? " is narrowband" : " is IR-pass") +
+               ", so its colours come from the filter.";
     return std::nullopt;
 }
 

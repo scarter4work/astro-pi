@@ -200,6 +200,7 @@ const char* FilterName(ser::FilterClass f) {
     switch (f) {
         case ser::FilterClass::Broadband: return "Broadband";
         case ser::FilterClass::Narrowband: return "Narrowband";
+        case ser::FilterClass::IrPass: return "IR-pass";
         case ser::FilterClass::Unknown: break;
     }
     return "Unknown";

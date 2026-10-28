@@ -62,7 +62,11 @@ behind the verdict.</p>
   combo shows where it came from, for example &ldquo;Moon (from file name)&rdquo;. Choose a target to override it. It is
   written to the image's <code>OBJECT</code> keyword.</li>
   <li><b>Mineral moon</b> (see <a href="#mineral">The mineral moon</a>) is offered when the target is the Moon, the
-  capture is colour and the filter is broadband (or not named). Otherwise the box is disabled and its tooltip says why,
+  capture is colour and the file name's filter is not a narrowband or an IR-pass one (a filter not named, or not
+  recognised, is allowed). Narrowband: HaO3, S2O3, Ha, OIII (O3), SII (S2), Hb, D1, D2, Duo, NBZ, ALP-T, L-eNhance,
+  L-eXtreme, L-Ultimate, CH4 (Methane); IR-pass: IR followed by a cut-on of 600 to 1100 nm (IR642, IR-685, IR850nm),
+  IRPass, and ProPlanet or PP followed by one (PP742). Case does not matter, nor, in the IR-pass names, &ldquo;-&rdquo;
+  and &ldquo;_&rdquo;. Otherwise the box is disabled and its tooltip says why,
   for example &ldquo;Mineral moon needs a broadband filter; HaO3 is narrowband, so its colours come from the
   filter.&rdquo; Checked after Stack!, the preview shows the mineral moon; unchecked, the stack again. Neither restacks.</li>
   <li><b>Strength</b>, <b>Chroma blur</b> and <b>Sharpen</b> tune the mineral moon live: each change re-runs only the
@@ -81,7 +85,7 @@ target and mineral moon settings; executing that icon stacks the file.</p>
 <tr><td><code>filePath</code></td><td>String</td><td>(empty)</td><td>Absolute path of the <code>.ser</code> or <code>.avi</code> video (the format is recognised from the file's content). The process cannot run while it is empty.</td></tr>
 <tr><td><code>bayerPattern</code></td><td>Enum</td><td>Auto</td><td>AVI only, ignored for SER: Auto, None (mono), RGGB, GRBG, GBRG or BGGR, as in SERViewer. A pattern set here wins over the AVI's sidecar.</td></tr>
 <tr><td><code>target</code></td><td>Enum</td><td>Auto</td><td>Auto (from the file name), Other, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus or Neptune.</td></tr>
-<tr><td><code>mineralMoon</code></td><td>Boolean</td><td>false</td><td>Also make the mineral moon (Moon, colour, broadband only).</td></tr>
+<tr><td><code>mineralMoon</code></td><td>Boolean</td><td>false</td><td>Also make the mineral moon (the Moon, a colour capture, no narrowband or IR-pass filter).</td></tr>
 <tr><td><code>mineralStrength</code></td><td>Real</td><td>8</td><td>0 to 15: how far the Moon's colour differences are amplified.</td></tr>
 <tr><td><code>chromaBlur</code></td><td>Real</td><td>2.5</td><td>0.5 to 6 px: the blur applied to the colour (not the detail), which keeps chroma noise from being amplified.</td></tr>
 <tr><td><code>mineralSharpen</code></td><td>Real</td><td>1.5</td><td>0 to 4: luminance sharpening. 0 is none; higher values sharpen the finest scales more, always limited by the stack's own measured noise.</td></tr>

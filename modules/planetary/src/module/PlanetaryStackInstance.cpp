@@ -308,7 +308,8 @@ bool PlanetaryStackInstance::ExecuteGlobal()
       throw Error( "PlanetaryStack: " + fileName + ": " + String::UTF8ToUTF16( e.what() ) );
    }
 
-   // Mineral moon on anything but a broadband colour Moon fails before any
+   // Mineral moon on anything but a colour Moon (not through a narrowband or
+   // IR-pass filter) fails before any
    // stacking. The info is OpenVideo's: an AVI's Bayer pattern is resolved by
    // then (B1 review m2: the AVI reader alone reports Mono).
    if ( mineralParams )

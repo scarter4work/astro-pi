@@ -97,7 +97,8 @@ const char* const kMineralTip =
    "<p>Also make the mineral moon: the stack colour-calibrated, stretched for display and sharpened, with the "
    "Moon's faint colour differences (the maria's titanium blues, the highlands' iron browns) amplified by Strength. "
    "The preview shows it; Execute opens it as a second window (&lt;name&gt;_mineral) beside the linear stack. "
-   "Checking or unchecking it never stacks again. Needs the Moon, a colour capture and a broadband filter.</p>";
+   "Checking or unchecking it never stacks again. Needs the Moon and a colour capture, not through a narrowband or "
+   "IR-pass filter (as the file name names it).</p>";
 
 bool SameParams( const stack::MineralParams& a, const stack::MineralParams& b )
 {
@@ -653,7 +654,8 @@ void PlanetaryStackInterface::UpdateControls()
       GUI->Target_ComboBox.SetCurrentItem( instance.p_target );
    GUI->Target_Label.Enable( !running );
    GUI->Target_ComboBox.Enable( !running );
-   // Mineral moon: only for a broadband colour Moon; the tooltip says why not.
+   // Mineral moon: only for a colour Moon, not through a narrowband or IR-pass
+   // filter; the tooltip says why not.
    std::optional<std::string> refusal;
    try
    {
