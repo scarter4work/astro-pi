@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include "Measure.h"
 #include "Parallel.h"
 
 namespace planetary::stack {
@@ -259,6 +260,188 @@ LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads) {
         m.skyCount += m.sky[i];
     }
     return m;
+}
+
+// ---- 2-3. Colour calibration and background ----
+
+namespace {
+
+void RequireMasks(const ser::FloatImage& rgb, const LunarMasks& m, const char* who) {
+    RequireRgb(rgb, who);
+    if (m.width != rgb.width || m.height != rgb.height || m.disk.size() != Pixels(rgb) || m.sky.size() != Pixels(rgb))
+        throw std::invalid_argument(std::string(who) + ": masks do not match the image");
+}
+
+std::string Fmt(const char* format, double a, double b = 0, double c = 0, double d = 0) {
+    char buf[160];
+    std::snprintf(buf, sizeof buf, format, a, b, c, d);
+    return buf;
+}
+
+std::string Percent(size_t part, size_t whole) { return Fmt("%.2f%%", 100.0 * part / std::max<size_t>(1, whole)); }
+
+// A plane a + b u + c v over the frame, u = x / (w - 1) - 0.5, v = y / (h - 1) - 0.5 (so b and c are the
+// rise across the frame and a the level at its centre).
+struct Plane {
+    double a = 0, b = 0, c = 0;
+    double At(int x, int y, int w, int h) const {
+        return a + b * (static_cast<double>(x) / std::max(1, w - 1) - 0.5) + c * (static_cast<double>(y) / std::max(1, h - 1) - 0.5);
+    }
+};
+
+// Least-squares plane of channel ch over the sky, three rounds of rejecting residuals beyond 3 robust sigma (a
+// star, a hot pixel, a satellite trail).
+Plane SkyPlane(const ser::FloatImage& rgb, const LunarMasks& m, int ch) {
+    const int w = rgb.width, h = rgb.height;
+    std::vector<uint8_t> use = m.sky;
+    Plane p;
+    for (int round = 0; round < 4; ++round) {
+        double S[3][3] = {}, r[3] = {};
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (!use[i]) continue;
+                const double f[3] = {1, static_cast<double>(x) / std::max(1, w - 1) - 0.5,
+                                     static_cast<double>(y) / std::max(1, h - 1) - 0.5};
+                const double v = rgb.data[i * 3 + ch];
+                for (int a = 0; a < 3; ++a) {
+                    r[a] += f[a] * v;
+                    for (int b = 0; b < 3; ++b) S[a][b] += f[a] * f[b];
+                }
+            }
+        // Solve S q = r (Gaussian elimination with partial pivoting; S is symmetric positive definite unless
+        // the sky is a line, in which case the slope along the degenerate axis is left 0).
+        double M[3][4];
+        for (int a = 0; a < 3; ++a) {
+            for (int b = 0; b < 3; ++b) M[a][b] = S[a][b];
+            M[a][3] = r[a];
+        }
+        double q[3] = {0, 0, 0};
+        int rank = 0;
+        for (int col = 0; col < 3; ++col) {
+            int piv = col;
+            for (int a = col + 1; a < 3; ++a)
+                if (std::fabs(M[a][col]) > std::fabs(M[piv][col])) piv = a;
+            if (std::fabs(M[piv][col]) < 1e-9 * std::max(1.0, S[0][0])) continue;
+            std::swap(M[piv], M[col]);
+            for (int a = 0; a < 3; ++a)
+                if (a != col) {
+                    const double f = M[a][col] / M[col][col];
+                    for (int b = col; b < 4; ++b) M[a][b] -= f * M[col][b];
+                }
+            ++rank;
+        }
+        for (int a = 0; a < 3; ++a)
+            if (std::fabs(M[a][a]) >= 1e-9 * std::max(1.0, S[0][0])) q[a] = M[a][3] / M[a][a];
+        if (rank == 0) break;
+        p = {q[0], q[1], q[2]};
+        if (round == 3) break;
+        std::vector<float> res;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (use[i]) res.push_back(static_cast<float>(rgb.data[i * 3 + ch] - p.At(x, y, w, h)));
+            }
+        const double sd = MadStd(res);
+        if (!(sd > 0)) break;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (m.sky[i]) use[i] = std::fabs(rgb.data[i * 3 + ch] - p.At(x, y, w, h)) <= 3 * sd;
+            }
+    }
+    return p;
+}
+
+// Spec step 2: under 1% of the frame, the disc is too small for a white reference and the sky too small for a
+// background reference.
+constexpr double kMinShare = 0.01;
+
+}  // namespace
+
+StepRecord CalibrateColour(ser::FloatImage& rgb, const LunarMasks& m) {
+    RequireMasks(rgb, m, "CalibrateColour");
+    const int w = rgb.width, h = rgb.height;
+    const size_t n = Pixels(rgb);
+    StepRecord rec;
+    if (m.diskCount < kMinShare * n) {
+        rec.skipped = true;
+        rec.history = "Colour calibration skipped: the lit disk is " + Percent(m.diskCount, n) +
+                      " of the frame, under the 1% a white reference needs";
+        return rec;
+    }
+    // Background reference: the sky's plane per channel (the same model NeutraliseBackground removes), so a
+    // gradient does not bias the white reference. Without enough sky, none: the white reference is taken on
+    // the raw levels, and HISTORY says so.
+    const bool haveSky = m.skyCount >= kMinShare * n;
+    Plane bg[3];
+    if (haveSky)
+        for (int c = 0; c < 3; ++c) bg[c] = SkyPlane(rgb, m, c);
+    // White reference: the whole lit disc, leaving out every pixel with a saturated sample (its true colour is
+    // unknown: a highland clipped in R alone would read too blue once scaled).
+    double sum[3] = {0, 0, 0};
+    size_t used = 0, saturated = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const size_t i = static_cast<size_t>(y) * w + x;
+            if (!m.disk[i]) continue;
+            const float* p = &rgb.data[i * 3];
+            if (p[0] >= kClippedLuma || p[1] >= kClippedLuma || p[2] >= kClippedLuma) {
+                ++saturated;
+                continue;
+            }
+            for (int c = 0; c < 3; ++c) sum[c] += p[c] - bg[c].At(x, y, w, h);
+            ++used;
+        }
+    if (used < kMinShare * n || !(sum[0] > 0 && sum[1] > 0 && sum[2] > 0)) {
+        rec.skipped = true;
+        rec.history = "Colour calibration skipped: " + Percent(used, n) +
+                      " of the frame is unsaturated lit disk with a positive level, under the 1% a white reference needs";
+        return rec;
+    }
+    // Scale R and B to G's level about the background, so the disc's mean is neutral and G keeps its brightness.
+    const double gain[3] = {sum[1] / sum[0], 1.0, sum[1] / sum[2]};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            float* p = &rgb.data[(static_cast<size_t>(y) * w + x) * 3];
+            for (int c : {0, 2}) {
+                const double b = bg[c].At(x, y, w, h);
+                p[c] = static_cast<float>(b + (p[c] - b) * gain[c]);
+            }
+        }
+    rec.history = "Colour calibration: white = lit disk (" + std::to_string(used) + " px, " + std::to_string(saturated) +
+                  " with a saturated sample left out), background = " +
+                  (haveSky ? std::string("sky plane") : "none (sky " + Percent(m.skyCount, n) + " of the frame, under 1%)") +
+                  Fmt("; gains R %.4f G 1 B %.4f", gain[0], gain[2]);
+    return rec;
+}
+
+StepRecord NeutraliseBackground(ser::FloatImage& rgb, const LunarMasks& m) {
+    RequireMasks(rgb, m, "NeutraliseBackground");
+    const int w = rgb.width, h = rgb.height;
+    const size_t n = Pixels(rgb);
+    StepRecord rec;
+    if (m.skyCount < kMinShare * n) {
+        rec.skipped = true;
+        rec.history = "Background skipped: the sky is " + Percent(m.skyCount, n) +
+                      " of the frame, under the 1% needed to measure it; nothing subtracted";
+        return rec;
+    }
+    // Spec step 3: the pedestal per channel plus a linear gradient, measured on sky pixels only and removed
+    // everywhere (it is light added on top of the disc as well). Samples may go below 0 here; the display
+    // transfer sets the black point.
+    Plane p[3];
+    for (int c = 0; c < 3; ++c) p[c] = SkyPlane(rgb, m, c);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            float* q = &rgb.data[(static_cast<size_t>(y) * w + x) * 3];
+            for (int c = 0; c < 3; ++c) q[c] = static_cast<float>(q[c] - p[c].At(x, y, w, h));
+        }
+    rec.history = "Background: sky plane removed per channel (" + std::to_string(m.skyCount) + " sky px)" +
+                  Fmt("; level R %.5f G %.5f B %.5f", p[0].a, p[1].a, p[2].a) +
+                  Fmt(", rise across the frame R %.5f G %.5f B %.5f", std::hypot(p[0].b, p[0].c), std::hypot(p[1].b, p[1].c),
+                      std::hypot(p[2].b, p[2].c));
+    return rec;
 }
 
 }  // namespace planetary::stack

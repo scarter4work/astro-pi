@@ -16,4 +16,11 @@ struct LunarMasks {
 };
 LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads);
 
+// One step's outcome: one ASCII HISTORY line (unsplit), and whether the step declined to run.
+struct StepRecord { std::string history; bool skipped = false; };
+
+// ---- 2-3. Colour calibration and background ----
+StepRecord CalibrateColour(ser::FloatImage& rgb, const LunarMasks& m);
+StepRecord NeutraliseBackground(ser::FloatImage& rgb, const LunarMasks& m);
+
 }  // namespace planetary::stack
