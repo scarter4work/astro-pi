@@ -94,8 +94,8 @@ public:
    bool ImportProcess( const ProcessImplementation& ) override;
 
    // Cancels a running stack and waits until it has stopped (the worker and
-   // every engine thread joined, every reader closed; a colour step running is
-   // waited for too), touching no control and
+   // every engine thread joined, every reader closed; a slider's sharpening and
+   // colour steps running are waited for too), touching no control and
    // not the console: PlanetaryModule::OnUnload calls it before PixInsight
    // exits, when the core may be tearing its windows down; the destructor too.
    void JoinStack();
@@ -162,8 +162,8 @@ private:
    std::string m_mineralError;
    std::string m_mineralOff;  // why Mineral moon was turned off for the capture shown
 
-   // The colour step for a strength or chroma blur change (ApplyMineralColour on
-   // the cache it holds, so a dropped stack cannot pull it away). Its worker
+   // The sharpening and colour steps for a Strength, Chroma blur or Sharpen change
+   // (FinishMineral on the cache it holds, so a dropped stack cannot pull it away). Its worker
    // writes only the results, then `finished`; the timer collects them. A change
    // while it runs waits (m_colourPending) and the newest values run next.
    struct ColourRun
@@ -260,8 +260,8 @@ private:
    // The preview: the mineral moon when it is checked and made, else the stack
    // (at the zoom shown when it replaces the other).
    void ShowPreview();
-   // The mineral moon with the current parameters: the one shown, or coloured
-   // now from the cache (the colour step only).
+   // The mineral moon with the current parameters: the one shown, or made now
+   // from the cache (FinishMineral: the sharpening and colour steps only).
    planetary::stack::MineralOutcome CurrentMineral() const;
    // Execute's windows: the stack, then (Mineral moon checked) its mineral moon.
    void OpenWindows();

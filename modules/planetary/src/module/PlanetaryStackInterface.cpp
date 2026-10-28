@@ -488,7 +488,7 @@ void PlanetaryStackInterface::RequestColour()
    run->cache = m_mineral;
    run->params = CurrentParams();
    run->threads = StackThreads();
-   // PCL-free: ApplyMineralColour on the cache the run holds; then `finished`.
+   // PCL-free: FinishMineral on the cache the run holds; then `finished`.
    ColourRun* r = run.get();
    m_colour = std::move( run );
    m_colourPending = false;
@@ -744,8 +744,8 @@ void PlanetaryStackInterface::StartWorker( bool openWhenDone )
 {
    // The worker: a Stack run's RunStack and, for a SER's DATE-OBS, the frame
    // times (CaptureTimes, PCL-free) through a reader of its own, then (with
-   // `mineral`) PrepareMineral and the colour step; a Mineral run's
-   // PrepareMineral and colour step on its copy of the stack. It writes only the
+   // `mineral`) PrepareMineral and FinishMineral; a Mineral run's
+   // PrepareMineral and FinishMineral on its copy of the stack. It writes only the
    // run's atomics and, before `finished`, its results; it never touches a PCL
    // object. The engine's report() and cancelled() run on this thread.
    Run* r = m_run.get();
@@ -944,7 +944,8 @@ void PlanetaryStackInterface::FinishStack()
       GUI->Execute_PushButton.Focus();
    else
       GUI->Stack_PushButton.Focus();
-   // The slider moved while the mineral moon was being made: the colour step for the newest values.
+   // The slider moved while the mineral moon was being made: the sharpening and
+   // colour steps for the newest values.
    if ( m_mineralShown && !SameParams( CurrentParams(), m_shownParams ) )
       RequestColour();
    if ( open && !cancelled && m_outcome && m_outcome->image )
@@ -1260,13 +1261,17 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Stack_PushButton.SetText( "Stack!" );
    Stack_PushButton.SetToolTip( "<p>Stack the video: every frame is measured, the sharpest are chosen from the "
                                 "capture's own statistics, aligned to the target and region by region, and stacked. "
-                                "Nothing to set. The bar shows how far it is; the window stays usable.</p>" );
+                                "With Mineral moon checked, the mineral moon is made from the stack too. Nothing "
+                                "to set. The bar shows how far it is; the window stays usable.</p>" );
    Stack_PushButton.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
-   Progress_Bar.SetToolTip( "<p>The stack's progress: measuring every frame, aligning, stacking.</p>" );
+   Progress_Bar.SetToolTip( "<p>The run's progress: measuring every frame, aligning, stacking, then the mineral moon "
+                            "when Mineral moon is checked. Checking it on a stack already made runs that last step "
+                            "alone.</p>" );
 
    Cancel_PushButton.SetText( "Cancel" );
-   Cancel_PushButton.SetToolTip( "<p>Stop the stack. Nothing is left behind: no image, no file.</p>" );
+   Cancel_PushButton.SetToolTip( "<p>Stop the run. A stack stopped leaves nothing behind: no image, no file. A "
+                                 "mineral moon stopped on a stack already made leaves that stack shown.</p>" );
    Cancel_PushButton.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
    Run_Sizer.SetSpacing( 6 );
@@ -1275,7 +1280,8 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Run_Sizer.Add( Cancel_PushButton );
 
    Preview_Control.SetScaledMinSize( 400, 300 );
-   Preview_Control.SetToolTip( "<p>The stack, stretched for display only (the image Execute opens is linear). "
+   Preview_Control.SetToolTip( "<p>The stack, stretched for display only (the stack Execute opens is linear); "
+                               "with Mineral moon checked, the mineral moon as Execute opens it. "
                                "Drag to move around it when zoomed in.</p>" );
 
    Fit_PushButton.SetText( "Fit" );
@@ -1333,7 +1339,8 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Target_Sizer.Add( Mineral_CheckBox );
    Target_Sizer.AddStretch();
 
-   // The mineral moon's colour: either slider re-runs only its colour step.
+   // The mineral moon's sliders: each re-runs only the sharpening and colour steps
+   // (FinishMineral on the cache), never the stack.
    Strength_NumericControl.label.SetText( "Strength:" );
    Strength_NumericControl.label.SetMinWidth( labelWidth );
    Strength_NumericControl.slider.SetRange( 0, 150 );
@@ -1387,8 +1394,9 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
 
    Execute_PushButton.SetText( "Execute" );
    Execute_PushButton.SetToolTip( "<p>Open the stack as a new image window: 32-bit float, linear, with FITS keywords "
-                                  "(source video, frames used, how they were chosen and aligned). When nothing is "
-                                  "stacked yet, it stacks first.</p>" );
+                                  "(source video, frames used, how they were chosen and aligned). With Mineral "
+                                  "moon checked, the mineral moon opens too, as a second window (&lt;name&gt;_mineral), "
+                                  "stretched for display. When nothing is stacked yet, it stacks first.</p>" );
    Execute_PushButton.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
    Execute_Sizer.AddStretch();
@@ -1397,7 +1405,7 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    // The GUI smoke (test/gui_drive.py stack_controls()) clicks relative to the
    // preview: two rows above it (Open... / Bayer pattern / Save pattern..., then
    // Stack! / the progress bar / Cancel), the zoom row below it, then Target /
-   // Mineral moon, Strength and Chroma blur, the info
+   // Mineral moon, Strength, Chroma blur and Sharpen, the info
    // block and Execute. A layout change here means re-measuring those offsets.
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
