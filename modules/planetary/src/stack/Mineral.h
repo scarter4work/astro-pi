@@ -101,13 +101,13 @@ struct MineralParams {
 // 0.92 x the lowest, over R, G and B, of the channel's 99.99th percentile (linear interpolation between order
 // statistics, numpy's default) over every pixel.
 double AutoSatThreshold(const ser::FloatImage& rgb);
-// In place: C = ChromaLayer(rgb, sigma); d_c = clamp(C_c / (mean(C) + eps) - 1, +-devClamp); w = clamp((threshold
-// - max(C_R, C_G)) / satRamp, 0, 1); out_c = clip(L (1 + k w d_c), 0, 1), L = lumSharp. Hue follows the sign of d,
-// all detail comes from L. One addition to the amendment, for its anti-goal "no new clipping": where some channel
+// In place: C = ChromaLayer(rgb, sigma); d_c = clamp((C_c - mean(C)) / (mean(C) + eps), +-devClamp); w =
+// clamp((threshold - max(C_R, C_G)) / satRamp, 0, 1); out_c = clip(L (1 + k w d_c), 0, 1), L = lumSharp. Hue
+// follows the sign of d, all detail comes from L. eps only keeps a black sky from dividing by 0 (Ruling R26): a
+// neutral pixel gets d = 0, and the channels' mean of d is 0 wherever the clamp does not engage, so out's
+// luminance is L's there. One addition to the amendment, for its anti-goal "no new clipping": where some channel
 // would pass 0.998, w is lowered for the whole pixel (hue kept, saturation given up), so the colour never clips
-// a sample; with k 8 that acts only where L > 0.67 with w > 0. Note eps darkens: the channels' mean of d is
-// -eps / (mean(C) + eps), so out's luminance is L (1 - k eps / (mean(C) + eps)) -- 4.5% at a display level of
-// 0.35 with k 8, and the clamp's 48% in the sky and the unlit side (mean(C) < 0.031).
+// a sample; with k 8 that acts only where L > 0.67 with w > 0.
 // Throws std::invalid_argument unless rgb is 3 channels, lumSharp 1 channel of its size, and the parameters
 // finite with strength, sigma, eps, devClamp >= 0 and satRamp > 0.
 StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads = 1);

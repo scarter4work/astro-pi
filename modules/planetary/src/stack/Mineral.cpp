@@ -1112,11 +1112,13 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
         size_t f = 0, g = 0;
         for (size_t i = static_cast<size_t>(y0) * rgb.width; i < static_cast<size_t>(y1) * rgb.width; ++i) {
             const float* q = &C.data[i * 3];
-            // 2. d: each channel's ratio to the channels' mean, less 1, clamped (one hot or saturated sample
-            //    cannot colour its neighbourhood beyond +-devClamp; eps keeps a black sky from dividing by 0).
+            // 2. d: each channel's deviation from the channels' mean, relative to it, clamped (one hot or saturated
+            //    sample cannot colour its neighbourhood beyond +-devClamp). eps keeps a black sky from dividing
+            //    by 0 and, in the numerator's difference form, biases nothing: a neutral pixel gets d = 0
+            //    (Ruling R26; C / (mean + eps) - 1 darkened every pixel by k eps / (mean + eps)).
             const double mean = (static_cast<double>(q[0]) + q[1] + q[2]) / 3;
             double d[3];
-            for (int c = 0; c < 3; ++c) d[c] = std::clamp(q[c] / (mean + p.eps) - 1, -p.devClamp, p.devClamp);
+            for (int c = 0; c < 3; ++c) d[c] = std::clamp((q[c] - mean) / (mean + p.eps), -p.devClamp, p.devClamp);
             // 3. Highlight fade (replaces step 7's clean-up): neutral at and above the threshold, R and G being
             //    the channels that saturate first on lunar highlands.
             double wgt = std::clamp((thr - std::max(q[0], q[1])) / p.satRamp, 0.0, 1.0);

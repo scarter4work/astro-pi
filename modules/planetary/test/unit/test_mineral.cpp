@@ -721,19 +721,15 @@ TEST_CASE("chroma: error halved") {
 }
 
 TEST_CASE("chroma: luminance kept") {
-    // Chroma comes from the blurred layer, luminance from L: with no gain beyond 1, no eps, no clamp and no
-    // fade, the output's luminance is L's.
+    // Chroma comes from the blurred layer, luminance from L: at the module's settings (k 8, eps, clamp, fade),
+    // the output's luminance is still L's (Ruling R26: a neutral pixel gets d = 0, so the colour step neither
+    // darkens nor brightens).
     MoonSceneSpec s;
     s.noiseStd = 0.01;
     MoonScene sc = MakeMoonScene(s);
     const std::vector<double> truth = testing::Lum(sc.truth), before = testing::Lum(sc.observed);
     const ser::FloatImage L = LumImage(sc.observed);
-    stack::MineralParams p;
-    p.strength = 1;
-    p.eps = 0;
-    p.devClamp = 1;
-    p.satThreshold = 1e9;
-    stack::MineralColour(sc.observed, L, p, 4);
+    stack::MineralColour(sc.observed, L, stack::MineralParams{}, 4);
     const double e0 = RmsOver(before, truth, sc.diskTruth), e1 = RmsOver(testing::Lum(sc.observed), truth, sc.diskTruth);
     INFO("luminance RMS error vs truth: " << e0 << " -> " << e1);
     CHECK(std::fabs(e1 / e0 - 1) <= 0.02);
@@ -840,7 +836,7 @@ TEST_CASE("colour: strength scales") {
         double dmax = 0, dabs = 0;
         bool clamped = false;
         for (int c = 0; c < 3; ++c) {
-            const double d = q[c] / (m + p8.eps) - 1;
+            const double d = (q[c] - m) / (m + p8.eps);
             clamped = clamped || std::fabs(d) >= 0.95 * p8.devClamp;
             dmax = std::max(dmax, d);
             dabs = std::max(dabs, std::fabs(d));
