@@ -58,6 +58,23 @@ bool NoiseModel::AnyClipped() const {
     return std::any_of(knots.begin(), knots.end(), [](const Knot& k) { return k.clipped; });
 }
 
+double StackNoise::Alpha2At(int x, int y) const {
+    const double gx = static_cast<double>(x + originX) / grid, gy = static_cast<double>(y + originY) / grid;
+    const int i = std::clamp(static_cast<int>(gx), 0, gridW - 2), j = std::clamp(static_cast<int>(gy), 0, gridH - 2);
+    const double tx = std::clamp(gx - i, 0.0, 1.0), ty = std::clamp(gy - j, 0.0, 1.0);
+    auto at = [&](int u, int v) { return static_cast<double>(alpha2[static_cast<size_t>(v) * gridW + u]); };
+    const double top = at(i, j) + tx * (at(i + 1, j) - at(i, j));
+    const double bottom = at(i, j + 1) + tx * (at(i + 1, j + 1) - at(i, j + 1));
+    return top + ty * (bottom - top);
+}
+
+bool StackNoise::Usable() const {
+    return model.Measured() && !model.Zero() && width > 0 && height > 0 && grid > 0 && gridW >= 2 && gridH >= 2 &&
+           alpha2.size() == static_cast<size_t>(gridW) * gridH && originX >= 0 && originY >= 0 &&
+           static_cast<int64_t>(width) - 1 + originX <= static_cast<int64_t>(gridW - 1) * grid &&
+           static_cast<int64_t>(height) - 1 + originY <= static_cast<int64_t>(gridH - 1) * grid;
+}
+
 NoiseModel NoiseModel::FromSkyNoise(const NoiseEstimate& sky) {
     NoiseModel m;
     m.a = sky.sigma * sky.sigma;

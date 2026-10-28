@@ -491,6 +491,39 @@ TEST_CASE("RunStack: an AVI with an unknown Bayer pattern stacks the raw mosaic 
     CHECK(std::count(colour.summary.warnings.begin(), colour.summary.warnings.end(), std::string(stack::kUndeclaredMosaicWarning)) == 0);
 }
 
+TEST_CASE("RunStack: the stack's noise carries the capture's model and the frames' noise-power count (Ruling R35)", "[engine]") {
+    // StackOutcome::noise (Noise.h, StackNoise) for the image as cropped: the capture's measured model, and per pixel
+    // alpha2 = sum_f (alpha_f / gain_f)^2. Over the sky every stacked frame weighs alike (the fallback stack), so its
+    // k_eff = 1 / alpha2 is the frames stacked; nowhere can it exceed that; and the grid is the same for any threads.
+    const Capture cap = DiscCapture(112, 96, 55.6, 48.3, 22, 50, 41);
+    const StackOutcome a = stack::RunStack(cap.Factory(), 1, {}), b = stack::RunStack(cap.Factory(), 8, {});
+    REQUIRE(a.image.has_value());
+    REQUIRE(a.noise.has_value());
+    REQUIRE(b.noise.has_value());
+    const stack::StackNoise& sn = *a.noise;
+    CHECK(sn.Usable());
+    CHECK(sn.width == a.image->width);
+    CHECK(sn.height == a.image->height);
+    CHECK(sn.originX == a.summary.crop.left);
+    CHECK(sn.originY == a.summary.crop.top);
+    CHECK(sn.model.Measured());
+    CHECK_FALSE(sn.model.Zero());
+    CHECK(sn.alpha2 == b.noise->alpha2);
+    const double used = static_cast<double>(a.summary.used);
+    double kMax = 0, kMin = 1e300;
+    for (int y = 0; y < sn.height; ++y)
+        for (int x = 0; x < sn.width; ++x) {
+            const double k = 1 / sn.Alpha2At(x, y);
+            kMax = std::max(kMax, k);
+            kMin = std::min(kMin, k);
+        }
+    const double kSky = 1 / sn.Alpha2At(0, 0);  // the corner: sky, far from the disc
+    INFO("frames stacked " << used << ", k_eff at the corner " << kSky << ", over the image " << kMin << " .. " << kMax);
+    CHECK(kSky == Catch::Approx(used).epsilon(0.02));
+    CHECK(kMax <= used * 1.02);
+    CHECK(kMin >= 1);
+}
+
 TEST_CASE("RunStack: 1 and 8 threads give the same result within 1e-6", "[engine]") {
     const Capture cap = DiscCapture(112, 96, 55.6, 48.3, 22, 50, 41);
     const StackOutcome a = stack::RunStack(cap.Factory(), 1, {}), b = stack::RunStack(cap.Factory(), 8, {});

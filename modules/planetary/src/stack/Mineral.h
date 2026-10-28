@@ -1,10 +1,12 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "Debayer.h"
+#include "Noise.h"
 #include "StackTypes.h"
 
 // The mineral moon (spec docs/superpowers/specs/2026-10-27-planetary-mineral-moon-design.md, Part B, and its
@@ -93,8 +95,19 @@ double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int thre
 // to two layer reaches inside the limb's and terminator's half-contrast line (no halo, no rim). Above 0.9 a
 // smooth shoulder keeps L under 0.998, so sharpening never clips a sample the stack did not. Skipped (unchanged)
 // when there is no disc. Throws std::invalid_argument as LuminanceNoise, or for a noise map not of lum1's size.
+// layerShape (optional; Ruling R33): per layer, its noise over the white-noise prediction (LayerNoiseShape); null:
+// white noise (1 for every layer).
 StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads,
-                                 const std::vector<float>* noise = nullptr);
+                                 const std::vector<float>* noise = nullptr,
+                                 const std::array<double, 4>* layerShape = nullptr);
+// The noise's shape over the starlet layers 1-4 (Ruling R33): per layer j, the robust std of layer j over the sky
+// (eroded by the layer's reach, so the disc's edge stays out) over kStarletNoise[j] times the white-noise std that
+// layer 1 implies there; layer 1 is 1 by construction. A stack's noise is correlated (the demosaic, the warp's
+// interpolation): on real Moons layers 2-4 read 1.6-1.7x, 1.9-2.2x, 2.4-3.1x the white prediction, and the white
+// thresholds let that noise through the boost. Each factor is at least 1 (a sky smoother than white noise does not
+// lower a threshold); 1 for a layer whose eroded sky has under 1000 px, or with no sky. lum1 linear (the sky is
+// clipped after a display transfer). Throws std::invalid_argument as LuminanceNoise.
+std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads);
 // The same on an RGB image's luminance (the channels' mean): every channel scaled by L's own factor, so R/G and
 // B/G are unchanged (chroma untouched); a pixel that would pass 0.998 in a channel is scaled less, uniformly.
 StepRecord SharpenLuminance(ser::FloatImage& rgb, const LunarMasks& m, int threads);
@@ -157,7 +170,15 @@ struct MineralCache {
 // sample), StackCancelled on a cancel. With no disc found, every later step skips (see MineralOutcome::notice).
 // Memory: the cache holds 18 bytes per pixel (display 12, lum 4, masks 2: 37 MB at 1920 x 1080); the working
 // copy of the stack becomes cache.display (moved, not copied).
-MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress);
+// The sharpening's noise (Ruling R35). With `noise` (the stack's: RunStack's StackOutcome::noise, for this stack;
+// Usable() and of its size) and a sky of at least 1000 px: per pixel, sqrt(model(t) alpha2) (Noise.h, StackNoise)
+// scaled once so that over the sky it equals the sky's measured white-noise std on the calibrated linear
+// luminance -- the level (shot noise: real discs 7-10x their sky's noise) and the frame count come from the stack,
+// the units from the sky -- then through the display transfer's slope at each pixel. Without it (null, unusable,
+// or no sky to scale it by), the sky's (or the flattest disc tiles') noise everywhere, a lower bound on a bright
+// disc's; HISTORY's Sharpen line says which. Either way the layer shape is LayerNoiseShape's on the linear data.
+MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress,
+                            const StackNoise* noise = nullptr);
 // Steps 5-7 only, on a copy of cache.display; record (if given) receives the colour step's HISTORY line. Cheap: a
 // chroma blur and one pass (1080p, 32 threads: well under a second); it allocates 24 bytes per pixel (the output
 // copy and the chroma layer: 50 MB at 1920 x 1080). p.satThreshold < 0 takes cache.satThreshold (the same value
@@ -180,6 +201,6 @@ struct MineralOutcome {
 // std::invalid_argument for a non-3-channel image or NaN samples; StackCancelled when progress cancels (no image
 // is returned).
 MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress,
-                               const MineralParams& params = {});
+                               const MineralParams& params = {}, const StackNoise* noise = nullptr);
 
 }  // namespace planetary::stack

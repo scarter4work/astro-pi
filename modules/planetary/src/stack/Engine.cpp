@@ -1222,6 +1222,19 @@ StackOutcome RunStack(const SourceFactory& rawFactory, int threads, const Progre
             }
             image = std::move(cropped);
         }
+        // The stack's noise (Ruling R35): the capture's model, and the frames' noise-power weights from the plan.
+        if (noise.Measured() && !noise.Zero()) {
+            StackNoise sn;
+            sn.model = noise;
+            sn.lumaWeights = acc.LumaWeights();
+            sn.width = image.width;
+            sn.height = image.height;
+            sn.grid = kStackNoiseGrid;
+            sn.alpha2 = acc.Alpha2Grid(kStackNoiseGrid, mem.stackWorkers, sn.gridW, sn.gridH);
+            sn.originX = c.left;
+            sn.originY = c.top;
+            out.noise = std::move(sn);
+        }
     }
     step("Stacking", t0);
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -161,6 +162,28 @@ struct NoiseModel {
 
 private:
     std::vector<double> table_;
+};
+
+// The finished stack's noise (Ruling R35, Task B9), for steps that need it per pixel (the mineral moon's sharpening).
+// A stack pixel averages the frames' samples with blend weights alpha_f (Accumulate.h, "The blend"), each frame's
+// sample divided by its gain, so its variance is sum_f (alpha_f / gain_f)^2 var_f -- with one curve for every frame
+// (the capture's model), model(t) x alpha2, alpha2 = 1 / k_eff. t is the stack's luma at the pixel (lumaWeights, the
+// level the model is read at). The model is in measurement-luma units, and the demosaic and the warp's
+// interpolation scale and correlate the noise on its way into the stack: a user maps model(t) alpha2 onto its own
+// image once, where it can measure that image's noise (the mineral moon: on the sky), and carries the level and the
+// frame count to the rest. Not counted: rejected samples, and the out-of-frame stand-ins near the stack's edge.
+struct StackNoise {
+    NoiseModel model;                       // the capture's (FitNoiseModel); Measured() and not Zero()
+    std::array<double, 3> lumaWeights{};    // the stack's luma: sum_c lumaWeights[c] x channel c
+    int width = 0, height = 0;              // the (cropped) stack's size
+    // alpha2 on the accumulator's grid: every `grid` px of the uncropped stack, gridW x gridH points, row-major;
+    // the stack's pixel (x, y) is the grid's (x + originX, y + originY) (the crop's left and top).
+    int grid = 1, gridW = 0, gridH = 0, originX = 0, originY = 0;
+    std::vector<float> alpha2;
+    // alpha2 at the stack's pixel (x, y), bilinear between grid points (as the accumulator interpolates alpha).
+    double Alpha2At(int x, int y) const;
+    // Usable: a measured, non-zero model and a grid that covers width x height.
+    bool Usable() const;
 };
 
 constexpr int kNoiseTable = 4097;

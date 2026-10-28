@@ -38,6 +38,13 @@ struct MoonSceneSpec {
     double gradientX = 0, gradientY = 0;      // added to every channel, rising by this across the frame
     double blurSigma = 0;          // Gaussian seeing blur (px)
     double noiseStd = 0;           // white noise per sample
+    // Shot noise (Task B9, Ruling R35): the sample's noise variance is noiseStd^2 + shotNoise x its level (a stack of
+    // a bright Moon: disc noise 7-10x the sky's on real data). 0: white noise of noiseStd everywhere, as before.
+    double shotNoise = 0;
+    // Spatially correlated noise (Ruling R33): the noise field per channel is Gaussian-blurred by this sigma (px)
+    // and rescaled to unit variance before the per-sample std multiplies it (a stack's demosaic and resampling
+    // correlate its noise: real starlet layers 2-4 hold 1.6-3x the white-noise prediction). 0: white.
+    double noiseCorrelation = 0;
     // Saturated highlights: the brightest `clipFraction` of the disc's pixels (observed, before clipping)
     // have the channels flagged here set to 1.0.
     double clipFraction = 0;
@@ -205,13 +212,25 @@ inline MoonScene MakeMoonScene(const MoonSceneSpec& s) {
     Blur(sc.observed, s.blurSigma);
     std::normal_distribution<double> nd(0, 1);
     if (s.noiseSeed != 0) rng.seed(s.noiseSeed);
+    // With correlated noise, the unit field is drawn first (whole frame), blurred and rescaled; else drawn per sample.
+    ser::FloatImage field;
+    if (s.noiseCorrelation > 0 && (s.noiseStd > 0 || s.shotNoise > 0)) {
+        field = ser::FloatImage{w, h, 3, std::vector<float>(n * 3)};
+        for (float& v : field.data) v = static_cast<float>(nd(rng));
+        Blur(field, s.noiseCorrelation);
+        double ss = 0;
+        for (float v : field.data) ss += static_cast<double>(v) * v;
+        const double k = 1 / std::sqrt(ss / static_cast<double>(field.data.size()));
+        for (float& v : field.data) v = static_cast<float>(v * k);
+    }
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             const size_t i = static_cast<size_t>(y) * w + x;
             const double g = s.gradientX * x / std::max(1, w - 1) + s.gradientY * y / std::max(1, h - 1);
             for (int c = 0; c < 3; ++c) {
                 double v = sc.observed.data[i * 3 + c] * s.cast[c] + s.pedestal[c] + g;
-                if (s.noiseStd > 0) v += s.noiseStd * nd(rng);
+                const double sd = s.shotNoise > 0 ? std::sqrt(s.noiseStd * s.noiseStd + s.shotNoise * std::max(v, 0.0)) : s.noiseStd;
+                if (sd > 0) v += sd * (field.data.empty() ? nd(rng) : field.data[i * 3 + c]);
                 sc.observed.data[i * 3 + c] = static_cast<float>(v);
             }
             if (s.edgeChromaNoise > 0 && x < s.edgeBandWidth) {

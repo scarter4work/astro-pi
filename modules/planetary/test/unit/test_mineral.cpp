@@ -1119,12 +1119,30 @@ namespace {
 // their sharp L over the std of the difference of their display L before sharpening. (Against the noise-free
 // scene instead, the difference would also hold the texture times the gain the Wiener factor rightly withholds
 // from the noisy one: on the textured disc at noise 0.002 / 0.005 that read x2.00 / x1.75, this x1.39 / x1.22.)
-double PipelineNoiseGain(const MoonSceneSpec& spec) {
+// The stack's noise as RunStack reports it (Noise.h, StackNoise) for a MoonSynth scene taken as a 1-frame stack: the
+// luma is the channels' mean, so its variance is (noiseStd^2 + shotNoise t) / 3 at luma t; alpha2 = 1 everywhere.
+stack::StackNoise SceneNoise(const MoonSceneSpec& spec) {
+    stack::StackNoise sn;
+    sn.model.a = spec.noiseStd * spec.noiseStd / 3;
+    sn.model.b = spec.shotNoise / 3;
+    sn.model.Tabulate();
+    sn.lumaWeights = {1.0 / 3, 1.0 / 3, 1.0 / 3};
+    sn.width = spec.width;
+    sn.height = spec.height;
+    sn.grid = std::max(spec.width, spec.height);
+    sn.gridW = sn.gridH = 2;
+    sn.alpha2.assign(4, 1.0f);
+    return sn;
+}
+
+double PipelineNoiseGain(const MoonSceneSpec& spec, bool stackNoise = false) {
     MoonSceneSpec sa = spec, sb = spec;
     sa.noiseSeed = 101;
     sb.noiseSeed = 202;
     const MoonScene a = MakeMoonScene(sa), b = MakeMoonScene(sb);
-    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}), cb = stack::PrepareMineral(b.observed, 4, {});
+    const stack::StackNoise sn = SceneNoise(spec);
+    const stack::StackNoise* np = stackNoise ? &sn : nullptr;
+    const stack::MineralCache ca = stack::PrepareMineral(a.observed, 4, {}, np), cb = stack::PrepareMineral(b.observed, 4, {}, np);
     const std::vector<double> la = testing::Lum(ca.display), lb = testing::Lum(cb.display);
     std::vector<double> before(la.size()), after(la.size());
     std::vector<uint8_t> interior(la.size(), 0);
@@ -1156,6 +1174,51 @@ TEST_CASE("pipeline: sharpening is noise-limited in the shipped order") {
             INFO((flat ? "flat disc" : "textured disc") << ", noise " << noise << ": disc-interior noise gain " << g);
             CHECK(g <= 1.5);
         }
+}
+
+TEST_CASE("pipeline: sharpening is noise-limited on correlated noise") {
+    // Ruling R33 (Task B9): a stack's noise is correlated by the demosaic and the warp's interpolation; real Moons' sky
+    // layers 2-4 hold 1.6-1.7x, 1.9-2.2x and 2.4-3.1x the white-noise prediction from layer 1, so white thresholds let
+    // it through the boost. Noise blurred by 0.6 px and rescaled to its std reads 2.05 / 2.39 / 2.61 here (0.5 px:
+    // 1.53 / 1.67 / 1.79). A noise-only disc must get next to no boost: with white thresholds the flat disc read 1.118
+    // (textured 1.476); at 0.8 px correlation, 1.57 textured.
+    for (bool flat : {false, true}) {
+        MoonSceneSpec s = StackScene();
+        s.noiseStd = 0.003;
+        s.noiseCorrelation = 0.6;
+        if (flat) {
+            s.textureAmplitude = 0;
+            s.mariaFraction = 0;
+            s.tintVariation = 0;
+        }
+        const double g = PipelineNoiseGain(s);
+        INFO((flat ? "flat" : "textured") << " gain " << g);
+        CHECK(g <= (flat ? 1.05 : 1.5));
+    }
+}
+
+TEST_CASE("pipeline: the stack's noise model limits sharpening on a shot-noise disc") {
+    // Ruling R35 (Task B9): var = a + b I, the disc's noise ~7x the sky's (real Moons 7.2-10.6x). The sky's noise
+    // under-reads the disc's; RunStack's StackNoise gives it per pixel. Correlated as a real stack's (0.6 px, as the
+    // test above): with white noise the unthresholded boost itself stays under 1.5 (white noise lives in layer 1, gain
+    // 1.5; the sky's-noise path read 1.44 / 1.31 here), so only correlated noise, as on real data, shows the under-read.
+    // Before Rulings R33 / R35: textured 1.592, flat 1.469. The sky's-noise path with R33's layer shape alone still
+    // reads 1.57 textured: the shape cannot see the disc's shot noise.
+    for (bool flat : {false, true}) {
+        MoonSceneSpec s = StackScene();
+        s.noiseStd = 0.001;
+        s.shotNoise = 2e-4;  // disc (~0.25): sd ~0.0071 against the sky's 0.001
+        s.noiseCorrelation = 0.6;
+        if (flat) {
+            s.textureAmplitude = 0;
+            s.mariaFraction = 0;
+            s.tintVariation = 0;
+        }
+        const double old = PipelineNoiseGain(s, false), now = PipelineNoiseGain(s, true);
+        INFO((flat ? "flat" : "textured") << " sky " << old << " model " << now);
+        CHECK(now <= (flat ? 1.05 : 1.5));
+        if (!flat) CHECK(old > 1.5);  // what the model fixes; the sky's-noise path stays as the fallback
+    }
 }
 
 TEST_CASE("pipeline: a small disc in a big frame is found, not the whole frame") {

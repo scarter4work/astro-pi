@@ -1063,7 +1063,78 @@ double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int thre
     return WhiteNoise(StarletLayers(lum1, 1, threads)[0], MakeDiscCore(lum1, m, threads), m);
 }
 
-StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads, const std::vector<float>* noise) {
+std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMasks& m, int threads) {
+    RequireLuminance(lum1, m, "LayerNoiseShape");
+    std::array<double, 4> shape{1, 1, 1, 1};
+    if (m.skyCount < 1000) return shape;
+    const std::vector<ser::FloatImage> layers = StarletLayers(lum1, kSharpenLayers, threads);
+    const std::vector<float> depth = DistanceOutside(m.sky, lum1.width, lum1.height);  // into the sky from its edge
+    for (int j = 1; j < kSharpenLayers; ++j) {
+        // Layer j and layer 1 over the same sky, clear of the disc by layer j's reach.
+        std::vector<uint8_t> r(m.sky.size());
+        size_t k = 0;
+        for (size_t i = 0; i < r.size(); ++i) k += r[i] = m.sky[i] && depth[i] > kLayerReach[j];
+        if (k < 1000) continue;
+        const double white = LayerNoise(layers[0], r) / kStarletNoise[0];
+        if (!(white > 0)) continue;
+        shape[static_cast<size_t>(j)] = std::max(1.0, LayerNoise(layers[static_cast<size_t>(j)], r) / (kStarletNoise[j] * white));
+    }
+    return shape;
+}
+
+namespace {
+
+// Ruling R35: the per-pixel white-noise std of the calibrated linear luminance `lin` from the stack's noise
+// (PrepareMineral): sqrt(model(t) alpha2), t the luma of the stack as it came (before calibration), scaled once
+// so that its median over the sky (clear of the disc by layer 1's reach) is the sky's measured white-noise std on
+// `lin` (layer 1's robust std / 0.889). Empty, with `why` set, when it cannot be had.
+std::vector<float> StackNoiseMap(const ser::FloatImage& stack, const ser::FloatImage& lin, const LunarMasks& m,
+                                 const StackNoise& sn, int threads, double& scale, std::string& why) {
+    const int w = stack.width, h = stack.height;
+    if (!sn.Usable()) {
+        why = "the stack's noise model is not usable (unmeasured, zero, or no frame-weight grid)";
+        return {};
+    }
+    if (sn.width != w || sn.height != h) {
+        why = "the stack's noise model is for a " + std::to_string(sn.width) + "x" + std::to_string(sn.height) + " stack";
+        return {};
+    }
+    const std::vector<float> depth = DistanceOutside(m.sky, w, h);
+    std::vector<uint8_t> r(m.sky.size());
+    size_t k = 0;
+    for (size_t i = 0; i < r.size(); ++i) k += r[i] = m.sky[i] && depth[i] > kLayerReach[0];
+    if (k < 1000) {
+        why = "under 1000 px of sky to scale the stack's noise model by";
+        return {};
+    }
+    std::vector<float> map(Pixels(stack));
+    ParallelBands(h, threads, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                double t = 0;
+                for (int c = 0; c < 3; ++c) t += sn.lumaWeights[static_cast<size_t>(c)] * stack.data[i * 3 + c];
+                map[i] = static_cast<float>(std::sqrt(std::max(0.0, sn.model.Lookup(t) * sn.Alpha2At(x, y))));
+            }
+    });
+    std::vector<float> skyPred;
+    for (size_t i = 0; i < r.size(); ++i)
+        if (r[i]) skyPred.push_back(map[i]);
+    const double pred = Median(skyPred);
+    const double measured = LayerNoise(StarletLayers(lin, 1, threads)[0], r) / kStarletNoise[0];
+    if (!(pred > 0) || !(measured > 0)) {
+        why = "the sky shows no noise to scale the stack's noise model by";
+        return {};
+    }
+    scale = measured / pred;
+    for (float& v : map) v = static_cast<float>(v * scale);
+    return map;
+}
+
+}  // namespace
+
+StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads, const std::vector<float>* noise,
+                                 const std::array<double, 4>* layerShape) {
     RequireLuminance(lum1, m, "SharpenLuminanceImage");
     if (noise && noise->size() != Pixels(lum1))
         throw std::invalid_argument("SharpenLuminanceImage: the noise map does not match the image");
@@ -1080,6 +1151,9 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
     // The white-noise std at each pixel: the given map, or one value measured on lum1 itself.
     const double white = noise ? 0.0 : WhiteNoise(layers[0], dc, m);
     auto sigma = [&](size_t i) { return noise ? static_cast<double>((*noise)[i]) : white; };
+    // Each layer's noise per unit of white-noise std: the white ratios, times the measured shape (Ruling R33).
+    double kn[kSharpenLayers];
+    for (int j = 0; j < kSharpenLayers; ++j) kn[j] = kStarletNoise[j] * (layerShape ? (*layerShape)[static_cast<size_t>(j)] : 1.0);
     double gain[kSharpenLayers];
     for (int j = 0; j < kSharpenLayers; ++j) {
         // The layer's own noise limit: a Wiener factor, the share of the layer's energy over the disc that is not
@@ -1094,7 +1168,7 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
                 ++k;
             }
         e /= std::max<size_t>(1, k);
-        nv *= kStarletNoise[j] * kStarletNoise[j] / std::max<size_t>(1, k);
+        nv *= kn[j] * kn[j] / std::max<size_t>(1, k);
         const double rho = e > 0 ? std::max(0.0, 1 - nv / e) : 0.0;
         gain[j] = 1 + (kLayerGain[j] - 1) * rho;
     }
@@ -1104,7 +1178,7 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
             if (dc.core[i])
                 for (int j = 0; j < kSharpenLayers; ++j)
                     v += (gain[j] - 1) * EdgeWeight(dc.dist[i], j) *
-                         Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * sigma(i) * kStarletNoise[j]);
+                         Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * sigma(i) * kn[j]);
             lum1.data[i] = static_cast<float>(Shoulder(v));
         }
     });
@@ -1393,7 +1467,7 @@ constexpr const char* kNoDisk = "no lunar disk distinguished from the sky";
 
 }  // namespace
 
-MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress) {
+MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress, const StackNoise* stackNoise) {
     if (stack.channels != 3 || stack.width <= 0 || stack.height <= 0 || stack.data.size() != Pixels(stack) * 3)
         throw std::invalid_argument("Mineral moon needs a 3-channel colour stack (this one has " +
                                     std::to_string(stack.channels) + " channel(s))");
@@ -1433,10 +1507,24 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
     // disc's noise, and carried through the display transfer's slope at each pixel (task ENG review I1: measured
     // after the transfer, which clips the sky at 0 and is steeper on the disc, it read ~7x low and the disc's
     // noise was boosted x1.53-1.57).
-    double linearNoise = 0;
+    // On a bright disc the sky's noise is a lower bound only (shot noise: real discs 7-10x their sky's), so with the
+    // stack's own noise (Ruling R35) the level and the frame count give it per pixel, scaled to the sky's; and the
+    // noise's spread over the starlet layers is measured on the sky (Ruling R33: a stack's noise is correlated).
+    double linearNoise = 0, noiseScale = 0;
+    std::vector<float> linearMap;
+    std::string noiseSource;
+    std::array<double, 4> shape{1, 1, 1, 1};
     DisplayCurve curve;
     step("Display transfer", [&] {
-        linearNoise = LuminanceNoise(MeanOfChannels(rgb, threads), cache.masks, threads);
+        const ser::FloatImage linL = MeanOfChannels(rgb, threads);
+        linearNoise = LuminanceNoise(linL, cache.masks, threads);
+        shape = LayerNoiseShape(linL, cache.masks, threads);
+        std::string why = "no stack noise model given";
+        if (stackNoise) linearMap = StackNoiseMap(stack, linL, cache.masks, *stackNoise, threads, noiseScale, why);
+        noiseSource = linearMap.empty()
+                          ? "noise: the sky's (" + why + "; a lower bound on a bright disc's)"
+                          : Fmt("noise: the stack's noise model per pixel (level and frame count), scaled to the sky's "
+                                "noise by %.3g", noiseScale);
         return DisplayTransfer(rgb, cache.masks, clipped, &curve).history;
     });
     step("Channel alignment", [&] { return AlignChannels(rgb, threads).history; });
@@ -1452,10 +1540,11 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
                     const double s = DisplaySlope(rgb.data[i * 3 + c], curve);
                     s2 += s * s;
                 }
-                noise[i] = static_cast<float>(linearNoise * std::sqrt(s2 / 3));
+                noise[i] = static_cast<float>((linearMap.empty() ? linearNoise : linearMap[i]) * std::sqrt(s2 / 3));
             }
         });
-        return SharpenLuminanceImage(cache.lum, cache.masks, threads, &noise).history;
+        return SharpenLuminanceImage(cache.lum, cache.masks, threads, &noise, &shape).history + "; " + noiseSource +
+               Fmt("; layer noise over white %.2f %.2f %.2f %.2f (the sky's)", shape[0], shape[1], shape[2], shape[3]);
     });
     if (noDisk) cache.lum = MeanOfChannels(rgb, threads);
     // The fade threshold depends on the display RGB only: measured once here, not on every slider move.
@@ -1481,8 +1570,9 @@ ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParam
     return out;
 }
 
-MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress, const MineralParams& params) {
-    MineralCache cache = PrepareMineral(stack, threads, progress);
+MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress, const MineralParams& params,
+                               const StackNoise* stackNoise) {
+    MineralCache cache = PrepareMineral(stack, threads, progress, stackNoise);
     MineralOutcome out;
     StepRecord rec;
     const auto t0 = std::chrono::steady_clock::now();
