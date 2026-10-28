@@ -523,84 +523,250 @@ std::vector<float> ShiftedPlane(const ser::FloatImage& src, int c, double sx, do
 
 struct ChannelShift {
     double dx = 0, dy = 0;
+    double ux = 0, uy = 0;  // 1-sigma uncertainty of dx, dy: the windows' own scatter (see MeasureShift)
+    int windows = 0;        // informative windows the estimate rests on
     bool converged = false;
 };
 
-// Where channel c's content sits against G: G(x) ~ a C(x + s) + b over the frame less an 8 px border
-// (the gain and offset absorb what calibration left; the limb and the terrain carry the position).
-// Gauss-Newton (Lucas-Kanade) from s = 0, each round on C resampled at the current s, to a step under
-// 1e-4 px. Capture range: a few px (the limb is a large, smooth edge); dispersion is well under that.
+// The window grid: kWin x kWin px windows tiling the frame less a kBorder px border.
+constexpr int kAlignBorder = 8, kAlignWin = 16;
+// Under this many informative windows (a disc of a few windows: under ~60 px across) the scatter that measures
+// the estimate's own uncertainty is not measurable, and nothing is applied.
+constexpr int kAlignMinWindows = 16;
+// A window is informative only when C and G share its structure this well (squared correlation).
+constexpr double kAlignMinR2 = 0.8;
+// Gaussian sigma (px) of the smoothing the measurement works on (AlignChannels).
+constexpr double kAlignPreSmooth = 1.0;
+
+// Where channel c's content sits against G: G(x) ~ a_k C(x + s) + b_k, ONE shift s for the frame and a gain and
+// offset per kAlignWin-px window k (rgb is AlignChannels' smoothed copy).
+// Why per window: lunar colour varies across the disc (maria vs highlands, and within each), and with one gain for
+// the frame a colour gradient gives the two limbs different contrast in C than in G, which Lucas-Kanade reads as a
+// shift -- on MoonSynth with tints +-10% and 6% tint structure the single-gain fit put R/B 0.25-0.50 px off
+// (applied), a 24 x 24 frame 0.13 px. Within a window the colour is near constant and its own gain absorbs it.
+// Each round: per window, the least-squares a_k, b_k on C resampled at s, and s's normal equations with a_k, b_k
+// eliminated (Schur complement); then one Gauss-Newton step for s from the chosen windows, to a step under 1e-4 px.
+// Informative windows (chosen once, at s = 0): C and G share the window's structure (squared correlation >=
+// kAlignMinR2) and its position constraint (the smaller eigenvalue of the eliminated 2 x 2) is at least 5% of the
+// 90th percentile's among those. Every per-window sum lands in that window's own slot and is added in window
+// order, so the result does not depend on the thread count.
+// Uncertainty, per axis, the largest of:
+//  - the scatter of the windows' own estimates (each one's 4-parameter step from the converged s),
+//    1.4826 x MAD / sqrt(K): a colour bias shows as scatter, a true dispersion moves every window alike;
+//  - the formal 1-sigma from the summed information, the residual variance inflated by the smoothing's
+//    correlation area;
+//  - half the difference between the solutions on the two checkerboard halves of the windows, each solved from
+//    s = 0: a fit that noise has taken into a wrong basin does not repeat on independent data (a grey synthetic
+//    crescent sliver, no true shift, noise 0.005, read R +0.41, -0.34 px +-0.12 by the first two alone).
+// A half that does not converge leaves the shift unmeasured (converged false).
 ChannelShift MeasureShift(const ser::FloatImage& rgb, int c, int threads) {
-    constexpr int kBorder = 8, kRounds = 30;
+    constexpr int kRounds = 60;
     const int w = rgb.width, h = rgb.height;
-    ChannelShift s;
-    if (w <= 2 * kBorder + 2 || h <= 2 * kBorder + 2) return s;
-    double a = 1, b = 0;
-    std::mutex mtx;
-    for (int round = 0; round < kRounds; ++round) {
-        const std::vector<float> C = ShiftedPlane(rgb, c, s.dx, s.dy, threads);
-        double H[16] = {}, g[4] = {};
-        ParallelBands(h - 2 * kBorder, threads, [&](int r0, int r1) {
-            double Hl[16] = {}, gl[4] = {};
-            for (int y = r0 + kBorder; y < r1 + kBorder; ++y)
-                for (int x = kBorder; x < w - kBorder; ++x) {
-                    const size_t i = static_cast<size_t>(y) * w + x;
-                    const double gx = 0.5 * (C[i + 1] - C[i - 1]), gy = 0.5 * (C[i + w] - C[i - w]);
-                    const double J[4] = {a * gx, a * gy, C[i], 1.0};
-                    const double r = rgb.data[i * 3 + 1] - (a * C[i] + b);
-                    for (int p = 0; p < 4; ++p) {
-                        gl[p] += J[p] * r;
-                        for (int q = 0; q < 4; ++q) Hl[p * 4 + q] += J[p] * J[q];
+    ChannelShift out;
+    const int nx = (w - 2 * kAlignBorder) / kAlignWin, ny = (h - 2 * kAlignBorder) / kAlignWin;
+    if (nx <= 0 || ny <= 0) return out;
+    const size_t K = static_cast<size_t>(nx) * ny;
+    struct Win {
+        double a = 1, b = 0;
+        double Hs[4] = {}, gs[2] = {};   // s's normal equations, gain and offset eliminated
+        double H4[16] = {}, g4[4] = {};  // the window's own 4-parameter normal equations
+        double lmin = 0;                 // smaller eigenvalue of Hs
+        double rss = 0;                  // sum of squared residuals
+        double r2 = 0;                   // squared correlation of C and G over the window
+    };
+    std::vector<Win> win(K);
+    // Fills every window's sums with C sampled at (sx, sy).
+    auto measure = [&](double sx, double sy) {
+        const std::vector<float> C = ShiftedPlane(rgb, c, sx, sy, threads);
+        ParallelBands(ny, threads, [&](int j0, int j1) {
+            for (int j = j0; j < j1; ++j)
+                for (int k = 0; k < nx; ++k) {
+                    Win& W = win[static_cast<size_t>(j) * nx + k];
+                    const int x0 = kAlignBorder + k * kAlignWin, y0 = kAlignBorder + j * kAlignWin;
+                    double sc = 0, scc = 0, sg = 0, sgg = 0, scg = 0, n = 0;
+                    for (int y = y0; y < y0 + kAlignWin; ++y)
+                        for (int x = x0; x < x0 + kAlignWin; ++x) {
+                            const size_t i = static_cast<size_t>(y) * w + x;
+                            const double cv = C[i], gv = rgb.data[i * 3 + 1];
+                            sc += cv;
+                            scc += cv * cv;
+                            sg += gv;
+                            sgg += gv * gv;
+                            scg += cv * gv;
+                            n += 1;
+                        }
+                    const double var = scc - sc * sc / n, varG = sgg - sg * sg / n, cov = scg - sc * sg / n;
+                    W.a = var > 1e-12 * n ? cov / var : 1.0;
+                    W.b = (sg - W.a * sc) / n;
+                    W.r2 = var > 0 && varG > 0 ? cov * cov / (var * varG) : 0.0;
+                    std::fill(std::begin(W.H4), std::end(W.H4), 0.0);
+                    std::fill(std::begin(W.g4), std::end(W.g4), 0.0);
+                    W.rss = 0;
+                    for (int y = y0; y < y0 + kAlignWin; ++y)
+                        for (int x = x0; x < x0 + kAlignWin; ++x) {
+                            const size_t i = static_cast<size_t>(y) * w + x;
+                            const double gx = 0.5 * (C[i + 1] - C[i - 1]), gy = 0.5 * (C[i + w] - C[i - w]);
+                            const double r = rgb.data[i * 3 + 1] - (W.a * C[i] + W.b);
+                            const double J[4] = {W.a * gx, W.a * gy, C[i], 1.0};
+                            W.rss += r * r;
+                            for (int p = 0; p < 4; ++p) {
+                                W.g4[p] += J[p] * r;
+                                for (int q = 0; q < 4; ++q) W.H4[p * 4 + q] += J[p] * J[q];
+                            }
+                        }
+                    // s's equations with the gain and offset eliminated: what the window says about position
+                    // beyond what a gain and an offset explain (a linear ramp, such as a terminator, says nothing
+                    // along its slope; held fixed instead, a and b let the shift wander along it).
+                    const double t00 = W.H4[10], t01 = W.H4[11], t11 = W.H4[15], tdet = t00 * t11 - t01 * t01;
+                    const double i00 = tdet > 0 ? t11 / tdet : 0, i01 = tdet > 0 ? -t01 / tdet : 0,
+                                 i11 = tdet > 0 ? t00 / tdet : 0;
+                    for (int p = 0; p < 2; ++p) {
+                        const double hp2 = W.H4[p * 4 + 2], hp3 = W.H4[p * 4 + 3];
+                        const double m0 = hp2 * i00 + hp3 * i01, m1 = hp2 * i01 + hp3 * i11;  // H_s,theta H_theta^-1
+                        W.gs[p] = W.g4[p] - (m0 * W.g4[2] + m1 * W.g4[3]);
+                        for (int q = 0; q < 2; ++q)
+                            W.Hs[p * 2 + q] = W.H4[p * 4 + q] - (m0 * W.H4[2 * 4 + q] + m1 * W.H4[3 * 4 + q]);
                     }
+                    const double tr = W.Hs[0] + W.Hs[3], det = W.Hs[0] * W.Hs[3] - W.Hs[1] * W.Hs[2];
+                    W.lmin = 0.5 * (tr - std::sqrt(std::max(0.0, tr * tr - 4 * det)));
                 }
-            std::lock_guard<std::mutex> lock(mtx);
-            for (int k = 0; k < 16; ++k) H[k] += Hl[k];
-            for (int k = 0; k < 4; ++k) g[k] += gl[k];
         });
-        double d[4];
-        if (!Solve(4, H, g, d)) return s;
-        s.dx += d[0];
-        s.dy += d[1];
-        a += d[2];
-        b += d[3];
-        if (!std::isfinite(s.dx) || !std::isfinite(s.dy) || std::hypot(s.dx, s.dy) > 8) return {};
-        if (std::hypot(d[0], d[1]) < 1e-4) {
-            s.converged = true;
-            return s;
+    };
+    // Informative windows, at s = 0.
+    measure(0, 0);
+    std::vector<uint8_t> informative(K, 0);
+    {
+        std::vector<double> l;
+        for (size_t k = 0; k < K; ++k)
+            if (win[k].r2 >= kAlignMinR2) l.push_back(win[k].lmin);
+        double floor = 0;
+        if (!l.empty()) {
+            const size_t q = std::min(l.size() - 1, static_cast<size_t>(0.9 * l.size()));
+            std::nth_element(l.begin(), l.begin() + static_cast<long>(q), l.end());
+            floor = 0.05 * l[q];
+        }
+        for (size_t k = 0; k < K; ++k) {
+            informative[k] = win[k].r2 >= kAlignMinR2 && floor > 0 && win[k].lmin >= floor;
+            out.windows += informative[k];
         }
     }
-    return s;
+    if (out.windows < kAlignMinWindows) return out;
+    // Gauss-Newton on the windows in `use`, from s = 0. False when it does not converge within 8 px.
+    auto solve = [&](const std::vector<uint8_t>& use, double& sx, double& sy) {
+        sx = sy = 0;
+        for (int round = 0; round < kRounds; ++round) {
+            if (round > 0) measure(sx, sy);
+            double H[4] = {}, g[2] = {};
+            for (size_t k = 0; k < K; ++k)
+                if (use[k]) {
+                    for (int p = 0; p < 4; ++p) H[p] += win[k].Hs[p];
+                    for (int p = 0; p < 2; ++p) g[p] += win[k].gs[p];
+                }
+            double d[2];
+            if (!Solve(2, H, g, d)) return false;
+            sx += d[0];
+            sy += d[1];
+            if (!std::isfinite(sx) || !std::isfinite(sy) || std::hypot(sx, sy) > 8) return false;
+            if (std::hypot(d[0], d[1]) < 1e-4) return true;
+        }
+        return false;
+    };
+    std::vector<uint8_t> half[2] = {std::vector<uint8_t>(K, 0), std::vector<uint8_t>(K, 0)};
+    for (int j = 0; j < ny; ++j)
+        for (int k = 0; k < nx; ++k) {
+            const size_t i = static_cast<size_t>(j) * nx + k;
+            half[(j + k) % 2][i] = informative[i];
+        }
+    double ax = 0, ay = 0, bx = 0, by = 0;
+    if (!solve(half[0], ax, ay) || !solve(half[1], bx, by)) return out;
+    measure(0, 0);
+    if (!solve(informative, out.dx, out.dy)) return out;
+    out.converged = true;
+    // The windows are now measured at the converged s: their own estimates, and the formal 1-sigma.
+    measure(out.dx, out.dy);
+    std::vector<double> ex, ey;
+    double H[4] = {}, rss = 0, npx = 0;
+    for (size_t k = 0; k < K; ++k) {
+        if (!informative[k]) continue;
+        for (int p = 0; p < 4; ++p) H[p] += win[k].Hs[p];
+        rss += win[k].rss;
+        npx += kAlignWin * kAlignWin - 4;
+        double H4[16], g4[4], d[4];
+        std::copy(std::begin(win[k].H4), std::end(win[k].H4), H4);
+        std::copy(std::begin(win[k].g4), std::end(win[k].g4), g4);
+        if (!Solve(4, H4, g4, d) || !std::isfinite(d[0]) || !std::isfinite(d[1])) continue;
+        ex.push_back(out.dx + d[0]);
+        ey.push_back(out.dy + d[1]);
+    }
+    auto spread = [](std::vector<double> v) {
+        if (v.size() < 2) return std::numeric_limits<double>::infinity();
+        auto mid = v.begin() + static_cast<long>(v.size() / 2);
+        std::nth_element(v.begin(), mid, v.end());
+        const double med = *mid;
+        for (double& e : v) e = std::fabs(e - med);
+        std::nth_element(v.begin(), mid, v.end());
+        return 1.4826 * *mid / std::sqrt(static_cast<double>(v.size()));
+    };
+    // Residuals of the smoothed data are correlated over ~4 pi sigma^2 px, so the independent-pixel variance is
+    // inflated by that area.
+    const double corrArea = std::max(1.0, 4 * M_PI * kAlignPreSmooth * kAlignPreSmooth);
+    const double det = H[0] * H[3] - H[1] * H[2], var = npx > 0 ? corrArea * rss / npx : 0;
+    const double inf = std::numeric_limits<double>::infinity();
+    const double fx = det > 0 ? std::sqrt(var * H[3] / det) : inf, fy = det > 0 ? std::sqrt(var * H[0] / det) : inf;
+    out.ux = std::max({spread(ex), fx, 0.5 * std::fabs(ax - bx)});
+    out.uy = std::max({spread(ey), fy, 0.5 * std::fabs(ay - by)});
+    return out;
 }
 
 // Amendment step 4b: a measured R or B shift against G above this is corrected; at or below it, nothing is
-// resampled (resampling costs a little sharpness for nothing).
-constexpr double kAlignMin = 0.1;
+// resampled (resampling costs a little sharpness for nothing). Nor is a shift that its own uncertainty does not
+// clear by kAlignSigmas: it is not shown to be there.
+constexpr double kAlignMin = 0.1, kAlignSigmas = 3.0;
 
 }  // namespace
 
 StepRecord AlignChannels(ser::FloatImage& rgb, int threads) {
     RequireRgb(rgb, "AlignChannels");
-    const ChannelShift r = MeasureShift(rgb, 0, threads), b = MeasureShift(rgb, 2, threads);
+    // Measured on a copy smoothed by a 1 px Gaussian: Catmull-Rom resampling cuts white noise's variance to 0.63 at a
+    // half-pixel shift (sum of its weights squared) against 1 at a whole one, so on raw data a weak-signal fit is
+    // pulled toward half pixels (grey synthetic crescent sliver, no true shift, noise 0.002: +0.27-0.31 px; 0.065 at
+    // noise 0.0005). Smoothed first, the noise has little left at the frequencies the interpolation cuts. The
+    // correction is applied to the unsmoothed data.
+    const ser::FloatImage smooth = ChromaLayer(rgb, kAlignPreSmooth, threads);
+    const ChannelShift r = MeasureShift(smooth, 0, threads), b = MeasureShift(smooth, 2, threads);
     StepRecord rec;
+    if (r.windows < kAlignMinWindows || b.windows < kAlignMinWindows) {
+        rec.skipped = true;
+        rec.history = "Channel alignment skipped: " + std::to_string(std::min(r.windows, b.windows)) +
+                      " window(s) of 16 px with structure, under the " + std::to_string(kAlignMinWindows) +
+                      " needed to measure a dispersion shift and its uncertainty (disk too small); nothing resampled";
+        return rec;
+    }
     if (!r.converged || !b.converged) {
         rec.skipped = true;
         rec.history = std::string("Channel alignment skipped: the ") + (!r.converged ? "R" : "B") +
                       " shift against G could not be measured (no convergence within 8 px); nothing resampled";
         return rec;
     }
-    const double worst = std::max(std::hypot(r.dx, r.dy), std::hypot(b.dx, b.dy));
-    rec.history = Fmt("Channel alignment: R %+.3f, %+.3f px, B %+.3f, %+.3f px against G", r.dx, r.dy, b.dx, b.dy);
-    if (worst <= kAlignMin) {
+    const double mr = std::hypot(r.dx, r.dy), mb = std::hypot(b.dx, b.dy);
+    const double ur = std::hypot(r.ux, r.uy), ub = std::hypot(b.ux, b.uy);
+    rec.history = Fmt("Channel alignment: R %+.3f, %+.3f px (+-%.3f), B %+.3f, %+.3f px (+-%.3f) against G, from %.0f windows",
+                      r.dx, r.dy, ur, b.dx, b.dy, ub, std::min(r.windows, b.windows));
+    // Each channel on its own: corrected when its shift exceeds 0.1 px and 3 x its uncertainty.
+    const bool fixR = mr > kAlignMin && mr > kAlignSigmas * ur, fixB = mb > kAlignMin && mb > kAlignSigmas * ub;
+    if (!fixR && !fixB) {
         rec.skipped = true;
-        rec.history += "; within 0.1 px, not applied";
+        rec.history += "; within 0.1 px or within 3 sigma of its uncertainty, not applied";
         return rec;
     }
-    const std::vector<float> R = ShiftedPlane(rgb, 0, r.dx, r.dy, threads), B = ShiftedPlane(rgb, 2, b.dx, b.dy, threads);
-    for (size_t i = 0; i < R.size(); ++i) {
-        rgb.data[i * 3] = R[i];
-        rgb.data[i * 3 + 2] = B[i];
+    for (int c : {0, 2}) {
+        const ChannelShift& s = c == 0 ? r : b;
+        if (!(c == 0 ? fixR : fixB)) continue;
+        const std::vector<float> P = ShiftedPlane(rgb, c, s.dx, s.dy, threads);
+        for (size_t i = 0; i < P.size(); ++i) rgb.data[i * 3 + static_cast<size_t>(c)] = P[i];
     }
-    rec.history += "; R and B resampled onto G (Catmull-Rom)";
+    rec.history += fixR && fixB ? "; R and B resampled onto G (Catmull-Rom)"
+                                : (fixR ? "; R resampled onto G (Catmull-Rom), B not" : "; B resampled onto G (Catmull-Rom), R not");
     return rec;
 }
 
