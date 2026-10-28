@@ -522,7 +522,19 @@ void CubicWeights(double f, double wt[4]) {
     wt[3] = 0.5 * f3 - 0.5 * f2;
 }
 
-// Channel c of `src` sampled at (x + sx, y + sy) at every pixel, edges replicated: a 1-channel plane.
+// Sample k of a row or column of n samples (at(i), 0 <= i < n), extended point-symmetrically past its ends: at(-k) =
+// 2 at(0) - at(k), so a sub-pixel shift at the frame's edge extrapolates the local slope (Ruling R32). Replicating the
+// edge sample instead left the outermost pixel where dispersion put it while the rest was aligned (real 64.6F:
+// split-half edge chroma noise 3.5x in that column, against 1.0x unaligned; Task B9).
+template <typename At>
+double Extended(At at, int k, int n) {
+    if (k >= 0 && k < n) return at(k);
+    const int e = k < 0 ? 0 : n - 1, m = std::clamp(2 * e - k, 0, n - 1);
+    return 2.0 * at(e) - at(m);
+}
+
+// Channel c of `src` sampled at (x + sx, y + sy) at every pixel, edges extended point-symmetrically (Extended): a
+// 1-channel plane.
 std::vector<float> ShiftedPlane(const ser::FloatImage& src, int c, double sx, double sy, int threads) {
     const int w = src.width, h = src.height, nc = src.channels;
     const int ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
@@ -532,23 +544,57 @@ std::vector<float> ShiftedPlane(const ser::FloatImage& src, int c, double sx, do
     const size_t n = Pixels(src);
     std::vector<float> tmp(n), out(n);
     ParallelBands(h, threads, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y)
+        for (int y = y0; y < y1; ++y) {
+            const float* row = &src.data[static_cast<size_t>(y) * w * nc + c];
+            auto at = [&](int i) { return static_cast<double>(row[static_cast<size_t>(i) * nc]); };
             for (int x = 0; x < w; ++x) {
                 double s = 0;
-                for (int k = 0; k < 4; ++k)
-                    s += wx[k] * src.data[(static_cast<size_t>(y) * w + std::clamp(x + ix - 1 + k, 0, w - 1)) * nc + c];
+                for (int k = 0; k < 4; ++k) s += wx[k] * Extended(at, x + ix - 1 + k, w);
                 tmp[static_cast<size_t>(y) * w + x] = static_cast<float>(s);
             }
+        }
     });
     ParallelBands(h, threads, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y)
             for (int x = 0; x < w; ++x) {
+                auto at = [&](int i) { return static_cast<double>(tmp[static_cast<size_t>(i) * w + x]); };
                 double s = 0;
-                for (int k = 0; k < 4; ++k) s += wy[k] * tmp[static_cast<size_t>(std::clamp(y + iy - 1 + k, 0, h - 1)) * w + x];
+                for (int k = 0; k < 4; ++k) s += wy[k] * Extended(at, y + iy - 1 + k, h);
                 out[static_cast<size_t>(y) * w + x] = static_cast<float>(s);
             }
     });
     return out;
+}
+
+// The frame's edge after ShiftedPlane (Ruling R32, Task B9). Where a pixel's Catmull-Rom taps for the shift (sx, sy)
+// leave the frame, its shifted sample is extrapolated, and no extension rule recovers light the frame never held:
+// on MoonSynth (0.5 px shift, texture to 1/4 cycle/px) the point-symmetric extension still left the outermost pixel
+// at 8x the interior's error and the next at 3x. The light's colour varies far more slowly than its brightness, so
+// there the plane takes G's own sample (the reference channel, measured at that pixel) times the channel's ratio to
+// G over the nearest 3 x 3 pixels whose taps stay inside. P: the shifted plane of `rgb`'s channel, in place.
+void FillFrameEdge(std::vector<float>& P, const ser::FloatImage& rgb, double sx, double sy) {
+    const int w = rgb.width, h = rgb.height;
+    const int ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
+    // Taps x + ix - 1 .. x + ix + 2 stay inside for x in [x0, x1]; likewise y.
+    const int x0 = std::max(0, 1 - ix), x1 = std::min(w - 1, w - 3 - ix);
+    const int y0 = std::max(0, 1 - iy), y1 = std::min(h - 1, h - 3 - iy);
+    if (x1 - x0 < 2 || y1 - y0 < 2) return;  // no 3 x 3 inside to take a ratio from
+    auto g = [&](int x, int y) { return static_cast<double>(rgb.data[(static_cast<size_t>(y) * w + x) * 3 + 1]); };
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+                x = x1;  // the interior of this row needs nothing
+                continue;
+            }
+            const int xa = std::clamp(x - 1, x0, x1 - 2), ya = std::clamp(y - 1, y0, y1 - 2);
+            double sp = 0, sg = 0;
+            for (int v = ya; v < ya + 3; ++v)
+                for (int u = xa; u < xa + 3; ++u) {
+                    sp += P[static_cast<size_t>(v) * w + u];
+                    sg += g(u, v);
+                }
+            if (sg > 0) P[static_cast<size_t>(y) * w + x] = static_cast<float>(g(x, y) * sp / sg);
+        }
 }
 
 struct ChannelShift {
@@ -793,11 +839,14 @@ StepRecord AlignChannels(ser::FloatImage& rgb, int threads) {
     for (int c : {0, 2}) {
         const ChannelShift& s = c == 0 ? r : b;
         if (!(c == 0 ? fixR : fixB)) continue;
-        const std::vector<float> P = ShiftedPlane(rgb, c, s.dx, s.dy, threads);
+        std::vector<float> P = ShiftedPlane(rgb, c, s.dx, s.dy, threads);
+        FillFrameEdge(P, rgb, s.dx, s.dy);
         for (size_t i = 0; i < P.size(); ++i) rgb.data[i * 3 + static_cast<size_t>(c)] = P[i];
     }
     rec.history += fixR && fixB ? "; R and B resampled onto G (Catmull-Rom)"
                                 : (fixR ? "; R resampled onto G (Catmull-Rom), B not" : "; B resampled onto G (Catmull-Rom), R not");
+    rec.history += "; at the frame's edge, where the shifted sample needs light from outside the frame, the channel's "
+                   "ratio to G is taken from the nearest pixels inside";
     return rec;
 }
 

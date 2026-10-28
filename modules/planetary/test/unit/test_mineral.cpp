@@ -448,6 +448,44 @@ TEST_CASE("align: the result does not depend on the thread count") {
     }
 }
 
+TEST_CASE("align: the frame's edge band is aligned like its interior") {
+    // Task B9 / Ruling R32: lit disc running off every side of the frame, R and B offset by 0.5 px on both axes. At
+    // the frame's edge the shifted sample lies outside the frame; replicating the edge sample there left the outermost
+    // pixel where dispersion put it (real 64.6F: split-half edge chroma noise 3.5x in that column, 1.73x over the
+    // 6 px band, 1.01x unaligned). Each channel's rms error against the unshifted scene over the 6 px edge band must
+    // stay within 1.5x its error 10-30 px in.
+    MoonSceneSpec s;
+    s.radius = 420;
+    s.blurSigma = 1.0;
+    s.noiseStd = 0.0005;
+    const MoonScene ref = MakeMoonScene(s);  // same seed, same noise: the offset is the only difference
+    s.shiftX = {0.5, 0, -0.5};
+    s.shiftY = {-0.5, 0, 0.5};
+    MoonScene sc = MakeMoonScene(s);
+    const stack::StepRecord rec = stack::AlignChannels(sc.observed, 4);
+    INFO(rec.history);
+    REQUIRE_FALSE(rec.skipped);
+    const int w = s.width, h = s.height;
+    for (int c : {0, 2}) {
+        double e2 = 0, i2 = 0;
+        size_t ne = 0, ni = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (!ref.diskTruth[i]) continue;
+                const int d = std::min({x, y, w - 1 - x, h - 1 - y});
+                const double e = static_cast<double>(sc.observed.data[i * 3 + c]) - ref.observed.data[i * 3 + c];
+                if (d < 6) e2 += e * e, ++ne;
+                else if (d >= 10 && d < 30) i2 += e * e, ++ni;
+            }
+        REQUIRE(ne > 1000);
+        REQUIRE(ni > 1000);
+        const double edge = std::sqrt(e2 / ne), interior = std::sqrt(i2 / ni);
+        INFO((c == 0 ? "R" : "B") << ": rms error, 6 px edge band " << edge << ", 10-30 px in " << interior);
+        CHECK(edge <= 1.5 * interior);
+    }
+}
+
 // ---- Step 4: luminance wavelet sharpening (Task B4) ----
 
 namespace {
