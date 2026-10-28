@@ -7,6 +7,7 @@
 #include <thread>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "Mineral.h"
@@ -1044,6 +1045,75 @@ TEST_CASE("pipeline: small disc completes") {
     REQUIRE_NOTHROW(out = stack::MakeMineralMoon(sc.observed, 4, {}));
     CheckValidOutput(out, sc.observed);
     CHECK(out.history.size() == 7);
+}
+
+TEST_CASE("pipeline: a small disc in a big frame is found, not the whole frame") {
+    // A 1080p frame with a 20 px disc (0.06% of it; task ENG review I2: it read "disk 100%", the sky was grey).
+    MoonSceneSpec s = StackScene();
+    s.width = 1920;
+    s.height = 1080;
+    s.cx = 960;
+    s.cy = 540;
+    s.radius = 20;
+    const MoonScene sc = MakeMoonScene(s);
+    const size_t n = static_cast<size_t>(s.width) * s.height;
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 8);
+    INFO("disk " << m.diskCount << " px, sky " << m.skyCount << " px; diskTruth in disk " << Within(sc.diskTruth, m.disk)
+                 << ", skyTruth in disk " << Within(sc.skyTruth, m.disk));
+    CHECK(m.diskCount < n / 100);
+    CHECK(Within(sc.diskTruth, m.disk) >= 0.98);
+    CHECK(Within(sc.skyTruth, m.disk) <= 0.005);
+    CHECK(Within(sc.skyTruth, m.sky) >= 0.95);
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 8, {});
+    CheckValidOutput(out, sc.observed);
+    REQUIRE(out.history.size() == 7);
+    INFO(out.history[0] << "\n" << out.history[1] << "\n" << out.history[2]);
+    CHECK(out.history[0].find("100.00%") == std::string::npos);
+    CHECK(out.history[1].find("skipped") != std::string::npos);  // the disc is under the 1% a white reference needs
+    CHECK(out.history[2].find("skipped") == std::string::npos);  // the sky is measured and removed
+    CHECK(out.notice.empty());
+    std::vector<double> sky;
+    const std::vector<double> L = testing::Lum(out.image);
+    for (size_t i = 0; i < n; ++i)
+        if (sc.skyTruth[i]) sky.push_back(L[i]);
+    std::nth_element(sky.begin(), sky.begin() + static_cast<long>(sky.size() / 2), sky.end());
+    INFO("output sky median " << sky[sky.size() / 2]);
+    CHECK(sky[sky.size() / 2] <= 0.02);
+}
+
+TEST_CASE("pipeline: a frame of sky has no lunar disk") {
+    // The stack scene with no Moon in it: sky pedestal, gradient and noise only.
+    MoonSceneSpec s = StackScene();
+    s.level = 0;
+    const MoonScene sc = MakeMoonScene(s);
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    INFO("disk " << m.diskCount << " px");
+    CHECK(m.diskCount == 0);
+    const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {});
+    CheckValidOutput(out, sc.observed);
+    REQUIRE(out.history.size() == 7);
+    for (const std::string& h : out.history) {
+        INFO(h);
+        CHECK(h.find("no lunar disk distinguished from the sky") != std::string::npos);
+        CHECK(Ascii(h));
+    }
+    CHECK(out.notice.find("no lunar disk distinguished from the sky") != std::string::npos);
+}
+
+TEST_CASE("pipeline: NaN in the stack is refused, Inf is not") {
+    const MoonScene sc = MakeMoonScene(StackScene());
+    ser::FloatImage nan1 = sc.observed, nan3 = sc.observed, inf1 = sc.observed;
+    nan1.data[(240 * 640 + 320) * 3 + 1] = std::numeric_limits<float>::quiet_NaN();
+    for (size_t k : {size_t(7), size_t(100000), size_t(500001)}) nan3.data[k] = std::numeric_limits<float>::quiet_NaN();
+    inf1.data[(240 * 640 + 320) * 3 + 1] = std::numeric_limits<float>::infinity();
+    CHECK_THROWS_MATCHES(stack::PrepareMineral(nan1, 4, {}), std::invalid_argument,
+                         Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("1 NaN sample")));
+    CHECK_THROWS_MATCHES(stack::MakeMineralMoon(nan3, 4, {}), std::invalid_argument,
+                         Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("3 NaN sample")));
+    stack::MineralOutcome out;
+    REQUIRE_NOTHROW(out = stack::MakeMineralMoon(inf1, 4, {}));
+    CheckValidOutput(out, inf1);
+    CHECK(out.notice.empty());
 }
 
 TEST_CASE("pipeline: cancel throws StackCancelled") {

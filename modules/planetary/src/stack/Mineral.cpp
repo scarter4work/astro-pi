@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -37,6 +38,17 @@ double MadStd(std::vector<float>& v) {
     for (float& x : v) x = static_cast<float>(std::fabs(x - med));
     return 1.4826 * Median(v);
 }
+
+// printf-style formatting of numbers into a HISTORY fragment (ASCII: the formats are). Every argument is passed
+// as a double, so every conversion is a floating one (%f, %g, %e).
+template <class... A>
+std::string Fmt(const char* format, A... args) {
+    char buf[256];
+    std::snprintf(buf, sizeof buf, format, static_cast<double>(args)...);
+    return buf;
+}
+
+std::string Percent(size_t part, size_t whole) { return Fmt("%.2f%%", 100.0 * part / std::max<size_t>(1, whole)); }
 
 // Mean of the channels, one sample per pixel.
 ser::FloatImage MeanOfChannels(const ser::FloatImage& rgb, int threads) {
@@ -75,18 +87,22 @@ ser::FloatImage Box3(const ser::FloatImage& L, int threads) {
     return out;
 }
 
-// Otsu's threshold over a 1024-bin histogram of v between its 0.1 and 99.9 percentiles.
+// Otsu's threshold over a 1024-bin histogram of v between its smallest and largest finite values (NaN left out,
+// +-Inf in the end bins). The full range, not a percentile clip: a disc under 0.1% of the frame lies above the
+// 99.9th percentile, and with that clip it shared the top bin with the sky's noise tail, so Otsu split the sky
+// (task ENG review I2). +inf when v has no finite value.
 double Otsu(const std::vector<float>& v) {
-    std::vector<float> s(v);
-    const size_t lo = s.size() / 1000, hi = s.size() - 1 - s.size() / 1000;
-    std::nth_element(s.begin(), s.begin() + static_cast<long>(lo), s.end());
-    const double a = s[lo];
-    std::nth_element(s.begin(), s.begin() + static_cast<long>(hi), s.end());
-    const double b = s[hi];
+    double a = std::numeric_limits<double>::infinity(), b = -a;
+    for (float x : v)
+        if (std::isfinite(x)) {
+            a = std::min(a, static_cast<double>(x));
+            b = std::max(b, static_cast<double>(x));
+        }
     if (!(b > a)) return a;
     constexpr int kBins = 1024;
     std::vector<double> hist(kBins, 0);
-    for (float x : v) hist[static_cast<size_t>(std::clamp((x - a) / (b - a) * kBins, 0.0, kBins - 1.0))] += 1;
+    for (float x : v)
+        if (!std::isnan(x)) hist[static_cast<size_t>(std::clamp((x - a) / (b - a) * kBins, 0.0, kBins - 1.0))] += 1;
     double total = 0, sumAll = 0;
     for (int i = 0; i < kBins; ++i) {
         total += hist[i];
@@ -212,9 +228,31 @@ LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads) {
     std::vector<float> upper;
     for (float v : Ls.data)
         if (v > t0) upper.push_back(v);
-    if (upper.empty()) return m;  // a flat image: no disc
+    if (upper.empty()) {
+        m.reason = "the frame is flat: no level stands above the rest";
+        return m;
+    }
     const double D = Median(upper);
-    if (!(D > 0)) return m;
+    // D must clear the frame's median by kDiscSigmas sigma of the 3 x 3 mean's noise; otherwise Otsu has only
+    // split the sky's noise (task ENG review I2) and there is no disc to find. Noise from neighbour differences
+    // over the whole frame (blind to gradients), / sqrt 2, then / 3 for the 3 x 3 mean.
+    {
+        constexpr double kDiscSigmas = 5;
+        std::vector<float> all, diff;
+        all.reserve(n);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (!std::isnan(Ls.data[i])) all.push_back(Ls.data[i]);
+                if (x + 1 < w && std::isfinite(L.data[i]) && std::isfinite(L.data[i + 1])) diff.push_back(L.data[i + 1] - L.data[i]);
+            }
+        const double med = Median(all), sigma = MadStd(diff) / std::sqrt(2.0) / 3;
+        if (!(D > 0) || !(D - med > kDiscSigmas * sigma)) {
+            m.reason = Fmt("the brightest class's level %.4g is not %.0f noise sigma (%.2g) above the frame's median %.4g",
+                           D, kDiscSigmas, sigma, med);
+            return m;
+        }
+    }
     // Sky candidates: darker than a quarter of the disc's level. Maria (0.5-0.7 of the highlands on the real
     // Moon) and lit terrain are not; the sky and the unlit side are. Limit: a sky brighter than D / 4 (a
     // twilight Moon) is not found -- it reads as "no sky" and the background step skips with that reason.
@@ -264,6 +302,7 @@ LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads) {
         m.diskCount += m.disk[i];
         m.skyCount += m.sky[i];
     }
+    if (m.diskCount == 0) m.reason = "no piece above the disc threshold is 16 px or more";
     return m;
 }
 
@@ -276,16 +315,6 @@ void RequireMasks(const ser::FloatImage& rgb, const LunarMasks& m, const char* w
     if (m.width != rgb.width || m.height != rgb.height || m.disk.size() != Pixels(rgb) || m.sky.size() != Pixels(rgb))
         throw std::invalid_argument(std::string(who) + ": masks do not match the image");
 }
-
-// printf-style formatting of numbers into a HISTORY fragment (ASCII: the formats are).
-template <class... A>
-std::string Fmt(const char* format, A... args) {
-    char buf[256];
-    std::snprintf(buf, sizeof buf, format, static_cast<double>(args)...);
-    return buf;
-}
-
-std::string Percent(size_t part, size_t whole) { return Fmt("%.2f%%", 100.0 * part / std::max<size_t>(1, whole)); }
 
 // A plane a + b u + c v over the frame, u = x / (w - 1) - 0.5, v = y / (h - 1) - 0.5 (so b and c are the
 // rise across the frame and a the level at its centre).
@@ -1033,6 +1062,12 @@ namespace {
 // width, so the colour's resolution against the disc stays the same.
 double ResolutionScale(int width) { return std::max(1.0, width / 2000.0); }
 
+void RequireParams(const MineralParams& p) {
+    if (!(p.strength >= 0) || !(p.chromaBlurSigma >= 0) || !(p.eps >= 0) || !(p.devClamp >= 0) || !(p.satRamp > 0) ||
+        !std::isfinite(p.strength) || !std::isfinite(p.chromaBlurSigma))
+        throw std::invalid_argument("MineralColour: strength, chroma blur, eps and clamp must be >= 0 and the ramp > 0");
+}
+
 }  // namespace
 
 ser::FloatImage ChromaLayer(const ser::FloatImage& rgb, double sigma, int threads) {
@@ -1098,9 +1133,7 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
     if (lumSharp.channels != 1 || lumSharp.width != rgb.width || lumSharp.height != rgb.height ||
         lumSharp.data.size() != Pixels(rgb))
         throw std::invalid_argument("MineralColour: the luminance must be one channel of the image's size");
-    if (!(p.strength >= 0) || !(p.chromaBlurSigma >= 0) || !(p.eps >= 0) || !(p.devClamp >= 0) || !(p.satRamp > 0) ||
-        !std::isfinite(p.strength) || !std::isfinite(p.chromaBlurSigma))
-        throw std::invalid_argument("MineralColour: strength, chroma blur, eps and clamp must be >= 0 and the ramp > 0");
+    RequireParams(p);
     const double sigma = p.chromaBlurSigma * ResolutionScale(rgb.width);
     const double thr = p.satThreshold >= 0 ? p.satThreshold : AutoSatThreshold(rgb);
     // 1. C: each channel blurred (the chroma noise reduction; colour at lower resolution than L, as in LRGB).
@@ -1248,41 +1281,70 @@ private:
 
 constexpr int kMineralSteps = 7;
 
+// Step 1 found no disc: every later step says so instead of running (spec anti-goal: a mineral image that hides
+// a defect).
+constexpr const char* kNoDisk = "no lunar disk distinguished from the sky";
+
 }  // namespace
 
 MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress) {
     if (stack.channels != 3 || stack.width <= 0 || stack.height <= 0 || stack.data.size() != Pixels(stack) * 3)
         throw std::invalid_argument("Mineral moon needs a 3-channel colour stack (this one has " +
                                     std::to_string(stack.channels) + " channel(s))");
+    // NaN is no level at all (an Inf is a saturated sample and is handled as one): refused, with the count, rather
+    // than spread by every blur into the output (task ENG review M1).
+    const size_t nans = static_cast<size_t>(std::count_if(stack.data.begin(), stack.data.end(), [](float v) { return std::isnan(v); }));
+    if (nans > 0)
+        throw std::invalid_argument("Mineral moon needs a stack of defined samples (this one has " + std::to_string(nans) +
+                                    " NaN sample(s))");
     MineralCache cache;
     MineralSteps steps(progress, kMineralSteps);
     ser::FloatImage rgb = stack;
     std::vector<uint8_t> clipped(stack.data.size());
     for (size_t k = 0; k < stack.data.size(); ++k) clipped[k] = stack.data[k] >= kClippedLuma;
     const size_t n = Pixels(stack);
+    bool noDisk = false;
+    // Runs `fn`, or with no disc records `name` skipped for that reason.
+    auto step = [&](const std::string& name, const std::function<std::string()>& fn) {
+        steps.Run(name, cache.stepSeconds,
+                  [&] { cache.history.push_back(noDisk ? name + " skipped: " + kNoDisk + "; nothing done" : fn()); });
+    };
     steps.Run("Lunar disk", cache.stepSeconds, [&] {
         cache.masks = SegmentLunar(rgb, threads);
-        cache.history.push_back("Lunar disk: " + Percent(cache.masks.diskCount, n) + " of the frame, sky " +
-                                Percent(cache.masks.skyCount, n));
+        noDisk = cache.masks.diskCount == 0;
+        cache.history.push_back(noDisk ? std::string("Lunar disk: none, ") + kNoDisk + " (" + cache.masks.reason +
+                                             "); the image is the stack clipped to [0, 1]"
+                                       : "Lunar disk: " + Percent(cache.masks.diskCount, n) + " of the frame, sky " +
+                                             Percent(cache.masks.skyCount, n));
     });
-    steps.Run("Colour calibration", cache.stepSeconds,
-              [&] { cache.history.push_back(CalibrateColour(rgb, cache.masks).history); });
-    steps.Run("Background", cache.stepSeconds, [&] { cache.history.push_back(NeutraliseBackground(rgb, cache.masks).history); });
-    steps.Run("Display transfer", cache.stepSeconds,
-              [&] { cache.history.push_back(DisplayTransfer(rgb, cache.masks, clipped).history); });
-    steps.Run("Channel alignment", cache.stepSeconds, [&] { cache.history.push_back(AlignChannels(rgb, threads).history); });
-    steps.Run("Sharpen", cache.stepSeconds, [&] {
+    if (noDisk) {
+        cache.notice = kNoDisk;
+        for (float& v : rgb.data) v = std::clamp(v, 0.0f, 1.0f);
+    }
+    step("Colour calibration", [&] { return CalibrateColour(rgb, cache.masks).history; });
+    step("Background", [&] { return NeutraliseBackground(rgb, cache.masks).history; });
+    step("Display transfer", [&] { return DisplayTransfer(rgb, cache.masks, clipped).history; });
+    step("Channel alignment", [&] { return AlignChannels(rgb, threads).history; });
+    step("Sharpen", [&] {
         cache.lum = MeanOfChannels(rgb, threads);
-        cache.history.push_back(SharpenLuminanceImage(cache.lum, cache.masks, threads).history);
+        return SharpenLuminanceImage(cache.lum, cache.masks, threads).history;
     });
+    if (noDisk) cache.lum = MeanOfChannels(rgb, threads);
     steps.Tick();
     cache.display = std::move(rgb);
     return cache;
 }
 
 ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParams& p, int threads, StepRecord* record) {
+    RequireParams(p);
     ser::FloatImage out = cache.display;
-    StepRecord rec = MineralColour(out, cache.lum, p, threads);
+    StepRecord rec;
+    if (cache.masks.diskCount == 0) {
+        rec.skipped = true;
+        rec.history = std::string("Mineral colour skipped: ") + kNoDisk + "; nothing done";
+    } else {
+        rec = MineralColour(out, cache.lum, p, threads);
+    }
     if (record) *record = std::move(rec);
     return out;
 }
@@ -1301,6 +1363,7 @@ MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const 
     out.history.push_back(rec.history);
     out.stepSeconds = std::move(cache.stepSeconds);
     out.stepSeconds.push_back({"Mineral colour", secs});
+    out.notice = std::move(cache.notice);
     return out;
 }
 

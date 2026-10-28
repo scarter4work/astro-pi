@@ -32,12 +32,17 @@ struct LunarMasks {
     int width = 0, height = 0;
     std::vector<uint8_t> disk, sky;   // 1 = member; disjoint; neither = limb transition / unsure
     size_t diskCount = 0, skyCount = 0;
+    std::string reason;               // with no disc (diskCount 0): why none was distinguished (ASCII); else empty
 };
-// On the 3 x 3 mean of the channels' mean: the disc's level D is the median of Otsu's brighter class; sky
+// On the 3 x 3 mean of the channels' mean: the disc's level D is the median of Otsu's brighter class (histogram
+// over the full finite range, so a disc of a few hundred px in a 1080p frame is its own class); D must clear the
+// frame's median by 5 sigma of the noise, or there is no disc (empty masks, reason set: a frame of sky). Sky
 // candidates are darker than D / 4 (maria, 0.5-0.7 of the highlands, are not); the threshold is the sky level
 // plus 5 sigma of its pixel noise, kept within 4-15% of the contrast (a lit terminator at 10% of the lit median
-// is disc). Pieces under 1% of the largest are dropped (stars, specks). Under 0.1% of the frame in sky candidates
-// there is no sky. Limit: a sky brighter than D / 4 (a twilight Moon) reads as "no sky".
+// is disc). Pieces under 1% of the largest, or under 16 px, are dropped (stars, specks). Under 0.1% of the frame
+// in sky candidates there is no sky. Limits: a sky brighter than D / 4 (a twilight Moon) reads as "no sky"; a
+// frame of sky whose gradient spans many noise sigma is not told from a disc filling the frame. NaN samples are
+// left out of the levels.
 // Throws std::invalid_argument unless rgb is 3 channels whose data matches its size.
 LunarMasks SegmentLunar(const ser::FloatImage& rgb, int threads);
 
@@ -131,12 +136,16 @@ struct MineralCache {
     LunarMasks masks;
     std::vector<std::string> history;  // steps 1-6 (Lunar disk .. Sharpen)
     std::vector<std::pair<std::string, double>> stepSeconds;
+    std::string notice;                // as MineralOutcome::notice
 };
 // Steps 1 - 4c. Throws std::invalid_argument for a stack that is not 3 channels (mono is refused: the spec's
-// anti-goal), StackCancelled on a cancel. Memory: the cache holds 4 floats per pixel, plus the input's copy.
+// anti-goal) or that holds NaN samples (the message gives their count; +-Inf is taken as a saturated or empty
+// sample), StackCancelled on a cancel. With no disc found, every later step skips (see MineralOutcome::notice).
+// Memory: the cache holds 4 floats per pixel, plus the input's copy.
 MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Progress& progress);
 // Steps 5-7 only, on a copy of cache.display; record (if given) receives the colour step's HISTORY line. Cheap: a
-// chroma blur and one pass (1080p, 32 threads: well under a second). Exceptions as MineralColour's.
+// chroma blur and one pass (1080p, 32 threads: well under a second). Exceptions as MineralColour's. With no disc
+// in the cache, the colour step skips (record says why) and the copy is returned as it is.
 ser::FloatImage ApplyMineralColour(const MineralCache& cache, const MineralParams& p, int threads,
                                    StepRecord* record = nullptr);
 
@@ -144,10 +153,15 @@ struct MineralOutcome {
     ser::FloatImage image;             // display-ready RGB, [0,1]
     std::vector<std::string> history;  // one line per step, in order (ASCII)
     std::vector<std::pair<std::string, double>> stepSeconds;
+    // Empty, or why the image is not a mineral moon, for the result line (spec anti-goal: a step that cannot run
+    // says why in HISTORY and in the result line): "no lunar disk distinguished from the sky", when step 1 finds
+    // none. Every step then skips with that reason and the image is the stack clipped to [0, 1].
+    std::string notice;
 };
 // PrepareMineral + ApplyMineralColour: seven HISTORY lines and step times, in the amendment's order (Lunar disk,
 // Colour calibration, Background, Display transfer, Channel alignment, Sharpen, Mineral colour). Throws
-// std::invalid_argument for a non-3-channel image; StackCancelled when progress cancels (no image is returned).
+// std::invalid_argument for a non-3-channel image or NaN samples; StackCancelled when progress cancels (no image
+// is returned).
 MineralOutcome MakeMineralMoon(const ser::FloatImage& stack, int threads, const Progress& progress,
                                const MineralParams& params = {});
 
