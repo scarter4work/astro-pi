@@ -943,6 +943,18 @@ double Shoulder(double x) {
     if (x <= kKnee) return x;
     return kKnee + (kCeiling - kKnee) * std::tanh((x - kKnee) / (kCeiling - kKnee));
 }
+// Shadow toe (Task B9), the shoulder's counterpart at black: sharpening may darken a pixel linearly down to kToe of its
+// unsharpened value v0; below that, v0 kToe exp((v / v0 - kToe) / kToe), continuous with its slope and above 0, so it
+// never clips a sample the stack did not. Real 0201-140 (a terminator: shadowed floors beside sunlit rims) went to
+// -0.156 on 1.59% of its disc, and the colour step's clip to [0, 1] black-clipped it. Unchanged pixels stay as they
+// were (v = v0 is in the linear part); at v0 <= 0 nothing goes below v0.
+constexpr double kToe = 0.25;
+
+double Toe(double v, double v0) {
+    if (v0 <= 0) return std::max(v, v0);
+    const double t = v / v0;
+    return t >= kToe ? v : v0 * kToe * std::exp((t - kToe) / kToe);
+}
 
 double Soft(double v, double t) { return v > t ? v - t : (v < -t ? v + t : 0.0); }
 
@@ -1174,12 +1186,13 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
     }
     ParallelBands(h, threads, [&](int y0, int y1) {
         for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
-            double v = lum1.data[i];
+            const double v0 = lum1.data[i];
+            double v = v0;
             if (dc.core[i])
                 for (int j = 0; j < kSharpenLayers; ++j)
                     v += (gain[j] - 1) * EdgeWeight(dc.dist[i], j) *
                          Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * sigma(i) * kn[j]);
-            lum1.data[i] = static_cast<float>(Shoulder(v));
+            lum1.data[i] = static_cast<float>(Shoulder(Toe(v, v0)));
         }
     });
     if (noise) {

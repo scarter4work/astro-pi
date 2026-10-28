@@ -93,7 +93,8 @@ double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int thre
 // pixel when given (PrepareMineral: LuminanceNoise on the linear data times the display transfer's slope there),
 // else LuminanceNoise(lum1) everywhere (right for linear input). The boost is 0 off the disc and fades in from one
 // to two layer reaches inside the limb's and terminator's half-contrast line (no halo, no rim). Above 0.9 a
-// smooth shoulder keeps L under 0.998, so sharpening never clips a sample the stack did not. Skipped (unchanged)
+// smooth shoulder keeps L under 0.998, and below a quarter of a pixel's unsharpened value a smooth toe keeps it above
+// 0 (shadows beside sunlit rims), so sharpening never clips a sample the stack did not, at either end. Skipped (unchanged)
 // when there is no disc. Throws std::invalid_argument as LuminanceNoise, or for a noise map not of lum1's size.
 // layerShape (optional; Ruling R33): per layer, its noise over the white-noise prediction (LayerNoiseShape); null:
 // white noise (1 for every layer).

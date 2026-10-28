@@ -15,8 +15,8 @@ there, and the B9 dispatch):
   clip        no new clipping: output samples >= 0.999 whose stack sample is < 0.999 (kClippedLuma): 0.
   time        the mineral steps' stepSeconds total <= 5 s (32 threads; the frame size is printed).
   2 calib     linear calibrated RGB, disk pixels with no sample >= 0.999 in the stack: mean R, B within 1 % of G.
-  3 sky       linear, sky pixels: |mean| per channel <= 0.5 % of the disk mean, and R's and B's mean within one sigma
-              of G's, sigma = the noise of a difference of two channels' pixels, sqrt(s_c^2 + s_G^2) (robust stds).
+  3 sky       linear, sky pixels, 3-sigma-clipped means: |mean| per channel <= 0.5 % of the disk mean, and R's and B's
+              mean within one sigma of G's, sigma = the robust std of the per-pixel difference (c - G).
   4 DAN       DAN_interior (bench/metric.py) of the linear L, sharpened vs not (lin_sharp vs lin_unsharp: both
               through the inverse display transfer), on the unsharpened image's box and interior window: rise
               >= 10 % (Ruling R25's bar carried to real data).
@@ -161,6 +161,14 @@ def alignment(j):
 
 def robust_std(v):
     return 1.4826 * float(np.median(np.abs(v - np.median(v)))) if v.size > 1 else float("nan")
+
+
+def clipped_mean(v, rounds=3, k=3.0):
+    m = np.ones(v.size, dtype=bool)
+    for _ in range(rounds):
+        mu, sd = v[m].mean(), v[m].std()
+        m = np.abs(v - mu) <= k * sd
+    return float(v[m].mean())
 
 
 def lum(rgb):
@@ -440,15 +448,17 @@ def check(out, cid, role):
     if history(j, "Background").startswith("Background skipped") or sky.sum() == 0:
         rep.add("3 sky", history(j, "Background") or "no sky", "<= 0.5 % of disk, equal within noise", "NOT JUDGED")
     else:
-        sm = [float(cal[c][sky].mean()) for c in range(3)]
+        # Means with three rounds of 3-sigma rejection (the background step's own fit rejects so; plain means carry the
+        # limb's glow and stars), and the noise of a channel difference measured on the per-pixel difference itself
+        # (robust std): from the channels' own robust stds it collapses where a channel's sky is quantised -- 0528a's
+        # G sky, 54.8% of it one value, read 8.4e-6, which put B-G at 3.51 "sigma"; measured directly, 0.90.
+        sm = [clipped_mean(cal[c][sky]) for c in range(3)]
         dm = [float(cal[c][disk].mean()) for c in range(3)]
-        sn = [robust_std(cal[c][sky]) for c in range(3)]
         rel = max(abs(sm[c]) / dm[c] for c in range(3))
-        # A difference of two channels' means against the noise of a difference of two channels' pixels: one pixel's
-        # noise of that difference (sqrt(s_c^2 + s_G^2)) is invisible.
-        spread = [abs(sm[c] - sm[1]) / math.hypot(sn[c], sn[1]) for c in (0, 2)]
-        rep.judge("3 sky", "sky mean R %.2e G %.2e B %.2e (pixel noise %.1e %.1e %.1e): max %.3f%% of disk; R-G, B-G "
-                  "%.2f, %.2f noise sigmas of the difference" % (sm[0], sm[1], sm[2], sn[0], sn[1], sn[2], 100 * rel, *spread),
+        dn = [robust_std(cal[c][sky] - cal[1][sky]) for c in (0, 2)]
+        spread = [abs(sm[c] - sm[1]) / n if n > 0 else float("inf") for c, n in zip((0, 2), dn)]
+        rep.judge("3 sky", "sky mean (3-sigma clipped) R %.2e G %.2e B %.2e: max %.3f%% of disk; R-G, B-G %.2f, %.2f "
+                  "sigmas of the per-pixel difference (robust std %.1e, %.1e)" % (sm[0], sm[1], sm[2], 100 * rel, *spread, *dn),
                   "<= 0.5 % of disk, |c - G| <= 1 sigma", rel <= 0.005 and max(spread) <= 1)
 
     # 4. sharpening

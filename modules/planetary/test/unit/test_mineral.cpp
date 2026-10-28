@@ -1070,6 +1070,36 @@ TEST_CASE("pipeline: display ready") {
     CHECK(med <= 0.45);
 }
 
+TEST_CASE("pipeline: sharpening never takes a lit-disc sample below black") {
+    // Task B9 (real 0201-140, a terminator: the sharpened L went below 0 on 1.59% of the disc, to -0.156, next to bright
+    // rims; the colour step's clip to [0, 1] then black-clipped it -- new clipping, and the output's luminance left L
+    // there, DAN_interior -2.12%). MoonSynth's texture is albedo, so its dark terrain has little absolute contrast;
+    // the terminator's craters are shadows beside sunlit rims: floors at 3% of the level inside rims at 1.8x, painted
+    // over the disc and blurred 1.2 px like the rest of the scene.
+    MoonSceneSpec s = StackScene();
+    MoonScene sc = MakeMoonScene(s);
+    for (int cy = 120; cy <= 360; cy += 40)
+        for (int cx = 180; cx <= 460; cx += 40)
+            for (int y = cy - 9; y <= cy + 9; ++y)
+                for (int x = cx - 9; x <= cx + 9; ++x) {
+                    const double r = std::hypot(x - cx, y - cy);
+                    const double f = r <= 6 ? 0.03 : (r <= 8 ? 1.8 : 1.0);
+                    for (int c = 0; c < 3; ++c) sc.observed.data[(static_cast<size_t>(y) * s.width + x) * 3 + c] *= static_cast<float>(f);
+                }
+    testing::moon_detail::Blur(sc.observed, 1.2);
+    const stack::MineralCache cache = stack::PrepareMineral(sc.observed, 4, {});
+    size_t below = 0, lit = 0;
+    float lowest = 1;
+    for (size_t i = 0; i < sc.diskTruth.size(); ++i)
+        if (cache.masks.disk[i]) {
+            ++lit;
+            below += cache.lum.data[i] < 0;
+            lowest = std::min(lowest, cache.lum.data[i]);
+        }
+    INFO(cache.history[5] << "; disc px " << lit << ", sharpened L < 0 on " << below << ", lowest " << lowest);
+    CHECK(below == 0);
+}
+
 TEST_CASE("pipeline: no cyan cast in the brightest highlands") {
     // Task B9 (real 0528a/b: the brightest 1% of the disc came out cyan 0.048, from 0.024 before the colour step). The
     // highlands are the brightest terrain and carry a bluish tint; the frame's channel extremes sit close together, so
