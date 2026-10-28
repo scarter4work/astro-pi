@@ -27,8 +27,8 @@ CaptureName ParseCaptureName(const std::string& fileName);
 const char* TargetName(Target);
 
 // nullopt when Mineral moon may run; else the ASCII reason shown in the tooltip and the failure.
-// `filterToken` (optional) names the filter in the narrowband reason; empty says "the filter".
+// `filterToken` (CaptureName::filterToken) names the filter in the narrowband reason; empty says "the filter".
 std::optional<std::string> MineralMoonRefusal(Target target, FilterClass filter, const FileInfo& info,
-                                              const std::string& filterToken = "");
+                                              const std::string& filterToken);
 
 }  // namespace planetary::ser

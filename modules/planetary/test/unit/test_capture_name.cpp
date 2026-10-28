@@ -59,15 +59,29 @@ TEST_CASE("TargetName", "[capture_name]") {
 
 TEST_CASE("MineralMoonRefusal", "[capture_name]") {
     const FileInfo bayer = Info(ColorId::BayerRGGB, 1);
-    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Broadband, bayer).has_value());
-    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Unknown, bayer).has_value());
-    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Broadband, Info(ColorId::RGB, 3)).has_value());
-    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Narrowband, bayer) ==
-          "Mineral moon needs a broadband filter; the filter is narrowband, so its colours come from the filter.");
+    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Broadband, bayer, "Lqef").has_value());
+    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Unknown, bayer, "").has_value());
+    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Broadband, Info(ColorId::RGB, 3), "Lqef").has_value());
     CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Narrowband, bayer, "HaO3") ==
           "Mineral moon needs a broadband filter; HaO3 is narrowband, so its colours come from the filter.");
-    CHECK(*MineralMoonRefusal(Target::Saturn, FilterClass::Broadband, bayer) ==
+    // The token as the file name writes it.
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Narrowband, bayer, "hao3") ==
+          "Mineral moon needs a broadband filter; hao3 is narrowband, so its colours come from the filter.");
+    CHECK(*MineralMoonRefusal(Target::Saturn, FilterClass::Broadband, bayer, "Lqef") ==
           "Mineral moon is for the Moon; the target is Saturn.");
-    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Broadband, Info(ColorId::Mono, 1)) ==
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Broadband, Info(ColorId::Mono, 1), "Lqef") ==
           "Mineral moon needs a colour capture; this one is mono (set the Bayer pattern if it is a colour camera).");
+}
+
+TEST_CASE("ParseCaptureName: a filter holding a separator, Windows paths, any case (B1 review m3)", "[capture_name]") {
+    // UV/IR holds a '/': in a full path the base name still starts at the timestamp.
+    Expect("/mnt/qnap/astro_data/2026-10-23/2026-10-23-203401-Moon-Bin1 UV/IR 5.0F.avi", Target::Moon, "UV/IR",
+           FilterClass::Broadband);
+    Expect("C:\\Users\\scott\\Pictures\\ASIAIR\\2026-10-23-203401-Moon-Bin1 Lqef 64.6F.avi", Target::Moon, "Lqef",
+           FilterClass::Broadband);
+    Expect("D:\\captures\\2026-10-23-203401-Moon-Bin1 UV/IR 5.0F.ser", Target::Moon, "UV/IR", FilterClass::Broadband);
+    // Filter tokens match whatever their case; the token is kept as written.
+    Expect("2026-10-23-203401-Moon-Bin1 hao3 16.2F.avi", Target::Moon, "hao3", FilterClass::Narrowband);
+    Expect("2026-10-23-203401-MOON-Bin1 LQEF 64.6F.avi", Target::Moon, "LQEF", FilterClass::Broadband);
+    Expect("2026-10-23-203401-Moon-Bin1 uv/ir 5.0F.avi", Target::Moon, "uv/ir", FilterClass::Broadband);
 }
