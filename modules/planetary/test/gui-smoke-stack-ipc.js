@@ -3,7 +3,8 @@
 // not the caller's, so each call's request is a file the shell writes first:
 // $PLANETARY_GUI_DIR/ipc-request.json, { "mode": ..., "out": <file name> }.
 //   windows  every image window: id, size, channels, its SRCVIDEO / NFRAMES /
-//            NCOMBINE keywords and the samples asked for ("sample": [[x, y]],
+//            NCOMBINE / OBJECT keywords, its HISTORY text (the cards joined with
+//            single spaces, as they were split) and the samples asked for ("sample": [[x, y]],
 //            every channel); then, with "close": true, each is closed (so the
 //            smoke's later "no new window" checks and Quit start from none)
 //   launch   the PlanetaryStack interface launched from an instance with
@@ -31,8 +32,13 @@ try
                        channels: img.numberOfChannels, keywords: {}, samples: [] };
          var kw = w.keywords;
          for ( var k = 0; k < kw.length; ++k )
-            if ( kw[k].name == "SRCVIDEO" || kw[k].name == "NFRAMES" || kw[k].name == "NCOMBINE" )
+            if ( kw[k].name == "SRCVIDEO" || kw[k].name == "NFRAMES" || kw[k].name == "NCOMBINE" || kw[k].name == "OBJECT" )
                entry.keywords[kw[k].name] = kw[k].strippedValue;
+         var history = [];
+         for ( var hk = 0; hk < kw.length; ++hk )
+            if ( kw[hk].name == "HISTORY" )
+               history.push( kw[hk].comment.trim() );
+         entry.history = history.join( " " );
          var samples = req.sample || [];
          for ( var s = 0; s < samples.length; ++s )
          {

@@ -52,6 +52,26 @@
 #     Save pattern... -> the "PlanetaryStack" confirmation         -> 15b-confirm.png
 #     Return: the sidecar written, the stack kept                  -> 16-pattern-saved.png
 #     the sidecar is byte for byte WriteAsiairSidecar's (Bayer = RG, this build's version).
+#  7b. Target and Mineral moon (Task B8), on Moon captures named as the ASIAIR names them:
+#     --stack-moon: Open... the Moon (Lqef): Target reads "Moon (from file name)" (tesseract), the
+#     Mineral moon box enabled                                     -> 20-moon-loaded.png
+#     Stack!                                                       -> 21-moon-stack.png
+#     Mineral moon checked: its mineral moon made from that stack   -> 22-mineral.png
+#     the Strength handle dragged 8 -> 14 (the colour step only)    -> 23-strength.png
+#     unchecked: the stack again, pixel for pixel                  -> 24-unchecked.png
+#     checked again: Strength 14's image, pixel for pixel           -> 24b-rechecked.png
+#     (after each of those three: PixInsight reads no video and the bar stays empty -- no restack)
+#     Execute                                                      -> 25-moon-execute.png
+#     gui-smoke-stack-ipc.js: exactly <stem>_stack and <stem>_mineral, the engine's size, OBJECT Moon, the
+#     target's HISTORY line, the seven mineral steps in order in the mineral window only, k of about 14.
+#     --stack-mineral-cancel: Open... a 2400 x 1800 Moon (its mineral moon checked to take >= 1.2 s past its
+#     first step, from the engine), Execute, the bar past 3/4 + 1/28 -> 26-mineral-phase.png; Cancel
+#                                                                  -> 27-mineral-cancelled.png
+#     no image window, no video file held open, the thread count back.
+#     --stack-hao3: Open... the HaO3 Moon: the box turned off, disabled, the info box says why
+#                                                                  -> 28-hao3.png
+#     the pointer on the box: its tooltip (read with tesseract: "HaO3 is narrowband")
+#                                                                  -> 28b-tooltip.png, 28c-no-tooltip.png
 #  8. --stack-close: Open... gui-long.avi, Stack!, mid-run         -> 17-close-progress.png
 #     the interface's close button                                 -> 18-closed.png
 #     no video file held open, the thread count back.
@@ -93,6 +113,16 @@ FIX="$PLANETARY_RUN_DIR/fixtures"
 LONG="$FIX/gui-long.avi"
 "$MAKE_FIXTURES" --stack-long "$LONG" 2500 >>"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
    || { echo "FAIL: make-fixtures --stack-long failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
+# Task B8: Moon captures named as the ASIAIR names them (the name gives the target and the filter): the
+# probe's small Moon and HaO3 Moon, and a large Moon whose mineral moon takes long enough for a Cancel to land
+# in it (checked below, from the engine).
+MOON="$FIX/2026-10-23-030000-Moon-Bin1 Lqef 64.6F.ser"
+MOON_ID="_2026_10_23_030000_Moon_Bin1_Lqef_64_6F"
+HAO3="$FIX/2026-10-23-033000-Moon-Bin1 HaO3 16.2F.ser"
+MOON_LONG="$FIX/2026-10-23-050000-Moon-Bin1 Lqef 63.0F.ser"
+"$MAKE_FIXTURES" --moon "$MOON_LONG" 2400 1800 24 >>"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
+   || { echo "FAIL: make-fixtures --moon failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
+[ -f "$MOON" ] && [ -f "$HAO3" ] || { echo "FAIL: make-fixtures --stack wrote no Moon / HaO3 Moon capture"; exit 1; }
 DIAG="$FIX/diag-notarget.ser" MOSAIC="$FIX/stack-mosaic.avi" SOFT="$FIX/stack-soft-disc.ser" BAYER="$FIX/stack-bayer.avi"
 [ ! -e "$MOSAIC.txt" ] || { echo "FAIL: $MOSAIC must have no sidecar (Save pattern... writes one)"; exit 1; }
 [ -f "$BAYER.txt" ] || { echo "FAIL: $BAYER must have its RG sidecar"; exit 1; }
@@ -127,6 +157,16 @@ engine "$MOSAIC" auto image "cannot be debayered afterwards" || exit 1
 engine "$SOFT" auto image "may be out of focus" || exit 1
 engine "$BAYER" auto image "" || exit 1
 engine "$BAYER" BGGR image "" || exit 1
+engine "$MOON" auto image "" || exit 1
+MOON_JSON="$OUT/engine-$(basename "$MOON")-auto.json"
+# The large Moon: its mineral moon's steps after the first must take at least 1.2 s (the engine's own times)
+# for the Cancel to land in them (the drive waits for the bar to pass the first of its 7 steps).
+LONG_MOON_JSON="$OUT/engine-moon-long-mineral.json"
+"$STACK_PROBE" "$MOON_LONG" --json --mineral 8,2.5 >"$LONG_MOON_JSON" 2>"$PLANETARY_RUN_DIR/stack-probe.err" \
+   || { echo "FAIL: $(basename "$MOON_LONG") gives no image from the engine"; exit 1; }
+jq -e '.mineral.notice == "" and (.mineral.seconds - .mineral.stepSeconds["Lunar disk"]) >= 1.2' "$LONG_MOON_JSON" >/dev/null \
+   || { echo "FAIL: $(basename "$MOON_LONG"): its mineral moon is too quick (or not one) for a Cancel to land in it: $(jq -c '.mineral | {seconds, stepSeconds, notice}' "$LONG_MOON_JSON")"; exit 1; }
+echo "engine: $(basename "$MOON_LONG"): stack $(jq .seconds "$LONG_MOON_JSON") s, mineral moon $(jq .mineral.seconds "$LONG_MOON_JSON") s"
 LONG_JSON="$OUT/engine-gui-long.avi-auto.json"
 # At least 3 s (as before the final fix round): Execute's checks (3, 3b) tell "opened the stack made" from
 # "stacked again" by the window existing 1.5 s after the click, and Cancel, the close and the Quit act at once
@@ -275,6 +315,40 @@ want="${want%x}"
 echo "sidecar written by Save pattern...: Bayer = RG, SERViewer $PLANETARY_VERSION"
 expect_no_open_video "after Save pattern..." || exit 1
 
+# Task B8: Target and Mineral moon. The Moon: Target from its name, Mineral moon checked after Stack!, the
+# Strength slider, unchecked and checked again -- never a restack (gui_drive.py checks no video is read and the
+# bar stays empty) -- then Execute: the stack and its mineral moon, Strength 14 in its HISTORY.
+drive --stack-moon "$OUT" "$MOON" || exit 1
+ipc '{"mode":"windows","out":"windows-moon.json","close":true}' windows-moon.json || exit 1
+jq -e --slurpfile e "$MOON_JSON" --arg s "${MOON_ID}_stack" --arg m "${MOON_ID}_mineral" '
+   (.windows | length == 2)
+   and ([.windows[].id] | sort == ([$s, $m] | sort))
+   and all(.windows[]; .width == $e[0].image.width and .height == $e[0].image.height and .channels == 3
+                       and .keywords.OBJECT == "Moon" and (.history | contains("PlanetaryStack target: Moon (from file name)")))
+   and (.windows[] | select(.id == $s) | .history | contains("PlanetaryStack mineral:") | not)' "$OUT/windows-moon.json" >/dev/null \
+   || { echo "FAIL: Execute on the Moon: expected ${MOON_ID}_stack and ${MOON_ID}_mineral, OBJECT Moon, the engine's size; got $(jq -c '[.windows[] | {id, width, height, channels, keywords}]' "$OUT/windows-moon.json")"; exit 1; }
+python3 - "$OUT/windows-moon.json" "${MOON_ID}_mineral" <<'PY' || exit 1
+import json, re, sys
+w = [x for x in json.load(open(sys.argv[1]))["windows"] if x["id"] == sys.argv[2]][0]
+steps = re.findall(r"PlanetaryStack mineral: (Lunar disk|Colour calibration|Background|Display transfer|Channel alignment|Sharpen|Mineral colour)", w["history"])
+if steps != ["Lunar disk", "Colour calibration", "Background", "Display transfer", "Channel alignment", "Sharpen", "Mineral colour"]:
+    sys.exit("FAIL: the mineral moon's HISTORY steps are %r" % steps)
+k = re.search(r"PlanetaryStack mineral: Mineral colour: k ([0-9.]+)", w["history"])
+if not k or not 13.0 <= float(k.group(1)) <= 15.0:
+    sys.exit("FAIL: the mineral moon was not coloured at the Strength the slider was dragged to (about 14): %s" % (k.group(0) if k else w["history"][-300:]))
+print("Execute on the Moon: %s with its seven mineral steps in HISTORY, %s (the slider's)" % (sys.argv[2], k.group(0)))
+PY
+expect_no_open_video "after the Moon's Execute" || exit 1
+# Cancel in the mineral moon's phase (Execute on the large Moon, Mineral moon still checked): no window.
+T2="$(threads)"
+drive --stack-mineral-cancel "$OUT" "$MOON_LONG" || exit 1
+expect_no_window "after a Cancel in the mineral moon" windows-mineral-cancel.json || exit 1
+expect_no_open_video "after a Cancel in the mineral moon" || exit 1
+expect_threads "after a Cancel in the mineral moon" "$T2" || exit 1
+# A HaO3 Moon: Mineral moon off and disabled; the info box and the tooltip say why.
+drive --stack-hao3 "$OUT" "$HAO3" || exit 1
+echo "HaO3 Moon: the tooltip reads: $(jq -r .text "$OUT/tooltip.json")"
+
 T1="$(threads)"
 drive --stack-close "$OUT" "$LONG" || exit 1
 expect_no_open_video "after closing the interface mid-run" || exit 1
@@ -292,7 +366,8 @@ for png in 01-opened 02-loaded 03-progress 04-fit 05-zoom-100 06-zoom-200 06b-zo
            07b-unreadable 07c-kept 07d-execute-kept \
            08-cancel-progress 09-cancelled 09b-shade-progress 09c-shaded 09c2-expanded 09d-unshaded 10-diagnosis 11-warning-mosaic 12-warning-focus 13-bayer-auto \
            13b-bayer-changed 14-bayer-bggr 15-pattern-rggb 15b-confirm 16-pattern-saved 17-close-progress 18-closed \
-           19-quit-progress; do
+           19-quit-progress 20-moon-loaded 21-moon-stack 22-mineral 23-strength 24-unchecked 24b-rechecked \
+           25-moon-execute 26-mineral-phase 27-mineral-cancelled 28-hao3 28b-tooltip 28c-no-tooltip; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done
 python3 "$HERE/gui_drive.py" --check-stack "$OUT" || ok=0

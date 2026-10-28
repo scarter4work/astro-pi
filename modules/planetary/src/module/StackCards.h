@@ -18,13 +18,60 @@
 #include <string>
 #include <vector>
 
+#include "CaptureName.h"
 #include "Engine.h"
 #include "FitsText.h"
+#include "Mineral.h"
 #include "PlanetaryVersion.h"
 #include "SerInfoText.h"
 
 namespace planetary::stackcards
 {
+
+// The target a stack is of, and where it came from: the target parameter, or
+// (Auto) the ASIAIR capture name (ser::ParseCaptureName).
+struct TargetChoice
+{
+   ser::Target target = ser::Target::Other;
+   bool setByUser = false;  // the target parameter named it
+   bool inFileName = false; // Auto, and the file name follows the ASIAIR pattern
+};
+
+// `userTarget`: the target parameter's choice, nullopt for Auto (then the file
+// name decides; a name that is no capture name, or names no planet, is Other).
+// `pathUtf8`: a base name or a full path.
+inline TargetChoice ResolveTarget( std::optional<ser::Target> userTarget, const std::string& pathUtf8 )
+{
+   TargetChoice t;
+   if ( userTarget )
+   {
+      t.target = *userTarget;
+      t.setByUser = true;
+      return t;
+   }
+   const ser::CaptureName c = ser::ParseCaptureName( pathUtf8 );
+   t.target = c.target;
+   t.inFileName = c.parsed;
+   return t;
+}
+
+// Why Mineral moon cannot run for this capture (ser::MineralMoonRefusal, the
+// filter read from the capture name), or nullopt. `info` must be the reader's
+// after OpenVideo has resolved an AVI's Bayer pattern (AviFile leaves an AVI
+// Mono until then; B1 review m2).
+inline std::optional<std::string> MineralRefusalFor( const std::string& pathUtf8, const ser::FileInfo& info,
+                                                     const TargetChoice& target )
+{
+   const ser::CaptureName c = ser::ParseCaptureName( pathUtf8 );
+   return ser::MineralMoonRefusal( target.target, c.filter, info, c.filterToken );
+}
+
+// "Moon (from file name)", "Jupiter (set by user)", "Other (not in file name)".
+inline std::string TargetText( const TargetChoice& t )
+{
+   return std::string( ser::TargetName( t.target ) ) +
+          (t.setByUser ? " (set by user)" : t.inFileName ? " (from file name)" : " (not in file name)");
+}
 
 // The capture's time span for DATE-OBS / DATE-END (PlanetaryStackInstance's
 // CaptureTimes fills it from a SER).
@@ -156,18 +203,22 @@ inline std::string DiagnosisText( const stack::Diagnosis& d )
    return t;
 }
 
-// The stack's cards, in order: SRCVIDEO (the file name, cut to fit its card
+// The stack's cards, in order: OBJECT (the target's name, unless it is
+// Other), SRCVIDEO (the file name, cut to fit its card
 // with the extension kept -- the full name is HISTORY's first line), NFRAMES
 // (measured), NCOMBINE (stacked), DATE-OBS / DATE-END (`times`; never for an
 // AVI, which has no trustworthy clock, whatever `times` holds), INSTRUME
 // (the SER header, or the ASIAIR sidecar's camera), TELESCOP, OBSERVER. No
 // BAYERPAT: the stack is debayered RGB, or the raw mosaic as mono.
 inline std::vector<Card> StackCards( const std::string& fileNameUtf8, const stack::StackOutcome& outcome,
-                                     const StackTimes& times )
+                                     const StackTimes& times, const TargetChoice& target )
 {
    const ser::FileInfo& info = outcome.info;
    const bool isAvi = IsAvi( info );
    std::vector<Card> cards;
+   if ( target.target != ser::Target::Other )
+      cards.push_back( { "OBJECT", ser::TargetName( target.target ),
+                         target.setByUser ? "Target, set by the user" : "Target, from the file name" } );
    cards.push_back( { "SRCVIDEO", fits::FitStringValue( fits::AsciiFromUtf8( fileNameUtf8 ) ),
                       "Video stacked (full name in HISTORY)" } );
    cards.push_back( { "NFRAMES", std::to_string( outcome.summary.measured ), "Frames in the video, every one measured", false } );
@@ -190,16 +241,19 @@ inline std::vector<Card> StackCards( const std::string& fileNameUtf8, const stac
 }
 
 // The stack's HISTORY texts, unsplit (one FITS card holds 72 characters; the
-// caller splits at spaces): the version and the full file name, an AVI's Bayer
+// caller splits at spaces): the version and the full file name, the target and
+// where it came from ("PlanetaryStack target: Moon (from file name)"), an AVI's Bayer
 // pattern and its source, the selection and alignment lines, the frame counts
 // and time, and every summary warning (reader warnings reworded for a stack).
-inline std::vector<std::string> StackHistory( const std::string& fileNameUtf8, const stack::StackOutcome& outcome )
+inline std::vector<std::string> StackHistory( const std::string& fileNameUtf8, const stack::StackOutcome& outcome,
+                                              const TargetChoice& target )
 {
    const ser::FileInfo& info = outcome.info;
    const stack::StackSummary& s = outcome.summary;
    const bool isAvi = IsAvi( info );
    std::vector<std::string> h;
    h.push_back( "PlanetaryStack " PLANETARY_VERSION_STRING ": stacked " + fits::AsciiFromUtf8( fileNameUtf8 ) );
+   h.push_back( "PlanetaryStack target: " + TargetText( target ) );
    if ( isAvi )
       h.push_back( "PlanetaryStack: Bayer " + fits::FitsAscii( preview::BayerText( info ) ) );
    h.push_back( "PlanetaryStack: " + fits::FitsAscii( s.selection ) );
@@ -212,13 +266,54 @@ inline std::vector<std::string> StackHistory( const std::string& fileNameUtf8, c
    return h;
 }
 
+// ---- The mineral moon (Mineral.h) ------------------------------------------
+
+// The mineral image's own HISTORY texts, after the stack's: one per step of the
+// mineral moon, in the engine's order (seven: Lunar disk .. Mineral colour),
+// each "PlanetaryStack mineral: <the step's line>".
+inline std::vector<std::string> MineralHistory( const stack::MineralOutcome& mineral )
+{
+   std::vector<std::string> h;
+   for ( const std::string& line : mineral.history )
+      h.push_back( "PlanetaryStack mineral: " + fits::FitsAscii( line ) );
+   return h;
+}
+
+// Why the mineral image is not a mineral moon (MineralOutcome::notice), for the
+// console, the result line and the window; empty without a notice.
+inline std::string MineralNoticeText( const std::string& notice )
+{
+   if ( notice.empty() )
+      return std::string();
+   return "Mineral moon: " + notice + ", so the mineral image is the stack clipped to [0, 1], with no colour or "
+          "sharpening.";
+}
+
+// The window's mineral lines, after ResultText: the colour step's line (the
+// last of the mineral history: its strength and chroma blur), then the notice
+// as a warning.
+inline std::string MineralResultText( const stack::MineralOutcome& mineral )
+{
+   std::string t = "Mineral moon shown: " + (mineral.history.empty() ? std::string() : mineral.history.back());
+   if ( !mineral.notice.empty() )
+      t += "\nWarning: " + MineralNoticeText( mineral.notice );
+   return t;
+}
+
 // ---- The PlanetaryStack window's text (PlanetaryStackInterface) ------------
 // UTF-8: file names are shown as they are; the engine's text is ASCII.
 
-// "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar RG)": an
-// AVI's pattern with its source (BayerText); a SER's colour from its header.
+// "Jupiter.avi: 1500 frames, 1024 x 768, 8-bit, Bayer RGGB (sidecar RG), target
+// not in file name": an AVI's pattern with its source (BayerText); a SER's
+// colour from its header; then the target an ASIAIR capture name gives
+// ("target from file name: Moon", an unknown one "Other (Betelgeuse)").
 inline std::string StackInfoLine( const std::string& fileNameUtf8, const ser::FileInfo& info )
 {
+   const ser::CaptureName name = ser::ParseCaptureName( fileNameUtf8 );
+   std::string target = "target not in file name";
+   if ( name.parsed )
+      target = std::string( "target from file name: " ) + ser::TargetName( name.target ) +
+               (name.target == ser::Target::Other ? " (" + name.targetToken + ")" : std::string());
    std::string colour;
    if ( stack::UndeclaredMosaic( info ) )
       colour = "no Bayer pattern known (raw CFA)";   // the fact; the warning gives the remedy
@@ -229,7 +324,8 @@ inline std::string StackInfoLine( const std::string& fileNameUtf8, const ser::Fi
    else
       colour = info.colorId == ser::ColorId::Mono ? "mono" : "RGB";
    return fileNameUtf8 + ": " + std::to_string( info.frameCount ) + " frames, " + std::to_string( info.header.width ) +
-          " x " + std::to_string( info.header.height ) + ", " + std::to_string( info.header.depth ) + "-bit, " + colour;
+          " x " + std::to_string( info.header.height ) + ", " + std::to_string( info.header.depth ) + "-bit, " + colour +
+          ", " + target;
 }
 
 // The result of a run, one fact per line. A stack: the frames used of those
@@ -268,15 +364,23 @@ inline double ProgressFraction( int64_t done, int64_t total )
    return done >= total ? 1.0 : done <= 0 ? 0.0 : double( done ) / double( total );
 }
 
-// The progress bar's text for the engine's three phases (Engine.h, in order):
+// The progress bar's text for the engine's three phases (Engine.h, in order)
+// and the mineral moon's, of `steps` in the run (3: a stack; 4: a stack and
+// its mineral moon; 1: the mineral moon of a stack already made, unnumbered):
 // "Step 1 of 3: Measuring frames 1234/4088" -- the engine's total there is the
 // hot-pixel frames plus every frame, so the count is of the capture's
 // `frames`, after the hot-pixel frames; "Step 2 of 3: Aligning 50%" (its total
 // is not a frame count); "Step 3 of 3: Stacking 312/1400" (the frames the plan
-// uses). Another name as it is.
-inline std::string ProgressText( const std::string& phase, int64_t done, int64_t total, int64_t frames )
+// uses); "Step 4 of 4: Mineral moon 3/7" (its steps). Another name as it is.
+inline std::string ProgressText( const std::string& phase, int64_t done, int64_t total, int64_t frames, int steps )
 {
-   const auto step = []( int i ) { return "Step " + std::to_string( i ) + " of 3: "; };
+   const auto step = [steps]( int i )
+   {
+      return steps <= 1 ? std::string() : "Step " + std::to_string( i ) + " of " + std::to_string( steps ) + ": ";
+   };
+   if ( phase == stack::kPhaseMineral )
+      return step( steps ) + phase + " " + std::to_string( std::clamp<int64_t>( done, 0, total ) ) + "/" +
+             std::to_string( total );
    if ( phase == stack::kPhaseMeasuring )
    {
       const int64_t hot = std::max<int64_t>( 0, total - frames );

@@ -36,6 +36,10 @@ python-xlib), and checks the screenshots. Test-only.
   gui_drive.py --stack-pattern OUT AVI   RGGB chosen, stacked, Save pattern..., Yes (15, 15b, 16)
   gui_drive.py --stack-close OUT FILE    Open... FILE, Stack! mid-run, the close button (17, 18)
   gui_drive.py --stack-quit OUT       the relaunched interface in place, Stack! mid-run (18b, 19)
+  gui_drive.py --stack-moon OUT SER   a Moon: Target, Stack!, Mineral moon checked, Strength 8 -> 14, unchecked,
+                                      checked again, Execute (20 ... 25)
+  gui_drive.py --stack-mineral-cancel OUT SER   a large Moon, Execute, Cancel in the mineral moon (26, 27)
+  gui_drive.py --stack-hao3 OUT SER   a HaO3 Moon: Mineral moon off and disabled, its tooltip read (28, 28b, 28c)
   gui_drive.py --check-stack OUT      pixel checks of the preview, progress bar and Save pattern...
                                       boxes (exit 1 on failure)
 
@@ -519,8 +523,12 @@ def stack_controls(box):
 # the preview edge the y offset is from). Measured 2026-10-22 (PI 1.9.5, Xvfb) with the preview at
 # (695, 305, 1230, 605): Open... x 695..788 y 251..270; the Bayer combo x 892..1004; Stack! x 695..788
 # y 278..297; the bar x 794..1130 y 277..298; Cancel x 1137..1230; the zoom row y 612..631 (Fit,
-# 100%, 200%, -, + at x 695, 792, 889, 986, 1083, each 93 wide); Execute x 1137..1230, 249 px below
-# the preview (the info box 200 px high).
+# 100%, 200%, -, + at x 695, 792, 889, 986, 1083, each 93 wide). Re-measured 2026-10-28 (Task B8) with the
+# preview at (680, 262, 1245, 562): the rows above and the zoom row as before (offsets kept); below the zoom
+# row Target (combo text x 770..929, y 601..608) / Mineral moon (check box x 953..965, y 599..611; label x
+# 973..1045), Strength (slider y 631: groove x 813..1244, handle centre x0 + 139 .. x1 - 7 over 0..15) and
+# Chroma blur (y 657), the info box (y 674..871) and Execute (x 1152..1244, y 879..899: 327 px below the
+# preview).
 STACK_OFFSETS = {
     "open": (46, "top", -45),
     "bayer": (253, "top", -45),
@@ -532,7 +540,9 @@ STACK_OFFSETS = {
     "z200": (240, "bottom", 16),
     "zoomout": (337, "bottom", 16),
     "zoomin": (434, "bottom", 16),
-    "execute": (-47, "bottom", 249),
+    "execute": (-47, "bottom", 327),
+    "target": (170, "bottom", 43),
+    "mineral": (279, "bottom", 43),
 }
 # The progress bar's inside and Save pattern...'s box (x0, y0, x1, y1 relative as above).
 BAR_BOX = ((101, "top", -25), (-102, "top", -9))
@@ -540,6 +550,16 @@ BAR_BOX = ((101, "top", -25), (-102, "top", -9))
 # darkest) while a stack runs, measured.
 STACK_BOX = ((2, "top", -26), (91, "top", -9))
 PATTERN_BOX = ((317, "top", -52), (405, "top", -37))
+# Task B8: the Target combo's text, inside the Mineral moon check box (white enabled, grey disabled, a dark
+# tick when checked), and the Strength slider's handle travel (x0 + 139 .. x1 - 7 over 0..15, at y1 + 69).
+TARGET_BOX = ((88, "bottom", 35), (252, "bottom", 51))
+MINERAL_BOX = ((275, "bottom", 39), (284, "bottom", 48))
+STRENGTH_Y = 69
+
+
+def strength_x(box, value):
+    x0, _, x1, _ = box
+    return int(round(x0 + 139 + value / 15.0 * ((x1 - 7) - (x0 + 139))))
 
 
 def rel_box(spec, box):
@@ -796,6 +816,135 @@ if MODE == "--stack-quit":
     stack_mid_run("19-quit-progress.png")
     sys.exit(0)
 
+# ---- PlanetaryStack: Target and Mineral moon (Task B8) ----------------------------------------
+
+
+def mineral_box(png=None):
+    """Inside the Mineral moon check box, live or from a screenshot: (mean, darkest) of its pixels'
+    darkest channel. White inside when enabled, grey (211, measured) when disabled; a dark tick when checked."""
+    b = rel_box(MINERAL_BOX, BOX if png is None else preview_box())
+    a = grab(b) if png is None else rgb(png)[b[1]:b[3], b[0]:b[2]]
+    m = a.min(axis=2)
+    return float(m.mean()), int(m.min())
+
+
+def ocr(png, region, psm=6):
+    """Tesseract's reading of `region` (x0, y0, x1, y1) of a screenshot, scaled 4x (UI text is small)."""
+    img = Image.open(png).convert("L").crop(region)
+    img = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
+    tmp = OUT + "/ocr-input.png"
+    img.save(tmp)
+    r = subprocess.run(["tesseract", tmp, "stdout", "--psm", str(psm)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit("FAIL: tesseract failed on %s %r: %s" % (png, region, r.stderr.strip()))
+    return " ".join(r.stdout.split())
+
+
+def bar_extent(png=None):
+    """How far the progress bar's fill reaches, 0..1: its rightmost fill-coloured pixel over the bar's rows,
+    live or from a screenshot. Unlike bar_fill's share of one row, the text drawn over the fill (white,
+    centred) does not pull it down, so it tells the phases apart (each run's step ends at k / steps)."""
+    b = rel_box(BAR_BOX, BOX if png is None else preview_box())
+    a = grab(b) if png is None else rgb(png)[b[1]:b[3], b[0]:b[2]]
+    xs = np.nonzero((np.abs(a - np.array(FILL)) <= 3).all(axis=2).any(axis=0))[0]
+    return 0.0 if len(xs) == 0 else float(xs.max() + 1) / a.shape[1]
+
+
+def no_restack(seconds, what):
+    """For `seconds` after a click: PixInsight reads no video and the progress bar stays empty -- nothing
+    stacks (the colour step and the preview swap work on what is in memory). FAIL otherwise."""
+    t0 = time.time()
+    looks = 0
+    while time.time() - t0 < seconds:
+        if holds_video(samples=1):
+            raise SystemExit("FAIL: %s: PixInsight read the video (a restack)" % what)
+        if bar_fill(BOX) > 0.0:
+            raise SystemExit("FAIL: %s: the progress bar filled (a run started)" % what)
+        looks += 1
+        time.sleep(0.05)
+    log.write("%s: no video read and the bar empty in %d looks over %.1f s\n" % (what, looks, seconds))
+
+
+if MODE == "--stack-moon":
+    # The Moon capture (its ASIAIR name: Moon, Lqef): Target shows it, Mineral moon is enabled. Stack!
+    # with the box clear, then check it (the mineral moon of that stack, no restack), drag Strength from
+    # 8 to 14 (the colour step alone), uncheck (the stack again, as it was), check again (the coloured
+    # image kept), Execute (both windows; gui-smoke-stack.sh checks them).
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    park()
+    shot("20-moon-loaded.png", 1.5)
+    stack_and_wait()
+    shot("21-moon-stack.png", 1.0)
+    click(*CTL["mineral"])
+    park()
+    wait_for(lambda: idle(BOX), 60, "the mineral moon to be made (the progress bar empty, Stack! enabled)")
+    shot("22-mineral.png", 1.0)
+    # Drag the Strength handle from 8 to 14: every step of the drag asks for the colour step.
+    y = BOX[3] + STRENGTH_Y
+    drag((strength_x(BOX, 8), y), (strength_x(BOX, 14), y), steps=24)
+    park()
+    no_restack(2.0, "Strength 8 -> 14")
+    shot("23-strength.png", 0.5)
+    click(*CTL["mineral"])
+    park()
+    no_restack(1.0, "Mineral moon unchecked")
+    shot("24-unchecked.png", 0.3)
+    click(*CTL["mineral"])
+    park()
+    no_restack(1.0, "Mineral moon checked again")
+    shot("24b-rechecked.png", 0.3)
+    click(*CTL["execute"])
+    park()
+    shot("25-moon-execute.png", 1.5)
+    sys.exit(0)
+
+if MODE == "--stack-mineral-cancel":
+    # A large Moon, Mineral moon still checked: Execute stacks it, then makes its mineral moon (step 4 of 4:
+    # the bar past 3/4 plus its first of 7 steps). Cancel then: no window, no image (gui-smoke-stack.sh
+    # checks the windows, the threads and the open files).
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    park()
+    click(*CTL["execute"])
+    park()
+    wait_for(lambda: 0.75 + 1.0 / 28 - 0.005 < bar_extent() < 0.99, 120,
+             "the mineral moon's phase (the progress bar past 3/4 and its first step)")
+    shot("26-mineral-phase.png", 0)
+    f = bar_extent(OUT + "/26-mineral-phase.png")
+    log.write("26-mineral-phase.png: the bar's fill reaches %.1f%%\n" % (100 * f))
+    if not 0.75 + 1.0 / 28 - 0.005 < f < 0.99:
+        raise SystemExit("FAIL: 26-mineral-phase.png is not in the mineral moon's phase (the bar's fill reaches %.0f%%)" % (100 * f))
+    click(*CTL["cancel"])
+    park()
+    wait_for(lambda: idle(BOX), 30, "the run to stop after Cancel (the progress bar empty, Stack! enabled)")
+    shot("27-mineral-cancelled.png", 1.0)
+    sys.exit(0)
+
+if MODE == "--stack-hao3":
+    # A HaO3 Moon: Mineral moon is turned off and disabled (the info box says why), and its tooltip
+    # says why: read off the screen (the region that changes when the pointer leaves) with tesseract.
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    park()
+    shot("28-hao3.png", 1.5)
+    # Qt shows tooltips only in the active window: the file dialog left the interface inactive (its title
+    # bar grey), so a click on its empty background (right of Mineral moon) activates it first. Then the
+    # pointer comes to rest on the box in small steps, as a hand moves it.
+    click(BOX[2] - 60, CTL["mineral"][1])
+    cx, cy = CTL["mineral"]
+    for i in range(8, -1, -1):
+        xtest.fake_input(d, X.MotionNotify, x=cx + 3 * i, y=cy + i); d.sync(); time.sleep(0.05)
+    shot("28b-tooltip.png", 2.0)
+    park()
+    shot("28c-no-tooltip.png", 1.5)
+    a, b = rgb(OUT + "/28b-tooltip.png"), rgb(OUT + "/28c-no-tooltip.png")
+    ys, xs = np.nonzero((np.abs(a - b) > 12).any(axis=2))
+    if len(xs) == 0:
+        raise SystemExit("FAIL: no tooltip appeared over the disabled Mineral moon check box (28b vs 28c)")
+    region = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+    text = ocr(OUT + "/28b-tooltip.png", region)
+    json.dump({"region": region, "text": text}, open(OUT + "/tooltip.json", "w"))
+    log.write("tooltip at %r: %s\n" % (region, text))
+    sys.exit(0)
+
 if MODE == "--check":
     expect_red = "--expect-red" in sys.argv[3:]
     expect_avi_red = "--expect-avi-red" in sys.argv[3:]
@@ -989,8 +1138,8 @@ if MODE == "--check-stack":
     need(lit("09d-unshaded.png") > 0.05, "09d-unshaded.png: the run went on while collapsed; its stack is shown "
          "(%.1f%% lit)" % (100 * lit("09d-unshaded.png")))
     # The info box never has the focus (no focus ring, so no caret): the ring is (135, 179, 255),
-    # measured, around the box (from 30 px below the preview to Execute's row).
-    ibox = (x0 - 3, y1 + 30, x1 + 3, y1 + 236)
+    # measured, around the box (from 108 px below the preview, under the Task B8 rows, to Execute's row).
+    ibox = (x0 - 3, y1 + 108, x1 + 3, y1 + 314)
     for name in ("02-loaded.png", "03-progress.png", "04-fit.png", "07-execute.png", "08-cancel-progress.png",
                  "09-cancelled.png", "09d-unshaded.png", "10-diagnosis.png", "11-warning-mosaic.png",
                  "12-warning-focus.png", "13b-bayer-changed.png", "14-bayer-bggr.png", "16-pattern-saved.png"):
@@ -1065,10 +1214,74 @@ if MODE == "--check-stack":
     v = changed("17-close-progress.png", "18-closed.png")
     need(v > 0.5, "18-closed.png: the interface is gone (%.1f%% of the preview region changed)" % (100 * v))
 
+    # ---- Target and Mineral moon (Task B8) ----
+    # The Moon capture's name gives the target, and the check box is enabled (white inside, no tick).
+    target = ocr(OUT + "/20-moon-loaded.png", rel_box(TARGET_BOX, box), psm=7)
+    need("Moon (from file name)" in target, "20-moon-loaded.png: Target shows the file name's Moon (read: %r)" % target)
+
+    def box_state(name):
+        mean, darkest = mineral_box(OUT + "/" + name)
+        return ("checked" if darkest < 100 else "enabled" if mean >= 235 else "disabled" if 195 <= mean <= 225
+                else "unknown"), mean, darkest
+
+    for name, want in (("20-moon-loaded.png", "enabled"), ("21-moon-stack.png", "enabled"), ("22-mineral.png", "checked"),
+                       ("23-strength.png", "checked"), ("24-unchecked.png", "enabled"), ("24b-rechecked.png", "checked"),
+                       ("28-hao3.png", "disabled")):
+        state, mean, darkest = box_state(name)
+        need(state == want, "%s: the Mineral moon box is %s (inside mean %.0f, darkest %d)" % (name, want, mean, darkest))
+
+    # The mineral moon's colour: the fixture's maria (upper left of the disc) are bluish and its highlands
+    # (lower right) reddish by 5%; the stack shows them faintly, the mineral moon amplified, more at Strength 14.
+    def hue_split(name):
+        p = px(name)
+        lum = p.max(axis=2)
+        m = lum > 24
+        ys, xs = np.nonzero(m)
+        cy, cx, r = ys.mean(), xs.mean(), np.sqrt(m.sum() / np.pi)
+        yy, xx = np.mgrid[0:p.shape[0], 0:p.shape[1]]
+        s = (xx - cx) / r + (yy - cy) / r
+        rb = (p[..., 0] - p[..., 2]) / np.maximum(lum, 1)
+        return float(rb[m & (s > 0.4)].mean()), float(rb[m & (s < -0.6)].mean())
+
+    hs, ms = hue_split("21-moon-stack.png")
+    h8, m8 = hue_split("22-mineral.png")
+    h14, m14 = hue_split("23-strength.png")
+    need(h8 > 0 > m8, "22-mineral.png: highlands reddish, maria bluish ((R-B)/L %.3f vs %.3f)" % (h8, m8))
+    need(h8 - m8 > (hs - ms) + 0.1, "22-mineral.png: the colour amplified over the stack's (split %.3f vs %.3f)"
+         % (h8 - m8, hs - ms))
+    need(h14 - m14 > 1.2 * (h8 - m8), "23-strength.png: Strength 14 colours more than 8 (split %.3f vs %.3f)"
+         % (h14 - m14, h8 - m8))
+    for a, b_, what, want in (("21-moon-stack.png", "22-mineral.png", "the stack vs its mineral moon", "differ"),
+                              ("22-mineral.png", "23-strength.png", "Strength 8 vs 14", "differ"),
+                              ("21-moon-stack.png", "24-unchecked.png", "the stack vs unchecked: the stack again", "same"),
+                              ("23-strength.png", "24b-rechecked.png", "Strength 14 vs checked again", "same"),
+                              ("24b-rechecked.png", "25-moon-execute.png", "before vs after Execute (no new stack)", "same")):
+        v = changed(a, b_)
+        need(v > 0.01 if want == "differ" else v == 0.0, "%s: %s vs %s (%.2f%% changed)" % (what, a, b_, 100 * v))
+    # Cancel in the mineral moon's phase: the bar past 3/4 then; afterwards idle, nothing shown.
+    f = bar_extent(OUT + "/26-mineral-phase.png")
+    need(0.75 + 1.0 / 28 - 0.005 < f < 0.99, "26-mineral-phase.png: in the mineral moon's phase (the bar's fill reaches %.1f%%)" % (100 * f))
+    need(lit("27-mineral-cancelled.png") == 0.0, "27-mineral-cancelled.png: no image after the cancel (%.2f%% lit)"
+         % (100 * lit("27-mineral-cancelled.png")))
+    # HaO3: the box was turned off, and the info box and the tooltip say why.
+    info = ocr(OUT + "/28-hao3.png", ibox)
+    need("Mineral moon turned off" in info and "narrowband" in info,
+         "28-hao3.png: the info box says Mineral moon was turned off, narrowband (read: %r)" % info[-300:])
+    tip = json.load(open(OUT + "/tooltip.json"))["text"]
+    # The reason word for word, case aside (tesseract has read "is" as "iS" in this font).
+    need("mineral moon needs a broadband filter; hao3 is narrowband, so its colours come from the filter." in tip.lower(),
+         "28b-tooltip.png: the disabled box's tooltip gives the reason (read: %r)" % tip)
+    for name in ("21-moon-stack.png", "22-mineral.png", "23-strength.png", "24-unchecked.png", "25-moon-execute.png",
+                 "27-mineral-cancelled.png", "28-hao3.png"):
+        f = bar_fill(box, OUT + "/" + name)
+        need(f == 0.0, "%s: the progress bar is empty (%.1f%%)" % (name, 100 * f))
+        ring = int((np.abs(crop(name, ibox) - np.array((135, 179, 255))) <= 6).all(axis=2).sum())
+        need(ring == 0, "%s: the info box has no focus ring (%d ring pixels)" % (name, ring))
+
     print("\n".join("  " + l for l in lines))
     open(OUT + "/checks.txt", "w").write("\n".join(lines) + "\n")
     sys.exit(1 if fails else 0)
 
 raise SystemExit("usage: gui_drive.py --dismiss|--open|--open-avi|--save-pattern|--shot|--close|--quit|--check OUT ...\n"
                  "       gui_drive.py --stack-open|--stack-run|--stack-unreadable|--stack-execute-again|--stack-cancel|--stack-file|--stack-bayer|--stack-pattern|"
-                 "--stack-close|--stack-quit|--check-stack OUT ...")
+                 "--stack-close|--stack-quit|--stack-moon|--stack-mineral-cancel|--stack-hao3|--check-stack OUT ...")

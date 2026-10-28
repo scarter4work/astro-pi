@@ -6,6 +6,8 @@
 //                                        (test/run-probe-stack.sh; see WriteStackFixtures)
 //   make-fixtures --stack-long <file.avi> <frames>  ->  the long Bayer capture with that many frames
 //                                        (test/gui-smoke-stack.sh; see WriteLongCapture)
+//   make-fixtures --moon <file.ser> <w> <h> <frames>  ->  a Moon capture, 16-bit RGGB SER
+//                                        (test/gui-smoke-stack.sh; see WriteMoonCapture)
 //
 // SERViewer's expected values come from the same generator formula that fills the files,
 // plus an independent bilinear demosaic written here, never from the reader
@@ -280,6 +282,76 @@ Capture Mosaic(const Capture& mono) {
     return cap;
 }
 
+// A Moon seen through an RGGB colour filter (Task B8's Mineral moon fixtures): a disc of `radius` px,
+// cratered (dark floors, bright rims) over a dark sky, with seeing, whose colour varies smoothly across
+// the disc by +-5% -- bluish "maria" towards the upper left, reddish highlands elsewhere: the faint colour
+// a mineral moon amplifies. The per-colour gains (R 1.0, G 0.8, B 0.55) are what calibration removes.
+Capture MoonMosaic(int w, int h, double radius, int n, unsigned seed) {
+    const double cx = w / 2.0 + 0.3, cy = h / 2.0 - 0.2;
+    Scene s = planetary::testing::MakeDisc(seed, cx, cy, radius);
+    s.level = 0.5;
+    s.waves.clear();
+    std::mt19937 rng(seed + 17);
+    std::uniform_real_distribution<double> uni(0, 1);
+    const int craters = static_cast<int>(radius * radius / 60);
+    for (int i = 0; i < craters; ++i) {
+        const double a = 2 * M_PI * uni(rng), r = 0.95 * radius * std::sqrt(uni(rng)), sz = 1.5 + 5 * uni(rng);
+        const double x = cx + r * std::cos(a), y = cy + r * std::sin(a);
+        s.blobs.push_back({x, y, sz, -0.12});
+        s.blobs.push_back({x + 0.6 * sz, y - 0.4 * sz, 0.5 * sz, 0.10});
+    }
+    s.Bin(0, 0, w, h);
+    Capture mono = planetary::testing::NewCapture(w, h);
+    std::mt19937 seeing(seed + 1000);
+    planetary::testing::RenderCapture(mono, s, n, [&](int) { return planetary::testing::Seeing(seeing, w, h, 2.0, 28); });
+
+    const double gain[3] = {1.0, 0.8, 0.55};
+    std::vector<float> tint(static_cast<size_t>(w) * h);   // -1 maria .. +1 highlands
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const double u = (x - cx) / radius, v = (y - cy) / radius;
+            tint[static_cast<size_t>(y) * w + x] = static_cast<float>(std::tanh(2.5 * (u + v + 0.3)));
+        }
+    Capture cap = planetary::testing::NewCapture(w, h);
+    for (const auto& f : *mono.frames) {
+        std::vector<float> out(f.size());
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int c = (y & 1) == 0 ? ((x & 1) == 0 ? 0 : 1) : ((x & 1) == 0 ? 1 : 2);
+                const size_t i = static_cast<size_t>(y) * w + x;
+                const double t = 0.05 * tint[i] * (c == 0 ? 1 : c == 2 ? -1 : 0);
+                out[i] = static_cast<float>(gain[c] * (1 + t) * f[i] / 65535.0);
+            }
+        cap.Add(out);
+    }
+    return cap;
+}
+
+// The Moon as a 16-bit RGGB SER named like an ASIAIR capture (the name is the test: target and filter).
+void WriteMoonSer(const std::string& path, const Capture& cap) {
+    SerSpec s;
+    s.colorId = 8;  // RGGB
+    s.width = cap.info.header.width;
+    s.height = cap.info.header.height;
+    s.depth = 16;
+    s.frameCount = static_cast<int32_t>(cap.frames->size());
+    s.instrument = "ZWO ASI585MC";
+    WriteSer(path, s, Frames16(cap));
+}
+
+// make-fixtures --moon <file.ser> <width> <height> <frames>: a Moon (MoonMosaic, radius 0.38 x the height,
+// 12 rendered frames repeated to `n`) as a 16-bit RGGB SER: gui-smoke-stack.sh's Mineral moon captures (the
+// file name, chosen there, carries the target and the filter).
+void WriteMoonCapture(const std::string& path, int w, int h, int n) {
+    const int unique = std::min(n, 12);
+    const Capture rendered = MoonMosaic(w, h, 0.38 * h, unique, 95);
+    Capture cap = planetary::testing::NewCapture(w, h);
+    for (int k = 0; k < n; ++k) cap.frames->push_back((*rendered.frames)[static_cast<size_t>(k % unique)]);
+    cap.info.frameCount = n;
+    cap.info.header.frameCount = n;
+    WriteMoonSer(path, cap);
+}
+
 // A planet disc with seeing (drift, local displacement, a blur field around 1.2 px).
 Capture SeeingDisc(int w, int h, double cx, double cy, double radius, int n, unsigned seed) {
     const Scene s = planetary::testing::MakeDisc(seed, cx, cy, radius);
@@ -335,6 +407,17 @@ std::string FrameIso(int k) {
     return b;
 }
 
+// The view id stem PixInsight gives a capture's windows (src/module/FitsCards.h ViewIdStem, restated for
+// the expectations): every character but [A-Za-z0-9_] becomes '_', and a leading digit gets a '_' before it.
+std::string ViewIdStem(const std::string& stem) {
+    std::string id;
+    for (char c : stem)
+        id += ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') ? c : '_';
+    if (id.empty()) return "SER";
+    if (id[0] >= '0' && id[0] <= '9') id.insert(id.begin(), '_');
+    return id;
+}
+
 struct StackCase {
     std::string name, path, kind, bayerPattern, probeBayer = "auto", expectId, expectKind, expectError;
     std::vector<std::pair<int, int>> sample;
@@ -342,13 +425,40 @@ struct StackCase {
     std::vector<std::string> absent, absentComments, frameTimes, consoleContains, consoleAbsent;
     double abortAfter = 0, minSeconds = 0;
     bool expectFocusWarning = false;  // image: the engine must warn "may be out of focus"
+    // Task B8: target (PlanetaryStack enum element id, e.g. "TargetJupiter"; empty: Auto); mineralMoon on
+    // (strength / chromaBlur set unless negative: the parameters' defaults otherwise). An image case with
+    // mineralMoon expects a second window, expectMineralId, with mineralKeywords and the engine's mineral moon
+    // (stack-probe --mineral: samples, its seven HISTORY lines in order).
+    std::string target, expectMineralId;
+    bool mineral = false;
+    double strength = -1, chromaBlur = -1;
+    std::vector<Kw> mineralKeywords;
 };
+
+std::string KwList(const std::vector<Kw>& kws) {
+    std::ostringstream o;
+    o << "[";
+    for (size_t i = 0; i < kws.size(); ++i)
+        o << (i ? "," : "") << "{\"name\":" << Quote(kws[i].name) << "," << Quote(kws[i].field) << ":" << Quote(kws[i].text)
+          << "}";
+    o << "]";
+    return o.str();
+}
 
 std::string ToJson(const StackCase& c) {
     std::ostringstream o;
     o << "{\"name\":" << Quote(c.name) << ",\"path\":" << Quote(c.path) << ",\"kind\":" << Quote(c.kind)
       << ",\"probeBayer\":" << Quote(c.probeBayer);
     if (!c.bayerPattern.empty()) o << ",\"bayerPattern\":" << Quote(c.bayerPattern);
+    if (!c.target.empty()) o << ",\"target\":" << Quote(c.target);
+    if (c.mineral) {
+        o << ",\"mineral\":{";
+        if (c.strength >= 0) o << "\"strength\":" << Num(c.strength);
+        if (c.chromaBlur >= 0) o << (c.strength >= 0 ? "," : "") << "\"chromaBlur\":" << Num(c.chromaBlur);
+        o << "}";
+    }
+    if (!c.expectMineralId.empty())
+        o << ",\"expectMineralId\":" << Quote(c.expectMineralId) << ",\"mineralKeywords\":" << KwList(c.mineralKeywords);
     if (!c.expectId.empty()) o << ",\"expectId\":" << Quote(c.expectId);
     if (!c.expectKind.empty()) o << ",\"expectKind\":" << Quote(c.expectKind);
     if (!c.expectError.empty()) o << ",\"expectError\":" << Quote(c.expectError);
@@ -356,11 +466,8 @@ std::string ToJson(const StackCase& c) {
     if (c.expectFocusWarning) o << ",\"expectFocusWarning\":true";
     o << ",\"sample\":[";
     for (size_t i = 0; i < c.sample.size(); ++i) o << (i ? "," : "") << "[" << c.sample[i].first << "," << c.sample[i].second << "]";
-    o << "],\"keywords\":[";
-    for (size_t i = 0; i < c.keywords.size(); ++i)
-        o << (i ? "," : "") << "{\"name\":" << Quote(c.keywords[i].name) << "," << Quote(c.keywords[i].field) << ":"
-          << Quote(c.keywords[i].text) << "}";
-    o << "],\"absentKeywords\":" << JsonList(c.absent) << ",\"absentComments\":" << JsonList(c.absentComments)
+    o << "],\"keywords\":" << KwList(c.keywords);
+    o << ",\"absentKeywords\":" << JsonList(c.absent) << ",\"absentComments\":" << JsonList(c.absentComments)
       << ",\"frameTimes\":" << JsonList(c.frameTimes)
       << ",\"consoleContains\":" << JsonList(c.consoleContains)
       << ",\"consoleAbsent\":" << JsonList(c.consoleAbsent) << "}";
@@ -415,8 +522,9 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         c.keywords = {{"INSTRUME", "value", "ZWO ASI585MC"},
                       {"SRCVIDEO", "value", "stack-bayer.avi"},
                       {"HISTORY", "commentContains", "PlanetaryStack " PLANETARY_VERSION_STRING ": stacked stack-bayer.avi"},
-                      {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar)"}};
-        c.absent = {"DATE-OBS", "DATE-END", "BAYERPAT"};
+                      {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar)"},
+                      {"HISTORY", "commentContains", "PlanetaryStack target: Other (not in file name)"}};
+        c.absent = {"DATE-OBS", "DATE-END", "BAYERPAT", "OBJECT"};
         c.consoleContains = {"PlanetaryStack: Bayer RGGB (sidecar)"};
         cases.push_back(c);
 
@@ -553,6 +661,105 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         cases.push_back(c);
     }
 
+    // Target and Mineral moon (Task B8): captures named as the ASIAIR names them -- the name is what is under test
+    // (the target, the filter) -- with the window ids PixInsight gives them (ViewIdStem).
+    {
+        const std::string moonName = "2026-10-23-030000-Moon-Bin1 Lqef 64.6F";
+        const std::string moonSer = (dir / (moonName + ".ser")).string();
+        const Capture moon = MoonMosaic(320, 256, 100, 40, 91);
+        WriteMoonSer(moonSer, moon);
+        const std::vector<std::pair<int, int>> moonSamples = {{160, 128}, {120, 90}, {200, 170}, {230, 120}, {8, 8}};
+
+        StackCase m;
+        m.name = "Moon SER (Lqef), mineralMoon, strength 5, chroma blur 2: the stack and its mineral moon";
+        m.path = moonSer; m.kind = "image"; m.mineral = true; m.strength = 5; m.chromaBlur = 2;
+        m.expectId = ViewIdStem(moonName) + "_stack";
+        m.expectMineralId = ViewIdStem(moonName) + "_mineral";
+        m.sample = moonSamples;
+        m.keywords = {{"OBJECT", "value", "Moon"},
+                      {"OBJECT", "comment", "Target, from the file name"},
+                      {"HISTORY", "commentContains", "PlanetaryStack target: Moon (from file name)"}};
+        m.absentComments = {"PlanetaryStack mineral:"};   // the stack window carries the stack's HISTORY only
+        m.mineralKeywords = {{"OBJECT", "value", "Moon"},
+                             {"SRCVIDEO", "value", moonName + ".ser"},
+                             {"HISTORY", "commentContains", "PlanetaryStack target: Moon (from file name)"},
+                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Mineral colour: k 5.00, chroma blur 2.00 px"}};
+        m.consoleContains = {"PlanetaryStack: target Moon (from file name); then the mineral moon: strength 5.00, chroma blur 2.00 px",
+                             "-> " + ViewIdStem(moonName) + "_mineral ("};
+        m.consoleAbsent = {"Mineral moon: no lunar disk"};
+        cases.push_back(m);
+
+        // B1 review m2: an AVI reads as Mono until OpenVideo resolves its Bayer pattern (here from the ASIAIR
+        // sidecar); Mineral moon must see the resolved capture and run. The parameters' defaults (8, 2.5).
+        const std::string aviName = "2026-10-23-031500-Moon-Bin1 Lqef 64.4F";
+        const std::string moonAvi = (dir / (aviName + ".avi")).string();
+        AviSpec a;
+        a.width = 320; a.height = 256;
+        WriteAvi(moonAvi, a, Frames8(moon));
+        WriteSidecarRG(moonAvi, 320, 256);
+        StackCase v = m;
+        v.name = "Moon AVI with its sidecar (RGGB resolved), mineralMoon at the defaults: two windows";
+        v.path = moonAvi; v.strength = -1; v.chromaBlur = -1;
+        v.expectId = ViewIdStem(aviName) + "_stack";
+        v.expectMineralId = ViewIdStem(aviName) + "_mineral";
+        v.keywords = {{"OBJECT", "value", "Moon"}, {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar)"}};
+        v.mineralKeywords = {{"OBJECT", "value", "Moon"},
+                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Mineral colour: k 8.00, chroma blur 2.50 px"}};
+        v.consoleContains = {"then the mineral moon: strength 8.00, chroma blur 2.50 px", "-> " + ViewIdStem(aviName) + "_mineral"};
+        cases.push_back(v);
+
+        // Refused before any stacking, each with its reason.
+        auto refused = [&](const std::string& name, const std::string& path, const std::string& target, const std::string& why) {
+            StackCase r;
+            r.name = name; r.path = path; r.kind = "error"; r.mineral = true; r.target = target; r.expectError = why;
+            r.consoleAbsent = {"Measuring frames"};
+            cases.push_back(r);
+        };
+        const std::string haName = "2026-10-23-033000-Moon-Bin1 HaO3 16.2F.ser";
+        WriteMoonSer((dir / haName).string(), MoonMosaic(160, 128, 50, 8, 92));
+        refused("Moon HaO3, mineralMoon: refused before stacking, the filter named", (dir / haName).string(), "",
+                "Mineral moon needs a broadband filter; HaO3 is narrowband, so its colours come from the filter.");
+        refused("Moon Lqef, target Saturn set by the user, mineralMoon: refused", moonSer, "TargetSaturn",
+                "Mineral moon is for the Moon; the target is Saturn.");
+        const std::string monoName = "2026-10-23-034500-Moon-Bin1 Lqef 63.9F.ser";
+        {
+            const Capture mono = SeeingDisc(160, 128, 80.3, 63.8, 50, 8, 93);
+            SerSpec s;
+            s.colorId = 0; s.width = 160; s.height = 128; s.depth = 16; s.frameCount = 8;
+            WriteSer((dir / monoName).string(), s, Frames16(mono));
+        }
+        refused("mono Moon, mineralMoon: refused, a colour capture needed", (dir / monoName).string(), "",
+                "Mineral moon needs a colour capture; this one is mono");
+
+        // The target alone: from the file name, or the user's.
+        const std::string saturnName = "2026-10-23-040000-Saturn-Bin1 Lqef 17.6F";
+        const std::string saturnSer = (dir / (saturnName + ".ser")).string();
+        {
+            const Capture sat = SeeingDisc(128, 112, 64.3, 55.7, 26, 40, 94);
+            SerSpec s;
+            s.colorId = 0; s.width = 128; s.height = 112; s.depth = 16; s.frameCount = 40;
+            WriteSer(saturnSer, s, Frames16(sat));
+        }
+        StackCase sat;
+        sat.name = "Saturn SER: OBJECT Saturn, from the file name"; sat.path = saturnSer; sat.kind = "image";
+        sat.expectId = ViewIdStem(saturnName) + "_stack";
+        sat.sample = {{64, 56}, {5, 5}};
+        sat.keywords = {{"OBJECT", "value", "Saturn"},
+                        {"OBJECT", "comment", "Target, from the file name"},
+                        {"HISTORY", "commentContains", "PlanetaryStack target: Saturn (from file name)"}};
+        sat.consoleContains = {"PlanetaryStack: target Saturn (from file name); no mineral moon"};
+        cases.push_back(sat);
+        StackCase jup = sat;
+        jup.name = "Saturn SER with target Jupiter set: OBJECT Jupiter, set by the user"; jup.target = "TargetJupiter";
+        jup.keywords = {{"OBJECT", "value", "Jupiter"},
+                        {"OBJECT", "comment", "Target, set by the user"},
+                        {"HISTORY", "commentContains", "PlanetaryStack target: Jupiter (set by user)"}};
+        jup.consoleContains = {"PlanetaryStack: target Jupiter (set by user); no mineral moon"};
+        cases.push_back(jup);
+        refused("Saturn SER, mineralMoon: refused, not the Moon", saturnSer, "",
+                "Mineral moon is for the Moon; the target is Saturn.");
+    }
+
     // Diagnoses: captures that must give no image, each with the engine's own message.
     auto diagnosis = [&](const std::string& name, const std::string& file, const Capture& cap, const std::string& kind) {
         const std::string path = (dir / file).string();
@@ -672,6 +879,16 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(dir);
         return WriteStackFixtures(dir);
     }
+    if (argc == 6 && std::string(argv[1]) == "--moon") {
+        const int w = std::atoi(argv[3]), h = std::atoi(argv[4]), n = std::atoi(argv[5]);
+        if (w < 64 || h < 64 || n < 1) {
+            std::fprintf(stderr, "make-fixtures: --moon needs a size of at least 64 x 64 and a frame count >= 1\n");
+            return 2;
+        }
+        WriteMoonCapture(argv[2], w, h, n);
+        std::printf("make-fixtures: %s, %d x %d, %d frames\n", argv[2], w, h, n);
+        return 0;
+    }
     if (argc == 4 && std::string(argv[1]) == "--stack-long") {
         const int n = std::atoi(argv[3]);
         if (n < 1) {
@@ -683,8 +900,9 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc != 2) {
-        std::fprintf(stderr, "usage: %s <out dir>\n       %s --stack <out dir>\n       %s --stack-long <file.avi> <frames>\n",
-                     argv[0], argv[0], argv[0]);
+        std::fprintf(stderr, "usage: %s <out dir>\n       %s --stack <out dir>\n       %s --stack-long <file.avi> <frames>\n"
+                             "       %s --moon <file.ser> <width> <height> <frames>\n",
+                     argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     const std::filesystem::path dir = std::filesystem::absolute(argv[1]);

@@ -65,6 +65,14 @@ Bitmap MakeStackPreviewBitmap( const planetary::ser::FloatImage& image )
    } );
 }
 
+Bitmap MakeDisplayPreviewBitmap( const planetary::ser::FloatImage& image )
+{
+   return ArgbBitmap( image, "PlanetaryStack: cannot show the mineral moon", [&image]()
+   {
+      return preview::PreviewArgb( image, 0.0f, 1.0f );
+   } );
+}
+
 // ----------------------------------------------------------------------------
 
 FramePreview::FramePreview( Control& parent )
@@ -122,6 +130,18 @@ void ZoomPreview::SetBitmap( const Bitmap& bitmap )
    m_cx = m_bitmap.Width() / 2.0;
    m_cy = m_bitmap.Height() / 2.0;
    UpdateCursor();
+   Update();
+}
+
+void ZoomPreview::ReplaceBitmap( const Bitmap& bitmap )
+{
+   if ( m_bitmap.IsNull() || bitmap.Width() != m_bitmap.Width() || bitmap.Height() != m_bitmap.Height() )
+   {
+      SetBitmap( bitmap );
+      return;
+   }
+   m_bitmap = bitmap;
+   m_note.Clear();
    Update();
 }
 

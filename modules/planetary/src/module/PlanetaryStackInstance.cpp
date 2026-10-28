@@ -47,9 +47,41 @@ String Num( int64_t n )
    return String( std::to_string( n ).c_str() );
 }
 
+// An interleaved engine image as a PCL image (separate planes): RGB for 3
+// channels, else grey.
+Image ImageOf( const ser::FloatImage& img )
+{
+   Image image( img.width, img.height, img.channels == 3 ? ColorSpace::RGB : ColorSpace::Gray );
+   const size_t n = size_t( img.width ) * size_t( img.height );
+   for ( int c = 0; c < img.channels; ++c )
+   {
+      float* plane = image.PixelData( c );
+      for ( size_t i = 0; i < n; ++i )
+         plane[i] = img.data[i * img.channels + c];
+   }
+   return image;
+}
+
 } // namespace
 
-void WriteStackContext( const String& path, const ser::FileInfo& info, int threads )
+stack::MineralParams MineralParamsFor( double strength, double chromaBlur, const char* process )
+{
+   const auto check = [process]( double v, const MetaDouble* p )
+   {
+      if ( !(v >= p->MinimumValue() && v <= p->MaximumValue()) )
+         throw Error( String( process ) + ": " + String( p->Id() ) + " " + String( v ) + " is outside " +
+                      String( p->MinimumValue() ) + " to " + String( p->MaximumValue() ) );
+   };
+   check( strength, ThePSMineralStrengthParameter );
+   check( chromaBlur, ThePSChromaBlurParameter );
+   stack::MineralParams p;
+   p.strength = strength;
+   p.chromaBlurSigma = chromaBlur;
+   return p;
+}
+
+void WriteStackContext( const String& path, const ser::FileInfo& info, int threads, const TargetChoice& target,
+                        const stack::MineralParams* mineral )
 {
    const String fileName = File::ExtractNameAndExtension( path );
    Console console;
@@ -59,6 +91,11 @@ void WriteStackContext( const String& path, const ser::FileInfo& info, int threa
                     Num( threads ) + " threads" );
    if ( stackcards::IsAvi( info ) )
       console.WriteLn( "PlanetaryStack: Bayer " + Html( preview::BayerText( info ) ) );
+   console.WriteLn( "PlanetaryStack: target " + Html( stackcards::TargetText( target ) ) +
+                    (mineral == nullptr ? String( "; no mineral moon" )
+                                        : String( "; then the mineral moon: strength " ) +
+                                             Html( stackcards::Fixed( mineral->strength, 2 ) ) + ", chroma blur " +
+                                             Html( stackcards::Fixed( mineral->chromaBlurSigma, 2 ) ) + " px" ) );
 }
 
 int StackThreads()
@@ -92,15 +129,16 @@ StackTimes CaptureTimes( const ser::FrameSource& source, const stack::StackOutco
    return t;
 }
 
-FITSKeywordArray StackKeywords( const String& path, const stack::StackOutcome& outcome, const StackTimes& times )
+FITSKeywordArray StackKeywords( const String& path, const stack::StackOutcome& outcome, const StackTimes& times,
+                                const TargetChoice& target )
 {
    const std::string fileName = File::ExtractNameAndExtension( path ).ToUTF8().c_str();
    FITSKeywordArray keywords;
-   for ( const stackcards::Card& card : stackcards::StackCards( fileName, outcome, times ) )
+   for ( const stackcards::Card& card : stackcards::StackCards( fileName, outcome, times, target ) )
       keywords << FITSHeaderKeyword( card.name.c_str(),
                                      card.text ? FitsString( card.value ) : IsoString( card.value.c_str() ),
                                      card.comment.c_str() );
-   for ( const std::string& text : stackcards::StackHistory( fileName, outcome ) )
+   for ( const std::string& text : stackcards::StackHistory( fileName, outcome, target ) )
       AddHistory( keywords, text );
    return keywords;
 }
@@ -125,7 +163,8 @@ void WriteStackResult( const String& path, const stack::StackOutcome& outcome, s
    console.WriteLn( "PlanetaryStack: " + Html( stackcards::CountsLine( s, true/*stacked*/ ) ) );
 }
 
-IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcome, const StackTimes& times )
+IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcome, const StackTimes& times,
+                           const TargetChoice& target )
 {
    const String fileName = File::ExtractNameAndExtension( path );
    if ( !outcome.image )
@@ -133,17 +172,9 @@ IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcom
    const ser::FloatImage& stacked = *outcome.image;
    const int channels = stacked.channels;
    // The image and its keywords are complete before any window exists: the
-   // window only receives a copy (ShowNewImageWindow). The stack is
-   // interleaved; the image's planes are separate.
-   const FITSKeywordArray keywords = StackKeywords( path, outcome, times );
-   Image image( stacked.width, stacked.height, channels == 3 ? ColorSpace::RGB : ColorSpace::Gray );
-   const size_t n = size_t( stacked.width ) * size_t( stacked.height );
-   for ( int c = 0; c < channels; ++c )
-   {
-      float* plane = image.PixelData( c );
-      for ( size_t i = 0; i < n; ++i )
-         plane[i] = stacked.data[i * channels + c];
-   }
+   // window only receives a copy (ShowNewImageWindow).
+   const FITSKeywordArray keywords = StackKeywords( path, outcome, times, target );
+   const Image image = ImageOf( stacked );
    const IsoString viewId = ShowNewImageWindow( image, ViewIdStem( path ) + "_stack", keywords, "PlanetaryStack: " + fileName );
 
    Console().WriteLn( "<end><cbr>PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + " -> " + String( viewId ) + " (" +
@@ -155,10 +186,60 @@ IsoString OpenStackWindow( const String& path, const stack::StackOutcome& outcom
    return viewId;
 }
 
+IsoString OpenMineralWindow( const String& path, const stack::StackOutcome& outcome, const StackTimes& times,
+                             const TargetChoice& target, const stack::MineralOutcome& mineral )
+{
+   const String fileName = File::ExtractNameAndExtension( path );
+   if ( mineral.image.channels != 3 )
+      throw Error( "PlanetaryStack: internal error - the mineral moon of " + fileName + " is not RGB" );
+   FITSKeywordArray keywords = StackKeywords( path, outcome, times, target );
+   for ( const std::string& text : stackcards::MineralHistory( mineral ) )
+      AddHistory( keywords, text );
+   const Image image = ImageOf( mineral.image );
+   Console console;
+   double seconds = 0;
+   String steps;
+   for ( const auto& [name, s] : mineral.stepSeconds )
+   {
+      seconds += s;
+      if ( !steps.IsEmpty() )
+         steps += ", ";
+      steps += Html( name + " " + stackcards::Fixed( s, 2 ) + " s" );
+   }
+   console.WriteLn( "<end><cbr>PlanetaryStack: mineral moon in " + Html( stackcards::Fixed( seconds, 2 ) ) + " s (" + steps + ")" );
+   if ( !mineral.history.empty() )
+      console.WriteLn( "PlanetaryStack: " + Html( mineral.history.back() ) );
+   if ( !mineral.notice.empty() )
+      console.WarningLn( "PlanetaryStack warning: " + Html( stackcards::MineralNoticeText( mineral.notice ) ) );
+   const IsoString viewId = ShowNewImageWindow( image, ViewIdStem( path ) + "_mineral", keywords, "PlanetaryStack: " + fileName );
+   console.WriteLn( "PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + " -> " + String( viewId ) + " (" +
+                    Num( mineral.image.width ) + "x" + Num( mineral.image.height ) + ", RGB, 32-bit float, " +
+                    (mineral.notice.empty() ? String( "mineral moon, display-ready)" )
+                                            : String( "the stack clipped to [0, 1]: no mineral moon, see the warning above)" )) );
+   return viewId;
+}
+
+stack::MineralOutcome MineralOutcomeOf( const stack::MineralCache& cache, ser::FloatImage image, const stack::StepRecord& colour,
+                                        double colourSeconds )
+{
+   stack::MineralOutcome m;
+   m.image = std::move( image );
+   m.history = cache.history;
+   m.history.push_back( colour.history );
+   m.stepSeconds = cache.stepSeconds;
+   m.stepSeconds.push_back( { "Mineral colour", colourSeconds } );
+   m.notice = cache.notice;
+   return m;
+}
+
 PlanetaryStackInstance::PlanetaryStackInstance( const MetaProcess* m )
    : ProcessImplementation( m )
    , p_filePath( ThePSFilePathParameter->DefaultValue() )
    , p_bayerPattern( pcl_enum( ThePSBayerPatternParameter->DefaultValueIndex() ) )
+   , p_target( pcl_enum( ThePSTargetParameter->DefaultValueIndex() ) )
+   , p_mineralMoon( ThePSMineralMoonParameter->DefaultValue() )
+   , p_mineralStrength( ThePSMineralStrengthParameter->DefaultValue() )
+   , p_chromaBlur( ThePSChromaBlurParameter->DefaultValue() )
 {
 }
 
@@ -175,6 +256,10 @@ void PlanetaryStackInstance::Assign( const ProcessImplementation& p )
    {
       p_filePath = x->p_filePath;
       p_bayerPattern = x->p_bayerPattern;
+      p_target = x->p_target;
+      p_mineralMoon = x->p_mineralMoon;
+      p_mineralStrength = x->p_mineralStrength;
+      p_chromaBlur = x->p_chromaBlur;
    }
 }
 
@@ -201,26 +286,40 @@ bool PlanetaryStackInstance::ExecuteGlobal()
       throw Error( whyNot );
 
    const String path = p_filePath.Trimmed();
+   const std::string pathUtf8 = path.ToUTF8().c_str();
    const String fileName = File::ExtractNameAndExtension( path );
    const ser::BayerChoice bayer = BayerChoiceFor( p_bayerPattern, "PlanetaryStack" );
+   const TargetChoice target = stackcards::ResolveTarget( TargetFor( p_target, "PlanetaryStack" ), pathUtf8 );
+   std::optional<stack::MineralParams> mineralParams;
+   if ( p_mineralMoon )
+      mineralParams = MineralParamsFor( p_mineralStrength, p_chromaBlur, "PlanetaryStack" );
    const int threads = StackThreads();
 
-   // Opened here for the context line and, after the stack, a SER's frame
-   // times; the engine opens its own readers (one per worker).
+   // Opened here for the context line, Mineral moon's colour check and, after
+   // the stack, a SER's frame times; the engine opens its own readers (one per
+   // worker).
    std::unique_ptr<ser::FrameSource> source;
    try
    {
-      source = ser::OpenVideo( path.ToUTF8().c_str(), bayer );
+      source = ser::OpenVideo( pathUtf8, bayer );
    }
    catch ( const ser::SerError& e )
    {
       throw Error( "PlanetaryStack: " + fileName + ": " + String::UTF8ToUTF16( e.what() ) );
    }
 
-   WriteStackContext( path, source->Info(), threads );
+   // Mineral moon on anything but a broadband colour Moon fails before any
+   // stacking. The info is OpenVideo's: an AVI's Bayer pattern is resolved by
+   // then (B1 review m2: the AVI reader alone reports Mono).
+   if ( mineralParams )
+      if ( const std::optional<std::string> why = stackcards::MineralRefusalFor( pathUtf8, source->Info(), target ) )
+         throw Error( "PlanetaryStack: " + fileName + ": " + String::UTF8ToUTF16( why->c_str() ) );
+
+   WriteStackContext( path, source->Info(), threads, target, mineralParams ? &*mineralParams : nullptr );
    Console console;
 
-   // Progress: one StatusMonitor run per engine phase, with the engine's fixed
+   // Progress: one StatusMonitor run per engine phase (the stack's three, then
+   // the mineral moon's), with the engine's fixed
    // total. The console's Abort button makes the monitor throw ProcessAborted;
    // that is caught here, so the engine only ever sees cancelled() turn true
    // and leaves by its own cancel path (workers joined, readers closed,
@@ -257,37 +356,41 @@ bool PlanetaryStackInstance::ExecuteGlobal()
       }
    };
    progress.cancelled = [&aborted] { return aborted; };
+   const auto cancelled = [&console]()
+   {
+      console.WriteLn( "<end><cbr>PlanetaryStack: cancelled; no image was made" );
+      return ProcessAborted();
+   };
+   // An Abort pressed after the engine's last cancelled() poll -- during its
+   // final blend, when no progress report runs to deliver it -- leaves RunStack
+   // (or MakeMineralMoon) to return normally. Deliver the pending events and
+   // honour it, before anything is written or opened (final review, module m3).
+   const auto honourAbort = [&]()
+   {
+      if ( !aborted )
+      {
+         Module->ProcessEvents();
+         aborted = console.AbortRequested();
+      }
+      if ( aborted )
+         throw cancelled();
+   };
 
    stack::StackOutcome outcome;
    try
    {
-      outcome = stack::RunStack( path.ToUTF8().c_str(), bayer, threads, progress );
+      outcome = stack::RunStack( pathUtf8, bayer, threads, progress );
    }
    catch ( const stack::StackCancelled& )
    {
-      console.WriteLn( "<end><cbr>PlanetaryStack: cancelled; no image was made" );
-      throw ProcessAborted();
+      throw cancelled();
    }
    catch ( ... )
    {
       throw Error( "PlanetaryStack: " + fileName + ": " +
                    String::UTF8ToUTF16( preview::DescribeException( std::current_exception() ).c_str() ) );
    }
-
-   // An Abort pressed after the engine's last cancelled() poll -- during its
-   // final blend, when no progress report runs to deliver it -- leaves RunStack
-   // to return normally. Deliver the pending events and honour it here, before
-   // anything is written or opened (final review, module m3).
-   if ( !aborted )
-   {
-      Module->ProcessEvents();
-      aborted = console.AbortRequested();
-   }
-   if ( aborted )
-   {
-      console.WriteLn( "<end><cbr>PlanetaryStack: cancelled; no image was made" );
-      throw ProcessAborted();
-   }
+   honourAbort();
 
    WriteStackResult( path, outcome );
    // No image from a capture with nothing usable: fail loudly with the
@@ -305,16 +408,44 @@ bool PlanetaryStackInstance::ExecuteGlobal()
    {
       throw Error( "PlanetaryStack: " + fileName + ": " + String::UTF8ToUTF16( e.what() ) );
    }
-   OpenStackWindow( path, outcome, times );
+
+   // The mineral moon before any window: an Abort or a failure here leaves none.
+   std::optional<stack::MineralOutcome> mineral;
+   if ( mineralParams )
+   {
+      try
+      {
+         mineral = stack::MakeMineralMoon( *outcome.image, threads, progress, *mineralParams );
+      }
+      catch ( const stack::StackCancelled& )
+      {
+         throw cancelled();
+      }
+      catch ( ... )
+      {
+         throw Error( "PlanetaryStack: " + fileName + ": mineral moon: " +
+                      String::UTF8ToUTF16( preview::DescribeException( std::current_exception() ).c_str() ) );
+      }
+      honourAbort();
+   }
+
+   OpenStackWindow( path, outcome, times, target );
+   if ( mineral )
+      OpenMineralWindow( path, outcome, times, target, *mineral );
    return true;
 }
 
 void* PlanetaryStackInstance::LockParameter( const MetaParameter* p, size_type )
 {
-   if ( p == ThePSFilePathParameter )     return p_filePath.Begin();
-   if ( p == ThePSBayerPatternParameter ) return &p_bayerPattern;
+   if ( p == ThePSFilePathParameter )        return p_filePath.Begin();
+   if ( p == ThePSBayerPatternParameter )    return &p_bayerPattern;
+   if ( p == ThePSTargetParameter )          return &p_target;
+   if ( p == ThePSMineralMoonParameter )     return &p_mineralMoon;
+   if ( p == ThePSMineralStrengthParameter ) return &p_mineralStrength;
+   if ( p == ThePSChromaBlurParameter )      return &p_chromaBlur;
    return nullptr;
 }
+
 
 bool PlanetaryStackInstance::AllocateParameter( size_type sizeOrLength, const MetaParameter* p, size_type )
 {

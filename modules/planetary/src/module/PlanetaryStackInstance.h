@@ -34,15 +34,26 @@ int StackThreads();
 using StackTimes = planetary::stackcards::StackTimes;
 StackTimes CaptureTimes( const planetary::ser::FrameSource& source, const planetary::stack::StackOutcome& outcome );
 
-// The stack window's FITS keywords: stackcards::StackCards (SRCVIDEO, NFRAMES,
+using TargetChoice = planetary::stackcards::TargetChoice;
+
+// The stack window's FITS keywords: stackcards::StackCards (OBJECT unless the
+// target is Other, SRCVIDEO, NFRAMES,
 // NCOMBINE, DATE-OBS / DATE-END never for an AVI, INSTRUME / TELESCOP /
 // OBSERVER) and stackcards::StackHistory as HISTORY cards.
-FITSKeywordArray StackKeywords( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times );
+FITSKeywordArray StackKeywords( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
+                                const TargetChoice& target );
 
-// Writes the context line before a run to the Process Console: version, file,
+// The mineral moon's colour parameters from the mineralStrength and chromaBlur
+// values. Throws pcl::Error, prefixed with `process`, for a value outside its
+// parameter's range (a script can set any number).
+planetary::stack::MineralParams MineralParamsFor( double strength, double chromaBlur, const char* process );
+
+// Writes the context lines before a run to the Process Console: version, file,
 // frames, size, colour, depth and threads; for an AVI, its Bayer pattern and
-// where it came from.
-void WriteStackContext( const String& path, const planetary::ser::FileInfo& info, int threads );
+// where it came from; the target and where it came from, and the mineral moon's
+// parameters when `mineral` is given (nullptr: no mineral moon).
+void WriteStackContext( const String& path, const planetary::ser::FileInfo& info, int threads, const TargetChoice& target,
+                        const planetary::stack::MineralParams* mineral );
 
 // Writes the outcome to the Process Console: the summary warnings first, one
 // line per condition as stackcards::ShownWarnings gives them for `where` (an
@@ -57,7 +68,23 @@ void WriteStackResult( const String& path, const planetary::stack::StackOutcome&
 // half-made window is closed, never shown; the image and keywords are built
 // first, so the window exists only for PCL's own calls), and says so on the console.
 // Returns the new view's id. Throws pcl::Error if no window can be made.
-IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times );
+IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
+                           const TargetChoice& target );
+
+// The mineral moon made from outcome's stack, opened as a new, shown 32-bit
+// float RGB window "<file stem>_mineral": the stack's keywords (StackKeywords)
+// and then stackcards::MineralHistory's seven lines as HISTORY. A notice (no
+// disc: the image is the stack clipped) is written to the console as a warning
+// first, so the result line is never read alone. Returns the new view's id.
+IsoString OpenMineralWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
+                             const TargetChoice& target, const planetary::stack::MineralOutcome& mineral );
+
+// A MineralOutcome from the interface's parts: PrepareMineral's cache (steps
+// 1-6: history, times, notice), the image ApplyMineralColour made from it and
+// that step's record and time.
+planetary::stack::MineralOutcome MineralOutcomeOf( const planetary::stack::MineralCache& cache,
+                                                   planetary::ser::FloatImage image,
+                                                   const planetary::stack::StepRecord& colour, double colourSeconds );
 
 class PlanetaryStackInstance : public ProcessImplementation
 {
@@ -73,7 +100,15 @@ public:
    // Process Console, whose Abort button cancels (ProcessAborted; no window,
    // every engine thread joined). Opens the stack (OpenStackWindow), or throws
    // pcl::Error with the diagnosis when the capture gives no image, or with the
-   // reader's reason when the file cannot be read.
+   // reader's reason when the file cannot be read. The target is p_target, or
+   // for Auto the capture name's (stackcards::ResolveTarget). With
+   // p_mineralMoon: refused before stacking (pcl::Error with
+   // stackcards::MineralRefusalFor's reason, from the reader's info after the
+   // Bayer pattern is resolved) unless the capture is a broadband colour Moon;
+   // else the mineral moon (stack::MakeMineralMoon, p_mineralStrength,
+   // p_chromaBlur) is made after the stack, with the same progress and Abort,
+   // and both windows open only once both images exist (an Abort during the
+   // mineral moon leaves no window).
    bool ExecuteGlobal() override;
 
    void* LockParameter( const MetaParameter*, size_type tableRow ) override;
@@ -82,6 +117,10 @@ public:
 
    String   p_filePath;
    pcl_enum p_bayerPattern;
+   pcl_enum p_target;
+   pcl_bool p_mineralMoon;
+   double   p_mineralStrength;
+   double   p_chromaBlur;
 };
 
 } // namespace pcl

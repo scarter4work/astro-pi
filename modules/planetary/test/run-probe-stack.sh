@@ -50,6 +50,11 @@ while IFS= read -r c; do
    fi
    args=( "$path" --json --bayer "$(jq -r .probeBayer <<<"$c")" )
    while IFS= read -r xy; do args+=( --sample "$xy" ); done < <(jq -r '.sample[] | "\(.[0]),\(.[1])"' <<<"$c")
+   # Mineral moon (Task B8): the engine's mineral moon with the case's parameters (the process's defaults,
+   # 8 and 2.5, when the case leaves them unset).
+   if jq -e '.kind == "image" and .mineral != null' <<<"$c" >/dev/null; then
+      args+=( --mineral "$(jq -r '"\(.mineral.strength // 8),\(.mineral.chromaBlur // 2.5)"' <<<"$c")" )
+   fi
    rc=0
    "$STACK_PROBE" "${args[@]}" >"$ENGINE" 2>"$PLANETARY_RUN_DIR/stack-probe.err" || rc=$?
    case "$kind" in
@@ -64,6 +69,13 @@ while IFS= read -r c; do
    if jq -e '.expectFocusWarning == true' <<<"$c" >/dev/null; then
       jq -e '.warnings | any(contains("may be out of focus"))' "$ENGINE" >/dev/null \
          || { echo "FAIL: fixture '$name' is not warned out of focus by the engine: $(jq -c .focus "$ENGINE")"; exit 1; }
+   fi
+   # A mineral moon case must give the engine a real mineral moon: seven steps, no notice, within [0, 1].
+   if jq -e '.kind == "image" and .mineral != null' <<<"$c" >/dev/null; then
+      jq -e '.mineral.history | length == 7' "$ENGINE" >/dev/null \
+         || { echo "FAIL: fixture '$name' gives the engine's mineral moon $(jq '.mineral.history | length' "$ENGINE") HISTORY lines, expected 7"; exit 1; }
+      jq -e '.mineral.notice == "" and .mineral.min >= 0 and .mineral.max <= 1' "$ENGINE" >/dev/null \
+         || { echo "FAIL: fixture '$name': the engine's mineral moon has a notice or a sample outside [0, 1]: $(jq -c '.mineral | {notice, min, max}' "$ENGINE")"; exit 1; }
    fi
    if [ "$kind" = "cancel" ]; then
       secs="$(jq -r .seconds "$ENGINE")"
@@ -94,6 +106,9 @@ while IFS= read -r c; do
                               { name: "DATE-END", value: .frameTimes[$r.stackedLast] } ]
                        else [] end)),
                  consoleContains: (.consoleContains + [ $r.selection, $r.alignment ] + $w) }
+             + (if .mineral != null
+                then { mineralSamples: $r.mineral.samples, mineralHistory: $r.mineral.history }
+                else {} end)
         elif .kind == "diagnosis" then
            . + { expectError: $r.diagnosis.message,
                  numbers: ($r.diagnosis.numbers | to_entries | map({ name: .key, value: .value })) }

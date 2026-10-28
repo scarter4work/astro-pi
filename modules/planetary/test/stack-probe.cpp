@@ -3,7 +3,7 @@
 //
 //   stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] [--out stack.fits|stack.tif]
 //               [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]...
-//               [--cancel-at measuring|aligning|stacking,F] [--parity even|odd]
+//               [--cancel-at measuring|aligning|stacking,F] [--parity even|odd] [--mineral K,S]
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -29,7 +29,10 @@
 // engine only the even- or the odd-numbered frames of the capture (after --frames), as frames 0..n-1: two
 // independent half-stacks for the split-half chroma noise check (edge_chroma.py --noise); the JSON names it
 // ("parity"). Each half is a run of its own, with its own reference and so its own grid: edge_chroma.py
-// registers the halves before it compares them. Exit 0 with an image, 2 when diagnosed, 1 on error.
+// registers the halves before it compares them. --mineral K,S (Task B8) then makes the stack's mineral moon
+// (stack::MakeMineralMoon, strength K, chroma blur S px) and adds "mineral" to the JSON: its time, notice,
+// HISTORY lines, smallest and largest sample, and its value at every --sample point (the headless probe
+// compares PlanetaryStack's _mineral window with them). Exit 0 with an image, 2 when diagnosed, 1 on error.
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -41,6 +44,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <random>
@@ -49,6 +53,7 @@
 
 #include "Engine.h"
 #include "Measure.h"
+#include "Mineral.h"
 #include "Noise.h"
 #include "ProbeFits.h"
 #include "ProbeSource.h"
@@ -191,7 +196,7 @@ private:
 int main(int argc, char** argv) try {
     if (argc < 2) {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
-                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd]\n");
+                             "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd] [--mineral K,S]\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -208,6 +213,7 @@ int main(int argc, char** argv) try {
     // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
     // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
     // take it. Exit 3 when RunStack throws StackCancelled.
+    std::optional<stack::MineralParams> mineral;  // --mineral K,S
     std::string cancelPhase;
     double cancelFraction = 0;
     for (int i = 2; i < argc; ++i) {
@@ -249,6 +255,14 @@ int main(int argc, char** argv) try {
             cancelFraction = std::stod(v.substr(comma + 1));
             if (cancelPhase.empty() || !(cancelFraction >= 0 && cancelFraction <= 1))
                 throw std::invalid_argument("--cancel-at: measuring|aligning|stacking,F with F in [0, 1]");
+        }
+        else if (a == "--mineral") {
+            const std::string v = next();
+            const size_t comma = v.find(',');
+            if (comma == std::string::npos) throw std::invalid_argument("--mineral: K,S");
+            mineral = stack::MineralParams();
+            mineral->strength = std::stod(v.substr(0, comma));
+            mineral->chromaBlurSigma = std::stod(v.substr(comma + 1));
         }
         else throw std::invalid_argument("unknown argument " + a);
     }
@@ -406,6 +420,28 @@ int main(int argc, char** argv) try {
                 }
             }
             j += "]";
+            if (mineral) {
+                const stack::MineralOutcome m = stack::MakeMineralMoon(im, threads, {}, *mineral);
+                double seconds = 0;
+                for (const auto& st : m.stepSeconds) seconds += st.second;
+                const auto [lo, hi] = std::minmax_element(m.image.data.begin(), m.image.data.end());
+                j += ",\"mineral\":{\"seconds\":" + Fmt(seconds) + ",\"stepSeconds\":{";
+                for (size_t i = 0; i < m.stepSeconds.size(); ++i)
+                    j += (i ? "," : "") + Json(m.stepSeconds[i].first) + ":" + Fmt(m.stepSeconds[i].second);
+                j += "},\"notice\":" + Json(m.notice) + ",\"min\":" + Fmt(*lo, 6) + ",\"max\":" + Fmt(*hi, 6) + ",\"history\":[";
+                for (size_t i = 0; i < m.history.size(); ++i) j += (i ? "," : "") + Json(m.history[i]);
+                j += "],\"samples\":[";
+                bool firstM = true;
+                for (const auto& [x, y] : samples)
+                    for (int c = 0; c < 3; ++c) {
+                        char v[48];
+                        std::snprintf(v, sizeof v, "%.9g", m.image.data[(static_cast<size_t>(y) * im.width + x) * 3 + c]);
+                        j += std::string(firstM ? "" : ",") + "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
+                             ",\"c\":" + std::to_string(c) + ",\"v\":" + v + "}";
+                        firstM = false;
+                    }
+                j += "]}";
+            }
         }
         j += ",\"output\":" + (o.image && !out.empty() ? Json(out) : std::string("null")) + "}";
         std::printf("%s\n", j.c_str());

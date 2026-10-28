@@ -19,6 +19,10 @@ PlanetaryStackProcess::PlanetaryStackProcess()
 
    new PSFilePath( this );
    new PSBayerPattern( this );
+   new PSTarget( this );
+   new PSMineralMoon( this );
+   new PSMineralStrength( this );
+   new PSChromaBlur( this );
 }
 
 IsoString PlanetaryStackProcess::Id() const
@@ -50,6 +54,14 @@ String PlanetaryStackProcess::Description() const
       "stacked as a mono image of the raw colour mosaic, with a warning: it cannot be debayered afterwards, so "
       "choose the pattern (or save it with Save pattern... in the PlanetaryStack or SERViewer window) and stack "
       "again for colour.</p>"
+      "<p><i>target</i> says what the capture is of. Auto reads it from an ASIAIR capture name "
+      "(<i>date</i>-<i>time</i>-<i>Target</i>-Bin1 <i>Filter</i> <i>temp</i>F); any other value is your choice. It "
+      "names the stack's OBJECT keyword. With <i>mineralMoon</i> on, a Moon capture also gives a mineral moon, "
+      "opened as a second window (<i>name</i>_mineral): the stack colour-calibrated, stretched for display and "
+      "sharpened, with the Moon's faint colour differences amplified by <i>mineralStrength</i> (0 to 15, default 8) "
+      "and their noise smoothed by <i>chromaBlur</i> (px, 0.5 to 6, default 2.5). It needs the Moon, a colour capture "
+      "and a broadband filter: anything else fails before stacking, saying why. The stack window stays linear; the "
+      "mineral image is display-ready, every sample within [0, 1].</p>"
       "<p>When the capture has no usable frames (no target, the target leaving the frame, a saturated target, "
       "out of focus, poor seeing, frames that do not line up) no image is made: execution fails with the "
       "diagnosis and its numbers on the Process Console.</p>"

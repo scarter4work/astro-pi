@@ -6,7 +6,10 @@
 
 #include <pcl/MetaParameter.h>
 
+#include <optional>
+
 #include "BayerPatternParameter.h"
+#include "CaptureName.h"
 
 namespace pcl
 {
@@ -28,8 +31,67 @@ public:
    PSBayerPattern( MetaProcess* );
 };
 
-extern PSFilePath*     ThePSFilePathParameter;
-extern PSBayerPattern* ThePSBayerPatternParameter;
+// What the capture is of: Auto reads it from the ASIAIR capture name
+// (<date>-<time>-<Target>-Bin<n> <Filter> <temp>F); any other value is the
+// user's. It names the stack (OBJECT) and decides whether Mineral moon may run.
+class PSTarget : public MetaEnumeration
+{
+public:
+   enum { Auto, Other, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, NumberOfItems, Default = Auto };
+
+   PSTarget( MetaProcess* );
+   IsoString Id() const override;
+   size_type NumberOfElements() const override;
+   IsoString ElementId( size_type ) const override;
+   int ElementValue( size_type ) const override;
+   size_type DefaultValueIndex() const override;
+};
+
+// The target a target parameter value names: nullopt for Auto (the file name
+// decides, stackcards::ResolveTarget). Throws pcl::Error, prefixed with
+// `process`, for a value outside the enumeration.
+std::optional<planetary::ser::Target> TargetFor( pcl_enum target, const char* process );
+
+// Also make the mineral moon (Mineral.h) of a Moon stack, as a second image.
+class PSMineralMoon : public MetaBoolean
+{
+public:
+   PSMineralMoon( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+// The mineral moon's colour strength k (MineralParams::strength): 0 grey, 8 the default.
+class PSMineralStrength : public MetaDouble
+{
+public:
+   PSMineralStrength( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double DefaultValue() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+};
+
+// The mineral moon's chroma blur, px at frames up to 2000 px wide
+// (MineralParams::chromaBlurSigma): the colour's noise reduction.
+class PSChromaBlur : public MetaDouble
+{
+public:
+   PSChromaBlur( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double DefaultValue() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+};
+
+extern PSFilePath*        ThePSFilePathParameter;
+extern PSBayerPattern*    ThePSBayerPatternParameter;
+extern PSTarget*          ThePSTargetParameter;
+extern PSMineralMoon*     ThePSMineralMoonParameter;
+extern PSMineralStrength* ThePSMineralStrengthParameter;
+extern PSChromaBlur*      ThePSChromaBlurParameter;
 
 } // namespace pcl
 

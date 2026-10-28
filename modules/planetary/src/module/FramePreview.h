@@ -25,6 +25,10 @@ Bitmap MakePreviewBitmap( const planetary::ser::FloatImage& image, const char* w
 // percentile) -- a display copy only.
 Bitmap MakeStackPreviewBitmap( const planetary::ser::FloatImage& image );
 
+// PlanetaryStack's preview of a display-ready image (the mineral moon, samples in
+// [0, 1]): 0..1 onto 0..255 as it is, no stretch.
+Bitmap MakeDisplayPreviewBitmap( const planetary::ser::FloatImage& image );
+
 // Paints one bitmap scaled to fit its client area, keeping the aspect ratio,
 // letterboxed on black. Black and empty until SetBitmap().
 class FramePreview : public Control
@@ -58,6 +62,10 @@ public:
 
    // A new bitmap is shown at Fit.
    void SetBitmap( const Bitmap& bitmap );
+   // Another view of the same image (the stack and its mineral moon, a new
+   // strength): shown at the zoom and place of the one it replaces; a bitmap of
+   // another size is shown at Fit (SetBitmap).
+   void ReplaceBitmap( const Bitmap& bitmap );
    void Clear( const String& note = String() );
    bool HasBitmap() const
    {
