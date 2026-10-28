@@ -58,7 +58,7 @@
 #     Stack!                                                       -> 21-moon-stack.png
 #     Mineral moon checked: its mineral moon made from that stack   -> 22-mineral.png
 #     the Strength handle dragged 8 -> 14 (the colour step only)    -> 23-strength.png
-#     the Sharpen handle dragged 2 -> 4 (sharpening + colour; more fine detail shown) -> 23b-sharpen.png
+#     the Sharpen handle dragged 1.5 -> 4 (sharpening + colour; more fine detail shown) -> 23b-sharpen.png
 #     unchecked: the stack again, pixel for pixel                  -> 24-unchecked.png
 #     checked again: Sharpen 4's image, pixel for pixel            -> 24b-rechecked.png
 #     (after each of those four: PixInsight reads no video and the bar stays empty -- no restack)

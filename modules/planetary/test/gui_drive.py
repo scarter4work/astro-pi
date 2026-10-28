@@ -36,7 +36,7 @@ python-xlib), and checks the screenshots. Test-only.
   gui_drive.py --stack-pattern OUT AVI   RGGB chosen, stacked, Save pattern..., Yes (15, 15b, 16)
   gui_drive.py --stack-close OUT FILE    Open... FILE, Stack! mid-run, the close button (17, 18)
   gui_drive.py --stack-quit OUT       the relaunched interface in place, Stack! mid-run (18b, 19)
-  gui_drive.py --stack-moon OUT SER   a Moon: Target, Stack!, Mineral moon checked, Strength 8 -> 14, Sharpen 2 -> 4, unchecked,
+  gui_drive.py --stack-moon OUT SER   a Moon: Target, Stack!, Mineral moon checked, Strength 8 -> 14, Sharpen 1.5 -> 4, unchecked,
                                       checked again, Execute (20 ... 25)
   gui_drive.py --stack-mineral-cancel OUT SER   a large Moon, Execute, Cancel in the mineral moon (26, 27)
   gui_drive.py --stack-hao3 OUT SER   a HaO3 Moon: Mineral moon off and disabled, its tooltip read (28, 28b, 28c)
@@ -875,7 +875,7 @@ def no_restack(seconds, what):
 if MODE == "--stack-moon":
     # The Moon capture (its ASIAIR name: Moon, Lqef): Target shows it, Mineral moon is enabled. Stack!
     # with the box clear, then check it (the mineral moon of that stack, no restack), drag Strength from
-    # 8 to 14 (the colour step alone) and Sharpen from 2 to 4 (the sharpening and the colour), uncheck (the
+    # 8 to 14 (the colour step alone) and Sharpen from 1.5 to 4 (the sharpening and the colour), uncheck (the
     # stack again, as it was), check again (the coloured image kept), Execute (both windows; gui-smoke-stack.sh checks them).
     file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
     park()
@@ -892,11 +892,11 @@ if MODE == "--stack-moon":
     park()
     no_restack(2.0, "Strength 8 -> 14")
     shot("23-strength.png", 0.5)
-    # Task SHARP: drag Sharpen from 2 (the default) to 4: the sharpening and the colour again, never the stack.
+    # Task SHARP: drag Sharpen from 1.5 (the default) to 4: the sharpening and the colour again, never the stack.
     y = BOX[3] + SHARPEN_Y
-    drag((sharpen_x(BOX, 2), y), (sharpen_x(BOX, 4), y), steps=24)
+    drag((sharpen_x(BOX, 1.5), y), (sharpen_x(BOX, 4), y), steps=24)
     park()
-    no_restack(2.0, "Sharpen 2 -> 4")
+    no_restack(2.0, "Sharpen 1.5 -> 4")
     shot("23b-sharpen.png", 0.5)
     click(*CTL["mineral"])
     park()
@@ -1265,7 +1265,7 @@ if MODE == "--check-stack":
          % (h8 - m8, hs - ms))
     need(h14 - m14 > 1.2 * (h8 - m8), "23-strength.png: Strength 14 colours more than 8 (split %.3f vs %.3f)"
          % (h14 - m14, h8 - m8))
-    # Task SHARP: Sharpen 4 shows more fine detail on the disc than 2 (mean |Laplacian| of the shown luminance).
+    # Task SHARP: Sharpen 4 shows more fine detail on the disc than 1.5 (mean |Laplacian| of the shown luminance).
     def detail(name):
         p = px(name).mean(axis=2)
         m = p[1:-1, 1:-1] > 24
@@ -1273,11 +1273,11 @@ if MODE == "--check-stack":
         return float(np.abs(lap)[m].mean())
 
     d1, d3 = detail("23-strength.png"), detail("23b-sharpen.png")
-    need(d3 > 1.1 * d1, "23b-sharpen.png: Sharpen 4 shows more fine detail than 2 (mean |Laplacian| %.2f vs %.2f)" % (d3, d1))
+    need(d3 > 1.1 * d1, "23b-sharpen.png: Sharpen 4 shows more fine detail than 1.5 (mean |Laplacian| %.2f vs %.2f)" % (d3, d1))
     for a, b_, what, want in (("21-moon-stack.png", "22-mineral.png", "the stack vs its mineral moon", "differ"),
                               ("22-mineral.png", "23-strength.png", "Strength 8 vs 14", "differ"),
                               ("21-moon-stack.png", "24-unchecked.png", "the stack vs unchecked: the stack again", "same"),
-                              ("23-strength.png", "23b-sharpen.png", "Sharpen 2 vs 4", "differ"),
+                              ("23-strength.png", "23b-sharpen.png", "Sharpen 1.5 vs 4", "differ"),
                               ("23b-sharpen.png", "24b-rechecked.png", "Sharpen 4 vs checked again", "same"),
                               ("24b-rechecked.png", "25-moon-execute.png", "before vs after Execute (no new stack)", "same")):
         v = changed(a, b_)

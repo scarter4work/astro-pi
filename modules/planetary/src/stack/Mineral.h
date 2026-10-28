@@ -106,10 +106,10 @@ double LuminanceNoise(const ser::FloatImage& lum1, const LunarMasks& m, int thre
 // noise-only (flat) disc's noise gain is 1.006 at 1, 1.04 at 2, 1.13 at 4. Noise riding texture above the threshold
 // takes the full gain, so on a textured disc it grows with the amount (MoonSynth, two realisations: 1.39 at 1, 1.86
 // at 1.25, 3.31 at 2), and on MoonSynth (truth known) 2 sharpens past the truth; the synthetic textured and
-// truth bars are judged at 1 (Ruling R40). Default 2: 64.6F's crater rims match Scott's reference's crispness
-// (Task SHARP report). Range 0 - 4. Throws std::invalid_argument for a negative or
-// non-finite amount. HISTORY's Sharpen line names the amount.
-constexpr double kSharpenDefault = 2.0, kSharpenMax = 4.0;
+// truth bars are judged at 1 (Ruling R40). Default 1.5, Scott's pick from the 64.6F series (Ruling R42); at 2
+// 64.6F's crater rims match his reference's crispness (Task SHARP report). Range 0 - 4. Throws
+// std::invalid_argument for a negative or non-finite amount. HISTORY's Sharpen line names the amount.
+constexpr double kSharpenDefault = 1.5, kSharpenMax = 4.0;
 StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads,
                                  const std::vector<float>* noise = nullptr,
                                  const std::array<double, 4>* layerShape = nullptr, double amount = kSharpenDefault);

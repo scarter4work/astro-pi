@@ -87,7 +87,7 @@ public:
 };
 
 // The mineral moon's Sharpen amount (MineralParams::sharpen, Mineral.h SharpenLuminanceImage): 0 none, 1 the
-// engine's nominal gains, 2 the default, up to 4.
+// engine's nominal gains, 1.5 the default, up to 4.
 class PSMineralSharpen : public MetaDouble
 {
 public:
