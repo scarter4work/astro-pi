@@ -50,10 +50,14 @@ while IFS= read -r c; do
    fi
    args=( "$path" --json --bayer "$(jq -r .probeBayer <<<"$c")" )
    while IFS= read -r xy; do args+=( --sample "$xy" ); done < <(jq -r '.sample[] | "\(.[0]),\(.[1])"' <<<"$c")
-   # Mineral moon (Task B8): the engine's mineral moon with the case's parameters (the process's defaults,
-   # 8 and 2.5, when the case leaves them unset).
+   # Mineral moon (Task B8): the engine's mineral moon with the case's parameters (unset: stack-probe's own
+   # defaults, the process's: 8, 2.5 and the engine's kSharpenDefault).
    if jq -e '.kind == "image" and .mineral != null' <<<"$c" >/dev/null; then
-      args+=( --mineral --strength "$(jq -r '.mineral.strength // 8' <<<"$c")" --chroma-blur "$(jq -r '.mineral.chromaBlur // 2.5' <<<"$c")" )
+      args+=( --mineral )
+      for p in strength:--strength chromaBlur:--chroma-blur sharpen:--sharpen; do
+         v="$(jq -r ".mineral.${p%%:*} // empty" <<<"$c")"
+         [ -z "$v" ] || args+=( "${p#*:}" "$v" )
+      done
    fi
    rc=0
    "$STACK_PROBE" "${args[@]}" >"$ENGINE" 2>"$PLANETARY_RUN_DIR/stack-probe.err" || rc=$?

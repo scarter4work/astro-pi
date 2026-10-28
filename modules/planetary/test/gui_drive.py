@@ -36,7 +36,7 @@ python-xlib), and checks the screenshots. Test-only.
   gui_drive.py --stack-pattern OUT AVI   RGGB chosen, stacked, Save pattern..., Yes (15, 15b, 16)
   gui_drive.py --stack-close OUT FILE    Open... FILE, Stack! mid-run, the close button (17, 18)
   gui_drive.py --stack-quit OUT       the relaunched interface in place, Stack! mid-run (18b, 19)
-  gui_drive.py --stack-moon OUT SER   a Moon: Target, Stack!, Mineral moon checked, Strength 8 -> 14, unchecked,
+  gui_drive.py --stack-moon OUT SER   a Moon: Target, Stack!, Mineral moon checked, Strength 8 -> 14, Sharpen 1 -> 3, unchecked,
                                       checked again, Execute (20 ... 25)
   gui_drive.py --stack-mineral-cancel OUT SER   a large Moon, Execute, Cancel in the mineral moon (26, 27)
   gui_drive.py --stack-hao3 OUT SER   a HaO3 Moon: Mineral moon off and disabled, its tooltip read (28, 28b, 28c)
@@ -528,7 +528,8 @@ def stack_controls(box):
 # row Target (combo text x 770..929, y 601..608) / Mineral moon (check box x 953..965, y 599..611; label x
 # 973..1045), Strength (slider y 631: groove x 813..1244, handle centre x0 + 139 .. x1 - 7 over 0..15) and
 # Chroma blur (y 657), the info box (y 674..871) and Execute (x 1152..1244, y 879..899: 327 px below the
-# preview).
+# preview). Task SHARP added Sharpen below Chroma blur (y 683, same handle travel over 0..4), which moves
+# the info box and Execute down one row (26 px: Execute 353 px below the preview).
 STACK_OFFSETS = {
     "open": (46, "top", -45),
     "bayer": (253, "top", -45),
@@ -540,7 +541,7 @@ STACK_OFFSETS = {
     "z200": (240, "bottom", 16),
     "zoomout": (337, "bottom", 16),
     "zoomin": (434, "bottom", 16),
-    "execute": (-47, "bottom", 327),
+    "execute": (-47, "bottom", 353),
     "target": (170, "bottom", 43),
     "mineral": (279, "bottom", 43),
 }
@@ -555,11 +556,17 @@ PATTERN_BOX = ((317, "top", -52), (405, "top", -37))
 TARGET_BOX = ((88, "bottom", 35), (252, "bottom", 51))
 MINERAL_BOX = ((275, "bottom", 39), (284, "bottom", 48))
 STRENGTH_Y = 69
+SHARPEN_Y = STRENGTH_Y + 52  # two rows below Strength (Task SHARP)
 
 
 def strength_x(box, value):
     x0, _, x1, _ = box
     return int(round(x0 + 139 + value / 15.0 * ((x1 - 7) - (x0 + 139))))
+
+
+def sharpen_x(box, value):
+    x0, _, x1, _ = box
+    return int(round(x0 + 139 + value / 4.0 * ((x1 - 7) - (x0 + 139))))
 
 
 def rel_box(spec, box):
@@ -868,8 +875,8 @@ def no_restack(seconds, what):
 if MODE == "--stack-moon":
     # The Moon capture (its ASIAIR name: Moon, Lqef): Target shows it, Mineral moon is enabled. Stack!
     # with the box clear, then check it (the mineral moon of that stack, no restack), drag Strength from
-    # 8 to 14 (the colour step alone), uncheck (the stack again, as it was), check again (the coloured
-    # image kept), Execute (both windows; gui-smoke-stack.sh checks them).
+    # 8 to 14 (the colour step alone) and Sharpen from 1 to 3 (the sharpening and the colour), uncheck (the
+    # stack again, as it was), check again (the coloured image kept), Execute (both windows; gui-smoke-stack.sh checks them).
     file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
     park()
     shot("20-moon-loaded.png", 1.5)
@@ -885,6 +892,12 @@ if MODE == "--stack-moon":
     park()
     no_restack(2.0, "Strength 8 -> 14")
     shot("23-strength.png", 0.5)
+    # Task SHARP: drag Sharpen from 1 to 3: the sharpening and the colour again, never the stack.
+    y = BOX[3] + SHARPEN_Y
+    drag((sharpen_x(BOX, 1), y), (sharpen_x(BOX, 3), y), steps=24)
+    park()
+    no_restack(2.0, "Sharpen 1 -> 3")
+    shot("23b-sharpen.png", 0.5)
     click(*CTL["mineral"])
     park()
     no_restack(1.0, "Mineral moon unchecked")
@@ -1138,8 +1151,8 @@ if MODE == "--check-stack":
     need(lit("09d-unshaded.png") > 0.05, "09d-unshaded.png: the run went on while collapsed; its stack is shown "
          "(%.1f%% lit)" % (100 * lit("09d-unshaded.png")))
     # The info box never has the focus (no focus ring, so no caret): the ring is (135, 179, 255),
-    # measured, around the box (from 108 px below the preview, under the Task B8 rows, to Execute's row).
-    ibox = (x0 - 3, y1 + 108, x1 + 3, y1 + 314)
+    # measured, around the box (from 134 px below the preview, under the Task B8 and SHARP rows, to Execute's row).
+    ibox = (x0 - 3, y1 + 134, x1 + 3, y1 + 340)
     for name in ("02-loaded.png", "03-progress.png", "04-fit.png", "07-execute.png", "08-cancel-progress.png",
                  "09-cancelled.png", "09d-unshaded.png", "10-diagnosis.png", "11-warning-mosaic.png",
                  "12-warning-focus.png", "13b-bayer-changed.png", "14-bayer-bggr.png", "16-pattern-saved.png"):
@@ -1225,7 +1238,8 @@ if MODE == "--check-stack":
                 else "unknown"), mean, darkest
 
     for name, want in (("20-moon-loaded.png", "enabled"), ("21-moon-stack.png", "enabled"), ("22-mineral.png", "checked"),
-                       ("23-strength.png", "checked"), ("24-unchecked.png", "enabled"), ("24b-rechecked.png", "checked"),
+                       ("23-strength.png", "checked"), ("23b-sharpen.png", "checked"), ("24-unchecked.png", "enabled"),
+                       ("24b-rechecked.png", "checked"),
                        ("28-hao3.png", "disabled")):
         state, mean, darkest = box_state(name)
         need(state == want, "%s: the Mineral moon box is %s (inside mean %.0f, darkest %d)" % (name, want, mean, darkest))
@@ -1251,10 +1265,20 @@ if MODE == "--check-stack":
          % (h8 - m8, hs - ms))
     need(h14 - m14 > 1.2 * (h8 - m8), "23-strength.png: Strength 14 colours more than 8 (split %.3f vs %.3f)"
          % (h14 - m14, h8 - m8))
+    # Task SHARP: Sharpen 3 shows more fine detail on the disc than 1 (mean |Laplacian| of the shown luminance).
+    def detail(name):
+        p = px(name).mean(axis=2)
+        m = p[1:-1, 1:-1] > 24
+        lap = 4 * p[1:-1, 1:-1] - p[:-2, 1:-1] - p[2:, 1:-1] - p[1:-1, :-2] - p[1:-1, 2:]
+        return float(np.abs(lap)[m].mean())
+
+    d1, d3 = detail("23-strength.png"), detail("23b-sharpen.png")
+    need(d3 > 1.1 * d1, "23b-sharpen.png: Sharpen 3 shows more fine detail than 1 (mean |Laplacian| %.2f vs %.2f)" % (d3, d1))
     for a, b_, what, want in (("21-moon-stack.png", "22-mineral.png", "the stack vs its mineral moon", "differ"),
                               ("22-mineral.png", "23-strength.png", "Strength 8 vs 14", "differ"),
                               ("21-moon-stack.png", "24-unchecked.png", "the stack vs unchecked: the stack again", "same"),
-                              ("23-strength.png", "24b-rechecked.png", "Strength 14 vs checked again", "same"),
+                              ("23-strength.png", "23b-sharpen.png", "Sharpen 1 vs 3", "differ"),
+                              ("23b-sharpen.png", "24b-rechecked.png", "Sharpen 3 vs checked again", "same"),
                               ("24b-rechecked.png", "25-moon-execute.png", "before vs after Execute (no new stack)", "same")):
         v = changed(a, b_)
         need(v > 0.01 if want == "differ" else v == 0.0, "%s: %s vs %s (%.2f%% changed)" % (what, a, b_, 100 * v))
@@ -1271,7 +1295,7 @@ if MODE == "--check-stack":
     # The reason word for word, case aside (tesseract has read "is" as "iS" in this font).
     need("mineral moon needs a broadband filter; hao3 is narrowband, so its colours come from the filter." in tip.lower(),
          "28b-tooltip.png: the disabled box's tooltip gives the reason (read: %r)" % tip)
-    for name in ("21-moon-stack.png", "22-mineral.png", "23-strength.png", "24-unchecked.png", "25-moon-execute.png",
+    for name in ("21-moon-stack.png", "22-mineral.png", "23-strength.png", "23b-sharpen.png", "24-unchecked.png", "25-moon-execute.png",
                  "27-mineral-cancelled.png", "28-hao3.png"):
         f = bar_fill(box, OUT + "/" + name)
         need(f == 0.0, "%s: the progress bar is empty (%.1f%%)" % (name, 100 * f))

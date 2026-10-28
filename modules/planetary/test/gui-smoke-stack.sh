@@ -58,12 +58,14 @@
 #     Stack!                                                       -> 21-moon-stack.png
 #     Mineral moon checked: its mineral moon made from that stack   -> 22-mineral.png
 #     the Strength handle dragged 8 -> 14 (the colour step only)    -> 23-strength.png
+#     the Sharpen handle dragged 1 -> 3 (sharpening + colour; more fine detail shown) -> 23b-sharpen.png
 #     unchecked: the stack again, pixel for pixel                  -> 24-unchecked.png
-#     checked again: Strength 14's image, pixel for pixel           -> 24b-rechecked.png
-#     (after each of those three: PixInsight reads no video and the bar stays empty -- no restack)
+#     checked again: Sharpen 3's image, pixel for pixel            -> 24b-rechecked.png
+#     (after each of those four: PixInsight reads no video and the bar stays empty -- no restack)
 #     Execute                                                      -> 25-moon-execute.png
 #     gui-smoke-stack-ipc.js: exactly <stem>_stack and <stem>_mineral, the engine's size, OBJECT Moon, the
-#     target's HISTORY line, the seven mineral steps in order in the mineral window only, k of about 14.
+#     target's HISTORY line, the seven mineral steps in order in the mineral window only, k of about 14 and a
+#     Sharpen amount of about 3.
 #     --stack-mineral-cancel: Open... a 2400 x 1800 Moon (its mineral moon checked to take >= 1.2 s past its
 #     first step, from the engine), Execute, the bar past 3/4 + 1/28 -> 26-mineral-phase.png; Cancel
 #                                                                  -> 27-mineral-cancelled.png
@@ -316,8 +318,8 @@ echo "sidecar written by Save pattern...: Bayer = RG, SERViewer $PLANETARY_VERSI
 expect_no_open_video "after Save pattern..." || exit 1
 
 # Task B8: Target and Mineral moon. The Moon: Target from its name, Mineral moon checked after Stack!, the
-# Strength slider, unchecked and checked again -- never a restack (gui_drive.py checks no video is read and the
-# bar stays empty) -- then Execute: the stack and its mineral moon, Strength 14 in its HISTORY.
+# Strength and Sharpen sliders, unchecked and checked again -- never a restack (gui_drive.py checks no video is
+# read and the bar stays empty) -- then Execute: the stack and its mineral moon, Strength 14 and Sharpen 3 in its HISTORY.
 drive --stack-moon "$OUT" "$MOON" || exit 1
 ipc '{"mode":"windows","out":"windows-moon.json","close":true}' windows-moon.json || exit 1
 jq -e --slurpfile e "$MOON_JSON" --arg s "${MOON_ID}_stack" --arg m "${MOON_ID}_mineral" '
@@ -336,7 +338,10 @@ if steps != ["Lunar disk", "Colour calibration", "Background", "Display transfer
 k = re.search(r"PlanetaryStack mineral: Mineral colour: k ([0-9.]+)", w["history"])
 if not k or not 13.0 <= float(k.group(1)) <= 15.0:
     sys.exit("FAIL: the mineral moon was not coloured at the Strength the slider was dragged to (about 14): %s" % (k.group(0) if k else w["history"][-300:]))
-print("Execute on the Moon: %s with its seven mineral steps in HISTORY, %s (the slider's)" % (sys.argv[2], k.group(0)))
+a = re.search(r"PlanetaryStack mineral: Sharpen \(luminance\): amount ([0-9.]+)", w["history"])
+if not a or not 2.7 <= float(a.group(1)) <= 3.3:
+    sys.exit("FAIL: the mineral moon was not sharpened at the amount the Sharpen slider was dragged to (about 3): %s" % (a.group(0) if a else w["history"][-300:]))
+print("Execute on the Moon: %s with its seven mineral steps in HISTORY, %s, %s (the sliders')" % (sys.argv[2], k.group(0), a.group(0)))
 PY
 expect_no_open_video "after the Moon's Execute" || exit 1
 # Cancel in the mineral moon's phase (Execute on the large Moon, Mineral moon still checked): no window.
@@ -366,7 +371,7 @@ for png in 01-opened 02-loaded 03-progress 04-fit 05-zoom-100 06-zoom-200 06b-zo
            07b-unreadable 07c-kept 07d-execute-kept \
            08-cancel-progress 09-cancelled 09b-shade-progress 09c-shaded 09c2-expanded 09d-unshaded 10-diagnosis 11-warning-mosaic 12-warning-focus 13-bayer-auto \
            13b-bayer-changed 14-bayer-bggr 15-pattern-rggb 15b-confirm 16-pattern-saved 17-close-progress 18-closed \
-           19-quit-progress 20-moon-loaded 21-moon-stack 22-mineral 23-strength 24-unchecked 24b-rechecked \
+           19-quit-progress 20-moon-loaded 21-moon-stack 22-mineral 23-strength 23b-sharpen 24-unchecked 24b-rechecked \
            25-moon-execute 26-mineral-phase 27-mineral-cancelled 28-hao3 28b-tooltip 28c-no-tooltip; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done

@@ -64,7 +64,7 @@ Image ImageOf( const ser::FloatImage& img )
 
 } // namespace
 
-stack::MineralParams MineralParamsFor( double strength, double chromaBlur, const char* process )
+stack::MineralParams MineralParamsFor( double strength, double chromaBlur, double sharpen, const char* process )
 {
    const auto check = [process]( double v, const MetaDouble* p )
    {
@@ -74,9 +74,11 @@ stack::MineralParams MineralParamsFor( double strength, double chromaBlur, const
    };
    check( strength, ThePSMineralStrengthParameter );
    check( chromaBlur, ThePSChromaBlurParameter );
+   check( sharpen, ThePSMineralSharpenParameter );
    stack::MineralParams p;
    p.strength = strength;
    p.chromaBlurSigma = chromaBlur;
+   p.sharpen = sharpen;
    return p;
 }
 
@@ -95,7 +97,8 @@ void WriteStackContext( const String& path, const ser::FileInfo& info, int threa
                     (mineral == nullptr ? String( "; no mineral moon" )
                                         : String( "; then the mineral moon: strength " ) +
                                              Html( stackcards::Fixed( mineral->strength, 2 ) ) + ", chroma blur " +
-                                             Html( stackcards::Fixed( mineral->chromaBlurSigma, 2 ) ) + " px" ) );
+                                             Html( stackcards::Fixed( mineral->chromaBlurSigma, 2 ) ) + " px, sharpen " +
+                                             Html( stackcards::Fixed( mineral->sharpen, 2 ) ) ) );
 }
 
 int StackThreads()
@@ -227,19 +230,6 @@ IsoString ShowMineralWindow( const String& path, const MineralWindow& window, co
    return viewId;
 }
 
-stack::MineralOutcome MineralOutcomeOf( const stack::MineralCache& cache, ser::FloatImage image, const stack::StepRecord& colour,
-                                        double colourSeconds )
-{
-   stack::MineralOutcome m;
-   m.image = std::move( image );
-   m.history = cache.history;
-   m.history.push_back( colour.history );
-   m.stepSeconds = cache.stepSeconds;
-   m.stepSeconds.push_back( { "Mineral colour", colourSeconds } );
-   m.notice = cache.notice;
-   return m;
-}
-
 PlanetaryStackInstance::PlanetaryStackInstance( const MetaProcess* m )
    : ProcessImplementation( m )
    , p_filePath( ThePSFilePathParameter->DefaultValue() )
@@ -248,6 +238,7 @@ PlanetaryStackInstance::PlanetaryStackInstance( const MetaProcess* m )
    , p_mineralMoon( ThePSMineralMoonParameter->DefaultValue() )
    , p_mineralStrength( ThePSMineralStrengthParameter->DefaultValue() )
    , p_chromaBlur( ThePSChromaBlurParameter->DefaultValue() )
+   , p_mineralSharpen( ThePSMineralSharpenParameter->DefaultValue() )
 {
 }
 
@@ -268,6 +259,7 @@ void PlanetaryStackInstance::Assign( const ProcessImplementation& p )
       p_mineralMoon = x->p_mineralMoon;
       p_mineralStrength = x->p_mineralStrength;
       p_chromaBlur = x->p_chromaBlur;
+      p_mineralSharpen = x->p_mineralSharpen;
    }
 }
 
@@ -300,7 +292,7 @@ bool PlanetaryStackInstance::ExecuteGlobal()
    const TargetChoice target = stackcards::ResolveTarget( TargetFor( p_target, "PlanetaryStack" ), pathUtf8 );
    std::optional<stack::MineralParams> mineralParams;
    if ( p_mineralMoon )
-      mineralParams = MineralParamsFor( p_mineralStrength, p_chromaBlur, "PlanetaryStack" );
+      mineralParams = MineralParamsFor( p_mineralStrength, p_chromaBlur, p_mineralSharpen, "PlanetaryStack" );
    const int threads = StackThreads();
 
    // Opened here for the context line, Mineral moon's colour check and, after
@@ -423,7 +415,9 @@ bool PlanetaryStackInstance::ExecuteGlobal()
    {
       try
       {
-         mineral = stack::MakeMineralMoon( *outcome.image, threads, progress, *mineralParams );
+         // The stack's own noise drives the sharpening's noise limit (Ruling R35), as in stack-probe.
+         mineral = stack::MakeMineralMoon( *outcome.image, threads, progress, *mineralParams,
+                                           outcome.noise ? &*outcome.noise : nullptr );
       }
       catch ( const stack::StackCancelled& )
       {
@@ -456,6 +450,7 @@ void* PlanetaryStackInstance::LockParameter( const MetaParameter* p, size_type )
    if ( p == ThePSMineralMoonParameter )     return &p_mineralMoon;
    if ( p == ThePSMineralStrengthParameter ) return &p_mineralStrength;
    if ( p == ThePSChromaBlurParameter )      return &p_chromaBlur;
+   if ( p == ThePSMineralSharpenParameter )  return &p_mineralSharpen;
    return nullptr;
 }
 

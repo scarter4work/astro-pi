@@ -290,11 +290,18 @@ inline std::string MineralNoticeText( const std::string& notice )
 }
 
 // The window's mineral lines, after ResultText: the colour step's line (the
-// last of the mineral history: its strength and chroma blur), then the notice
-// as a warning.
+// last of the mineral history: its strength and chroma blur), the Sharpen
+// line up to its noise note (the slider's amount and the gains it gave), then
+// the notice as a warning.
 inline std::string MineralResultText( const stack::MineralOutcome& mineral )
 {
    std::string t = "Mineral moon shown: " + (mineral.history.empty() ? std::string() : mineral.history.back());
+   for ( const std::string& h : mineral.history )
+      if ( h.rfind( "Sharpen", 0 ) == 0 )
+      {
+         t += "\n" + h.substr( 0, h.find( "; noise:" ) );
+         break;
+      }
    if ( !mineral.notice.empty() )
       t += "\nWarning: " + MineralNoticeText( mineral.notice );
    return t;

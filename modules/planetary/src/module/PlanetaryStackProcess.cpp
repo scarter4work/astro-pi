@@ -23,6 +23,7 @@ PlanetaryStackProcess::PlanetaryStackProcess()
    new PSMineralMoon( this );
    new PSMineralStrength( this );
    new PSChromaBlur( this );
+   new PSMineralSharpen( this );
 }
 
 IsoString PlanetaryStackProcess::Id() const
@@ -59,7 +60,8 @@ String PlanetaryStackProcess::Description() const
       "names the stack's OBJECT keyword. With <i>mineralMoon</i> on, a Moon capture also gives a mineral moon, "
       "opened as a second window (<i>name</i>_mineral): the stack colour-calibrated, stretched for display and "
       "sharpened, with the Moon's faint colour differences amplified by <i>mineralStrength</i> (0 to 15, default 8) "
-      "and their noise smoothed by <i>chromaBlur</i> (px, 0.5 to 6, default 2.5). It needs the Moon, a colour capture "
+      "and their noise smoothed by <i>chromaBlur</i> (px, 0.5 to 6, default 2.5); <i>mineralSharpen</i> (0 to 4, "
+      "default 1) sets how much its luminance is sharpened (0 none). It needs the Moon, a colour capture "
       "and a broadband filter: anything else fails before stacking, saying why. The stack window stays linear; the "
       "mineral image is display-ready, every sample within [0, 1].</p>"
       "<p>When the capture has no usable frames (no target, the target leaving the frame, a saturated target, "

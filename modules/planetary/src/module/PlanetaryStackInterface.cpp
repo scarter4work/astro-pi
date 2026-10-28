@@ -101,7 +101,7 @@ const char* const kMineralTip =
 
 bool SameParams( const stack::MineralParams& a, const stack::MineralParams& b )
 {
-   return a.strength == b.strength && a.chromaBlurSigma == b.chromaBlurSigma;
+   return a.strength == b.strength && a.chromaBlurSigma == b.chromaBlurSigma && a.sharpen == b.sharpen;
 }
 
 } // namespace
@@ -435,7 +435,7 @@ void PlanetaryStackInterface::ApplyMineralRefusal()
 
 stack::MineralParams PlanetaryStackInterface::CurrentParams() const
 {
-   return MineralParamsFor( instance.p_mineralStrength, instance.p_chromaBlur, "PlanetaryStack" );
+   return MineralParamsFor( instance.p_mineralStrength, instance.p_chromaBlur, instance.p_mineralSharpen, "PlanetaryStack" );
 }
 
 void PlanetaryStackInterface::ShowPreview()
@@ -455,11 +455,7 @@ stack::MineralOutcome PlanetaryStackInterface::CurrentMineral() const
       return *m_mineralShown;
    if ( !m_mineral )
       throw Error( "PlanetaryStack: internal error - no mineral moon data to colour" );
-   stack::StepRecord record;
-   const auto t0 = std::chrono::steady_clock::now();
-   ser::FloatImage image = stack::ApplyMineralColour( *m_mineral, params, StackThreads(), &record );
-   return MineralOutcomeOf( *m_mineral, std::move( image ), record,
-                            std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+   return stack::FinishMineral( *m_mineral, params, StackThreads() );
 }
 
 void PlanetaryStackInterface::OpenWindows()
@@ -502,11 +498,7 @@ void PlanetaryStackInterface::RequestColour()
       {
          try
          {
-            stack::StepRecord record;
-            const auto t0 = std::chrono::steady_clock::now();
-            ser::FloatImage image = stack::ApplyMineralColour( *r->cache, r->params, r->threads, &record );
-            r->mineral = MineralOutcomeOf( *r->cache, std::move( image ), record,
-                                           std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+            r->mineral = stack::FinishMineral( *r->cache, r->params, r->threads );
          }
          catch ( ... )
          {
@@ -677,8 +669,10 @@ void PlanetaryStackInterface::UpdateControls()
                                              : String( kMineralTip ) );
    GUI->Strength_NumericControl.SetValue( instance.p_mineralStrength );
    GUI->ChromaBlur_NumericControl.SetValue( instance.p_chromaBlur );
+   GUI->Sharpen_NumericControl.SetValue( instance.p_mineralSharpen );
    GUI->Strength_NumericControl.Enable( !running && instance.p_mineralMoon );
    GUI->ChromaBlur_NumericControl.Enable( !running && instance.p_mineralMoon );
+   GUI->Sharpen_NumericControl.Enable( !running && instance.p_mineralMoon );
 
    const bool zoom = GUI->Preview_Control.HasBitmap();
    GUI->Fit_PushButton.Enable( zoom );
@@ -735,11 +729,13 @@ void PlanetaryStackInterface::StartMineral( bool openWhenDone )
    run->mineral = true;
    run->params = CurrentParams();
    run->input = *m_outcome->image;
+   run->inputNoise = m_outcome->noise;
    m_mineralError.clear();
    Console().WriteLn( "<end><cbr>PlanetaryStack: the mineral moon of " +
                       File::ExtractNameAndExtension( m_outcomePath ).EncodedHTMLSpecialChars() + ": strength " +
                       String( stackcards::Fixed( run->params.strength, 2 ).c_str() ) + ", chroma blur " +
-                      String( stackcards::Fixed( run->params.chromaBlurSigma, 2 ).c_str() ) + " px" );
+                      String( stackcards::Fixed( run->params.chromaBlurSigma, 2 ).c_str() ) + " px, sharpen " +
+                      String( stackcards::Fixed( run->params.sharpen, 2 ).c_str() ) );
    m_run = std::move( run );
    StartWorker( openWhenDone );
 }
@@ -783,13 +779,13 @@ void PlanetaryStackInterface::StartWorker( bool openWhenDone )
                // A stack the mineral moon refuses (NaN samples) stands: the reason is shown.
                try
                {
+                  // The stack's own noise drives the sharpening's noise limit (Ruling R35): a Stack run's from
+                  // RunStack, a Mineral run's kept with the stack shown.
+                  const stack::StackNoise* noise = r->job == Job::Stack ? (r->outcome->noise ? &*r->outcome->noise : nullptr)
+                                                                        : (r->inputNoise ? &*r->inputNoise : nullptr);
                   std::shared_ptr<stack::MineralCache> cache =
-                     std::make_shared<stack::MineralCache>( stack::PrepareMineral( *stacked, r->threads, progress ) );
-                  stack::StepRecord record;
-                  const auto t0 = std::chrono::steady_clock::now();
-                  ser::FloatImage image = stack::ApplyMineralColour( *cache, r->params, r->threads, &record );
-                  r->mineralMade = MineralOutcomeOf( *cache, std::move( image ), record,
-                                                     std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+                     std::make_shared<stack::MineralCache>( stack::PrepareMineral( *stacked, r->threads, progress, noise ) );
+                  r->mineralMade = stack::FinishMineral( *cache, r->params, r->threads );
                   r->cache = std::move( cache );
                   progress.report( stack::kPhaseMineral, 1, 1 );
                }
@@ -1185,9 +1181,11 @@ void PlanetaryStackInterface::e_ValueUpdated( NumericEdit& sender, double value 
          instance.p_mineralStrength = value;
       else if ( sender == GUI->ChromaBlur_NumericControl )
          instance.p_chromaBlur = value;
+      else if ( sender == GUI->Sharpen_NumericControl )
+         instance.p_mineralSharpen = value;
       else
          return;
-      // Only the colour step runs again, on the mineral data already made; a run
+      // Only the sharpening and the colour run again, on the mineral data already made; a run
       // in progress picks the newest values up when it ends (FinishStack).
       if ( instance.p_mineralMoon && m_mineral && !Running() )
          RequestColour();
@@ -1347,7 +1345,7 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Strength_NumericControl.edit.SetFixedWidth( editWidth );
    Strength_NumericControl.SetToolTip( "<p>How strongly the Moon's colour differences are amplified (the colour "
                                        "gain k): 0 is grey, 8 the default, 15 the most. Only the colour is computed "
-                                       "again; the stack and its sharpening stay.</p>" );
+                                       "again; the stack stays.</p>" );
    Strength_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
 
    ChromaBlur_NumericControl.label.SetText( "Chroma blur:" );
@@ -1364,6 +1362,21 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
                                          "colour features. The detail always comes from the sharp luminance. Only the "
                                          "colour is computed again.</p>" );
    ChromaBlur_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
+
+   Sharpen_NumericControl.label.SetText( "Sharpen:" );
+   Sharpen_NumericControl.label.SetMinWidth( labelWidth );
+   Sharpen_NumericControl.slider.SetRange( 0, 80 );
+   Sharpen_NumericControl.slider.SetScaledMinWidth( 250 );
+   Sharpen_NumericControl.SetReal();
+   Sharpen_NumericControl.SetRange( ThePSMineralSharpenParameter->MinimumValue(), ThePSMineralSharpenParameter->MaximumValue() );
+   Sharpen_NumericControl.SetPrecision( 2 );
+   Sharpen_NumericControl.EnableFixedPrecision();
+   Sharpen_NumericControl.edit.SetFixedWidth( editWidth );
+   Sharpen_NumericControl.SetToolTip( "<p>How much the luminance is sharpened: 0 is none, 1 the default, 4 the most. "
+                                      "Above 1 the finest detail (crater rims) gains most. Noise is held back at every "
+                                      "amount, but noise riding on texture grows with it. Only the sharpening and the "
+                                      "colour are computed again.</p>" );
+   Sharpen_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
 
    Info_TextBox.SetReadOnly();
    // Never focused (mouse selection and copy still work): a button that disables
@@ -1395,6 +1408,7 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Global_Sizer.Add( Target_Sizer );
    Global_Sizer.Add( Strength_NumericControl );
    Global_Sizer.Add( ChromaBlur_NumericControl );
+   Global_Sizer.Add( Sharpen_NumericControl );
    Global_Sizer.Add( Info_TextBox );
    Global_Sizer.Add( Execute_Sizer );
 

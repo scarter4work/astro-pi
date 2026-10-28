@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "AviWriter.h"
+#include "Mineral.h"
 #include "PlanetaryVersion.h"
 #include "SerWriter.h"
 #include "StackSynth.h"
@@ -77,6 +78,12 @@ std::string Quote(const std::string& s) {
 std::string Num(double v) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.12g", v);
+    return buf;
+}
+// Two decimals, as the module prints its parameters (stackcards::Fixed).
+std::string Num2(double v) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.2f", v);
     return buf;
 }
 
@@ -426,12 +433,12 @@ struct StackCase {
     double abortAfter = 0, minSeconds = 0;
     bool expectFocusWarning = false;  // image: the engine must warn "may be out of focus"
     // Task B8: target (PlanetaryStack enum element id, e.g. "TargetJupiter"; empty: Auto); mineralMoon on
-    // (strength / chromaBlur set unless negative: the parameters' defaults otherwise). An image case with
+    // (strength / chromaBlur / sharpen set unless negative: the parameters' defaults otherwise). An image case with
     // mineralMoon expects a second window, expectMineralId, with mineralKeywords and the engine's mineral moon
     // (stack-probe --mineral: samples, its seven HISTORY lines in order).
     std::string target, expectMineralId;
     bool mineral = false;
-    double strength = -1, chromaBlur = -1;
+    double strength = -1, chromaBlur = -1, sharpen = -1;
     std::vector<Kw> mineralKeywords;
 };
 
@@ -455,6 +462,7 @@ std::string ToJson(const StackCase& c) {
         o << ",\"mineral\":{";
         if (c.strength >= 0) o << "\"strength\":" << Num(c.strength);
         if (c.chromaBlur >= 0) o << (c.strength >= 0 ? "," : "") << "\"chromaBlur\":" << Num(c.chromaBlur);
+        if (c.sharpen >= 0) o << (c.strength >= 0 || c.chromaBlur >= 0 ? "," : "") << "\"sharpen\":" << Num(c.sharpen);
         o << "}";
     }
     if (!c.expectMineralId.empty())
@@ -671,8 +679,8 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         const std::vector<std::pair<int, int>> moonSamples = {{160, 128}, {120, 90}, {200, 170}, {230, 120}, {8, 8}};
 
         StackCase m;
-        m.name = "Moon SER (Lqef), mineralMoon, strength 5, chroma blur 2: the stack and its mineral moon";
-        m.path = moonSer; m.kind = "image"; m.mineral = true; m.strength = 5; m.chromaBlur = 2;
+        m.name = "Moon SER (Lqef), mineralMoon, strength 5, chroma blur 2, sharpen 2.5: the stack and its mineral moon";
+        m.path = moonSer; m.kind = "image"; m.mineral = true; m.strength = 5; m.chromaBlur = 2; m.sharpen = 2.5;
         m.expectId = ViewIdStem(moonName) + "_stack";
         m.expectMineralId = ViewIdStem(moonName) + "_mineral";
         m.sample = moonSamples;
@@ -683,14 +691,16 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         m.mineralKeywords = {{"OBJECT", "value", "Moon"},
                              {"SRCVIDEO", "value", moonName + ".ser"},
                              {"HISTORY", "commentContains", "PlanetaryStack target: Moon (from file name)"},
-                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Mineral colour: k 5.00, chroma blur 2.00 px"}};
-        m.consoleContains = {"PlanetaryStack: target Moon (from file name); then the mineral moon: strength 5.00, chroma blur 2.00 px",
+                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Mineral colour: k 5.00, chroma blur 2.00 px"},
+                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Sharpen (luminance): amount 2.50, "}};
+        m.consoleContains = {"PlanetaryStack: target Moon (from file name); then the mineral moon: strength 5.00, chroma blur 2.00 px, "
+                             "sharpen 2.50",
                              "-> " + ViewIdStem(moonName) + "_mineral ("};
         m.consoleAbsent = {"Mineral moon: no lunar disk"};
         cases.push_back(m);
 
         // B1 review m2: an AVI reads as Mono until OpenVideo resolves its Bayer pattern (here from the ASIAIR
-        // sidecar); Mineral moon must see the resolved capture and run. The parameters' defaults (8, 2.5).
+        // sidecar); Mineral moon must see the resolved capture and run. The parameters' defaults (8, 2.5, kSharpenDefault).
         const std::string aviName = "2026-10-23-031500-Moon-Bin1 Lqef 64.4F";
         const std::string moonAvi = (dir / (aviName + ".avi")).string();
         AviSpec a;
@@ -699,13 +709,16 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         WriteSidecarRG(moonAvi, 320, 256);
         StackCase v = m;
         v.name = "Moon AVI with its sidecar (RGGB resolved), mineralMoon at the defaults: two windows";
-        v.path = moonAvi; v.strength = -1; v.chromaBlur = -1;
+        v.path = moonAvi; v.strength = -1; v.chromaBlur = -1; v.sharpen = -1;
         v.expectId = ViewIdStem(aviName) + "_stack";
         v.expectMineralId = ViewIdStem(aviName) + "_mineral";
         v.keywords = {{"OBJECT", "value", "Moon"}, {"HISTORY", "commentContains", "PlanetaryStack: Bayer RGGB (sidecar)"}};
         v.mineralKeywords = {{"OBJECT", "value", "Moon"},
-                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Mineral colour: k 8.00, chroma blur 2.50 px"}};
-        v.consoleContains = {"then the mineral moon: strength 8.00, chroma blur 2.50 px", "-> " + ViewIdStem(aviName) + "_mineral"};
+                             {"HISTORY", "commentContains", "PlanetaryStack mineral: Mineral colour: k 8.00, chroma blur 2.50 px"},
+                             {"HISTORY", "commentContains",
+                              "PlanetaryStack mineral: Sharpen (luminance): amount " + Num2(planetary::stack::kSharpenDefault) + ", "}};
+        v.consoleContains = {"then the mineral moon: strength 8.00, chroma blur 2.50 px, sharpen " + Num2(planetary::stack::kSharpenDefault),
+                             "-> " + ViewIdStem(aviName) + "_mineral"};
         cases.push_back(v);
 
         // Refused before any stacking, each with its reason.

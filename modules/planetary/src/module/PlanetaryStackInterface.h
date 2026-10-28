@@ -68,9 +68,9 @@ private:
 // after the stack (a fourth step, Cancel stops it and keeps no image) and the
 // preview shows it; checked after a stack, it is made from that stack (the
 // worker, as Stack!'s). Unchecking shows the stack again; neither restacks.
-// Strength and Chroma blur re-run only the colour step on the cached mineral
-// data (stack::ApplyMineralColour on a colour worker, the newest values once
-// it is free), never the stack. Execute opens the mineral moon as a second window.
+// Strength, Chroma blur and Sharpen re-run only the sharpening and the colour
+// step on the cached mineral data (stack::FinishMineral on a colour worker, the
+// newest values once it is free), never the stack. Execute opens the mineral moon as a second window.
 class PlanetaryStackInterface : public ProcessInterface
 {
 public:
@@ -129,6 +129,7 @@ private:
       bool mineral = false; // Stack: make the mineral moon too
       planetary::stack::MineralParams params;
       std::optional<planetary::ser::FloatImage> input;  // Mineral: the stack
+      std::optional<planetary::stack::StackNoise> inputNoise;  // Mineral: its noise (StackOutcome::noise; Ruling R35)
       std::atomic<uint64_t> progress{ 0 };  // the phase and its done / total counts (PackProgress)
       std::atomic<bool> cancel{ false };    // Cancel / StopStack; the engine's cancelled() reads it
       std::atomic<bool> finished{ false };  // the worker's last write
@@ -206,6 +207,7 @@ private:
             CheckBox        Mineral_CheckBox;
          NumericControl  Strength_NumericControl;
          NumericControl  ChromaBlur_NumericControl;
+         NumericControl  Sharpen_NumericControl;
          TextBox         Info_TextBox;
          HorizontalSizer Execute_Sizer;
             PushButton      Execute_PushButton;
@@ -253,7 +255,7 @@ private:
    // A capture or target that refuses Mineral moon turns it off (saying why in
    // the info block) and shows the stack.
    void ApplyMineralRefusal();
-   // mineralStrength and chromaBlur as colour parameters (pcl::Error when out of range).
+   // mineralStrength, chromaBlur and mineralSharpen as mineral parameters (pcl::Error when out of range).
    planetary::stack::MineralParams CurrentParams() const;
    // The preview: the mineral moon when it is checked and made, else the stack
    // (at the zoom shown when it replaces the other).

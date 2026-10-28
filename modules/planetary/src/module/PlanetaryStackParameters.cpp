@@ -5,6 +5,8 @@
 
 #include <pcl/ErrorHandler.h>
 
+#include "Mineral.h"
+
 namespace ser = planetary::ser;
 
 namespace pcl
@@ -16,6 +18,7 @@ PSTarget*          ThePSTargetParameter = nullptr;
 PSMineralMoon*     ThePSMineralMoonParameter = nullptr;
 PSMineralStrength* ThePSMineralStrengthParameter = nullptr;
 PSChromaBlur*      ThePSChromaBlurParameter = nullptr;
+PSMineralSharpen*  ThePSMineralSharpenParameter = nullptr;
 
 PSFilePath::PSFilePath( MetaProcess* p ) : MetaString( p )
 {
@@ -111,5 +114,16 @@ int PSChromaBlur::Precision() const { return 2; }
 double PSChromaBlur::DefaultValue() const { return 2.5; }
 double PSChromaBlur::MinimumValue() const { return 0.5; }
 double PSChromaBlur::MaximumValue() const { return 6.0; }
+
+PSMineralSharpen::PSMineralSharpen( MetaProcess* p ) : MetaDouble( p )
+{
+   ThePSMineralSharpenParameter = this;
+}
+
+IsoString PSMineralSharpen::Id() const { return "mineralSharpen"; }
+int PSMineralSharpen::Precision() const { return 2; }
+double PSMineralSharpen::DefaultValue() const { return planetary::stack::kSharpenDefault; }
+double PSMineralSharpen::MinimumValue() const { return 0.0; }
+double PSMineralSharpen::MaximumValue() const { return planetary::stack::kSharpenMax; }
 
 } // namespace pcl

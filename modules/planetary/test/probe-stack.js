@@ -14,7 +14,7 @@
 //       numbers: [ {name, value} ] },                                   (its numbers, on the console too)
 //     { kind: "error", name, path, expectError, consoleAbsent? },
 //   Any case may set target (an enum element id, e.g. "TargetJupiter") and mineral
-//   ({ strength?, chromaBlur? }: mineralMoon on). An image case with mineral also
+//   ({ strength?, chromaBlur?, sharpen? }: mineralMoon on). An image case with mineral also
 //   has expectMineralId, mineralKeywords, mineralSamples and mineralHistory (the
 //   engine's, stack-probe --mineral): its second window, checkMineralWindow.
 //     { kind: "cancel", name, path, abortAfter, after: <an image case> } ] }
@@ -72,6 +72,8 @@ function newProcess( c )
          P.mineralStrength = c.mineral.strength;
       if ( c.mineral.chromaBlur !== undefined )
          P.chromaBlur = c.mineral.chromaBlur;
+      if ( c.mineral.sharpen !== undefined )
+         P.mineralSharpen = c.mineral.sharpen;
    }
    return P;
 }

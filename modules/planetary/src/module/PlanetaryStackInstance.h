@@ -44,10 +44,10 @@ using TargetChoice = planetary::stackcards::TargetChoice;
 FITSKeywordArray StackKeywords( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
                                 const TargetChoice& target );
 
-// The mineral moon's colour parameters from the mineralStrength and chromaBlur
-// values. Throws pcl::Error, prefixed with `process`, for a value outside its
-// parameter's range (a script can set any number).
-planetary::stack::MineralParams MineralParamsFor( double strength, double chromaBlur, const char* process );
+// The mineral moon's parameters from the mineralStrength, chromaBlur and
+// mineralSharpen values. Throws pcl::Error, prefixed with `process`, for a
+// value outside its parameter's range (a script can set any number).
+planetary::stack::MineralParams MineralParamsFor( double strength, double chromaBlur, double sharpen, const char* process );
 
 // Writes the context lines before a run to the Process Console: version, file,
 // frames, size, colour, depth and threads; for an AVI, its Bayer pattern and
@@ -91,13 +91,6 @@ MineralWindow MakeMineralWindow( const String& path, const planetary::stack::Sta
                                  const TargetChoice& target, const planetary::stack::MineralOutcome& mineral );
 IsoString ShowMineralWindow( const String& path, const MineralWindow& window, const planetary::stack::MineralOutcome& mineral );
 
-// A MineralOutcome from the interface's parts: PrepareMineral's cache (steps
-// 1-6: history, times, notice), the image ApplyMineralColour made from it and
-// that step's record and time.
-planetary::stack::MineralOutcome MineralOutcomeOf( const planetary::stack::MineralCache& cache,
-                                                   planetary::ser::FloatImage image,
-                                                   const planetary::stack::StepRecord& colour, double colourSeconds );
-
 class PlanetaryStackInstance : public ProcessImplementation
 {
 public:
@@ -118,7 +111,8 @@ public:
    // stackcards::MineralRefusalFor's reason, from the reader's info after the
    // Bayer pattern is resolved) unless the capture is a broadband colour Moon;
    // else the mineral moon (stack::MakeMineralMoon, p_mineralStrength,
-   // p_chromaBlur) is made after the stack, with the same progress and Abort,
+   // p_chromaBlur, p_mineralSharpen; the stack's own noise, StackOutcome::noise)
+   // is made after the stack, with the same progress and Abort,
    // and both windows open only once both images exist (an Abort during the
    // mineral moon leaves no window).
    bool ExecuteGlobal() override;
@@ -133,6 +127,7 @@ public:
    pcl_bool p_mineralMoon;
    double   p_mineralStrength;
    double   p_chromaBlur;
+   double   p_mineralSharpen;
 };
 
 } // namespace pcl

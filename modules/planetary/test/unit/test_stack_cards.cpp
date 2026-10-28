@@ -313,7 +313,9 @@ stack::MineralOutcome SevenSteps(const std::string& notice = "") {
     stack::MineralOutcome m;
     m.history = {"Lunar disk: 31.2% of the frame, sky 52.0%", "Colour calibration: R x 1.012, B x 1.204",
                  "Background: plane removed", "Display transfer: linked midtones 0.01234",
-                 "Channel alignment: R 0.02 px, B 0.03 px; skipped", "Sharpen: layers 1-4",
+                 "Channel alignment: R 0.02 px, B 0.03 px; skipped",
+                 "Sharpen (luminance): amount 1.50, starlet layers 1-4, noise 0.00014; gains 2.40 4.10 1.00 1.00 "
+                 "(noise-limited); noise: the sky's (no stack noise model given)",
                  "Mineral colour: k 8.00, chroma blur 2.50 px, eps 0.0020"};
     m.notice = notice;
     return m;
@@ -401,9 +403,11 @@ TEST_CASE("a mineral moon with a notice says why on the result line; none withou
     CHECK(stackcards::MineralNoticeText("no lunar disk distinguished from the sky") ==
           "Mineral moon: no lunar disk distinguished from the sky, so the mineral image is the stack clipped to "
           "[0, 1], with no colour or sharpening.");
-    // The window's mineral lines: the colour step, then the notice as a warning.
+    // The window's mineral lines: the colour step, the Sharpen step up to its noise note (Task SHARP: the slider's
+    // amount and the gains it gave), then the notice as a warning.
     CHECK(stackcards::MineralResultText(SevenSteps()) ==
-          "Mineral moon shown: Mineral colour: k 8.00, chroma blur 2.50 px, eps 0.0020");
+          "Mineral moon shown: Mineral colour: k 8.00, chroma blur 2.50 px, eps 0.0020\n"
+          "Sharpen (luminance): amount 1.50, starlet layers 1-4, noise 0.00014; gains 2.40 4.10 1.00 1.00 (noise-limited)");
     const std::string withNotice = stackcards::MineralResultText(SevenSteps("no lunar disk distinguished from the sky"));
     CHECK(withNotice.find("\nWarning: Mineral moon: no lunar disk distinguished from the sky, so the mineral image") !=
           std::string::npos);

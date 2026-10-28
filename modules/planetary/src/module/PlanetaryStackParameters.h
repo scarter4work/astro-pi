@@ -86,12 +86,26 @@ public:
    double MaximumValue() const override;
 };
 
+// The mineral moon's Sharpen amount (MineralParams::sharpen, Mineral.h SharpenLuminanceImage): 0 none, 1 the
+// default (the engine's nominal gains), up to 4.
+class PSMineralSharpen : public MetaDouble
+{
+public:
+   PSMineralSharpen( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double DefaultValue() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+};
+
 extern PSFilePath*        ThePSFilePathParameter;
 extern PSBayerPattern*    ThePSBayerPatternParameter;
 extern PSTarget*          ThePSTargetParameter;
 extern PSMineralMoon*     ThePSMineralMoonParameter;
 extern PSMineralStrength* ThePSMineralStrengthParameter;
 extern PSChromaBlur*      ThePSChromaBlurParameter;
+extern PSMineralSharpen*  ThePSMineralSharpenParameter;
 
 } // namespace pcl
 
