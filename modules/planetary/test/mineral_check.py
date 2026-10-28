@@ -29,8 +29,9 @@ there, and the B9 dispatch):
               <= 0.5 x before. (A single image's chroma std counts the Moon's colour texture: it read x0.6-0.85.)
               Sky not judged when the display transfer clipped it black.
   5 lumdetail DAN_interior of the mineral output's luminance vs the sharpened L's (display space): within 2 %.
-  7 cyan      brightest 1 % of disk pixels (output luminance): mean(min(G, B) - R) / mean(L) <= 0.02; the line also
-              gives the same pixels' cyan before the colour step and the fade weight w there.
+  7 cyan      brightest 1 % of the disc by region (the output's luminance at the chroma layer's scale, as the unit
+              test; Ruling R41): sum(min(G, B) - R) / sum(L) <= 0.02. "7 cyan px" (INFO) gives the same by pixel
+              (output luminance), with those pixels' cyan before the colour step and the fade weight w there.
   8 median    disk median of the output's luminance in [0.25, 0.45] (the transfer aims at 0.35).
   R12 edge    edge_chroma --noise on the even / odd mineral outputs, per frame side, bands 0:6 vs 20:40, along the
               longest run where both bands are disc 12 px clear of the limb (disc_span; at least 50 px, else that
@@ -619,9 +620,20 @@ def check(out, cid, role):
     cyan0 = float((np.minimum(dg, db) - dr).mean() / lum(disp)[top].mean())
     C = chroma_blur(disp)
     wt = np.clip((mj["satThreshold"] - np.maximum(C[0], C[1])) / 0.12, 0, 1)[top]
-    rep.judge("7 cyan", "brightest 1%% (L >= %.3f): cyan %.4f, mean saturation %.4f (display stage cyan %.4f; fade "
-              "threshold %.3f, mean w there %.2f)" % (thr, cyan, sat, cyan0, mj["satThreshold"], float(wt.mean())),
-              "cyan <= 0.02", cyan <= 0.02)
+    # Ruling R41: a cast is a region's colour, so the brightest 1% are taken on the output's luminance at the chroma
+    # layer's scale, as the unit test ("pipeline: no cyan cast in the brightest highlands") takes them. By pixel, a
+    # sharpened image's brightest 1% are its sharpening peaks -- craterlets carrying their region's real tint (0528a/b
+    # at Sharpen 2: 0.029 by pixel, 0.004 by region) -- so that number is informational.
+    Lr = lum(chroma_blur(full["mineral"]))
+    thr_r = np.percentile(Lr[disk], 99)
+    top_r = disk & (Lr >= thr_r)
+    cyan_r = float((np.minimum(full["mineral"][1][top_r], full["mineral"][2][top_r]) - full["mineral"][0][top_r]).sum()
+                   / Lr[top_r].sum())
+    rep.judge("7 cyan", "brightest 1%% of the disc by region (L at the chroma layer's scale >= %.3f): cyan %.4f"
+              % (thr_r, cyan_r), "cyan <= 0.02 (Ruling R41: by region)", cyan_r <= 0.02)
+    rep.add("7 cyan px", "brightest 1%% by pixel (L >= %.3f): cyan %.4f, mean saturation %.4f (display stage cyan %.4f; "
+            "fade threshold %.3f, mean w there %.2f)" % (thr, cyan, sat, cyan0, mj["satThreshold"], float(wt.mean())),
+            "informational (Ruling R41)", "INFO")
     med = float(np.median(Lo[disk]))
     rep.judge("8 median", "%.3f" % med, "0.25-0.45", 0.25 <= med <= 0.45)
 
