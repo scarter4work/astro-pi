@@ -54,7 +54,7 @@ The project is delivered in two parts, in order:
    target. `src/ser/AsiairSidecar.h` already parses the start time from this name (`FilenameStart`);
    target and filter parsing go beside it. The interface shows a **Target** dropdown (Moon, Jupiter,
    Saturn, Mars, Venus, Mercury, Uranus, Neptune, Other), preselected from the name, and the user
-   can override it. A name that doesn't parse (renamed files, `_pipp.ser`) selects Other and says
+   can override it. A name that does not parse (a renamed file; PIPP keeps the ASIAIR name, so `_pipp.ser` parses to its real target) selects Other and says
    so on the info line.
 4. **When Mineral moon is offered.** The checkbox is enabled only when all three hold:
    - the Target is Moon;
@@ -183,7 +183,7 @@ Gating tests, on real file names:
 - `2024-02-01-013058-Moon-Bin1 HaO3 16.2F.avi` → Mineral moon disabled (narrowband).
 - `2026-02-10-...-Betelgeuse-...avi` → Target Other.
 - `...Saturn...`, `...Jupiter...`, `...Neptune...` → the right planet, option disabled.
-- `_pipp.ser` → Other, with the info-line note.
+- `moon_stack_final.ser` (renamed) → Other, with the info-line note; `..._pipp.ser` keeps the ASIAIR name and parses to its real target.
 
 ### Testing and proof
 

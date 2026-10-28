@@ -1,0 +1,73 @@
+#include <catch_amalgamated.hpp>
+
+#include "CaptureName.h"
+
+using namespace planetary::ser;
+
+namespace {
+void Expect(const char* name, Target t, const char* filter, FilterClass fc) {
+    const CaptureName c = ParseCaptureName(name);
+    INFO(name);
+    CHECK(c.parsed);
+    CHECK(c.target == t);
+    CHECK(c.filterToken == filter);
+    CHECK(c.filter == fc);
+}
+FileInfo Info(ColorId id, int planes) {
+    FileInfo i;
+    i.colorId = id;
+    i.planes = planes;
+    return i;
+}
+}  // namespace
+
+TEST_CASE("ParseCaptureName reads ASIAIR names", "[capture_name]") {
+    Expect("2026-10-23-203401-Moon-Bin1 Lqef 64.6F.avi", Target::Moon, "Lqef", FilterClass::Broadband);
+    Expect("2024-02-01-013058-Moon-Bin1 HaO3 16.2F.avi", Target::Moon, "HaO3", FilterClass::Narrowband);
+    Expect("2023-08-30-220451-Moon-Bin1 LPro 14.0F.avi", Target::Moon, "LPro", FilterClass::Broadband);
+    Expect("2026-01-30-193142-Moon-Bin1 Lqef -4.0F_pipp.ser", Target::Moon, "Lqef", FilterClass::Broadband);
+    Expect("2026-01-30-195137-Jupiter-Bin1 Lqef -4.2F.avi", Target::Jupiter, "Lqef", FilterClass::Broadband);
+    Expect("2026-01-30-195137-Saturn-Bin1 Lqef -4.2F.avi", Target::Saturn, "Lqef", FilterClass::Broadband);
+    Expect("2026-01-30-195137-Neptune-Bin1 Lqef -4.2F.avi", Target::Neptune, "Lqef", FilterClass::Broadband);
+    Expect("2026-01-30-195137-Mars-Bin1 Lqef -4.2F.avi", Target::Mars, "Lqef", FilterClass::Broadband);
+    Expect("2026-01-30-195137-moon-Bin1 L-eXtreme 4.2F.avi", Target::Moon, "L-eXtreme", FilterClass::Narrowband);
+    Expect("2026-01-30-195137-Moon-Bin1 Weird 4.2F.avi", Target::Moon, "Weird", FilterClass::Unknown);
+    Expect("/mnt/qnap/astro/2026-01-30-195137-Moon-Bin1 Lqef -4.2F.avi", Target::Moon, "Lqef",
+           FilterClass::Broadband);
+}
+
+TEST_CASE("ParseCaptureName: unknown target is Other, still parsed", "[capture_name]") {
+    const CaptureName c = ParseCaptureName("2026-02-10-215957-Betelgeuse-Bin1 Lqef -4.0F.avi");
+    CHECK(c.parsed);
+    CHECK(c.target == Target::Other);
+    CHECK(c.targetToken == "Betelgeuse");
+}
+
+TEST_CASE("ParseCaptureName: non-matching names", "[capture_name]") {
+    for (const char* n : {"moon_stack_final.ser", ""}) {
+        const CaptureName c = ParseCaptureName(n);
+        CHECK_FALSE(c.parsed);
+        CHECK(c.target == Target::Other);
+    }
+}
+
+TEST_CASE("TargetName", "[capture_name]") {
+    CHECK(std::string(TargetName(Target::Moon)) == "Moon");
+    CHECK(std::string(TargetName(Target::Jupiter)) == "Jupiter");
+    CHECK(std::string(TargetName(Target::Other)) == "Other");
+}
+
+TEST_CASE("MineralMoonRefusal", "[capture_name]") {
+    const FileInfo bayer = Info(ColorId::BayerRGGB, 1);
+    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Broadband, bayer).has_value());
+    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Unknown, bayer).has_value());
+    CHECK_FALSE(MineralMoonRefusal(Target::Moon, FilterClass::Broadband, Info(ColorId::RGB, 3)).has_value());
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Narrowband, bayer) ==
+          "Mineral moon needs a broadband filter; the filter is narrowband, so its colours come from the filter.");
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Narrowband, bayer, "HaO3") ==
+          "Mineral moon needs a broadband filter; HaO3 is narrowband, so its colours come from the filter.");
+    CHECK(*MineralMoonRefusal(Target::Saturn, FilterClass::Broadband, bayer) ==
+          "Mineral moon is for the Moon; the target is Saturn.");
+    CHECK(*MineralMoonRefusal(Target::Moon, FilterClass::Broadband, Info(ColorId::Mono, 1)) ==
+          "Mineral moon needs a colour capture; this one is mono (set the Bayer pattern if it is a colour camera).");
+}
