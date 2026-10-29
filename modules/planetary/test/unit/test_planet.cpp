@@ -391,8 +391,8 @@ TEST_CASE("dispersion residual") {
 TEST_CASE("dispersion: a channel's own limb profile does not hold back a real shift") {
     // Task 5, 2023-11-02 Jupiter (r 27.7 px): R -0.85 px and B +0.64 px against G along y (atmospheric dispersion: R
     // and B on opposite sides), B's limb wider than G's (blue seeing is worse; the fit's normal offset e read 0.64 px).
-    // B was declined at +-0.47 px: the uncertainty took in the shift's dependence on e, which on a whole disc is no
-    // uncertainty (e is fitted with the shift) and grows with the shift itself. Both must be corrected.
+    // B was declined at +-0.47 px: its uncertainty takes in the shift's dependence on e, which stays (the zero-shift twin
+    // below needs it); along R's axis, R corrected on its own, B is tested without it. Both must be corrected.
     for (unsigned seed : {1u, 2u, 3u}) {
         PlanetSceneSpec s = Realistic(28, 300 + seed);
         s.bandContrast = {0.7, 1.0, 1.4};
@@ -420,6 +420,39 @@ TEST_CASE("dispersion: a channel's own limb profile does not hold back a real sh
         CHECK(Residual(d.r, 0, -0.85) <= 0.1);
         CHECK(Residual(d.b, 0, 0.64) <= 0.1);
     }
+}
+
+TEST_CASE("dispersion: a channel's own limb profile makes no false shift") {
+    // Task 5 review, Important 1: the zero-shift twin of the test above. B's limb wider than G's (blurred 2.0 px against
+    // 1.2) and the light tilted across the disc (0.4 or 0.8 of it per radius, clamped 0.6-1.4) bias B's fitted shift
+    // through its trade-off with e (0.29 px at r 10, tilt 0.4, seed 3); the shift's dependence on e must keep it from
+    // being applied. 4 radii x 2 tilts x 6 seeds, no true shift: nothing moved by more than 0.1 px.
+    for (double r : {10.0, 14.0, 20.0, 28.0})
+        for (double tilt : {0.4, 0.8})
+            for (unsigned seed = 1; seed <= 6; ++seed) {
+                PlanetSceneSpec s = Realistic(r, 300 + seed);
+                s.bandContrast = {0.7, 1.0, 1.4};
+                PlanetSceneSpec wide = s;
+                wide.blurSigma = 2.0;
+                const PlanetScene sc = MakePlanetScene(s), sb = MakePlanetScene(wide);
+                ser::FloatImage im = sc.clean;
+                for (size_t i = 0; i < im.data.size() / 3; ++i) im.data[i * 3 + 2] = sb.clean.data[i * 3 + 2];
+                std::mt19937 rng(seed);
+                std::normal_distribution<float> noise(0.0f, static_cast<float>(s.noiseStd));
+                for (int y = 0; y < im.height; ++y)
+                    for (int x = 0; x < im.width; ++x)
+                        for (int c = 0; c < 3; ++c) {
+                            const double f = std::clamp(1 + tilt * (y - s.cy) / s.radius, 0.6, 1.4);
+                            float& v = im.data[(static_cast<size_t>(y) * im.width + x) * 3 + c];
+                            v = static_cast<float>(s.pedestal[c] + f * (v - s.pedestal[c])) + noise(rng);
+                        }
+                const stack::LunarMasks m = stack::SegmentLunar(im, 4);
+                stack::PlanetDispersion d;
+                const stack::StepRecord rec = stack::AlignPlanetChannels(im, m, 4, &d);
+                INFO("r " << r << " tilt " << tilt << " seed " << seed << ": " << rec.history);
+                CHECK(Applied(d.r) <= 0.1);
+                CHECK(Applied(d.b) <= 0.1);
+            }
 }
 
 TEST_CASE("dispersion: the weaker channel follows the stronger's axis") {

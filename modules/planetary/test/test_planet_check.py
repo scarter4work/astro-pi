@@ -80,28 +80,39 @@ def scene(seed=1, level=0.6):
     return rgb, disk, ~near
 
 
-def history(calib=True):
+ALIGN_NONE = ("Channel alignment (small disc): R +0.000, +0.000 px (+-0.010), B +0.000, +0.000 px (+-0.010) against G, "
+              "from 400 px of the limb band in 16 sectors; within 0.1 px or within 3 sigma of its uncertainty, not applied")
+# R resampled (no reason given for anything left): a residual over 0.1 px is a FAIL, not ruling Q4's NOT JUDGED.
+ALIGN_APPLIED = ("Channel alignment (small disc): R +0.500, +0.000 px (+-0.010), B +0.000, +0.000 px (+-0.010) against G, "
+                 "from 400 px of the limb band in 16 sectors; R and B resampled onto G (Catmull-Rom)")
+
+
+def history(calib=True, align=ALIGN_NONE):
     return ["Planet disc: 452 px (equivalent radius 12.0 px), 5.89% of the frame, sky 80.00%",
             ("Colour calibration: Saturn's reflectance B/G 0.679 R/G 1.295 (synthetic)" if calib else
              "Colour calibration skipped: no planet disc distinguished from the sky; nothing done"),
             "Background: sky plane removed per channel (synthetic)",
             "Display transfer: linear (no midtones stretch), white point 1.00000",
-            "Channel alignment (small disc): R +0.000, +0.000 px (+-0.010), B +0.000, +0.000 px (+-0.010) against G, "
-            "from 400 px of the limb band in 16 sectors; within 0.1 px or within 3 sigma of its uncertainty, not applied",
+            align,
             "Sharpen (luminance): amount 1.50 (synthetic)",
             "Saturation: 1.00x the natural colour (synthetic)"]
 
 
-def shift_json():
-    return {"dx": 0.0, "dy": 0.0, "ux": 0.01, "uy": 0.01, "measured": True, "applied": False, "alongAxis": False}
+def shift_json(dx=0.0, applied=False):
+    return {"dx": dx, "dy": 0.0, "ux": 0.01, "uy": 0.01, "measured": True, "applied": applied, "alongAxis": False}
 
 
-def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False):
+def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshift=0.0, applied=False, nan_cal=False):
+    """rshift: R left that many px right of G in the display, the unaligned display and the output (a residual
+    dispersion); applied: the engine says it resampled R (HISTORY gives no reason for the residual) instead of declining
+    it; nan_cal: one disc sample of the calibrated RGB is NaN (a metric that must fail, not pass)."""
     os.makedirs(os.path.join(d, "stages"), exist_ok=True)
     if stack_refused:
         dump(os.path.join(d, "probe.json"), {"capture": "synthetic", "diagnosis": {"kind": "Clipped", "message":
              "The target is saturated."}, "target": "Saturn", "filter": "Broadband"})
         return
+    if rshift:
+        rgb = np.stack([shift(rgb[0], 0, rshift), rgb[1], rgb[2]])
     display = np.clip(rgb, 0, 1)
     L = display.mean(axis=0)
     out = display if out is None else out
@@ -121,7 +132,10 @@ def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False):
     write_fits(os.path.join(st, "lum_sharp.fits"), L)
     write_fits(os.path.join(st, "lin_unsharp.fits"), L)
     write_fits(os.path.join(st, "lin_sharp.fits"), L)
-    write_fits(os.path.join(st, "calibrated.fits"), rgb)
+    cal = rgb.copy()
+    if nan_cal:
+        cal[1][tuple(np.argwhere(disk)[0])] = np.nan
+    write_fits(os.path.join(st, "calibrated.fits"), cal)
     write_fits(os.path.join(st, "masks.fits"), np.stack([disk, sky]).astype(np.float32))
     ys, xs = np.nonzero(disk)
     planet = {
@@ -129,11 +143,12 @@ def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False):
         "curve": {"white": 1.0, "balance": 0.5},
         "disc": {"pixels": 0 if notice else int(disk.sum()), "sky": int(sky.sum()), "equivRadius": R,
                  "box": None if notice else [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())], "reason": ""},
-        "dispersion": {"before": None if notice else {"r": shift_json(), "b": shift_json(), "pixels": 400, "sectors": 16,
+        "dispersion": {"before": None if notice else {"r": shift_json(0.5 if applied else rshift, applied), "b": shift_json(),
+                                                       "pixels": 400, "sectors": 16,
                                                        "frameCut": False, "reason": ""},
                        "after": None if notice else {"r": shift_json(), "b": shift_json(), "pixels": 400, "sectors": 16,
                                                       "frameCut": False, "reason": ""}},
-        "history": history(not notice), "stepSeconds": {}, "seconds": 0.0, "output": os.path.join(d, "planet.fits"),
+        "history": history(not notice, ALIGN_APPLIED if applied else ALIGN_NONE), "stepSeconds": {}, "seconds": 0.0, "output": os.path.join(d, "planet.fits"),
         "sharpenAlso": [{"sharpen": a, "output": os.path.join(d, "planet_s%g.fits" % a)} for a in SHARPENS],
         "chromaBlurAlso": [{"chromaBlur": s, "output": os.path.join(d, "planet_c%g.fits" % s)} for s in BLURS],
         "saturationAlso": [{"saturation": 0, "output": os.path.join(d, "planet_k0.fits")}],
@@ -164,8 +179,8 @@ class PlanetCheckFailsClosed(unittest.TestCase):
     def make(self, cid="synth", out=None, **kw):
         write_part(os.path.join(self.run_dir, cid, "full"), self.rgb, self.disk, self.sky, out=out, **kw)
 
-    def check(self, *extra):
-        p = subprocess.run([sys.executable, "-I", CHECK, "--no-png", *extra, self.run_dir], capture_output=True,
+    def check(self, *ids):
+        p = subprocess.run([sys.executable, "-I", CHECK, "--no-png", self.run_dir, *ids], capture_output=True,
                            text=True, timeout=600)
         return p.returncode, p.stdout + p.stderr
 
@@ -208,14 +223,54 @@ class PlanetCheckFailsClosed(unittest.TestCase):
         code, text = self.check()
         self.assertEqual(code, 1, text)
 
-    def test_no_disc_and_refused_stack_are_not_failures(self):
+    def test_no_disc_and_expected_refusal_are_not_failures(self):
         self.make("nodisc", notice="no planet disc distinguished from the sky")
         self.make("refused", stack_refused=True)
         write_gate(self.run_dir)
-        code, text = self.check()
+        code, text = self.check("nodisc", "refused:acceptance:Clipped")
         self.assertEqual(code, 0, text)
         self.assertEqual(self.rows("nodisc").get("no disc"), "PASS", text)
-        self.assertEqual(self.rows("refused").get("stack"), "NOT JUDGED", text)
+        self.assertEqual(self.rows("refused").get("stack"), "PASS", text)
+
+    def test_unexpected_refusal_fails(self):
+        # A capture the table expects an image of (a Saturn, a Jupiter) refused by the stacker: a regression, not an
+        # outcome; and a refusal of another kind than the one expected.
+        self.make("refused", stack_refused=True)
+        write_gate(self.run_dir)
+        for ids in (("refused",), ("refused:acceptance:NoTarget",)):
+            with self.subTest(ids=ids):
+                code, text = self.check(*ids)
+                self.assertEqual(code, 1, text)
+                self.assertEqual(self.rows("refused").get("stack"), "FAIL", text)
+
+    def test_image_where_refusal_expected_fails(self):
+        self.make()
+        write_gate(self.run_dir)
+        code, text = self.check("synth:acceptance:Clipped")
+        self.assertEqual(code, 1, text)
+        self.assertEqual(self.rows().get("stack"), "FAIL", text)
+
+    def test_nan_metric_fails(self):
+        self.make(nan_cal=True)
+        write_gate(self.run_dir)
+        code, text = self.check()
+        self.assertEqual(code, 1, text)
+        self.assertEqual(self.rows().get("1 calib"), "FAIL", text)
+
+    def test_declined_channel_not_judged(self):
+        # Ruling Q4: R 0.5 px off G left by the engine with HISTORY's reason -> acceptance 3 R and the fringe row NOT
+        # JUDGED (exit 0); the same residual where the engine claims to have resampled R -> FAIL.
+        self.make(rshift=0.5)
+        write_gate(self.run_dir)
+        code, text = self.check()
+        self.assertEqual(code, 0, text)
+        rows = self.rows()
+        self.assertEqual(rows.get("3 disp R"), "NOT JUDGED", text)
+        self.assertEqual(rows.get("4 fringe"), "NOT JUDGED", text)
+        self.make(rshift=0.5, applied=True)
+        code, text = self.check()
+        self.assertEqual(code, 1, text)
+        self.assertEqual(self.rows().get("3 disp R"), "FAIL", text)
 
     def test_pngs(self):
         try:

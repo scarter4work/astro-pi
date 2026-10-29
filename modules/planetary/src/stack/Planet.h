@@ -83,8 +83,8 @@ struct DispersionShift {
     bool alongAxis = false;  // applied as its component along the other channel's dispersion axis (AlignPlanetChannels)
 };
 // The 1-sigma of a channel's shift along the unit direction (ax, ay): the larger of the formal one and the jackknife's
-// over the groups' solutions projected there (MeasurePlanetDispersion's ux, uy per axis, for any direction; on a
-// disc the frame cuts, the shift's dependence on e is not in it).
+// over the groups' solutions projected there (MeasurePlanetDispersion's ux, uy per axis, for any direction, less the
+// shift's dependence on e: AlignPlanetChannels uses it only along an axis another channel's own correction has set).
 double DispersionSigmaAlong(const DispersionShift& s, double ax, double ay);
 struct PlanetDispersion {
     DispersionShift r, b;
@@ -105,11 +105,11 @@ struct PlanetDispersion {
 // enters only through the derivative along it: structure along the limb (bands crossing it, the rings' arms) carries
 // colour as well as position and is not used. 1-sigma per axis: the largest of the formal one (residual variance
 // inflated by the smoothing's correlation area), the delete-one-group jackknife over 8 runs of neighbouring sectors
-// (a colour that differs around the limb moves the groups apart; a true dispersion moves every group alike), and, on a
-// disc the frame cuts (where s and e trade off), the shift's dependence on e. Not on a whole disc (Task 5): there e is
-// fitted with the shift, and that term grew with the shift itself wherever the limb was brighter on one side -- real
-// Jupiter's B (+0.64 px, e 0.64 px) read +-0.47 px and a real dispersion was declined (synthetic reproduction: a 28 px
-// disc, B blurred 2.0 px against 1.2, light 0.6-1.4 across it, B +0.64 px: declined before, residual <= 0.1 px after).
+// (a colour that differs around the limb moves the groups apart; a true dispersion moves every group alike), and the
+// shift's dependence on e (where the limb is not alike all round -- the frame cuts it, or it is brighter on one side --
+// s and e trade off, and a channel whose limb differs from G's reads a shift that is not there: B blurred 2.0 px against
+// 1.2, the light tilted 0.4 per radius, read +0.29 px at r 10 with none; Task 5 review). On real 2023-11-02 Jupiter that
+// term puts B's +0.64 px at +-0.47 (+-0.13 without it); B is corrected along R's axis (AlignPlanetChannels).
 // Measured (PlanetSynth: cast, pedestal and gradient per channel, blur 1.2 px, noise 0.004 on a 0.5 disc, 3% band
 // colour, limb darkening 0.45/0.50/0.55; 8 seeds, R and B): with no true shift, nothing applied on any disc, whole,
 // cut by the frame or ringed (largest |measured| 0.02-0.07 px on whole 12-200 px discs, up to 0.20 on cut ones); a
@@ -128,12 +128,14 @@ PlanetDispersion MeasurePlanetDispersion(const ser::FloatImage& rgb, const Lunar
 // The dispersion axis (Task 5): atmospheric dispersion puts R and B on opposite sides of G along one line. When one
 // channel passes and the other does not (on a whole disc), the other is tested along the passing channel's line: its
 // component there, opposite the passing channel, must exceed 0.1 px and 3 x that component's own uncertainty
-// (DispersionSigmaAlong), and its component across the line be within 0.1 px or 3 sigma; then it is resampled by that
-// component alone (alongAxis). 2026-10-23 Saturn: R +0.39, -0.40 px at +-0.22 (the rings' colour in the jackknife) was
+// (DispersionSigmaAlong: without the shift's dependence on e, as the other channel's opposite shift, corrected on its
+// own, is the evidence that the dispersion is real), and its component across the line be within 0.1 px or 3 sigma;
+// then it is resampled by that component alone (alongAxis). 2026-10-23 Saturn: R +0.39, -0.40 px at +-0.22 (the rings' colour in the jackknife) was
 // declined beside B -0.31, +0.32 at +-0.08 and left a 0.5 px red fringe; along B's axis it is +0.563 +-0.166 and is
 // corrected (independent check: 0.115 +-0.11 px left, the fringe 0.997 -> 0.057). Synthetic (14 px disc, R/G 0.15,
 // noise 0.016, R +0.55 / B -0.45 px on one line): of 16 seeds 5 pass alone, 5 more along the axis (residual 0.04-0.18
-// px), 6 stay declined; an unshifted R is never moved. HISTORY gives the shifts, their sigma, the axis test and what was
+// px), 6 stay declined; an unshifted R is never moved. 2023-11-02 Jupiter's B (+0.64 px, +-0.47 on its own, the shift's
+// dependence on e) is corrected this way beside R -0.85 px. HISTORY gives the shifts, their sigma, the axis test and what was
 // resampled (and why a channel was not); skipped (unchanged, HISTORY says why) when nothing was. result (if given)
 // receives the measurement and what was applied.
 // Throws std::invalid_argument unless rgb is 3 channels and the masks are of its size.
@@ -153,7 +155,7 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
 // the disc's split-half chroma noise is 0.68-0.99 of blur 0's and its colour rms 0.995-1.004 of blur 0's.
 // Sharpen 1.5 (kSharpenDefault, unchanged), top 4 (kSharpenMax), kPlanetSharpen unchanged. On the synthetic truth
 // (PlanetSynth with fine detail, noise 0.005, 4 seeds; test_planet "[.series]") the disc's RMS error falls at every
-// amount 1-4 at every radius 10-100 px and blur 1-1.5 px (at 1.5: 5-20% lower; at 4: 3-39%), and the disc's noise
+// amount 1-4 at every radius 10-100 px and blur 1-1.5 px (at 1.5: 0.8-20.2% lower; at 4: 3.3-38.8%), and the disc's noise
 // gain is 1.05-1.38 at 1.5 and 1.49-1.65 at 2 (r 10-20, blur 1). Real (split-half noise gain on the disc interior at
 // 1.5): Jupiter 1.06, Mars 1.15, Saturn 1.31 / 1.64 (its globe's edge and rings inside the mask), Neptune 1.36; the
 // sky's noise x1.000 at every amount (the boost is 0 off the disc, spec P2). Saturn shows a bright rim inside the

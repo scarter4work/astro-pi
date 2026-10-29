@@ -12,7 +12,9 @@
 # 0, 0.5, 1, 1.5, 2, 2.5, 3, 4, 6 (planet_c<S>.fits) and Saturation 0 (planet_k0.fits). The even and the odd frames alone go
 # the same way to <id>/even/ and <id>/odd/ (the split-half noise measures). planet_check.py then prints acceptance 1-7
 # per capture with PASS / FAIL / NOT JUDGED, the series measurements, writes <id>/check.json, summary.json and the
-# PNGs. The gating run (2026-10-05 Saturn, HaO3 only: spec P6) must be refused, exit 4, with the narrowband text.
+# PNGs. A capture the table expects the stacker to refuse (Venus saturated, the 2023 Neptune with no target) must be
+# refused with that diagnosis. The gating run (2026-10-05 Saturn, HaO3 only: spec P6) must be refused, exit 4, with the
+# narrowband text.
 # capture-id ... restricts the run to those captures (the gating run always runs); a part whose probe JSON is already
 # in <out-dir> is not re-stacked unless PLANETARY_PLANET_RESTACK=1.
 #
@@ -37,16 +39,20 @@ mkdir -p "$OUT"
 SHARPENS="0 1 1.5 2 3 4"
 BLURS="0 0.5 1 1.5 2 2.5 3 4 6"
 
-# id | path under the NAS | --bayer | role (series: the Sharpen series goes to Scott too)
+# id | path under the NAS | --bayer | role (series: the Sharpen series goes to Scott too) | expected stacker outcome:
+# "image", or the diagnosis kind the stacker must refuse the capture with (stack-probe exit 2; planet_check.py fails
+# any other outcome)
 CAPTURES=(
-  "sat1023|2026-10-23/Saturn/2026-10-23-204422-Saturn-Bin1 Lqef 65.5F.avi|auto|series"
-  "sat0907|2026-09-06/Saturn/2026-09-07-020421-Saturn-Bin1 Lqef 16.7F.avi|auto|acceptance"
-  "jup0813|8_13_2023/2023-08-13-024340-Jupiter-Bin1 LPro 15.3F.avi|auto|acceptance"
-  "jup1102|11_3_2023/2023-11-02-210201-Jupiter-Bin1 LPro 13.8F.avi|auto|series"
-  "mars0211|2_12_2023/2023-02-11-192403-Mars-Bin1 16.5F.avi|RGGB|series"
-  "venus0211|2_12_2023/2023-02-11-190452-Venus-Bin1 15.8F.avi|RGGB|acceptance"
-  "nep0211|2_12_2023/2023-02-11-191000-Neptune-Bin1 14.9F.avi|RGGB|acceptance"
-  "nep1023|2026-10-23/Neptune/2026-10-23-212210-Neptune-Bin1 Lqef 62.4F.avi|auto|acceptance"
+  "sat1023|2026-10-23/Saturn/2026-10-23-204422-Saturn-Bin1 Lqef 65.5F.avi|auto|series|image"
+  "sat0907|2026-09-06/Saturn/2026-09-07-020421-Saturn-Bin1 Lqef 16.7F.avi|auto|acceptance|image"
+  "jup0813|8_13_2023/2023-08-13-024340-Jupiter-Bin1 LPro 15.3F.avi|auto|acceptance|image"
+  "jup1102|11_3_2023/2023-11-02-210201-Jupiter-Bin1 LPro 13.8F.avi|auto|series|image"
+  "mars0211|2_12_2023/2023-02-11-192403-Mars-Bin1 16.5F.avi|RGGB|series|image"
+  # Saturated in 6483 of 6485 frames.
+  "venus0211|2_12_2023/2023-02-11-190452-Venus-Bin1 15.8F.avi|RGGB|acceptance|Clipped"
+  # A target in 0 of 7406 frames.
+  "nep0211|2_12_2023/2023-02-11-191000-Neptune-Bin1 14.9F.avi|RGGB|acceptance|NoTarget"
+  "nep1023|2026-10-23/Neptune/2026-10-23-212210-Neptune-Bin1 Lqef 62.4F.avi|auto|acceptance|image"
 )
 
 want() {  # is capture id $1 selected?
@@ -73,9 +79,9 @@ run_probe() {  # dir video bayer part(full|even|odd)
 fail=0
 ids=()
 for entry in "${CAPTURES[@]}"; do
-  IFS='|' read -r id rel bayer role <<< "$entry"
+  IFS='|' read -r id rel bayer role expect <<< "$entry"
   want "$id" || continue
-  ids+=("$id:$role")
+  ids+=("$id:$role:$expect")
   video="$NAS/$rel"
   [ -f "$video" ] || { echo "FAIL $id: $video not found"; fail=1; continue; }
   for part in full even odd; do
@@ -84,7 +90,8 @@ for entry in "${CAPTURES[@]}"; do
     echo "== $id $part ($role, --bayer $bayer)"
     run_probe "$d" "$video" "$bayer" "$part"
     rc=$?
-    if [ $rc -ne 0 ]; then
+    # Exit 2 is the stacker's diagnosis: an outcome where the table expects a refusal (the checker judges its kind).
+    if [ $rc -ne 0 ] && ! { [ $rc -eq 2 ] && [ "$expect" != image ]; }; then
       echo "FAIL $id $part: stack-probe exit $rc (see $d/probe.log)"; tail -3 "$d/probe.log"; fail=1
     fi
   done

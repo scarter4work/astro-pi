@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Planet processing real-data acceptance checks (planet Task 5), over run-planet-real.sh's output.
 
-    planet_check.py [--png-dir DIR] [--no-png] <run-dir> [<id>[:<role>] ...]
+    planet_check.py [--png-dir DIR] [--no-png] <run-dir> [<id>[:<role>[:<expect>]] ...]
 
 With no ids, every <run-dir>/<id>/full/probe.json is checked (role "acceptance"). Each <run-dir>/<id>/ holds full/
 (and, for the split-half measures, even/ and odd/): stack-probe --planet's probe.json, planet.fits (the defaults),
@@ -11,9 +11,12 @@ holds the gating run (auto.exit / RGGB.exit and their JSON). numpy only (Pillow 
 written), so the ctest case runs wherever numpy does.
 
 Every requirement prints its number, its bar and PASS / FAIL / NOT JUDGED. NOT JUDGED is for a requirement whose
-input this capture does not have -- the stacker refused it (Venus saturated, a Neptune with no target), no disc was
-found (an accepted outcome, ruling Q3a), a step skipped and HISTORY says why -- never for a missing file, which fails
-(fail-closed). The requirements (spec "Acceptance (the bar)", with rulings P2 and P3):
+input this capture does not have -- no disc was found (an accepted outcome, ruling Q3a), a step skipped or a channel was
+declined and HISTORY says why (ruling Q4) -- never for a missing file or a NaN metric, which fail (fail-closed).
+<expect> is the stacker's outcome the capture table expects: "image" (the default), or the diagnosis kind it must be
+refused with (Venus "Clipped", the 2023 Neptune "NoTarget"). The "stack" row passes only on that outcome: any other
+refusal fails, and so does an image where a refusal was expected. The requirements (spec "Acceptance (the bar)", with
+rulings P2, P3 and Q4):
 
   1 calib     linear calibrated RGB (stages/calibrated.fits: after calibration and the sky plane), disc pixels with no
               stack sample >= 0.999: mean B/G and R/G within 2 % of the catalogue's (Planet.cpp PlanetReflectance).
@@ -22,8 +25,10 @@ found (an accepted outcome, ruling Q3a), a step skipped and HISTORY says why -- 
               within one sigma (robust std of the per-pixel c - G) of G.
   3 disp R/B  dispersion after the alignment, by an estimator independent of the engine's (the half-contrast limb
               radius per channel along rays from the disc's centroid; R - G and B - G fitted as a cos + b sin + c,
-              1-sigma by a jackknife over 8 groups of rays): |shift| <= 0.1 px. A residual over 0.1 px but within 2
-              sigma of it (this estimator cannot tell) is NOT JUDGED, never PASS. The engine's own before / after
+              1-sigma by a jackknife over 8 groups of rays): |shift| <= 0.1 px. Over 0.1 px, a channel the engine
+              declined with HISTORY's reason ("within 0.1 px or within 3 sigma of its uncertainty") is NOT JUDGED
+              (ruling Q4: acceptance 3's "where it skipped, HISTORY gives the reason"), and so is a residual within 2
+              sigma of 0.1 (this estimator cannot tell); neither is ever a PASS. The engine's own before / after
               (MeasurePlanetDispersion; after is circular for a resampled channel: the engine's estimate of its own
               correction) are printed with it.
   4 halo      sharpened - unsharpened linear L in the band 1-6 px outside the disc mask: 0.5 / 99.5 percentiles'
@@ -35,9 +40,10 @@ found (an accepted outcome, ruling Q3a), a step skipped and HISTORY says why -- 
               disc (the display's luminance in the disc's mean colour, each channel with the sky's own noise, clipped
               at 0 as the display is, then the colour step's chroma blur and ratio), R and B moved 0.1 px either side
               of G along the axis: acceptance 3's tolerance (Task 5 ruling candidate: with zero shift the synthetic
-              reads 0.0005-0.002 on the real discs, while a 0.05 px residual -- acceptance 3 PASS -- reads 0.04, so the
+              reads 0.0004-0.16 on the real discs, while a 0.05 px residual -- acceptance 3 PASS -- reads 0.04, so the
               bar as written failed every capture however well aligned). Before / after the alignment (the display
-              RGB) and the zero-shift synthetic are printed with it.
+              RGB) and the zero-shift synthetic are printed with it. Over the bar with a channel declined as in
+              "3 disp" (ruling Q4): NOT JUDGED.
   5 skynoise  ruling P2: the output's L robust std over the sky, at the default Sharpen / at Sharpen 0: <= 1.5.
   6 clip      every output finite, in [0, 1]; no sample >= 0.999 whose stack sample is < 0.999.
   7 natural   Saturation 1 (the run's own saturation must be 1): the output's mean B/G and R/G over the disc within
@@ -77,6 +83,8 @@ BLURS = (0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0)
 EPS = 0.002  # FinishPlanet's eps (Planet.h)
 SYNTH_SEEDS = 64
 TOLERANCE = 0.1  # acceptance 3's residual (px): the fringe bar's synthetic carries it (Task 5 ruling candidate)
+# AlignPlanetChannels' HISTORY reason for a channel it did not resample.
+DECLINED = "within 0.1 px or within 3 sigma of its uncertainty"
 
 
 class HarnessError(Exception):
@@ -252,6 +260,12 @@ def starlet(x, n=2):
     return out
 
 
+def worst(values):
+    """The largest of values, NaN when any is NaN (max() is order-dependent with NaN: a NaN metric must fail, not hide)."""
+    v = [float(x) for x in values]
+    return float("nan") if not v or any(math.isnan(x) for x in v) else max(v)
+
+
 def robust_std(v):
     v = np.asarray(v, float)
     return 1.4826 * float(np.median(np.abs(v - np.median(v)))) if v.size > 1 else float("nan")
@@ -391,7 +405,7 @@ AXES8 = [(math.cos(k * math.pi / 8), math.sin(k * math.pi / 8)) for k in range(8
 def fringe_measure(rgb, ring, cy, cx, axis):
     if axis is not None:
         return abs(side_asym(rgb, ring, cy, cx, axis))
-    return max(abs(side_asym(rgb, ring, cy, cx, a)) for a in AXES8)
+    return worst(abs(side_asym(rgb, ring, cy, cx, a)) for a in AXES8)
 
 
 def colour_step(display, Lsharp, sigma):
@@ -512,16 +526,23 @@ def series_noise(full, even, odd, rep, cid):
     return res
 
 
-def check(run, cid, role, png_dir):
-    print("== %s (%s)" % (cid, role), flush=True)
+def check(run, cid, role, png_dir, expect="image"):
+    print("== %s (%s, expect %s)" % (cid, role, expect), flush=True)
     rep = Report(cid)
     base = os.path.join(run, cid)
     full = load_part(os.path.join(base, "full"), need_stack=True)
     j = full["json"]
-    result = {"id": cid, "role": role, "rows": rep.rows, "series": {}}
+    result = {"id": cid, "role": role, "expect": expect, "rows": rep.rows, "series": {}}
+    kind = j.get("diagnosis", {}).get("kind", "?")
     if "image" not in j:
-        d = j.get("diagnosis", {})
-        rep.add("stack", "%s: %s" % (d.get("kind", "?"), d.get("message", "")), "an image", "NOT JUDGED")
+        # A refusal is an outcome only where the capture table expects that kind of refusal (Venus saturated, the 2023
+        # Neptune with no target); any other refusal -- a Saturn or a Jupiter refused after a regression -- fails.
+        msg = "%s: %s" % (kind, j.get("diagnosis", {}).get("message", ""))
+        rep.judge("stack", msg, "refused as %s" % expect if expect != "image" else "an image", kind == expect)
+        return rep, result
+    if expect != "image":
+        rep.add("stack", "an image (diagnosis %s), where the table expects the stacker to refuse it as %s" % (kind, expect),
+                "refused as %s" % expect, "FAIL")
         return rep, result
     if "planet" not in j:
         raise HarnessError("%s: probe.json has an image but no planet result" % cid)
@@ -585,7 +606,7 @@ def check(run, cid, role, png_dir):
         unsat = disk & (stack < CLIP).all(axis=0)
         m = [float(cal[c][unsat].mean()) for c in range(3)]
         bg, rg = m[2] / m[1], m[0] / m[1]
-        err = max(abs(bg / tgt[0] - 1), abs(rg / tgt[1] - 1))
+        err = worst([abs(bg / tgt[0] - 1), abs(rg / tgt[1] - 1)])
         rep.judge("1 calib", "disc B/G %.4f R/G %.4f vs %s's %.3f %.3f: %.2f%%" % (bg, rg, target, tgt[0], tgt[1],
                   100 * err), "<= 2 %", err <= 0.02, error=err)
 
@@ -595,11 +616,11 @@ def check(run, cid, role, png_dir):
     else:
         sm = [clipped_mean(cal[c][sky]) for c in range(3)]
         dmean = float(cal.mean(axis=0)[disk].mean())
-        rel = max(abs(x) for x in sm) / dmean
+        rel = worst(abs(x) for x in sm) / dmean
         dn = [robust_std(cal[c][sky] - cal[1][sky]) for c in (0, 2)]
         spread = [abs(sm[c] - sm[1]) / n if n > 0 else float("inf") for c, n in zip((0, 2), dn)]
         rep.judge("2 sky", "sky mean R %.2e G %.2e B %.2e: max %.3f%% of the disc mean; R-G, B-G %.2f, %.2f sigmas" % (
-            sm[0], sm[1], sm[2], 100 * rel, *spread), "<= 0.5 %, |c - G| <= 1 sigma", rel <= 0.005 and max(spread) <= 1)
+            sm[0], sm[1], sm[2], 100 * rel, *spread), "<= 0.5 %, |c - G| <= 1 sigma", rel <= 0.005 and worst(spread) <= 1)
 
     # crop for the limb measures
     y0, y1, x0, x1 = crop_box(disc["box"], disk.shape)
@@ -612,6 +633,7 @@ def check(run, cid, role, png_dir):
     # 3. dispersion
     line = history(j, "Channel alignment")
     eng = pj["dispersion"]
+    declined = []  # channels the engine declined with HISTORY's reason (ruling Q4)
     if line.startswith("Channel alignment skipped"):
         rep.add("3 disp", line, "<= 0.1 px", "NOT JUDGED")
     else:
@@ -629,6 +651,12 @@ def check(run, cid, role, png_dir):
                 b["dx"], b["dy"], b["u"], a["dx"], a["dy"], a["u"], a["mag"], after["rays"])
             if a["mag"] <= 0.1:
                 rep.add("3 disp " + name, txt, "<= 0.1 px", "PASS", before=b, after=a, engine=eb)
+            elif not eb["applied"] and DECLINED in line:
+                # Ruling Q4: acceptance 3's "where it skipped, HISTORY gives the reason" -- the engine declined this
+                # channel and HISTORY says why (within 3 sigma of its uncertainty): not judged, never a PASS.
+                declined.append(name)
+                rep.add("3 disp " + name, txt + "; declined with HISTORY's reason (ruling Q4)", "<= 0.1 px", "NOT JUDGED",
+                        before=b, after=a, engine=eb)
             elif a["mag"] - 2 * a["u"] <= 0.1:
                 # Over 0.1 px but within 2 sigma of it: this estimator cannot tell (never a PASS).
                 rep.add("3 disp " + name, txt + "; %s, within 2 sigma of 0.1" % ("applied" if eb["applied"] else "declined"),
@@ -642,7 +670,7 @@ def check(run, cid, role, png_dir):
     if band.sum() > 20:
         delta = (full["lin_sharp"] - full["lin_unsharp"])[band]
         dm = float(full["lin_unsharp"][disk].mean())
-        halo = max(abs(np.percentile(delta, 99.5)), abs(np.percentile(delta, 0.5))) / dm
+        halo = worst([abs(np.percentile(delta, 99.5)), abs(np.percentile(delta, 0.5))]) / dm
         rep.judge("4 halo", "%.3f%% of the disc mean (%d band px)" % (100 * halo, band.sum()), "<= 2 %", halo <= 0.02)
     else:
         rep.add("4 halo", "no limb band inside the frame", "<= 2 %", "NOT JUDGED")
@@ -680,15 +708,20 @@ def check(run, cid, role, png_dir):
                     planes = [fourier_shift(Lb * ratio[c], s * tol * a[1], s * tol * a[0]) for c, s in ((0, 1), (1, 0), (2, -1))]
                     ds = np.stack([np.clip(planes[c] + rng.normal(0, noise_c[c], Lb.shape), 0, 1) for c in range(3)])
                     vals.append(abs(side_asym(colour_step(ds, Lp, sigma), ring, cy, cx, a)))
-                syn.append(max(vals))
+                syn.append(worst(vals))
             refs[tol] = float(np.percentile(syn, 95))
         ref = refs[TOLERANCE]
-        rep.judge("4 fringe", "|side difference of (R-B)/L| %.4f (display before alignment %.4f, after %.4f) vs 1.5 x %.4f "
-                  "(95th pct of %d synthetics, R and B %.1f px either side of G) = %.4f [zero shift: %.4f]; axis %s; ring %d px" % (
-                      real, fb, fa, ref, SYNTH_SEEDS, TOLERANCE, 1.5 * ref, refs[0.0],
-                      "(%.2f, %.2f)" % axis if axis else "worst of 8", ring.sum()),
-                  "<= 1.5 x synthetic", real <= 1.5 * ref, value_real=real, before=fb, after=fa, synthetic=ref,
-                  synthetic_zero=refs[0.0])
+        txt = ("|side difference of (R-B)/L| %.4f (display before alignment %.4f, after %.4f) vs 1.5 x %.4f (95th pct of "
+               "%d synthetics, R and B %.1f px either side of G) = %.4f [zero shift: %.4f]; axis %s; ring %d px" % (
+                   real, fb, fa, ref, SYNTH_SEEDS, TOLERANCE, 1.5 * ref, refs[0.0],
+                   "(%.2f, %.2f)" % axis if axis else "worst of 8", ring.sum()))
+        extra = dict(value_real=real, before=fb, after=fa, synthetic=ref, synthetic_zero=refs[0.0])
+        if not real <= 1.5 * ref and declined and math.isfinite(real) and math.isfinite(ref):
+            # Ruling Q4: the fringe of a channel the engine declined with HISTORY's reason (acceptance 3 not judged).
+            rep.add("4 fringe", txt + "; over the bar with %s declined (ruling Q4)" % " and ".join(declined),
+                    "<= 1.5 x synthetic", "NOT JUDGED", **extra)
+        else:
+            rep.judge("4 fringe", txt, "<= 1.5 x synthetic", real <= 1.5 * ref, **extra)
 
     # 5. sky noise (P2)
     s0 = outs.get("s0")
@@ -710,9 +743,9 @@ def check(run, cid, role, png_dir):
         raise HarnessError("%s: the run's saturation is %g, the natural colour check needs 1" % (cid, pj["saturation"]))
     mo = [float(P[c][disk].sum()) for c in range(3)]
     md = [float(disp[c][disk].sum()) for c in range(3)]
-    err = max(abs((mo[2] / mo[1]) / (md[2] / md[1]) - 1), abs((mo[0] / mo[1]) / (md[0] / md[1]) - 1))
+    err = worst([abs((mo[2] / mo[1]) / (md[2] / md[1]) - 1), abs((mo[0] / mo[1]) / (md[0] / md[1]) - 1)])
     tg = REFLECTANCE.get(target, (float("nan"), float("nan")))
-    terr = max(abs((mo[2] / mo[1]) / tg[0] - 1), abs((mo[0] / mo[1]) / tg[1] - 1))
+    terr = worst([abs((mo[2] / mo[1]) / tg[0] - 1), abs((mo[0] / mo[1]) / tg[1] - 1)])
     rep.judge("7 natural", "output B/G %.4f R/G %.4f vs the display's %.4f %.4f: %.2f%% (vs the catalogue: %.2f%%)" % (
         mo[2] / mo[1], mo[0] / mo[1], md[2] / md[1], md[0] / md[1], 100 * err, 100 * terr), "<= 2 %", err <= 0.02,
         error=err, catalogue_error=terr)
@@ -881,9 +914,9 @@ def main(argv):
         png_dir = os.path.join(run, "png")
     reports, results, failed = [], [], []
     for spec in ids:
-        cid, _, role = spec.partition(":")
+        cid, role, expect = (spec.split(":") + ["", ""])[:3]
         try:
-            rep, res = check(run, cid, role or "acceptance", png_dir)
+            rep, res = check(run, cid, role or "acceptance", png_dir, expect or "image")
         except HarnessError as e:
             rep, res = Report(cid), {"id": cid}
             rep.add("harness", str(e), "every input present", "FAIL")

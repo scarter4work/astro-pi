@@ -243,7 +243,6 @@ struct FitData {
     std::vector<int> sector;      // per pixel, 0 .. sectors - 1, by the normal's direction
     std::vector<float> nx, ny;    // per pixel, the limb's outward normal
     int sectors = 8;
-    bool frameCut = false;       // the disc touches the frame's edge (PlanetDispersion::frameCut)
 };
 
 // One sector's normal equations for (sx, sy, e), its gain and offset eliminated.
@@ -439,16 +438,16 @@ DispersionShift MeasureChannel(const FitData& f, int c, int threads, int& sector
         for (double x : v) ss += (x - mean) * (x - mean);
         return std::sqrt(ss * (static_cast<double>(v.size()) - 1) / static_cast<double>(v.size()));
     };
-    // How far the shift depends on e: with e held at 0 the shift moves by H_ss^-1 H_se e (linearised). On a limb the
-    // frame cuts the two trade off (the visible arc's colour and its position are not told apart), and this says by
-    // how much: there it is part of the uncertainty. On a whole disc it is not (Task 5): e is fitted with the shift,
-    // and H_se is nil only for a limb alike all round -- a limb brighter on one side gives it a share, and the term
-    // then grows with the shift itself (2023-11-02 Jupiter: B +0.64 px, e 0.64 px, the term 0.30 / 0.36 px against a
-    // formal 0.05 and a jackknife 0.13, so a real dispersion was declined; 2023-02-11 Mars: 0.08-0.11 against 0.03).
-    // The formal 1-sigma is already marginal over e (H's inverse); the jackknife carries what the limb's colour adds.
+    // How far the shift depends on e: with e held at 0 the shift moves by H_ss^-1 H_se e (linearised). Nil for a limb
+    // alike all round; on a limb the frame cuts, or one brighter on one side, the two trade off, and a channel whose limb
+    // differs from G's (chromatic seeing: large e) reads a shift that is not there -- B blurred 2.0 px against 1.2 with
+    // the light tilted 0.4 per radius read +0.29 px at r 10 with no true shift (Task 5 review). So it stays in each
+    // channel's own uncertainty, whole disc or cut. It is not in DispersionSigmaAlong: along the axis of the other
+    // channel, already corrected on its own, the opposite shift there is the evidence that the dispersion is real
+    // (2023-11-02 Jupiter: B +0.64 px at +-0.47 with this term, +-0.13 without, beside R -0.85 corrected).
     const double det = H[0] * H[4] - H[1] * H[3], vx = H[2] * e, vy = H[5] * e;
-    const double mx = !f.frameCut ? 0.0 : det > 0 ? std::fabs((H[4] * vx - H[1] * vy) / det) : inf;
-    const double my = !f.frameCut ? 0.0 : det > 0 ? std::fabs((H[0] * vy - H[3] * vx) / det) : inf;
+    const double mx = det > 0 ? std::fabs((H[4] * vx - H[1] * vy) / det) : inf;
+    const double my = det > 0 ? std::fabs((H[0] * vy - H[3] * vx) / det) : inf;
     out.dx = sx;
     out.dy = sy;
     out.ux = std::max({fx, jack(jx), mx});
@@ -513,7 +512,6 @@ PlanetDispersion MeasurePlanetDispersion(const ser::FloatImage& rgb, const Lunar
     const int cw = x1 - x0 + 1, ch = y1 - y0 + 1;
     const size_t cn = static_cast<size_t>(cw) * ch;
     FitData f;
-    f.frameCut = out.frameCut;
     // Sectors of about kSectorArc px of limb (the disc's equivalent circumference), 8 to 64, each with its own gain:
     // the limb's colour may vary along it.
     f.sectors = std::clamp(static_cast<int>(2 * M_PI * std::sqrt(m.diskCount / M_PI) / kSectorArc), 8, 64);
@@ -704,7 +702,8 @@ StepRecord AlignAndClamp(ser::FloatImage& rgb, const LunarMasks& m, int threads)
 // puts the brightest sample at 0.95, so a small seeing-blurred disc's median sits low, and a fixed eps pulled its colour
 // toward grey by about eps / C: 2026-10-23 Neptune (median 0.035) 2.4%, 2023-02-11 Mars (0.057) 1.9%, against
 // acceptance 7's 2%. Scaled, the pull is at most 0.002 / 0.35 = 0.6% of the disc's median level. The sky stays
-// guarded: there the output is L (C_c + eps) / (mean(C) + eps) with C >= 0, under 2 L whatever eps.
+// guarded: there the output is L (C_c + eps) / (mean(C) + eps) with C >= 0, at most 3 L whatever eps (all of C in one
+// channel).
 double PlanetEps(const MineralCache& cache) {
     constexpr double kEps = 0.002, kReference = 0.35;
     std::vector<float> disc;
