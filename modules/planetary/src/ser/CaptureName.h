@@ -19,7 +19,8 @@ struct CaptureName {
     FilterClass filter = FilterClass::Unknown;
 };
 
-// Parses `YYYY-MM-DD-HHMMSS-<Target>-Bin<n> <Filter> <temp>F` + extension (ASIAIR's capture name;
+// Parses `YYYY-MM-DD-HHMMSS-<Target>-Bin<n> <Filter> <temp>F` + extension (ASIAIR's capture name; the older form
+// `YYYY-MM-DD-HHMMSS-<Target>-Bin<n> <temp>F` has no filter: empty token, FilterClass::Unknown;
 // PIPP keeps it, so a trailing `_pipp` before the extension is fine). `fileName` is a base name
 // or a full path. Target and filter tokens match case-insensitively; an unknown target is Other
 // (parsed stays true), an unknown filter token is Unknown.
@@ -28,11 +29,20 @@ CaptureName ParseCaptureName(const std::string& fileName);
 // "Moon", "Jupiter", ..., "Other".
 const char* TargetName(Target);
 
+// True for Mercury through Neptune.
+bool IsPlanet(Target);
+
 // nullopt when Mineral moon may run; else the ASCII reason shown in the tooltip and the failure.
 // Refused: a target other than the Moon, a mono capture, a narrowband or an IR-pass filter (an unrecognised or missing
 // filter token is allowed). `filterToken` (CaptureName::filterToken) names the filter in the narrowband and IR-pass
 // reasons; empty says "the filter".
 std::optional<std::string> MineralMoonRefusal(Target target, FilterClass filter, const FileInfo& info,
                                               const std::string& filterToken);
+
+// nullopt when planet processing may run; else the ASCII reason shown in the tooltip and the failure.
+// Refused: the Moon (points to Mineral moon), a target that is not a planet (pick it in the Target list), a mono capture,
+// a narrowband or an IR-pass filter. Colour and filter tests are shared with MineralMoonRefusal.
+std::optional<std::string> PlanetRefusal(Target target, FilterClass filter, const FileInfo& info,
+                                         const std::string& filterToken);
 
 }  // namespace planetary::ser

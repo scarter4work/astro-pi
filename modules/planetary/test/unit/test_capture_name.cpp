@@ -107,3 +107,42 @@ TEST_CASE("ParseCaptureName: a filter holding a separator, Windows paths, any ca
     Expect("2026-10-23-203401-MOON-Bin1 LQEF 64.6F.avi", Target::Moon, "LQEF", FilterClass::Broadband);
     Expect("2026-10-23-203401-Moon-Bin1 uv/ir 5.0F.avi", Target::Moon, "uv/ir", FilterClass::Broadband);
 }
+
+TEST_CASE("ParseCaptureName: ASIAIR's old filterless names", "[capture_name]") {
+    Expect("2023-02-11-192403-Mars-Bin1 16.5F.avi", Target::Mars, "", FilterClass::Unknown);
+    Expect("2023-02-12-031500-Venus-Bin1 -2.0F.avi", Target::Venus, "", FilterClass::Unknown);
+    Expect("2023-02-12-040212-Neptune-Bin1 15.5F_pipp.ser", Target::Neptune, "", FilterClass::Unknown);
+    Expect("2023-02-12-025133-Moon-Bin1 15.0F.avi", Target::Moon, "", FilterClass::Unknown);
+}
+
+TEST_CASE("IsPlanet is Mercury through Neptune", "[capture_name]") {
+    for (Target t : {Target::Mercury, Target::Venus, Target::Mars, Target::Jupiter, Target::Saturn, Target::Uranus,
+                     Target::Neptune})
+        CHECK(IsPlanet(t));
+    CHECK_FALSE(IsPlanet(Target::Moon));
+    CHECK_FALSE(IsPlanet(Target::Other));
+}
+
+TEST_CASE("PlanetRefusal", "[capture_name]") {
+    const FileInfo bayer = Info(ColorId::BayerRGGB, 1);
+    CHECK_FALSE(PlanetRefusal(Target::Saturn, FilterClass::Broadband, bayer, "Lqef").has_value());
+    CHECK_FALSE(PlanetRefusal(Target::Mars, FilterClass::Unknown, bayer, "").has_value());
+    CHECK_FALSE(PlanetRefusal(Target::Saturn, FilterClass::Broadband, Info(ColorId::RGB, 3), "Lqef").has_value());
+    const auto nb = PlanetRefusal(Target::Saturn, FilterClass::Narrowband, bayer, "HaO3");
+    REQUIRE(nb.has_value());
+    CHECK(nb->find("HaO3") != std::string::npos);
+    CHECK(nb->find("narrowband") != std::string::npos);
+    const auto ir = PlanetRefusal(Target::Saturn, FilterClass::IrPass, bayer, "IR685");
+    REQUIRE(ir.has_value());
+    CHECK(ir->find("IR685") != std::string::npos);
+    CHECK(ir->find("IR-pass") != std::string::npos);
+    const auto mono = PlanetRefusal(Target::Saturn, FilterClass::Broadband, Info(ColorId::Mono, 1), "Lqef");
+    REQUIRE(mono.has_value());
+    CHECK(mono->find("mono") != std::string::npos);
+    const auto moon = PlanetRefusal(Target::Moon, FilterClass::Broadband, bayer, "Lqef");
+    REQUIRE(moon.has_value());
+    CHECK(moon->find("Mineral moon") != std::string::npos);
+    const auto other = PlanetRefusal(Target::Other, FilterClass::Broadband, bayer, "Lqef");
+    REQUIRE(other.has_value());
+    CHECK(other->find("pick the planet in the Target list") != std::string::npos);
+}

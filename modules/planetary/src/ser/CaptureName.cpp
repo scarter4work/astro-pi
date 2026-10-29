@@ -104,6 +104,16 @@ CaptureName ParseCaptureName(const std::string& path) {
     while (i < name.size() && std::isdigit(static_cast<unsigned char>(name[i]))) ++i;
     if (i == digitsAt || i >= name.size() || name[i] != ' ') return out;
     ++i;
+    // The older form has no filter: `Bin1 16.5F.avi`.
+    {
+        const size_t tEnd = TempEnd(name, i);
+        if (tEnd != i && (tEnd == name.size() || name[tEnd] == '.' || name[tEnd] == '_')) {
+            out.parsed = true;
+            out.targetToken = name.substr(18, binAt - 18);
+            out.target = TargetFromToken(out.targetToken);
+            return out;
+        }
+    }
     const size_t filterAt = i;
     const size_t sp = name.find(' ', filterAt);
     if (sp == std::string::npos || sp == filterAt) return out;
@@ -134,20 +144,38 @@ const char* TargetName(Target t) {
     return "Other";
 }
 
-std::optional<std::string> MineralMoonRefusal(Target target, FilterClass filter, const FileInfo& info,
-                                              const std::string& filterToken) {
-    if (target != Target::Moon)
-        return std::string("Mineral moon is for the Moon; the target is ") + TargetName(target) + ".";
+bool IsPlanet(Target t) { return t != Target::Other && t != Target::Moon; }
+
+namespace {
+// The colour and filter tests both gates share; `use` names the processing for the message ("Mineral moon").
+std::optional<std::string> ColourAndFilterRefusal(const char* use, FilterClass filter, const FileInfo& info,
+                                                  const std::string& filterToken) {
     if (info.planes == 1 && !IsBayer(info.colorId))
-        return std::string(
-            "Mineral moon needs a colour capture; this one is mono (set the Bayer pattern if it is a "
-            "colour camera).");
+        return std::string(use) +
+               " needs a colour capture; this one is mono (set the Bayer pattern if it is a colour camera).";
     if (filter == FilterClass::Narrowband || filter == FilterClass::IrPass)
-        return "Mineral moon needs a broadband filter; " +
+        return std::string(use) + " needs a broadband filter; " +
                (filterToken.empty() ? std::string("the filter") : filterToken) +
                (filter == FilterClass::Narrowband ? " is narrowband" : " is IR-pass") +
                ", so its colours come from the filter.";
     return std::nullopt;
+}
+}  // namespace
+
+std::optional<std::string> MineralMoonRefusal(Target target, FilterClass filter, const FileInfo& info,
+                                              const std::string& filterToken) {
+    if (target != Target::Moon)
+        return std::string("Mineral moon is for the Moon; the target is ") + TargetName(target) + ".";
+    return ColourAndFilterRefusal("Mineral moon", filter, info, filterToken);
+}
+
+std::optional<std::string> PlanetRefusal(Target target, FilterClass filter, const FileInfo& info,
+                                         const std::string& filterToken) {
+    if (target == Target::Moon)
+        return std::string("Planet processing is for the planets; the target is the Moon (use Mineral moon).");
+    if (!IsPlanet(target))
+        return std::string("Planet processing needs a planet target; pick the planet in the Target list.");
+    return ColourAndFilterRefusal("Planet processing", filter, info, filterToken);
 }
 
 }  // namespace planetary::ser
