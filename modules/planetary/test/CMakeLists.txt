@@ -57,8 +57,13 @@ if(PLANETARY_PYTHON3)
     add_test(NAME edge_chroma_fails_closed
              COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_edge_chroma.py")
     set_tests_properties(edge_chroma_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
+    # planet_check.py (planet Task 5) on a synthetic run dir: clean passes (0), a limb fringe fails (1), a missing stage
+    # file, gating run or capture fails (1); a capture with no disc (ruling Q3a) or refused by the stacker is no failure.
+    add_test(NAME planet_check_fails_closed
+             COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_planet_check.py")
+    set_tests_properties(planet_check_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
 else()
-    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed and edge_chroma_fails_closed are not registered")
+    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed, edge_chroma_fails_closed and planet_check_fails_closed are not registered")
 endif()
 
 # The PixInsight harness refuses to re-sign a shipped module (a PLANETARY_SO inside the PixInsight install

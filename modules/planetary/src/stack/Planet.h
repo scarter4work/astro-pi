@@ -18,12 +18,12 @@ namespace planetary::stack {
 
 // ---- Sharpening for small discs (Ruling P1) ----
 // SharpenLuminanceImage's profile for a planet (Mineral.h SharpenProfile): gains {1.2, 1, 1, 1}, extra {0.6, 0, 0, 0},
-// limb fade fraction 0.15 -- layer 1 only (gain 1.6 at the default 1.5 before the Wiener factor); Task 5 retunes them
-// on real data. On a 20-40 px disc layer 2's scale is the disc's own shape (limb darkening, the inner half of the
-// blurred limb): the Moon's {1.5, 2.5} / {3, 1} lifted the interior into a dome, and the disc's RMS error against
-// the truth rose 675% / 257% at r 10 (blur 1 / 1.5 px) and 342% / 33% at r 20 with this fade, 236% at r 20 blur 1
-// with the Moon's; the edge rim reached 2.5-11% of the disc mean. Measured with these values (PlanetSynth with fine
-// detail -- texture to 4 px periods and spots -- noise 0.005, amount 1.5; test_planet): the disc's RMS error against
+// limb fade fraction 0.15 -- layer 1 only (gain 1.6 at the default 1.5 before the Wiener factor); kept by Task 5
+// on real data (see the defaults below). On a 20-40 px disc layer 2's scale is the disc's own shape (limb darkening,
+// the inner half of the blurred limb): the Moon's {1.5, 2.5} / {3, 1} lifted the interior into a dome, and the disc's
+// RMS error against the truth rose 675% / 257% at r 10 (blur 1 / 1.5 px) and 342% / 33% at r 20 with this fade, 236%
+// at r 20 blur 1 with the Moon's; the edge rim reached 2.5-11% of the disc mean. Measured with these values
+// (PlanetSynth with fine detail -- texture to 4 px periods and spots -- noise 0.005, amount 1.5; test_planet): the disc's RMS error against
 // the sharp truth falls 16.7% / 4.7% at r 10 (blur 1 / 1.5 px), 15.4% / 4.5% at r 20, 5.2% / 0.8% at r 100; around
 // a ringed globe of r 8 and 16 (blur 1.2) the sky side gains 0, the undershoot below the sky is at most 0.20% and
 // the rim inside the limb and ring tips at most 1.25% of the disc mean (bar 2%); the sky's noise is unchanged (the
@@ -142,9 +142,25 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
 // ---- The planet pipeline (spec calls 2, 4, 6; plan Task 4) ----
 // The sliders (spec call 7): Saturation, a multiple of the natural colour, 1 by default (0 grey, 3 the top); Chroma
 // blur (px, as the Moon's: scaled by width / 2000 above 2000 px); Sharpen (SharpenLuminanceImage's amount, with
-// kPlanetSharpen). The Chroma blur and Sharpen defaults and tops here are placeholders (the Moon's Sharpen, a 1 px
-// blur); Task 5 sets them from the real planet captures (spec calls 5 and 6: the smallest blur that halves the sky's
-// chroma noise; the Sharpen series).
+// kPlanetSharpen). Defaults measured on the real captures (Task 5, ruling Q2; Scott's pick from the series is Q3):
+// Chroma blur 1.0 px. The brief's rule -- the smallest blur that halves the sky's chroma noise -- holds for no blur up
+// to 2.5 on any capture (the sky's output chroma is 0.006-0.64 of one 8-bit level, already held down by the colour
+// step's ratio; blur 2.5 leaves 0.72-0.97 of it), nor does halving the disc's split-half chroma noise (0.53-0.91 at
+// 2.5). The disc's chroma noise is under one 8-bit level at blur 0 on every capture but 2026-10-23 Neptune (1.35 levels;
+// 1.03 at 1, 0.88 at 1.5); the others 0.16-0.35. The bound is acceptance 7 (Saturation 1 keeps the disc's colour within
+// 2%): the blur mixes a small disc's limb with the sky, where the ratio is eps's, and 2023-02-11 Mars (r 7 px) reads
+// 1.6% at 1.0 and 2.4% at 1.5. So 1.0, the largest blur of the series that keeps acceptance 7 on every capture; there
+// the disc's split-half chroma noise is 0.68-0.99 of blur 0's and its colour rms 0.995-1.004 of blur 0's.
+// Sharpen 1.5 (kSharpenDefault, unchanged), top 4 (kSharpenMax), kPlanetSharpen unchanged. On the synthetic truth
+// (PlanetSynth with fine detail, noise 0.005, 4 seeds; test_planet "[.series]") the disc's RMS error falls at every
+// amount 1-4 at every radius 10-100 px and blur 1-1.5 px (at 1.5: 5-20% lower; at 4: 3-39%), and the disc's noise
+// gain is 1.05-1.38 at 1.5 and 1.49-1.65 at 2 (r 10-20, blur 1). Real (split-half noise gain on the disc interior at
+// 1.5): Jupiter 1.06, Mars 1.15, Saturn 1.31 / 1.64 (its globe's edge and rings inside the mask), Neptune 1.36; the
+// sky's noise x1.000 at every amount (the boost is 0 off the disc, spec P2). Saturn shows a bright rim inside the
+// globe's edge: faint at 1.5, plain from 2, strong at 3-4 (layer 1's boost on the limb's own curvature, 2 px in). Not
+// retuned: a layer-2 extra of 0.3 lowered the synthetic error further at 1.5-2 (r 20 blur 1: 39% at 2 against 24%) but
+// raised it above the input's from 3 up on sharp discs (r 10 blur 1: -25% at 3, -100% at 4), so the slider's top would make artefacts;
+// raising the top past 4 adds only layer-1 boost (Jupiter's detail is at layers 2-3: x1.14 fine detail at 4).
 constexpr double kPlanetSaturationDefault = 1.0, kPlanetSaturationMax = 3.0;
 constexpr double kPlanetChromaBlurDefault = 1.0, kPlanetChromaBlurMax = 6.0;
 constexpr double kPlanetSharpenDefault = kSharpenDefault, kPlanetSharpenMax = kSharpenMax;

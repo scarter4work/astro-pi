@@ -653,7 +653,7 @@ TEST_CASE("small-disc sharpening reduces error against the truth") {
             const std::vector<double> truth = planetary::testing::Lum(sc.truth);
             ser::FloatImage L = LumImage(sc.observed);
             const double e0 = RmsOver(L.data, truth, sc.diskTruth);
-            const stack::StepRecord rec = stack::SharpenLuminanceImage(L, m, 4, nullptr, nullptr, stack::kSharpenDefault,
+            const stack::StepRecord rec = stack::SharpenLuminanceImage(L, m, 4, nullptr, nullptr, stack::kPlanetSharpenDefault,
                                                                        stack::kPlanetSharpen);
             const double e1 = RmsOver(L.data, truth, sc.diskTruth);
             INFO("r " << r << ", blur " << blur << ": disc RMS error vs truth " << e0 << " -> " << e1 << " ("
@@ -685,7 +685,7 @@ TEST_CASE("no halo around a ringed disc") {
         const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
         const ser::FloatImage L0 = LumImage(sc.observed);
         ser::FloatImage L1 = L0;
-        const stack::StepRecord rec = stack::SharpenLuminanceImage(L1, m, 4, nullptr, nullptr, stack::kSharpenDefault,
+        const stack::StepRecord rec = stack::SharpenLuminanceImage(L1, m, 4, nullptr, nullptr, stack::kPlanetSharpenDefault,
                                                                    stack::kPlanetSharpen);
         REQUIRE_FALSE(rec.skipped);
         const std::vector<double> truth = planetary::testing::Lum(sc.truth);
@@ -737,6 +737,48 @@ TEST_CASE("no halo around a ringed disc") {
     }
 }
 
+TEST_CASE("planet sharpen series (measurement, not a check)", "[.series]") {
+    // Task 5, brief Step 3 (the Sharpen default): not run by default (hidden tag); run it with
+    //   build/test/test_planet "[.series]"
+    // Per amount 0, 1, 1.5, 2, 3, 4 with kPlanetSharpen, on Blurred() discs (fine detail, noise 0.005): the disc's RMS
+    // error against the sharp truth (lower than the input's by), and the noise gain on the disc -- the same scene with
+    // two noise draws, std of the sharpened difference over the input's -- averaged over 4 seeds.
+    const double amounts[] = {0, 1, 1.5, 2, 3, 4};
+    std::printf("planet sharpen series (kPlanetSharpen): r, blur: per amount, error lower by %% / disc noise gain\n");
+    for (double r : {10.0, 20.0, 40.0, 100.0})
+        for (double blur : {1.0, 1.5}) {
+            double lower[6] = {}, gain[6] = {};
+            const int seeds = 4;
+            for (int k = 0; k < seeds; ++k) {
+                PlanetSceneSpec s = Blurred(r, blur, 600 + static_cast<unsigned>(10 * r) + static_cast<unsigned>(k));
+                s.noiseSeed = 1;
+                const PlanetScene a = MakePlanetScene(s);
+                s.noiseSeed = 2;
+                const PlanetScene b = MakePlanetScene(s);
+                const stack::LunarMasks m = stack::SegmentLunar(a.observed, 4);
+                const std::vector<double> truth = planetary::testing::Lum(a.truth);
+                const ser::FloatImage La = LumImage(a.observed), Lb = LumImage(b.observed);
+                const double e0 = RmsOver(La.data, truth, a.diskTruth);
+                std::vector<float> d0(La.data.size());
+                for (size_t i = 0; i < d0.size(); ++i) d0[i] = La.data[i] - Lb.data[i];
+                const double n0 = StdOver(d0, a.diskTruth);
+                for (int j = 0; j < 6; ++j) {
+                    ser::FloatImage sa = La, sb = Lb;
+                    stack::SharpenLuminanceImage(sa, m, 4, nullptr, nullptr, amounts[j], stack::kPlanetSharpen);
+                    stack::SharpenLuminanceImage(sb, m, 4, nullptr, nullptr, amounts[j], stack::kPlanetSharpen);
+                    std::vector<float> d(sa.data.size());
+                    for (size_t i = 0; i < d.size(); ++i) d[i] = sa.data[i] - sb.data[i];
+                    lower[j] += 100 * (1 - RmsOver(sa.data, truth, a.diskTruth) / e0) / seeds;
+                    gain[j] += StdOver(d, a.diskTruth) / n0 / seeds;
+                }
+            }
+            std::printf("  r %5.1f blur %.1f:", r, blur);
+            for (int j = 0; j < 6; ++j) std::printf("  A%-3g %+6.1f%% x%.2f", amounts[j], lower[j], gain[j]);
+            std::printf("\n");
+        }
+    SUCCEED();
+}
+
 TEST_CASE("sky noise") {
     // Ruling P2: sharpening at the default raises the sky's noise std by no more than 1.5x.
     for (double r : {10.0, 20.0, 100.0}) {
@@ -744,7 +786,7 @@ TEST_CASE("sky noise") {
         const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
         const ser::FloatImage L0 = LumImage(sc.observed);
         ser::FloatImage L1 = L0;
-        stack::SharpenLuminanceImage(L1, m, 4, nullptr, nullptr, stack::kSharpenDefault, stack::kPlanetSharpen);
+        stack::SharpenLuminanceImage(L1, m, 4, nullptr, nullptr, stack::kPlanetSharpenDefault, stack::kPlanetSharpen);
         const double n0 = StdOver(L0.data, sc.skyTruth), n1 = StdOver(L1.data, sc.skyTruth);
         INFO("r " << r << ": sky noise std " << n0 << " -> " << n1);
         CHECK(n1 <= 1.5 * n0);
