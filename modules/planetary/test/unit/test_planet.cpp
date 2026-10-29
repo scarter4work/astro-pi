@@ -294,17 +294,56 @@ TEST_CASE("planet disc: a small planet in a large frame of sky is found, not the
     CHECK_FALSE(Contains(cache.history.front(), "100.00% of the frame"));
 }
 
+TEST_CASE("planet disc: a small planet beside a brighter star is found, not the star") {
+    // Final review: the fallback started from the frame's brightest 3 x 3 mean, so a field star brighter per pixel than a
+    // small Neptune or Uranus became the "disc". A 5 px planet (level 0.38: its brightest pixel about 0.42) and a 2 x 2 px
+    // star at 0.95 (its 3 x 3 mean about 0.45, over the planet's 0.40), 300 px apart, in SmallInLargeSky's frame (whose
+    // gradient makes SegmentLunar take the whole frame): the planet is chosen.
+    for (unsigned seed : {1u, 2u, 3u}) {
+        PlanetSceneSpec s = SmallInLargeSky(seed);
+        s.radius = 5;
+        s.level = 0.38;
+        ser::FloatImage im = MakePlanetScene(s).observed;
+        double planetTop = 0;
+        for (int y = 470; y < 497; ++y)
+            for (int x = 892; x < 919; ++x) {
+                const float* q = &im.data[(static_cast<size_t>(y) * im.width + x) * 3];
+                planetTop = std::max(planetTop, (q[0] + q[1] + q[2]) / 3.0);
+            }
+        REQUIRE(planetTop < 0.6);  // the star is brighter per pixel than any of the planet's
+        const int sx = 1205, sy = 483;
+        for (int y = sy; y < sy + 2; ++y)
+            for (int x = sx; x < sx + 2; ++x)
+                for (int c = 0; c < 3; ++c) im.data[(static_cast<size_t>(y) * im.width + x) * 3 + c] = 0.95f;
+        im = WithStackNoise(im, seed);
+        const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+        const size_t planet = static_cast<size_t>(483) * im.width + 905, star = static_cast<size_t>(sy) * im.width + sx;
+        INFO("seed " << seed << ": planet's brightest pixel " << planetTop << "; disc " << m.diskCount << " px, sky "
+                     << m.skyCount << " px; " << m.reason);
+        REQUIRE(m.diskCount > 0);
+        CHECK(m.diskCount < 400);
+        CHECK(m.disk[planet]);
+        CHECK_FALSE(m.disk[star]);
+    }
+}
+
 TEST_CASE("planet disc: a disc filling the frame stays the frame's") {
-    // The fallback's limit: a planet larger than the frame keeps SegmentLunar's masks (nothing compact to find).
+    // The fallback's limit: a planet larger than the frame keeps SegmentLunar's masks (nothing compact to find). The
+    // frame is large enough that the window search runs (64 and 128 px windows are under a quarter of 480 x 360 px;
+    // a 48 x 40 frame skipped the loop, so the case could not fail).
     PlanetSceneSpec s = Framed(20);
-    s.width = 48;
-    s.height = 40;
-    s.cx = 24;
-    s.cy = 20;
-    s.radius = 40;
+    s.width = 480;
+    s.height = 360;
+    s.cx = 240;
+    s.cy = 180;
+    s.radius = 400;
     s.noiseStd = 0.004;
     const ser::FloatImage im = MakePlanetScene(s).observed;
+    REQUIRE(64.0 * 64.0 < 0.25 * im.width * im.height);
     const stack::LunarMasks a = stack::SegmentPlanet(im, 4), b = stack::SegmentLunar(im, 4);
+    INFO("SegmentLunar: disc " << b.diskCount << " sky " << b.skyCount << "; SegmentPlanet: disc " << a.diskCount << " sky "
+                               << a.skyCount);
+    REQUIRE(b.skyCount == 0);  // the fallback's case: SegmentLunar's disc with no sky
     CHECK(a.disk == b.disk);
     CHECK(a.sky == b.sky);
 }

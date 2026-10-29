@@ -30,7 +30,7 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
     if (m.diskCount == 0 || m.skyCount > 0) return m;
     const int w = rgb.width, h = rgb.height;
     const size_t n = Pixels(rgb);
-    // The 3 x 3 mean of the channels' mean (SegmentLunar's levels), and its brightest pixel: the planet, if any.
+    // The 3 x 3 mean of the channels' mean (SegmentLunar's levels).
     std::vector<float> L(n), Ls(n);
     for (size_t i = 0; i < n; ++i) L[i] = (rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3.0f;
     size_t peak = 0;
@@ -49,6 +49,48 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
             Ls[i] = k ? static_cast<float>(s / k) : 0.0f;
             if (Ls[i] > Ls[peak]) peak = i;
         }
+    // The planet, if any: the brightest pixel of the candidate holding the most light (final review). Candidates are
+    // the 8-connected groups over the frame's level (its median) by 5 sigma (its robust std) and by a tenth of the
+    // brightest pixel's height above it -- the second keeps a sky gradient of a few sigma (SmallInLargeSky's: 0.008 over
+    // noise 0.006) from joining into one large candidate; each weighs the light it holds above the level. The frame's
+    // brightest pixel alone took a field star brighter per pixel than a small Neptune or Uranus for the disc; a star's
+    // 1-2 px hold far less light than a disc of a few px radius. With no candidate (a flat frame), the brightest pixel.
+    {
+        std::vector<float> v(Ls);
+        const double level = Median(v);
+        v.assign(Ls.begin(), Ls.end());
+        const double top = level + std::max(5 * MadStd(v), 0.1 * (Ls[peak] - level));
+        std::vector<uint8_t> seen(n, 0);
+        std::vector<size_t> todo;
+        double best = 0;
+        for (size_t s0 = 0; s0 < n; ++s0) {
+            if (seen[s0] || !(Ls[s0] > top)) continue;
+            seen[s0] = 1;
+            todo.assign(1, s0);
+            double weight = 0;
+            size_t brightest = s0;
+            while (!todo.empty()) {
+                const size_t i = todo.back();
+                todo.pop_back();
+                weight += Ls[i] - level;
+                if (Ls[i] > Ls[brightest]) brightest = i;
+                const int x = static_cast<int>(i % static_cast<size_t>(w)), y = static_cast<int>(i / static_cast<size_t>(w));
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int yy = y + dy, xx = x + dx;
+                        if (yy < 0 || xx < 0 || yy >= h || xx >= w) continue;
+                        const size_t j = static_cast<size_t>(yy) * w + xx;
+                        if (seen[j] || !(Ls[j] > top)) continue;
+                        seen[j] = 1;
+                        todo.push_back(j);
+                    }
+            }
+            if (weight > best) {
+                best = weight;
+                peak = brightest;
+            }
+        }
+    }
     const int px = static_cast<int>(peak % static_cast<size_t>(w)), py = static_cast<int>(peak / static_cast<size_t>(w));
     // Windows of kPlanetWindow px and up, doubling, centred on it (clipped to the frame), while a window is under a
     // quarter of the frame: the first where SegmentLunar finds the planet -- the brightest pixel in its disc, the disc
