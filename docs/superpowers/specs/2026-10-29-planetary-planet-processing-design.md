@@ -331,3 +331,17 @@ point where the work waits on him.
   processing capture.
 - The rings' place in the disc mask is measured on real Saturn, not assumed. If `SegmentLunar`
   splits them off, the planet path keeps them in the disc.
+
+## Rulings during build (Claude's calls, 2026-10-29; Scott may veto)
+
+**Q9. The Moon-named types carry the planet path unrenamed.** `LunarMasks`, `MineralCache` and
+`MineralOutcome` serve the planet path under their Moon names. This is an exception to call 2's
+rename rule. Renaming them would touch every mineral call site for no change in behaviour, and it
+would put the mineral moon's bit-identical guarantee at risk. Call 2 allowed a rename only where the
+old name is wrong. Cost if wrong: readers meet Moon names on the planet path.
+
+**Q5. Acceptance 4's reference carries acceptance 3's residual.** P3's zero-dispersion synthetic disc
+becomes a synthetic disc with R and B 0.1 px either side of G along the dispersion axis: the residual
+acceptance 3 allows. As first written, the bar failed every real capture, however well it was
+aligned, because acceptance 3 itself permits 0.1 px. The two bars must agree. Cost if wrong: a 0.1 px
+residual fringe is tolerated.
