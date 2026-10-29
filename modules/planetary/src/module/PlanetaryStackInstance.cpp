@@ -315,8 +315,11 @@ bool PlanetaryStackInstance::ExecuteGlobal()
    const String fileName = File::ExtractNameAndExtension( path );
    const ser::BayerChoice bayer = BayerChoiceFor( p_bayerPattern, "PlanetaryStack" );
    const TargetChoice target = stackcards::ResolveTarget( TargetFor( p_target, "PlanetaryStack" ), pathUtf8 );
-   // The product to make after the stack: the mineral moon or planet processing (at most one passes its gate below:
-   // the first is the Moon's, the second a planet's).
+   // The product to make after the stack: the mineral moon or planet processing, never both (the window offers one, by
+   // the target; a script setting both fails here, before any stacking, saying so). The one asked for passes its gate
+   // below or the run fails with its reason.
+   if ( const std::optional<std::string> why = stackcards::PostConflict( p_mineralMoon, p_planetProcess ) )
+      throw Error( "PlanetaryStack: " + fileName + ": " + String::UTF8ToUTF16( why->c_str() ) );
    std::vector<PostParams> wanted;
    if ( p_mineralMoon )
    {

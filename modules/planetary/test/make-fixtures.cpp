@@ -888,6 +888,17 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
                       "TargetMoon", "Planet processing is for the planets; the target is the Moon (use Mineral moon).");
         planetRefused("mono Saturn, planetProcess: refused, a colour capture needed", saturnSer, "",
                       "Planet processing needs a colour capture; this one is mono");
+        // Both on (a script can set both; the window offers one): refused before stacking, saying only one can run
+        // (final review; it gave the mineral moon's "not the Moon" alone).
+        {
+            StackCase both;
+            both.name = "Saturn Lqef, mineralMoon and planetProcess both on: refused, only one of the two can run";
+            both.path = colourSer; both.kind = "error"; both.mineral = true; both.planet = true;
+            both.expectError = "Mineral moon and Planet processing are both on; only one of the two can run (Mineral moon "
+                               "for the Moon, Planet processing for a planet).";
+            both.consoleAbsent = {"Measuring frames"};
+            cases.push_back(both);
+        }
     }
 
     // Diagnoses: captures that must give no image, each with the engine's own message.

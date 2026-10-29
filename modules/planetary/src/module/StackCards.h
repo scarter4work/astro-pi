@@ -341,6 +341,16 @@ inline std::optional<std::string> PlanetRefusalFor( const std::string& pathUtf8,
    return ser::PlanetRefusal( target.target, c.filter, info, c.filterToken );
 }
 
+// Why the two products cannot both be asked for (the window offers one, by the
+// target; a script can set both parameters), or nullopt.
+inline std::optional<std::string> PostConflict( bool mineralMoon, bool planetProcess )
+{
+   if ( mineralMoon && planetProcess )
+      return std::string( "Mineral moon and Planet processing are both on; only one of the two can run (Mineral moon "
+                          "for the Moon, Planet processing for a planet)." );
+   return std::nullopt;
+}
+
 // The kind's gate: MineralRefusalFor or PlanetRefusalFor.
 inline std::optional<std::string> PostRefusalFor( PostKind k, const std::string& pathUtf8, const ser::FileInfo& info,
                                                   const TargetChoice& target )

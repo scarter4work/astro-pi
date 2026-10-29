@@ -639,6 +639,18 @@ TEST_CASE("the console's context names the post-processing and its parameters, o
     CHECK(stackcards::PostContextText(ser::Target::Other, nullptr) == "; no planet processing");
 }
 
+TEST_CASE("mineralMoon and planetProcess both on: refused, only one of the two can run", "[stackcards][planet]") {
+    // Final review (Task 6 minor): a script setting both got only the mineral moon's refusal (or the planet's) and no
+    // word that the two exclude each other; the run now fails with that reason, before any stacking.
+    CHECK_FALSE(stackcards::PostConflict(false, false).has_value());
+    CHECK_FALSE(stackcards::PostConflict(true, false).has_value());
+    CHECK_FALSE(stackcards::PostConflict(false, true).has_value());
+    const std::optional<std::string> why = stackcards::PostConflict(true, true);
+    REQUIRE(why.has_value());
+    CHECK(*why == "Mineral moon and Planet processing are both on; only one of the two can run (Mineral moon for the Moon, "
+                  "Planet processing for a planet).");
+}
+
 TEST_CASE("post-processing parameters: equal values, and when a cache made for one serves the other", "[stackcards][planet]") {
     stackcards::PostParams a;
     a.kind = stackcards::PostKind::Planet;
