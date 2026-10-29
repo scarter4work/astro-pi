@@ -128,7 +128,8 @@ constexpr const char* kPhasePlanet = "Planet";
 //   Background           NeutraliseBackground
 //   Display transfer     linear (call 4): DisplayTransfer with medianTarget 0, the brightest sample the stack did not
 //                        clip at 0.95 (calibration may have lifted it above 1.0: it lands there all the same)
-//   Channel alignment    AlignPlanetChannels (Ruling P1)
+//   Channel alignment    AlignPlanetChannels (Ruling P1); after a resampling every sample is clamped to [0, 1]
+//                        (Catmull-Rom overshoots below 0 beside the limb; HISTORY counts the samples clamped)
 // and the sharpening's noise exactly as PrepareMineral measures it (Mineral.h: the stack's noise model or one level,
 // through the transfer's slope, now 1 / W). No highlight threshold is measured (cache.satThreshold -1: the planet
 // colour has no fade). With no disc found (a faint Neptune, a frame of sky) every later step skips with that reason

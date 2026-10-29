@@ -177,7 +177,8 @@ double HighlightThreshold(const ser::FloatImage& rgb, const LunarMasks& m, doubl
 // Throws std::invalid_argument unless rgb is 3 channels, lumSharp 1 channel of its size, and the parameters
 // finite with strength, sigma, eps, devClamp >= 0 and satRamp > 0. No upper bounds: the planet path (Planet.h,
 // FinishPlanet) runs this transfer with k = Saturation (0-3), devClamp 1e3 and satThreshold 1e3, which switch the clamp
-// and the fade off (|d| < 2 for non-negative C; w = 1 below a C of 1000), the gamut guard as it is.
+// and the fade off (|d| < 2 for non-negative C -- PreparePlanet clamps its display to [0, 1] after the resampling, which
+// overshoots below 0 beside the limb; w = 1 below a C of 1000), the gamut guard as it is.
 StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads = 1);
 
 // ---- 8. Display transfer and the pipeline ----

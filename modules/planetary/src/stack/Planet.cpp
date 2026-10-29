@@ -529,13 +529,33 @@ constexpr const char* kPlanetProduct = "Planet processing";
 // accepted outcome for a faint Neptune).
 constexpr const char* kNoPlanet = "no planet disc distinguished from the sky";
 // Spec call 6: the mineral moon's +-6% deviation clamp and highlight fade, off. MineralColour has no switch for them;
-// these values are beyond any reach (Mineral.h: |d| < 2 for non-negative C, and C <= 1 after the display transfer).
+// these values are beyond any reach: PreparePlanet clamps its display to [0, 1] after the alignment (AlignAndClamp), so
+// C >= 0 and |d| < 2, and C <= 1 keeps w at 1.
 constexpr double kNoClamp = 1e3, kNoFade = 1e3;
 
 void RequirePlanetParams(const PlanetParams& p) {
     if (!(p.saturation >= 0) || !(p.chromaBlurSigma >= 0) || !(p.sharpen >= 0) || !std::isfinite(p.saturation) ||
         !std::isfinite(p.chromaBlurSigma) || !std::isfinite(p.sharpen))
         throw std::invalid_argument("Planet processing: saturation, chroma blur and sharpen must be finite and >= 0");
+}
+
+// AlignPlanetChannels on the display RGB, then every sample clamped to [0, 1] (Task 4 review, Important): Catmull-Rom
+// overshoots below 0 (and above the display's top) beside the limb, and with the deviation clamp off a chroma mean near
+// -eps made d unbounded there -- off-disc pixels past (1 + 2k) L, up to a one-channel speck at the gamut guard's 0.998
+// on a pixel at the sky's level. With C >= 0, d lies in (-1, 2) and out_c <= (1 + 2k) L. HISTORY names the samples
+// clamped. Nothing to clamp when nothing was resampled (the transfer's output is in [0, 1]).
+StepRecord AlignAndClamp(ser::FloatImage& rgb, const LunarMasks& m, int threads) {
+    StepRecord rec = AlignPlanetChannels(rgb, m, threads);
+    if (rec.skipped) return rec;
+    size_t below = 0, above = 0;
+    for (float& v : rgb.data) {
+        below += v < 0.0f;
+        above += v > 1.0f;
+        v = std::clamp(v, 0.0f, 1.0f);
+    }
+    rec.history += "; display clamped to [0, 1] after the resampling (" + std::to_string(below) + " samples below 0, " +
+                   std::to_string(above) + " above 1)";
+    return rec;
 }
 
 double Seconds(std::chrono::steady_clock::time_point t0) {
@@ -557,7 +577,7 @@ MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int thre
                               kNoPlanet,
                               true,
                               [t](ser::FloatImage& rgb, const LunarMasks& m) { return CalibratePlanetColour(rgb, m, t); },
-                              [threads](ser::FloatImage& rgb, const LunarMasks& m) { return AlignPlanetChannels(rgb, m, threads); },
+                              [threads](ser::FloatImage& rgb, const LunarMasks& m) { return AlignAndClamp(rgb, m, threads); },
                               0.0,  // linear (spec call 4)
                               false};
     return PrepareDisc(stack, threads, progress, noise, planet);

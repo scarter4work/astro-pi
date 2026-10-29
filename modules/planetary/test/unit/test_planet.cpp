@@ -770,6 +770,47 @@ TEST_CASE("no new clipping") {
     }
 }
 
+TEST_CASE("no chroma off the disc after a real alignment shift") {
+    // Task 4 review (Important): AlignPlanetChannels resamples R and B with Catmull-Rom, which overshoots below 0 beside
+    // the limb; with the deviation clamp off, a sky pixel whose blurred chroma mean sits near -eps got a d that drove
+    // one channel to the gamut guard's 0.998 -- a saturated one-channel speck on a pixel with L ~ 0.001. With the
+    // display in [0, 1], d is in (-1, 2), so out_c <= (1 + 2k) L everywhere: off the disc (L at the sky's level) no
+    // channel can stand out. Judged at Saturation 3 on discs whose R and B the stack moved by 0.5-0.8 px (resampled).
+    for (double r : {10.0, 20.0, 40.0})
+        for (ser::Target t : {ser::Target::Mars, ser::Target::Saturn, ser::Target::Neptune}) {
+            PlanetSceneSpec s = Realistic(r, 141 + static_cast<unsigned>(r));
+            s.shiftX = {0.6, 0, -0.5};
+            s.shiftY = {-0.5, 0, 0.6};
+            const PlanetScene sc = MakePlanetScene(s);
+            const stack::MineralCache cache = stack::PreparePlanet(sc.observed, t, 4, {});
+            REQUIRE(Contains(cache.history[4], "resampled onto G"));  // the alignment ran
+            stack::PlanetParams p;
+            p.saturation = stack::kPlanetSaturationMax;
+            const stack::MineralOutcome out = stack::FinishPlanet(cache, p, 4);
+            CheckValid(out, sc.observed);
+            const ser::FloatImage L = stack::SharpenedLuminance(cache, p.sharpen, 4, nullptr, stack::kPlanetSharpen);
+            const double k = p.saturation;
+            size_t over = 0, specks = 0;
+            double worst = 0, worstL = 0;
+            for (size_t i = 0; i < cache.masks.disk.size(); ++i) {
+                if (cache.masks.disk[i]) continue;
+                const float* o = &out.image.data[i * 3];
+                const double hi = std::max({o[0], o[1], o[2]}), lo = std::min({o[0], o[1], o[2]});
+                const double l = std::max(0.0f, L.data[i]);
+                over += hi > (1 + 2 * k) * l + 1e-6;
+                specks += l < 0.02 && hi - lo > 0.1;  // a dark pixel with a bright channel
+                if (hi - lo > worst) {
+                    worst = hi - lo;
+                    worstL = l;
+                }
+            }
+            INFO("r " << r << " " << ser::TargetName(t) << ": off-disc pixels over (1 + 2k) L " << over << ", dark specks "
+                      << specks << "; worst chroma " << worst << " at L " << worstL << "; " << cache.history[4]);
+            CHECK(over == 0);
+            CHECK(specks == 0);
+        }
+}
+
 TEST_CASE("linear display") {
     // Spec call 4: no midtones stretch for a planet; the white point puts the brightest sample the stack did not clip
     // at 0.95. G is untouched by the calibration and the alignment, so with no background (noise-free, no pedestal or
