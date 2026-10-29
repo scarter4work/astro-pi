@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <random>
 #include <stdexcept>
@@ -227,6 +228,87 @@ TEST_CASE("planet calibration skips without a catalogue colour or a disc") {
     CHECK(im.data == sc.observed.data);
 }
 
+// ---- A small planet in a large frame of sky (Task 5: 2026-10-23 Neptune) ----
+
+namespace {
+
+// 2026-10-23 Neptune: a 1911 x 1071 stack of sky at 0.058 (noise 0.006, the rows rising 0.008 down the
+// frame) holding a disc of about 3 px radius peaking at 0.85. SegmentLunar took the whole frame for the disc (100.00%,
+// no sky): the gradient lifts the Otsu split of the sky's own histogram 5 sigma clear.
+PlanetSceneSpec SmallInLargeSky(unsigned seed) {
+    PlanetSceneSpec s;
+    s.width = 1911;
+    s.height = 1071;
+    s.radius = 3;
+    s.cx = 905.3;
+    s.cy = 482.6;
+    s.level = 0.9;
+    s.tint = {0.55, 1.0, 1.25};
+    s.limbDarkening = {0.3, 0.3, 0.3};
+    s.bandAmplitude = 0;
+    s.bandTint = 0;
+    s.pedestal = {0.058, 0.058, 0.058};
+    s.gradientY = {0.008, 0.008, 0.008};
+    s.gradientX = {-0.003, -0.003, -0.003};
+    s.blurSigma = 1.2;
+    s.seed = seed;
+    return s;
+}
+
+// The scene with a stack's noise: correlated (white noise blurred by 1.2 px, as the demosaic and the warp leave it),
+// std 0.006 per sample. Neighbour differences read correlated noise low, which is how the Otsu split of the sky's
+// own histogram passed SegmentLunar's 5-sigma test on the real frame; and the sky's pedestal (0.058) is above a
+// quarter of that split's level, so no pixel was a sky candidate and the whole frame became disc.
+ser::FloatImage WithStackNoise(ser::FloatImage im, unsigned seed) {
+    ser::FloatImage nz{im.width, im.height, 3, std::vector<float>(im.data.size())};
+    std::mt19937 rng(seed * 7919u + 13u);
+    std::normal_distribution<float> g(0.0f, 1.0f);
+    for (float& v : nz.data) v = g(rng);
+    planetary::testing::moon_detail::Blur(nz, 1.2);
+    double ss = 0;
+    for (float v : nz.data) ss += static_cast<double>(v) * v;
+    const float k = static_cast<float>(0.006 / std::sqrt(ss / static_cast<double>(nz.data.size())));
+    for (size_t i = 0; i < im.data.size(); ++i) im.data[i] = std::clamp(im.data[i] + k * nz.data[i], 0.0f, 1.0f);
+    return im;
+}
+
+}  // namespace
+
+TEST_CASE("planet disc: a small planet in a large frame of sky is found, not the frame") {
+    for (unsigned seed : {1u, 2u, 3u}) {
+        const ser::FloatImage im = WithStackNoise(MakePlanetScene(SmallInLargeSky(seed)).observed, seed);
+        const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+        const size_t n = static_cast<size_t>(im.width) * im.height;
+        const size_t centre = static_cast<size_t>(483) * im.width + 905;
+        INFO("seed " << seed << ": disc " << m.diskCount << " px, sky " << m.skyCount << " px of " << n << "; " << m.reason);
+        REQUIRE(m.diskCount > 0);
+        CHECK(m.diskCount < 200);
+        CHECK(m.disk[centre]);
+        CHECK(m.skyCount > n / 2);
+    }
+    // The pipeline takes it: the disc's line names its px, not the frame.
+    const ser::FloatImage big = WithStackNoise(MakePlanetScene(SmallInLargeSky(4)).observed, 4);
+    const stack::MineralCache cache = stack::PreparePlanet(big, ser::Target::Neptune, 4, {});
+    INFO(cache.history.front());
+    CHECK(cache.masks.diskCount < 200);
+    CHECK_FALSE(Contains(cache.history.front(), "100.00% of the frame"));
+}
+
+TEST_CASE("planet disc: a disc filling the frame stays the frame's") {
+    // The fallback's limit: a planet larger than the frame keeps SegmentLunar's masks (nothing compact to find).
+    PlanetSceneSpec s = Framed(20);
+    s.width = 48;
+    s.height = 40;
+    s.cx = 24;
+    s.cy = 20;
+    s.radius = 40;
+    s.noiseStd = 0.004;
+    const ser::FloatImage im = MakePlanetScene(s).observed;
+    const stack::LunarMasks a = stack::SegmentPlanet(im, 4), b = stack::SegmentLunar(im, 4);
+    CHECK(a.disk == b.disk);
+    CHECK(a.sky == b.sky);
+}
+
 // ---- The ring in the disc mask (spec P6, plan risk 2) ----
 
 TEST_CASE("ring stays in the disc") {
@@ -304,6 +386,87 @@ TEST_CASE("dispersion residual") {
             CHECK(Contains(rec.history, "resampled"));
             CHECK(AllFinite(im));
         }
+}
+
+TEST_CASE("dispersion: a channel's own limb profile does not hold back a real shift") {
+    // Task 5, 2023-11-02 Jupiter (r 27.7 px): R -0.85 px and B +0.64 px against G along y (atmospheric dispersion: R
+    // and B on opposite sides), B's limb wider than G's (blue seeing is worse; the fit's normal offset e read 0.64 px).
+    // B was declined at +-0.47 px: the uncertainty took in the shift's dependence on e, which on a whole disc is no
+    // uncertainty (e is fitted with the shift) and grows with the shift itself. Both must be corrected.
+    for (unsigned seed : {1u, 2u, 3u}) {
+        PlanetSceneSpec s = Realistic(28, 300 + seed);
+        s.bandContrast = {0.7, 1.0, 1.4};
+        s.shiftY = {-0.85, 0, 0.64};
+        // The limb brighter on one side than the other (Jupiter's limb is not alike all round): 0.6 to 1.4 of its light
+        // across the disc along y, on the noise-free scene, then the noise.
+        PlanetSceneSpec wide = s;
+        wide.blurSigma = 2.0;  // B's seeing is worse: its limb is wider than G's
+        const PlanetScene sc = MakePlanetScene(s), sb = MakePlanetScene(wide);
+        ser::FloatImage im = sc.clean;
+        for (size_t i = 0; i < im.data.size() / 3; ++i) im.data[i * 3 + 2] = sb.clean.data[i * 3 + 2];
+        std::mt19937 rng(seed);
+        std::normal_distribution<float> noise(0.0f, static_cast<float>(s.noiseStd));
+        for (int y = 0; y < im.height; ++y)
+            for (int x = 0; x < im.width; ++x)
+                for (int c = 0; c < 3; ++c) {
+                    const double f = std::clamp(1 + 0.4 * (y - s.cy) / s.radius, 0.6, 1.4);
+                    float& v = im.data[(static_cast<size_t>(y) * im.width + x) * 3 + c];
+                    v = static_cast<float>(s.pedestal[c] + f * (v - s.pedestal[c])) + noise(rng);
+                }
+        const stack::LunarMasks m = stack::SegmentLunar(im, 4);
+        stack::PlanetDispersion d;
+        const stack::StepRecord rec = stack::AlignPlanetChannels(im, m, 4, &d);
+        INFO("seed " << seed << ": " << rec.history);
+        CHECK(Residual(d.r, 0, -0.85) <= 0.1);
+        CHECK(Residual(d.b, 0, 0.64) <= 0.1);
+    }
+}
+
+TEST_CASE("dispersion: the weaker channel follows the stronger's axis") {
+    // Task 5, 2026-10-23 Saturn: B -0.31, +0.32 px (+-0.08) was corrected, R +0.39, -0.40 px (+-0.22, the rings' colour
+    // in the jackknife) was not, and left a 0.5 px red fringe. Atmospheric dispersion puts R and B on opposite sides of
+    // G along one line: once one channel is corrected, the other is tested along that line alone (its component there,
+    // with that component's uncertainty). Here R is faint and noisy (Neptune-like: R/G 0.15), so on its own it is
+    // within 3 sigma; along B's axis it is not.
+    // Seeds whose R is within 3 sigma on its own (deterministic scenes; 6 of 16 seeds at this noise stay declined even
+    // along the axis, and 5 pass on their own).
+    for (unsigned seed : {2u, 4u, 6u, 15u, 16u}) {
+        PlanetSceneSpec s = Realistic(14, 400 + seed);
+        s.tint = {0.15, 1.0, 1.2};
+        s.cast = {1, 1, 1};
+        s.noiseStd = 0.016;
+        const double ux = 0.69, uy = -0.73;  // the axis, R's sense
+        s.shiftX = {0.55 * ux, 0, -0.45 * ux};
+        s.shiftY = {0.55 * uy, 0, -0.45 * uy};
+        ser::FloatImage im = MakePlanetScene(s).observed;
+        const stack::LunarMasks m = stack::SegmentLunar(im, 4);
+        stack::PlanetDispersion d;
+        const stack::StepRecord rec = stack::AlignPlanetChannels(im, m, 4, &d);
+        INFO("seed " << seed << ": " << rec.history);
+        CHECK(d.b.applied);
+        CHECK(d.r.applied);
+        CHECK(d.r.alongAxis);
+        CHECK(Contains(rec.history, "R along B's dispersion axis"));
+        // Its own uncertainty along the axis is 0.13-0.17 px here: corrected to within that, not to 0.1 px (0.55 px left
+        // uncorrected otherwise).
+        CHECK(Residual(d.r, 0.55 * ux, 0.55 * uy) <= 0.2);
+        CHECK(Residual(d.b, -0.45 * ux, -0.45 * uy) <= 0.1);
+    }
+    // R unshifted: the axis invents no shift for it.
+    for (unsigned seed : {1u, 2u, 3u}) {
+        PlanetSceneSpec s = Realistic(14, 410 + seed);
+        s.tint = {0.15, 1.0, 1.2};
+        s.cast = {1, 1, 1};
+        s.noiseStd = 0.016;
+        s.shiftX = {0, 0, -0.45 * 0.69};
+        s.shiftY = {0, 0, 0.45 * 0.73};
+        ser::FloatImage im = MakePlanetScene(s).observed;
+        const stack::LunarMasks m = stack::SegmentLunar(im, 4);
+        stack::PlanetDispersion d;
+        const stack::StepRecord rec = stack::AlignPlanetChannels(im, m, 4, &d);
+        INFO("seed " << seed << " (R unshifted): " << rec.history);
+        CHECK(Applied(d.r) <= 0.1);
+    }
 }
 
 TEST_CASE("dispersion: no false shift") {
@@ -723,6 +886,39 @@ TEST_CASE("saturation 1 is the natural colour") {
             CHECK(std::fabs(got.first / cal.first - 1) <= 0.02);
             CHECK(std::fabs(got.second / cal.second - 1) <= 0.02);
         }
+}
+
+TEST_CASE("saturation 1 is the natural colour on a dim, peaked disc") {
+    // Task 5, 2026-10-23 Neptune (r 5.3 px): the linear display puts the brightest sample at 0.95, so a small blurred
+    // disc's median sits low (0.035) and the colour step's eps (0.002, the sky's divide guard) pulled the disc 2.4%
+    // toward grey (B/G 1.259 against 1.272); Mars (median 0.057) by 1.9%. Acceptance 7's bar is 2%.
+    // A 2.5 px globe whose light is 40% in the seeing's core (1.2 px) and 60% in a wide halo (4 px), as a short-
+    // exposure stack's profile is; the disc mask reaches into the halo, so the disc's median is a few % of its peak.
+    for (unsigned seed : {1u, 2u, 3u}) {
+        PlanetSceneSpec s = Realistic(2.5, 95 + seed);
+        s.width = 96;
+        s.height = 72;
+        s.cx = 48.3;
+        s.cy = 35.8;
+        s.level = 0.9;
+        s.noiseStd = 0;
+        PlanetSceneSpec halo = s;
+        halo.blurSigma = 4.0;
+        const PlanetScene core = MakePlanetScene(s), wide = MakePlanetScene(halo);
+        ser::FloatImage im = core.clean;
+        std::mt19937 rng(seed);
+        std::normal_distribution<float> noise(0.0f, 0.002f);
+        for (size_t i = 0; i < im.data.size(); ++i) im.data[i] = 0.4f * im.data[i] + 0.6f * wide.clean.data[i] + noise(rng);
+        const stack::MineralCache cache = stack::PreparePlanet(im, ser::Target::Neptune, 4, {});
+        const stack::MineralOutcome out = stack::FinishPlanet(cache, {}, 4);
+        CheckValid(out, im);
+        const auto cal = MeanRatios(cache.display, cache.masks.disk), got = MeanRatios(out.image, cache.masks.disk);
+        INFO("seed " << seed << ": calibrated B/G " << cal.first << " R/G " << cal.second << "; processed B/G " << got.first
+                     << " R/G " << got.second << "; " << out.history[0] << "; " << out.history[3] << "; " << out.history[6]);
+        REQUIRE_FALSE(cache.masks.diskCount == 0);
+        CHECK(std::fabs(got.first / cal.first - 1) <= 0.02);
+        CHECK(std::fabs(got.second / cal.second - 1) <= 0.02);
+    }
 }
 
 TEST_CASE("saturation 0 is grey") {

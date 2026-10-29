@@ -322,6 +322,8 @@ struct DiscPipeline {
     std::function<StepRecord(ser::FloatImage&, const LunarMasks&)> calibrate, align;
     double displayMedian; // DisplayTransfer's medianTarget (<= 0: linear)
     bool highlightThreshold;  // measure cache.satThreshold (the mineral colour's highlight fade)
+    // The first step's masks: SegmentLunar when empty (the Moon); the planet's SegmentPlanet.
+    std::function<LunarMasks(const ser::FloatImage&, int)> segment = {};
 };
 // PrepareMineral's body (Mineral.h gives the contract), for either kind.
 MineralCache PrepareDisc(const ser::FloatImage& stack, int threads, const Progress& progress, const StackNoise* stackNoise,

@@ -20,6 +20,88 @@ const SharpenProfile kPlanetSharpen = {{1.2, 1.0, 1.0, 1.0}, {0.6, 0.0, 0.0, 0.0
 
 // ---- Colour calibration ----
 
+// The first window SegmentPlanet tries around the brightest pixel (px a side; it doubles).
+constexpr int kPlanetWindow = 64;
+
+LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
+    LunarMasks m = SegmentLunar(rgb, threads);
+    // Only SegmentLunar's "disc with no sky" outcome is in question: it is a disc filling the frame, or a small planet
+    // in a frame of sky that SegmentLunar could not tell from one (Planet.h).
+    if (m.diskCount == 0 || m.skyCount > 0) return m;
+    const int w = rgb.width, h = rgb.height;
+    const size_t n = Pixels(rgb);
+    // The 3 x 3 mean of the channels' mean (SegmentLunar's levels), and its brightest pixel: the planet, if any.
+    std::vector<float> L(n), Ls(n);
+    for (size_t i = 0; i < n; ++i) L[i] = (rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3.0f;
+    size_t peak = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            double s = 0;
+            int k = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int yy = y + dy, xx = x + dx;
+                    if (yy < 0 || xx < 0 || yy >= h || xx >= w || !std::isfinite(L[static_cast<size_t>(yy) * w + xx])) continue;
+                    s += L[static_cast<size_t>(yy) * w + xx];
+                    ++k;
+                }
+            const size_t i = static_cast<size_t>(y) * w + x;
+            Ls[i] = k ? static_cast<float>(s / k) : 0.0f;
+            if (Ls[i] > Ls[peak]) peak = i;
+        }
+    const int px = static_cast<int>(peak % static_cast<size_t>(w)), py = static_cast<int>(peak / static_cast<size_t>(w));
+    // Windows of kPlanetWindow px and up, doubling, centred on it (clipped to the frame), while a window is under a
+    // quarter of the frame: the first where SegmentLunar finds the planet -- the brightest pixel in its disc, the disc
+    // clear of the window's edges (except where they are the frame's), and half the window sky -- gives the masks.
+    for (int side = kPlanetWindow; static_cast<double>(side) * side < 0.25 * static_cast<double>(n); side *= 2) {
+        const int x0 = std::max(0, px - side / 2), y0 = std::max(0, py - side / 2);
+        const int x1 = std::min(w, x0 + side), y1 = std::min(h, y0 + side), cw = x1 - x0, ch = y1 - y0;
+        ser::FloatImage crop{cw, ch, 3, std::vector<float>(static_cast<size_t>(cw) * ch * 3)};
+        for (int y = 0; y < ch; ++y)
+            std::copy_n(rgb.data.begin() + static_cast<std::ptrdiff_t>((static_cast<size_t>(y + y0) * w + x0) * 3),
+                        static_cast<size_t>(cw) * 3, crop.data.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * cw * 3));
+        const LunarMasks c = SegmentLunar(crop, threads);
+        if (c.diskCount == 0 || c.skyCount * 2 < static_cast<size_t>(cw) * ch ||
+            !c.disk[static_cast<size_t>(py - y0) * cw + (px - x0)])
+            continue;
+        bool clear = true;
+        for (int y = 0; y < ch && clear; ++y)
+            for (int x = 0; x < cw && clear; ++x)
+                if (c.disk[static_cast<size_t>(y) * cw + x] &&
+                    ((x == 0 && x0 > 0) || (y == 0 && y0 > 0) || (x == cw - 1 && x1 < w) || (y == ch - 1 && y1 < h)))
+                    clear = false;
+        if (!clear) continue;
+        // The window's masks in the frame. Sky outside the window: within 5 sigma of the window's sky level (its 3 x 3
+        // mean's median and robust std over the window's sky), so a frame's gradient stays in and a star or a moon
+        // stays out -- the background plane is fitted over the frame as for any other capture.
+        std::vector<float> sky;
+        for (int y = 0; y < ch; ++y)
+            for (int x = 0; x < cw; ++x)
+                if (c.sky[static_cast<size_t>(y) * cw + x]) sky.push_back(Ls[static_cast<size_t>(y + y0) * w + (x + x0)]);
+        const double level = Median(sky), top = level + 5 * MadStd(sky);
+        LunarMasks out;
+        out.width = w;
+        out.height = h;
+        out.disk.assign(n, 0);
+        out.sky.assign(n, 0);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+                    const size_t j = static_cast<size_t>(y - y0) * cw + (x - x0);
+                    out.disk[i] = c.disk[j];
+                    out.sky[i] = c.sky[j];
+                } else {
+                    out.sky[i] = std::isfinite(Ls[i]) && Ls[i] <= top;
+                }
+                out.diskCount += out.disk[i];
+                out.skyCount += out.sky[i];
+            }
+        return out;
+    }
+    return m;
+}
+
 std::optional<BodyColour> PlanetReflectance(ser::Target t) {
     // Mallama, Krobusek & Pavlov 2017, "Comprehensive wide-band magnitudes and albedos for the planets", Icarus 282
     // (arXiv:1609.05048), Table 7: geometric albedos A_B, A_V, A_Rc; B/G = A_B / A_V, R/G = A_Rc / A_V as spec call 3
@@ -161,6 +243,7 @@ struct FitData {
     std::vector<int> sector;      // per pixel, 0 .. sectors - 1, by the normal's direction
     std::vector<float> nx, ny;    // per pixel, the limb's outward normal
     int sectors = 8;
+    bool frameCut = false;       // the disc touches the frame's edge (PlanetDispersion::frameCut)
 };
 
 // One sector's normal equations for (sx, sy, e), its gain and offset eliminated.
@@ -356,15 +439,23 @@ DispersionShift MeasureChannel(const FitData& f, int c, int threads, int& sector
         for (double x : v) ss += (x - mean) * (x - mean);
         return std::sqrt(ss * (static_cast<double>(v.size()) - 1) / static_cast<double>(v.size()));
     };
-    // How far the shift depends on e: with e held at 0 the shift moves by H_ss^-1 H_se e (linearised). Nil on a whole
-    // disc, where e and the shift are orthogonal; on a limb the frame cuts they trade off, and this says by how much.
+    // How far the shift depends on e: with e held at 0 the shift moves by H_ss^-1 H_se e (linearised). On a limb the
+    // frame cuts the two trade off (the visible arc's colour and its position are not told apart), and this says by
+    // how much: there it is part of the uncertainty. On a whole disc it is not (Task 5): e is fitted with the shift,
+    // and H_se is nil only for a limb alike all round -- a limb brighter on one side gives it a share, and the term
+    // then grows with the shift itself (2023-11-02 Jupiter: B +0.64 px, e 0.64 px, the term 0.30 / 0.36 px against a
+    // formal 0.05 and a jackknife 0.13, so a real dispersion was declined; 2023-02-11 Mars: 0.08-0.11 against 0.03).
+    // The formal 1-sigma is already marginal over e (H's inverse); the jackknife carries what the limb's colour adds.
     const double det = H[0] * H[4] - H[1] * H[3], vx = H[2] * e, vy = H[5] * e;
-    const double mx = det > 0 ? std::fabs((H[4] * vx - H[1] * vy) / det) : inf;
-    const double my = det > 0 ? std::fabs((H[0] * vy - H[3] * vx) / det) : inf;
+    const double mx = !f.frameCut ? 0.0 : det > 0 ? std::fabs((H[4] * vx - H[1] * vy) / det) : inf;
+    const double my = !f.frameCut ? 0.0 : det > 0 ? std::fabs((H[0] * vy - H[3] * vx) / det) : inf;
     out.dx = sx;
     out.dy = sy;
     out.ux = std::max({fx, jack(jx), mx});
     out.uy = std::max({fy, jack(jy), my});
+    if (inv) out.cov = {var * cx[0], var * cx[1], var * cy[1]};
+    else out.cov = {inf, 0, inf};
+    for (size_t q = 0; q < jx.size(); ++q) out.groups.push_back({jx[q], jy[q]});
     out.measured = std::isfinite(out.ux) && std::isfinite(out.uy);
     if (!out.measured) reason = "its uncertainty could not be measured (one run of the limb carries the fit)";
     return out;
@@ -422,6 +513,7 @@ PlanetDispersion MeasurePlanetDispersion(const ser::FloatImage& rgb, const Lunar
     const int cw = x1 - x0 + 1, ch = y1 - y0 + 1;
     const size_t cn = static_cast<size_t>(cw) * ch;
     FitData f;
+    f.frameCut = out.frameCut;
     // Sectors of about kSectorArc px of limb (the disc's equivalent circumference), 8 to 64, each with its own gain:
     // the limb's colour may vary along it.
     f.sectors = std::clamp(static_cast<int>(2 * M_PI * std::sqrt(m.diskCount / M_PI) / kSectorArc), 8, 64);
@@ -475,6 +567,22 @@ PlanetDispersion MeasurePlanetDispersion(const ser::FloatImage& rgb, const Lunar
     return out;
 }
 
+double DispersionSigmaAlong(const DispersionShift& s, double ax, double ay) {
+    const double formal = std::sqrt(std::max(0.0, ax * ax * s.cov[0] + 2 * ax * ay * s.cov[1] + ay * ay * s.cov[2]));
+    if (s.groups.size() < 2) return std::numeric_limits<double>::infinity();
+    std::vector<double> v;
+    double mean = 0;
+    for (const auto& g : s.groups) {
+        v.push_back(g[0] * ax + g[1] * ay);
+        mean += v.back();
+    }
+    mean /= static_cast<double>(v.size());
+    double ss = 0;
+    for (double x : v) ss += (x - mean) * (x - mean);
+    const double jack = std::sqrt(ss * (static_cast<double>(v.size()) - 1) / static_cast<double>(v.size()));
+    return std::isfinite(formal) && std::isfinite(jack) ? std::max(formal, jack) : std::numeric_limits<double>::infinity();
+}
+
 StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int threads, PlanetDispersion* result) {
     RequireMasks(rgb, m, "AlignPlanetChannels");
     PlanetDispersion d = MeasurePlanetDispersion(rgb, m, threads);
@@ -498,6 +606,33 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
     };
     d.r.applied = gate(mr, ur);
     d.b.applied = gate(mb, ub);
+    // The dispersion axis (Task 5): atmospheric dispersion puts R and B on opposite sides of G along one line, so once
+    // one channel passes, the other is tested along that line alone -- its component there, opposite the passing
+    // channel, against 0.1 px and 3 x that component's own uncertainty (DispersionSigmaAlong); its component across
+    // the line must be within 0.1 px or 3 sigma, else it is no dispersion and the axis gives it nothing. Applied, it
+    // is resampled by that component alone. Not on a disc the frame cuts (Ruling Q1: there colour and shift trade off).
+    std::string axisNote;
+    if (d.r.applied != d.b.applied && !d.frameCut) {
+        DispersionShift& q = d.r.applied ? d.b : d.r;
+        const DispersionShift& p = d.r.applied ? d.r : d.b;
+        const char* qn = d.r.applied ? "B" : "R";
+        const char* pn = d.r.applied ? "R" : "B";
+        const double pm = std::hypot(p.dx, p.dy), ax = -p.dx / pm, ay = -p.dy / pm;
+        const double along = q.dx * ax + q.dy * ay, across = -q.dx * ay + q.dy * ax;
+        const double sa = DispersionSigmaAlong(q, ax, ay), sc = DispersionSigmaAlong(q, -ay, ax);
+        if (q.measured && along > kResampleMin && along > kResampleSigmas * sa &&
+            std::fabs(across) <= std::max(kResampleMin, kResampleSigmas * sc)) {
+            q.dx = along * ax;
+            q.dy = along * ay;
+            q.applied = q.alongAxis = true;
+            axisNote = "; " + std::string(qn) + " along " + pn +
+                       Fmt("'s dispersion axis: %+.3f px (+-%.3f; across it %+.3f, +-%.3f), applied as %+.3f, %+.3f px", along,
+                           sa, across, sc, q.dx, q.dy);
+        } else {
+            axisNote = "; " + std::string(qn) + " along " + pn +
+                       Fmt("'s dispersion axis: %+.3f px (+-%.3f; across it %+.3f, +-%.3f), not applied", along, sa, across, sc);
+        }
+    }
     if (result) *result = d;
     if (!d.r.applied && !d.b.applied) {
         rec.history += "; within 0.1 px or within 3 sigma of its uncertainty";
@@ -505,6 +640,7 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
         rec.history += ", not applied";
         return rec;
     }
+    rec.history += axisNote;
     for (int c : {0, 2}) {
         const DispersionShift& s = c == 0 ? d.r : d.b;
         if (!s.applied) continue;
@@ -516,6 +652,11 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
     rec.history += d.r.applied && d.b.applied
                        ? "; R and B resampled onto G (Catmull-Rom)"
                        : (d.r.applied ? "; R resampled onto G (Catmull-Rom), B not" : "; B resampled onto G (Catmull-Rom), R not");
+    if (d.r.applied != d.b.applied) {
+        rec.history += " (within 0.1 px or within 3 sigma of its uncertainty";
+        if (d.frameCut) rec.history += Fmt(", or (the frame cuts the disc) its uncertainty over %.2f px", kCutMaxSigma);
+        rec.history += ")";
+    }
     rec.history += "; at the frame's edge, the channel's ratio to G from the nearest pixels inside";
     return rec;
 }
@@ -558,6 +699,22 @@ StepRecord AlignAndClamp(ser::FloatImage& rgb, const LunarMasks& m, int threads)
     return rec;
 }
 
+// The colour step's eps for a planet (Task 5): the mineral moon's 0.002 (Ruling R26: the sky's divide guard, set for a
+// disc whose display median is 0.35) scaled by the disc's display median over 0.35, up to 0.002. The linear display
+// puts the brightest sample at 0.95, so a small seeing-blurred disc's median sits low, and a fixed eps pulled its colour
+// toward grey by about eps / C: 2026-10-23 Neptune (median 0.035) 2.4%, 2023-02-11 Mars (0.057) 1.9%, against
+// acceptance 7's 2%. Scaled, the pull is at most 0.002 / 0.35 = 0.6% of the disc's median level. The sky stays
+// guarded: there the output is L (C_c + eps) / (mean(C) + eps) with C >= 0, under 2 L whatever eps.
+double PlanetEps(const MineralCache& cache) {
+    constexpr double kEps = 0.002, kReference = 0.35;
+    std::vector<float> disc;
+    for (size_t i = 0; i < cache.masks.disk.size(); ++i)
+        if (cache.masks.disk[i]) disc.push_back(cache.lumBase.data[i]);
+    if (disc.empty()) return kEps;
+    const double d = Median(disc);
+    return d > 0 ? kEps * std::min(1.0, d / kReference) : kEps;
+}
+
 double Seconds(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -579,7 +736,8 @@ MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int thre
                               [t](ser::FloatImage& rgb, const LunarMasks& m) { return CalibratePlanetColour(rgb, m, t); },
                               [threads](ser::FloatImage& rgb, const LunarMasks& m) { return AlignAndClamp(rgb, m, threads); },
                               0.0,  // linear (spec call 4)
-                              false};
+                              false,
+                              [](const ser::FloatImage& rgb, int n) { return SegmentPlanet(rgb, n); }};
     return PrepareDisc(stack, threads, progress, noise, planet);
 }
 
@@ -603,6 +761,7 @@ MineralOutcome FinishPlanet(const MineralCache& cache, const PlanetParams& param
         q.sharpen = params.sharpen;
         q.devClamp = kNoClamp;
         q.satThreshold = kNoFade;
+        q.eps = PlanetEps(cache);
         const ColourCounts c = ColourTransfer(out.image, L, q, threads);
         colour.history = Fmt("Saturation: %.2fx the natural colour (the chroma layer's channel ratios on the sharp "
                              "luminance), chroma blur %.2f px, eps %.4f; no deviation clamp, no highlight fade",

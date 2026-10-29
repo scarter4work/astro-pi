@@ -1,6 +1,8 @@
 #pragma once
+#include <array>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "CaptureName.h"
 #include "Mineral.h"
@@ -29,6 +31,19 @@ namespace planetary::stack {
 // 0 (the Moon's fade), 20.17% against 20.05% lower at r 8, 19.19% against 18.92% at r 10; no change at blur 1.5 or at
 // r 6 or 12 (where 0.15 R >= 2 px, layer 1's reach, or the fade lies outside the measured interior), none in the halo.
 extern const SharpenProfile kPlanetSharpen;
+
+// ---- The planet's disc (Task 5) ----
+// SegmentLunar, except where it found a disc and no sky. That is a disc filling the frame -- or a small planet in a
+// large frame of sky that SegmentLunar cannot tell from one: 2026-10-23 Neptune (1911 x 1071, sky 0.058 with
+// correlated noise and a 0.008 rise down the frame, a disc of about 3 px radius) came out as 100% disc, so the sky was
+// calibrated to Neptune's colour. There, windows of 64, 128, ... px (while under a quarter of the frame) centred on the
+// brightest pixel of the 3 x 3 mean are tried in turn with SegmentLunar; the first whose disc holds that pixel, is clear
+// of the window's edges (but where they are the frame's), and leaves half the window sky gives the masks: the window's
+// disc and sky, and outside the window the pixels within 5 robust sigma of the window's sky level (a gradient stays in,
+// a star or a moon stays out). Otherwise SegmentLunar's masks stand (a planet filling the frame stays the frame's).
+// Measured: the synthetic Neptune above (3 seeds) gives a disc of under 200 px holding the planet and over half the frame
+// sky; the real one 88 px (equivalent radius 5.3 px), sky 99.92%.
+LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads);
 
 // ---- Colour calibration (spec call 3) ----
 // A body's colour relative to sunlight: the ratios of its geometric albedos in Johnson B, Johnson V and Cousins Rc.
@@ -61,7 +76,16 @@ struct DispersionShift {
     double ux = 0, uy = 0;  // 1-sigma uncertainty of dx, dy
     bool measured = false;  // converged with enough of the disc to judge it
     bool applied = false;   // the channel was resampled by (dx, dy) onto G
+    // What the uncertainty along any direction is taken from (DispersionSigmaAlong): the formal covariance of (dx, dy)
+    // (xx, xy, yy) and the jackknife's solutions, one per group of sectors.
+    std::array<double, 3> cov{0, 0, 0};
+    std::vector<std::array<double, 2>> groups;
+    bool alongAxis = false;  // applied as its component along the other channel's dispersion axis (AlignPlanetChannels)
 };
+// The 1-sigma of a channel's shift along the unit direction (ax, ay): the larger of the formal one and the jackknife's
+// over the groups' solutions projected there (MeasurePlanetDispersion's ux, uy per axis, for any direction; on a
+// disc the frame cuts, the shift's dependence on e is not in it).
+double DispersionSigmaAlong(const DispersionShift& s, double ax, double ay);
 struct PlanetDispersion {
     DispersionShift r, b;
     size_t pixels = 0;      // pixels the fit used (the limb band, inside the frame)
@@ -81,8 +105,11 @@ struct PlanetDispersion {
 // enters only through the derivative along it: structure along the limb (bands crossing it, the rings' arms) carries
 // colour as well as position and is not used. 1-sigma per axis: the largest of the formal one (residual variance
 // inflated by the smoothing's correlation area), the delete-one-group jackknife over 8 runs of neighbouring sectors
-// (a colour that differs around the limb moves the groups apart; a true dispersion moves every group alike), and the
-// shift's dependence on e (nil on a whole disc; on a cut one, s and e trade off).
+// (a colour that differs around the limb moves the groups apart; a true dispersion moves every group alike), and, on a
+// disc the frame cuts (where s and e trade off), the shift's dependence on e. Not on a whole disc (Task 5): there e is
+// fitted with the shift, and that term grew with the shift itself wherever the limb was brighter on one side -- real
+// Jupiter's B (+0.64 px, e 0.64 px) read +-0.47 px and a real dispersion was declined (synthetic reproduction: a 28 px
+// disc, B blurred 2.0 px against 1.2, light 0.6-1.4 across it, B +0.64 px: declined before, residual <= 0.1 px after).
 // Measured (PlanetSynth: cast, pedestal and gradient per channel, blur 1.2 px, noise 0.004 on a 0.5 disc, 3% band
 // colour, limb darkening 0.45/0.50/0.55; 8 seeds, R and B): with no true shift, nothing applied on any disc, whole,
 // cut by the frame or ringed (largest |measured| 0.02-0.07 px on whole 12-200 px discs, up to 0.20 on cut ones); a
@@ -97,9 +124,18 @@ PlanetDispersion MeasurePlanetDispersion(const ser::FloatImage& rgb, const Lunar
 // ratio-to-G rule) when its shift exceeds 0.1 px AND 3 times its uncertainty (AlignChannels' gate, spec P1). On a
 // disc the frame cuts, also only when that uncertainty is within 0.05 px: there colour and shift trade off along the
 // visible arc, and without the rule the corrections applied there left 0.12-0.16 px at sigma 0.10-0.17 (centre 3 px
-// from the edge); with it, applied corrections there left at most 0.095 px and the rest declined. HISTORY gives the
-// shifts, their sigma, and what was resampled; skipped (unchanged, HISTORY says why) when nothing was. result (if
-// given) receives the measurement and what was applied.
+// from the edge); with it, applied corrections there left at most 0.095 px and the rest declined.
+// The dispersion axis (Task 5): atmospheric dispersion puts R and B on opposite sides of G along one line. When one
+// channel passes and the other does not (on a whole disc), the other is tested along the passing channel's line: its
+// component there, opposite the passing channel, must exceed 0.1 px and 3 x that component's own uncertainty
+// (DispersionSigmaAlong), and its component across the line be within 0.1 px or 3 sigma; then it is resampled by that
+// component alone (alongAxis). 2026-10-23 Saturn: R +0.39, -0.40 px at +-0.22 (the rings' colour in the jackknife) was
+// declined beside B -0.31, +0.32 at +-0.08 and left a 0.5 px red fringe; along B's axis it is +0.563 +-0.166 and is
+// corrected (independent check: 0.115 +-0.11 px left, the fringe 0.997 -> 0.057). Synthetic (14 px disc, R/G 0.15,
+// noise 0.016, R +0.55 / B -0.45 px on one line): of 16 seeds 5 pass alone, 5 more along the axis (residual 0.04-0.18
+// px), 6 stay declined; an unshifted R is never moved. HISTORY gives the shifts, their sigma, the axis test and what was
+// resampled (and why a channel was not); skipped (unchanged, HISTORY says why) when nothing was. result (if given)
+// receives the measurement and what was applied.
 // Throws std::invalid_argument unless rgb is 3 channels and the masks are of its size.
 StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int threads, PlanetDispersion* result = nullptr);
 
@@ -123,7 +159,7 @@ constexpr const char* kPhasePlanet = "Planet";
 
 // PrepareMineral's pipeline for a planet (spec call 2: the same code, parameterised by the target kind), its five
 // steps, each with one HISTORY line:
-//   Planet disc          SegmentLunar (its px and equivalent radius named)
+//   Planet disc          SegmentPlanet (its px and equivalent radius named)
 //   Colour calibration   CalibratePlanetColour to t's catalogue reflectance (call 3), not grey
 //   Background           NeutraliseBackground
 //   Display transfer     linear (call 4): DisplayTransfer with medianTarget 0, the brightest sample the stack did not
@@ -145,7 +181,9 @@ MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int thre
 // chroma blur p.chromaBlurSigma, devClamp 1e3 (no clamp: Mars's B/G is about half its R/G) and satThreshold 1e3 (no
 // highlight fade: Jupiter's zones and Saturn's rings keep their colour), the gamut guard as it is (no new clipping:
 // where a channel would pass 0.998 the pixel's saturation gives, its hue holds). At saturation 1 that is the natural
-// colour, out_c = L (C_c + eps) / (mean(C) + eps), eps 0.002 (the sky's divide guard); at 0, R = G = B = L.
+// colour, out_c = L (C_c + eps) / (mean(C) + eps), eps the sky's divide guard: 0.002 x min(1, the disc's display median
+// / 0.35) (Task 5: a fixed 0.002 pulled a dim linear disc toward grey by about eps / C -- 2026-10-23 Neptune, median
+// 0.035, 2.4% against acceptance 7's 2%; scaled, 1.5%); at 0, R = G = B = L.
 // HISTORY: the cache's five lines, then "Sharpen ..." and "Saturation ...", each step timed. The notice is the
 // cache's. Throws std::invalid_argument for a parameter negative or not finite; StackCancelled when progress cancels.
 MineralOutcome FinishPlanet(const MineralCache& cache, const PlanetParams& params, int threads, const Progress& progress = {});

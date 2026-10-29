@@ -1405,7 +1405,7 @@ MineralCache mineral_internal::PrepareDisc(const ser::FloatImage& stack, int thr
                   [&] { cache.history.push_back(noDisk ? name + " skipped: " + kind.noDisc + "; nothing done" : fn()); });
     };
     steps.Run(kind.discStep, cache.stepSeconds, [&] {
-        cache.masks = SegmentLunar(rgb, threads);
+        cache.masks = kind.segment ? kind.segment(rgb, threads) : SegmentLunar(rgb, threads);
         noDisk = cache.masks.diskCount == 0;
         const std::string size =
             kind.discSize && !noDisk
