@@ -696,7 +696,7 @@ def check(run, cid, role, png_dir, expect="image"):
         Lb = cd.mean(axis=0)
         ratio = [float(cd[c][cdisk].sum() / Lb[cdisk].sum()) for c in range(3)]
         Lp = cP.mean(axis=0)
-        sigma = pj["chromaBlur"] * max(1.0, W / 2000.0)
+        sigma = pj["chromaBlur"]  # px at any width (FinishPlanet: MineralParams::scaleBlurWithWidth off)
         rng = np.random.default_rng(20261029)
         refs = {}
         for tol in (0.0, TOLERANCE):

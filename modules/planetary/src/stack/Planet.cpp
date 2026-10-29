@@ -757,6 +757,7 @@ MineralOutcome FinishPlanet(const MineralCache& cache, const PlanetParams& param
         MineralParams q;
         q.strength = params.saturation;
         q.chromaBlurSigma = params.chromaBlurSigma;
+        q.scaleBlurWithWidth = false;  // the slider's px at any frame width (Planet.h)
         q.sharpen = params.sharpen;
         q.devClamp = kNoClamp;
         q.satThreshold = kNoFade;

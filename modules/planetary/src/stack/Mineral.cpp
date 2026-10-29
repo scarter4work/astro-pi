@@ -1200,7 +1200,7 @@ ColourCounts mineral_internal::ColourTransfer(ser::FloatImage& rgb, const ser::F
         lumSharp.data.size() != Pixels(rgb))
         throw std::invalid_argument("MineralColour: the luminance must be one channel of the image's size");
     RequireParams(p);
-    const double sigma = p.chromaBlurSigma * ResolutionScale(rgb.width);
+    const double sigma = p.scaleBlurWithWidth ? p.chromaBlurSigma * ResolutionScale(rgb.width) : p.chromaBlurSigma;
     const double thr = p.satThreshold >= 0 ? p.satThreshold : AutoSatThreshold(rgb);
     // 1. C: each channel blurred (the chroma noise reduction; colour at lower resolution than L, as in LRGB).
     const ser::FloatImage C = ChromaLayer(rgb, sigma, threads);

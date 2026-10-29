@@ -1508,8 +1508,8 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
            TipNum( sat->MaximumValue() ) + " the most. Highlights never clip: where a channel would, the colour "
            "gives way and the hue holds. Only the colour is computed again; the stack stays.</p>" );
    slider( PlanetChromaBlur_NumericControl, "Chroma blur:", blur, planetSteps( blur ),
-           "<p>How far the colour is smoothed, in pixels (frames up to 2000 px wide; scaled for wider ones): " +
-           TipNum( blur->MinimumValue() ) + " is none, " + TipNum( blur->DefaultValue() ) + " the default, " +
+           "<p>How far the colour is smoothed, in pixels at any frame size (a planet's disc does not grow with the "
+           "frame): " + TipNum( blur->MinimumValue() ) + " is none, " + TipNum( blur->DefaultValue() ) + " the default, " +
            TipNum( blur->MaximumValue() ) + " the most. More hides the colour's noise; less keeps a planet's small "
            "colour features (belts, spots), a few pixels across. The detail always comes from the sharp luminance. "
            "Only the colour is computed again.</p>" );

@@ -95,8 +95,8 @@ sliders.</p>
     <li><b>Saturation</b>, 0 to 3, default 1: the planet's colour as a multiple of its natural colour (the catalogue
     colour the stack was calibrated to). 0 is grey, 1 the natural colour, 3 the most. Highlights never clip: where a
     channel would, the colour gives way and the hue holds.</li>
-    <li><b>Chroma blur</b>, 0 to 6 px, default 1: how far the colour is smoothed (frames up to 2000 px wide; scaled for
-    wider ones). 0 is none. More hides the colour's noise; less keeps a planet's small colour features (belts, spots), a
+    <li><b>Chroma blur</b>, 0 to 6 px, default 1: how far the colour is smoothed, in pixels at any frame size (a
+    planet's disc does not grow with the frame, unlike the Moon's). 0 is none. More hides the colour's noise; less keeps a planet's small colour features (belts, spots), a
     few pixels across. The detail always comes from the sharp luminance.</li>
     <li><b>Sharpen</b>, 0 to 4, default 1.5: how much the luminance is sharpened. 0 is none. On a small disc the finest
     detail gains most; noise is held back at every amount, and the sky is left as it is.</li>

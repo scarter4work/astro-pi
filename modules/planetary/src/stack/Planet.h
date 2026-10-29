@@ -143,9 +143,9 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
 
 // ---- The planet pipeline (spec calls 2, 4, 6; plan Task 4) ----
 // The sliders (spec call 7): Saturation, a multiple of the natural colour, 1 by default (0 grey, 3 the top); Chroma
-// blur (px, as the Moon's: scaled by width / 2000 above 2000 px); Sharpen (SharpenLuminanceImage's amount, with
-// kPlanetSharpen). Defaults measured on the real captures (Task 5, ruling Q2; Scott's pick from the series is Q3):
-// Chroma blur 1.0 px. The brief's rule -- the smallest blur that halves the sky's chroma noise -- holds for no blur up
+// blur (px at any frame width: not the Moon's width / 2000 scale, as a planet's disc does not grow with the frame);
+// Sharpen (SharpenLuminanceImage's amount, with kPlanetSharpen). Defaults measured on the real captures (Task 5,
+// ruling Q2; Scott's pick from the series is Q3): Chroma blur 1.0 px. The brief's rule -- the smallest blur that halves the sky's chroma noise -- holds for no blur up
 // to 2.5 on any capture (the sky's output chroma is 0.006-0.64 of one 8-bit level, already held down by the colour
 // step's ratio; blur 2.5 leaves 0.72-0.97 of it), nor does halving the disc's split-half chroma noise (0.53-0.91 at
 // 2.5). The disc's chroma noise is under one 8-bit level at blur 0 on every capture but 2026-10-23 Neptune (1.35 levels;
@@ -196,9 +196,9 @@ MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int thre
                            const StackNoise* noise = nullptr);
 // The finish on the cache (FinishMineral's shape; the module's sliders re-run only this): SharpenedLuminance at
 // p.sharpen with kPlanetSharpen, then MineralColour's transfer on a copy of cache.display with k = p.saturation,
-// chroma blur p.chromaBlurSigma, devClamp 1e3 (no clamp: Mars's B/G is about half its R/G) and satThreshold 1e3 (no
-// highlight fade: Jupiter's zones and Saturn's rings keep their colour), the gamut guard as it is (no new clipping:
-// where a channel would pass 0.998 the pixel's saturation gives, its hue holds). At saturation 1 that is the natural
+// chroma blur p.chromaBlurSigma px at any width (scaleBlurWithWidth off), devClamp 1e3 (no clamp: Mars's B/G is about
+// half its R/G) and satThreshold 1e3 (no highlight fade: Jupiter's zones and Saturn's rings keep their colour), the
+// gamut guard as it is (no new clipping: where a channel would pass 0.998 the pixel's saturation gives, its hue holds). At saturation 1 that is the natural
 // colour, out_c = L (C_c + eps) / (mean(C) + eps), eps the sky's divide guard: 0.002 x min(1, the disc's display median
 // / 0.35) (Task 5: a fixed 0.002 pulled a dim linear disc toward grey by about eps / C -- 2026-10-23 Neptune, median
 // 0.035, 2.4% against acceptance 7's 2%; scaled, 1.5%); at 0, R = G = B = L.

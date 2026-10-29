@@ -1110,6 +1110,44 @@ TEST_CASE("linear display") {
     CHECK(top >= 0.94);
 }
 
+TEST_CASE("planet chroma blur does not scale with the frame's width") {
+    // Final review: the Moon's chroma blur scales by width / 2000 above 2000 px (a frame-filling disc: the colour's
+    // resolution against the disc); a planet's disc is the same size in a full 3840 px frame as in a 1920 px one, so
+    // its blur is the slider's px. The same disc (noise-free, no background: the 1920 frame is the 3840 frame's left
+    // half exactly) gives the same blur in HISTORY and the same output over the disc.
+    auto run = [](int width) {
+        PlanetSceneSpec s = Framed(20);
+        s.width = width;
+        s.height = 120;
+        s.cx = 80.3;
+        s.cy = 59.8;
+        s.blurSigma = 1.2;
+        s.tint = {1.2, 1.0, 0.8};
+        const PlanetScene sc = MakePlanetScene(s);
+        const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Jupiter, 4, {});
+        REQUIRE(cache.masks.diskCount > 0);
+        return std::make_pair(cache, stack::FinishPlanet(cache, {}, 4));
+    };
+    const auto [c1, o1] = run(1920);
+    const auto [c2, o2] = run(3840);
+    INFO(o1.history[6] << "\n" << o2.history[6]);
+    CHECK(Contains(o1.history[6], "chroma blur 1.00 px"));
+    CHECK(Contains(o2.history[6], "chroma blur 1.00 px"));
+    double worst = 0;
+    size_t disc = 0;
+    for (int y = 0; y < 120; ++y)
+        for (int x = 0; x < 160; ++x) {
+            const size_t i1 = static_cast<size_t>(y) * 1920 + x, i2 = static_cast<size_t>(y) * 3840 + x;
+            if (!c1.masks.disk[i1]) continue;
+            ++disc;
+            for (int c = 0; c < 3; ++c)
+                worst = std::max(worst, std::fabs(static_cast<double>(o1.image.data[i1 * 3 + c]) - o2.image.data[i2 * 3 + c]));
+        }
+    INFO("disc " << disc << " px, largest difference " << worst);
+    REQUIRE(disc > 1000);
+    CHECK(worst <= 1e-5);
+}
+
 TEST_CASE("tiny or absent disc completes") {
     // Ruling P1: no disc (a faint Neptune, a frame of sky) or a disc of a few px runs every step, each that cannot
     // run saying why; the image is valid.

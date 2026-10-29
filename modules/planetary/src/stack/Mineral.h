@@ -147,12 +147,16 @@ std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMa
 // reduction. sigma 0 returns a copy. Throws std::invalid_argument for a negative or non-finite sigma.
 ser::FloatImage ChromaLayer(const ser::FloatImage& rgb, double sigma, int threads);
 // strength: k, the colour gain (the module's mineralStrength, 0-15, default 8). chromaBlurSigma: px at frames up
-// to 2000 px wide, scaled by width / 2000 above (the module's chromaBlur, 0.5-6, default 2.5). eps, devClamp and
-// satRamp are internal (amendment). satThreshold < 0 means automatic: AutoSatThreshold in MineralColour itself, the
-// cache's HighlightThreshold in ApplyMineralColour (the module's only path); the tests set it to switch the fade off.
+// to 2000 px wide, scaled by width / 2000 above (the module's chromaBlur, 0.5-6, default 2.5) while scaleBlurWithWidth
+// is set (the default: a frame-filling Moon, whose disc grows with the frame). eps, devClamp and satRamp are internal
+// (amendment). satThreshold < 0 means automatic: AutoSatThreshold in MineralColour itself, the cache's
+// HighlightThreshold in ApplyMineralColour (the module's only path); the tests set it to switch the fade off.
+// scaleBlurWithWidth false: chromaBlurSigma is px at any width (FinishPlanet: a planet's disc is the same size in a full
+// 3840 px frame as in a 320 px ROI, so the Moon's scale would blur a full-frame planet's colour 1.92x as far).
 struct MineralParams {
     double strength = 8.0, chromaBlurSigma = 2.5, sharpen = kSharpenDefault, eps = 0.002, devClamp = 0.06, satRamp = 0.12;
     double satThreshold = -1;  // < 0: automatic (see above)
+    bool scaleBlurWithWidth = true;
 };
 // 0.92 x the lowest, over R, G and B, of the channel's 99.99th percentile (linear interpolation between order
 // statistics, numpy's default) over every pixel.
