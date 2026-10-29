@@ -3,9 +3,11 @@
 // against its requirement on synthetic planets whose truth is known (PlanetSynth.h).
 #include <catch_amalgamated.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -417,4 +419,191 @@ TEST_CASE("dispersion: skips with its reason, and does not depend on the thread 
         CHECK(ra.history == rb.history);
         CHECK(a.data == b.data);
     }
+}
+
+// ---- Sharpening for small discs (Ruling P1: the limb fade scaled to the disc) ----
+
+namespace {
+
+// The luminance (the channels' mean, as the mineral path takes it) as a 1-channel image.
+ser::FloatImage LumImage(const ser::FloatImage& rgb) {
+    ser::FloatImage L{rgb.width, rgb.height, 1, {}};
+    for (double v : planetary::testing::Lum(rgb)) L.data.push_back(static_cast<float>(v));
+    return L;
+}
+
+double RmsOver(const std::vector<float>& a, const std::vector<double>& b, const std::vector<uint8_t>& mask) {
+    double s = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (mask[i]) {
+            s += (a[i] - b[i]) * (a[i] - b[i]);
+            ++n;
+        }
+    return std::sqrt(s / n);
+}
+
+double StdOver(const std::vector<float>& a, const std::vector<uint8_t>& mask) {
+    double s = 0, s2 = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (mask[i]) {
+            s += a[i];
+            s2 += static_cast<double>(a[i]) * a[i];
+            ++n;
+        }
+    return std::sqrt(std::max(0.0, s2 / n - (s / n) * (s / n)));
+}
+
+// A planet as the sharpening tests take it: seeing blur, white noise, no cast or background (so the truth and the
+// observed light are on one scale), in at least a 160 x 120 frame (the acceptance ROIs are 320 x 240), so the sky
+// has the 1000 px the noise estimate needs (Framed's 64 x 48 left a 40 px disc 856 px of sky, and the noise read 5x
+// high off the disc). Fine detail (texture to 4 px periods, spots) at every radius, so a large disc has something
+// the blur took to give back.
+PlanetSceneSpec Blurred(double r, double blur, unsigned seed) {
+    PlanetSceneSpec s = Framed(r);
+    s.width = std::max(s.width, 160);
+    s.height = std::max(s.height, 120);
+    s.cx = 0.5 * s.width + 0.3;
+    s.cy = 0.5 * s.height - 0.2;
+    s.seed = seed;
+    s.blurSigma = blur;
+    s.noiseStd = 0.005;
+    s.textureAmplitude = 0.05;  // detail at the seeing's scale at every radius (ruling Q2)
+    s.spotDensity = 4;
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE("small-disc sharpening reduces error against the truth") {
+    // Ruling P1 (mineral Ruling 2's ground-truth test): on blurred discs of known truth, the Sharpen at the default
+    // amount with the planet profile brings the disc closer to the sharp truth.
+    for (double r : {10.0, 20.0, 100.0})
+        for (double blur : {1.0, 1.5}) {
+            const PlanetSceneSpec s = Blurred(r, blur, 31 + static_cast<unsigned>(r));
+            const PlanetScene sc = MakePlanetScene(s);
+            const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+            const std::vector<double> truth = planetary::testing::Lum(sc.truth);
+            ser::FloatImage L = LumImage(sc.observed);
+            const double e0 = RmsOver(L.data, truth, sc.diskTruth);
+            const stack::StepRecord rec = stack::SharpenLuminanceImage(L, m, 4, nullptr, nullptr, stack::kSharpenDefault,
+                                                                       stack::kPlanetSharpen);
+            const double e1 = RmsOver(L.data, truth, sc.diskTruth);
+            INFO("r " << r << ", blur " << blur << ": disc RMS error vs truth " << e0 << " -> " << e1 << " ("
+                      << 100 * (1 - e1 / e0) << "% lower); " << rec.history);
+            WARN("r " << r << ", blur " << blur << ": disc RMS error vs truth " << e0 << " -> " << e1 << " ("
+                      << 100 * (1 - e1 / e0) << "% lower)");
+            REQUIRE_FALSE(rec.skipped);
+            CHECK(e1 < e0);
+        }
+}
+
+TEST_CASE("no halo around a ringed disc") {
+    // Spec acceptance 4 (mineral B4): the profile across the limb and the ring tips overshoots the sky by no more than
+    // 2% of the disc's mean, and sharpening puts no bright rim inside the edge (above both the blurred input and the
+    // truth). Profiles are 5 px wide strips (noise down by sqrt 5): up and down from the globe's centre (the limb; the
+    // far half of the ring is behind the globe there, the near half ends inside it) and out along the ring's major
+    // axis (its tips; the window takes in the Cassini gap, 2-5 px in), from 8 px inside the edge to 10 px into the
+    // sky.
+    for (double r : {8.0, 16.0}) {
+        PlanetSceneSpec s = Blurred(r, 1.2, 41 + static_cast<unsigned>(r));
+        s.noiseStd = 0.002;
+        s.ring = true;
+        s.ringTiltDeg = 25;
+        s.width = std::max(96, static_cast<int>(std::lround(6 * r)));
+        s.height = std::max(64, static_cast<int>(std::lround(3.2 * r)));
+        s.cx = 0.5 * s.width + 0.3;
+        s.cy = 0.5 * s.height - 0.2;
+        const PlanetScene sc = MakePlanetScene(s);
+        const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+        const ser::FloatImage L0 = LumImage(sc.observed);
+        ser::FloatImage L1 = L0;
+        const stack::StepRecord rec = stack::SharpenLuminanceImage(L1, m, 4, nullptr, nullptr, stack::kSharpenDefault,
+                                                                   stack::kPlanetSharpen);
+        REQUIRE_FALSE(rec.skipped);
+        const std::vector<double> truth = planetary::testing::Lum(sc.truth);
+        double discMean = 0;
+        size_t nd = 0;
+        for (size_t i = 0; i < sc.diskTruth.size(); ++i)
+            if (sc.diskTruth[i]) {
+                discMean += L1.data[i];
+                ++nd;
+            }
+        discMean /= static_cast<double>(nd);
+        // Strip mean at distance t along (dx, dy) from the edge point (ex, ey); t < 0 inside.
+        auto strip = [&](const std::vector<double>& v, double ex, double ey, double dx, double dy, double t) {
+            double sum = 0;
+            for (int k = -2; k <= 2; ++k) {
+                const int x = static_cast<int>(std::lround(ex + t * dx - k * dy)), y = static_cast<int>(std::lround(ey + t * dy + k * dx));
+                sum += v[static_cast<size_t>(y) * s.width + x];
+            }
+            return sum / 5;
+        };
+        const std::vector<double> before(L0.data.begin(), L0.data.end()), after(L1.data.begin(), L1.data.end());
+        struct Edge { const char* name; double ex, ey, dx, dy; };
+        const Edge edges[] = {{"top limb", s.cx, s.cy - r, 0, -1},
+                              {"bottom limb", s.cx, s.cy + r, 0, 1},
+                              {"left ring tip", s.cx - s.ringOuter * r, s.cy, -1, 0},
+                              {"right ring tip", s.cx + s.ringOuter * r, s.cy, 1, 0}};
+        for (const Edge& e : edges) {
+            double sky = 0;
+            for (int t = 7; t <= 10; ++t) sky += strip(after, e.ex, e.ey, e.dx, e.dy, t) / 4;
+            double over = 0, under = 0, rim = 0;
+            for (double t = -8; t <= 10; t += 1) {
+                const double p0 = strip(before, e.ex, e.ey, e.dx, e.dy, t), p1 = strip(after, e.ex, e.ey, e.dx, e.dy, t),
+                             pt = strip(truth, e.ex, e.ey, e.dx, e.dy, t);
+                if (t > 0) {
+                    over = std::max(over, p1 - p0);
+                    under = std::max(under, sky - p1);
+                } else {
+                    rim = std::max(rim, p1 - std::max(p0, pt));
+                }
+            }
+            INFO("globe r " << r << ", " << e.name << ": disc mean " << discMean << "; sky-side brightening " << over
+                            << ", undershoot " << under << ", rim over the input and truth " << rim << "; " << rec.history);
+            WARN("globe r " << r << ", " << e.name << ": sky-side brightening " << over / discMean * 100 << "%, undershoot "
+                            << under / discMean * 100 << "%, rim " << rim / discMean * 100 << "% of the disc mean");
+            CHECK(over <= 0.02 * discMean);
+            CHECK(under <= 0.02 * discMean);
+            CHECK(rim <= 0.02 * discMean);
+        }
+    }
+}
+
+TEST_CASE("sky noise") {
+    // Ruling P2: sharpening at the default raises the sky's noise std by no more than 1.5x.
+    for (double r : {10.0, 20.0, 100.0}) {
+        const PlanetScene sc = MakePlanetScene(Blurred(r, 1.5, 51 + static_cast<unsigned>(r)));
+        const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+        const ser::FloatImage L0 = LumImage(sc.observed);
+        ser::FloatImage L1 = L0;
+        stack::SharpenLuminanceImage(L1, m, 4, nullptr, nullptr, stack::kSharpenDefault, stack::kPlanetSharpen);
+        const double n0 = StdOver(L0.data, sc.skyTruth), n1 = StdOver(L1.data, sc.skyTruth);
+        INFO("r " << r << ": sky noise std " << n0 << " -> " << n1);
+        CHECK(n1 <= 1.5 * n0);
+    }
+}
+
+TEST_CASE("sharpen profile: refused when not finite and >= 0, and HISTORY names a scaled fade") {
+    const PlanetScene sc = MakePlanetScene(Blurred(10, 1.0, 61));
+    const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
+    const double bad[] = {-0.1, std::nan(""), HUGE_VAL};
+    for (double v : bad) {
+        stack::SharpenProfile f = stack::kPlanetSharpen, g = stack::kPlanetSharpen, x = stack::kPlanetSharpen;
+        f.fadeRadiusFraction = v;
+        g.gain[1] = v;
+        x.extra[0] = v;
+        for (const stack::SharpenProfile* p : {&f, &g, &x}) {
+            ser::FloatImage L = LumImage(sc.observed);
+            CHECK_THROWS_AS(stack::SharpenLuminanceImage(L, m, 4, nullptr, nullptr, 0.0, *p), std::invalid_argument);
+        }
+    }
+    ser::FloatImage L = LumImage(sc.observed);
+    const stack::StepRecord rec = stack::SharpenLuminanceImage(L, m, 4, nullptr, nullptr, stack::kSharpenDefault,
+                                                               stack::kPlanetSharpen);
+    INFO(rec.history);
+    CHECK(Contains(rec.history, "limb fade scaled to the disc"));
+    ser::FloatImage M = LumImage(sc.observed);
+    CHECK_FALSE(Contains(stack::SharpenLuminanceImage(M, m, 4).history, "limb fade"));  // the Moon's line as it was
 }

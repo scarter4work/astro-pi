@@ -14,6 +14,22 @@
 
 namespace planetary::stack {
 
+// ---- Sharpening for small discs (Ruling P1) ----
+// SharpenLuminanceImage's profile for a planet (Mineral.h SharpenProfile): gains {1.2, 1, 1, 1}, extra {0.6, 0, 0, 0},
+// limb fade fraction 0.15 -- layer 1 only (gain 1.6 at the default 1.5 before the Wiener factor); Task 5 retunes them
+// on real data. On a 20-40 px disc layer 2's scale is the disc's own shape (limb darkening, the inner half of the
+// blurred limb): the Moon's {1.5, 2.5} / {3, 1} lifted the interior into a dome, and the disc's RMS error against
+// the truth rose 675% / 257% at r 10 (blur 1 / 1.5 px) and 342% / 33% at r 20 with this fade, 236% at r 20 blur 1
+// with the Moon's; the edge rim reached 2.5-11% of the disc mean. Measured with these values (PlanetSynth with fine
+// detail -- texture to 4 px periods and spots -- noise 0.005, amount 1.5; test_planet): the disc's RMS error against
+// the sharp truth falls 16.7% / 4.7% at r 10 (blur 1 / 1.5 px), 15.4% / 4.5% at r 20, 5.2% / 0.8% at r 100; around
+// a ringed globe of r 8 and 16 (blur 1.2) the sky side gains 0, the undershoot below the sky is at most 0.20% and
+// the rim inside the limb and ring tips at most 1.25% of the disc mean (bar 2%); the sky's noise is unchanged (the
+// boost is 0 off the disc). The fade fraction's own share is small but consistent: 8 seeds at blur 1, f 0.15 against
+// 0 (the Moon's fade), 20.17% against 20.05% lower at r 8, 19.19% against 18.92% at r 10; no change at blur 1.5 or at
+// r 6 or 12 (where 0.15 R >= 2 px, layer 1's reach, or the fade lies outside the measured interior), none in the halo.
+extern const SharpenProfile kPlanetSharpen;
+
 // ---- Colour calibration (spec call 3) ----
 // A body's colour relative to sunlight: the ratios of its geometric albedos in Johnson B, Johnson V and Cousins Rc.
 struct BodyColour { double bOverG, rOverG; };

@@ -7,6 +7,8 @@
 #include <thread>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -1780,4 +1782,51 @@ TEST_CASE("pipeline: 1080p within the time budget") {
     }
     WARN(threads << " threads: a slider move (FinishMineral) " << slider << " s at 1920 x 1080");
     if (threads >= 32) CHECK(slider <= 0.25);
+}
+
+namespace {
+
+// FNV-1a 64 over the samples' bit patterns: any change to any sample changes it.
+uint64_t ImageHash(const ser::FloatImage& im) {
+    uint64_t h = 1469598103934665603ull;
+    for (float v : im.data) {
+        uint32_t u;
+        std::memcpy(&u, &v, sizeof u);
+        for (int b = 0; b < 4; ++b) {
+            h ^= (u >> (8 * b)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    }
+    return h;
+}
+
+}  // namespace
+
+TEST_CASE("mineral output bit-identical") {
+    // Planet Task 3 (controller ruling Q0a): the planet path's sharpen profile reworked SharpenLuminanceImage's fade;
+    // the Moon's output must stay what it was, bit for bit. These are MakeMineralMoon's outputs before that change
+    // (2026-10-29, commit 83364194), at 1 and 7 threads: StackScene at the default Sharpen, at 0 and at the slider's
+    // top, and a 60 px disc.
+    struct Case { const char* name; double radius, amount; uint64_t hash; };
+    const Case cases[] = {
+        {"default", 0, stack::kSharpenDefault, 0x661a860bd2bb6244ull},
+        {"amount 0", 0, 0.0, 0xe89b0d750d05cdf1ull},
+        {"amount 4", 0, stack::kSharpenMax, 0x0033157e44c11f63ull},
+        {"60 px disc", 60, stack::kSharpenDefault, 0x861e38359081b18eull},
+    };
+    for (const Case& c : cases) {
+        MoonSceneSpec s = StackScene();
+        if (c.radius > 0) s.radius = c.radius;
+        const MoonScene sc = MakeMoonScene(s);
+        stack::MineralParams p;
+        p.sharpen = c.amount;
+        for (int threads : {1, 7}) {
+            const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, threads, {}, p);
+            const uint64_t h = ImageHash(out.image);
+            char hex[32];
+            std::snprintf(hex, sizeof hex, "0x%016llx", static_cast<unsigned long long>(h));
+            INFO(c.name << ", " << threads << " threads: " << hex);
+            CHECK(h == c.hash);
+        }
+    }
 }

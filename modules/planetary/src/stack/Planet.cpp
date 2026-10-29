@@ -13,6 +13,10 @@ namespace planetary::stack {
 
 using namespace mineral_internal;
 
+// ---- Sharpening for small discs ----
+
+const SharpenProfile kPlanetSharpen = {{1.2, 1.0, 1.0, 1.0}, {0.6, 0.0, 0.0, 0.0}, 0.15};  // Planet.h: the measurements
+
 // ---- Colour calibration ----
 
 std::optional<BodyColour> PlanetReflectance(ser::Target t) {

@@ -98,7 +98,7 @@ double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& regi
 // white noise (1 for every layer).
 // amount (the Sharpen slider, Task SHARP): 0 leaves lum1 exactly as it is (the step is skipped, HISTORY says so);
 // 1 is the nominal gains above; above 1 each layer's boost grows by (amount - 1) x {3, 1, 0, 0} more, the finest
-// layer most, as a deconvolution would (Mineral.cpp, kLayerExtra: measured on real 64.6F against Scott's
+// layer most, as a deconvolution would (Mineral.cpp, kMoonSharpen: measured on real 64.6F against Scott's
 // reference). The noise limit (Wiener factor, soft threshold at the per-pixel noise) holds at every amount: a
 // noise-only (flat) disc's noise gain is 1.006 at 1, 1.04 at 2, 1.13 at 4. Noise riding texture above the threshold
 // takes the full gain, so on a textured disc it grows with the amount (MoonSynth, two realisations: 1.39 at 1, 1.86
@@ -107,10 +107,25 @@ double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& regi
 // 64.6F's crater rims measure 1.07x his reference's crispness (2: 1.38x, at ~3.6x the disc noise; Task SHARP
 // report). Range 0 - 4. Throws std::invalid_argument for a negative or non-finite amount. HISTORY's Sharpen line
 // names the amount.
+// profile (plan Task 3, spec Ruling P1): the layers' nominal gains, their extra per amount above 1, and the limb
+// fade's scale. gain and extra are what the paragraph above calls {1.5, 2.5, 1, 1} and {3, 1, 0, 0} (kMoonSharpen's).
+// fadeRadiusFraction f: 0 is the fade above, from one to two layer reaches (2, 6, 14, 30 px) inside the half-contrast
+// line, whatever the disc's size. f > 0 scales it to the disc: layer j's fade runs from min(reach_j, f R) to
+// 2 min(reach_j, f R), R the disc's equivalent radius sqrt(diskCount / pi), and the Wiener factor is taken where
+// that fade is at full weight. A planet disc is 12-50 px across (Ruling P1): with the reach-based fade a 20 px disc
+// gives layers 2-4 no boost anywhere. With f > 0 HISTORY's Sharpen line names R and the reaches. kMoonSharpen gives
+// the Moon's output bit for bit (test_mineral "mineral output bit-identical"). Throws std::invalid_argument for a
+// negative or non-finite fade fraction, gain or extra.
 constexpr double kSharpenDefault = 1.5, kSharpenMax = 4.0;
+struct SharpenProfile {
+    std::array<double, 4> gain, extra;  // per layer 1-4: nominal gain at amount 1; boost added per amount above 1
+    double fadeRadiusFraction;          // 0: the reach-based limb fade; > 0: each reach capped at this x R
+};
+extern const SharpenProfile kMoonSharpen;  // {1.5, 2.5, 1, 1}, {3, 1, 0, 0}, 0
 StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads,
                                  const std::vector<float>* noise = nullptr,
-                                 const std::array<double, 4>* layerShape = nullptr, double amount = kSharpenDefault);
+                                 const std::array<double, 4>* layerShape = nullptr, double amount = kSharpenDefault,
+                                 const SharpenProfile& profile = kMoonSharpen);
 // The noise's shape over the starlet layers 1-4 (Ruling R33): per layer j, the robust std of layer j over the sky
 // (eroded by the layer's reach, so the disc's edge stays out) over kStarletNoise[j] times the white-noise std that
 // layer 1 implies there; layer 1 is 1 by construction. A stack's noise is correlated (the demosaic, the warp's

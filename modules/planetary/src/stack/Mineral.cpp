@@ -667,22 +667,22 @@ constexpr double kStarletNoise[kSharpenLayers] = {0.889, 0.200, 0.086, 0.041};
 // Chosen by measurement on MoonSynth (truth detail to 1/4 cycle/px, noise 0.005, 2 sigma threshold), disc RMS
 // error against the truth: {1.5, 2.5, 1, 1} 18.2% / 14.3% lower at blur 1.0 / 1.5 px; {1.5, 2.2, 1.6, 1.25}
 // -13.7% / +3.4% (over-boosts the coarse layers); {1.5, 2.0, 1.2, 1.05} 16.8% / 10.7%; {1.6, 3.0, 1, 1} 3.3% /
-// 15.1% (too strong for the lighter blur).
-constexpr double kLayerGain[kSharpenLayers] = {1.5, 2.5, 1.0, 1.0};
-// The Sharpen amount a (Task SHARP): each layer's boost (nominal gain - 1) is a x kLayerGain's up to a = 1 (the
-// gains above, B9's sharpening), plus (a - 1) x kLayerExtra beyond it. Measured on real 64.6F against Scott's
-// MineralMoon.png (one grid; the reference's luminance quantile-mapped onto ours, starlet rms over the disc
-// interior): at a = 1 our layers 1 / 2 / 3 held 0.37 / 0.68 / 0.94 of the reference's -- the deficit is at the
-// finest scales. Scaling the gains alone (extra 0) brought layer 3 to 1.20 by the time layer 1 reached 0.54 (a 2;
-// a boost leaks into its neighbour's band); extra {3, 1, 0, 0} reaches 0.86 / 1.35 / 1.51 at a 2. Its crater rims
-// measure 0.77 / 1.07 / 1.38 / 1.68 of the reference's crispness at a 1 / 1.5 / 2 / 2.5 (Ruling R42: default 1.5).
-// {1.5, 0.5}, {1, 1}, {2.5, 0.5} and {5, 1} lie on nearly the same curve at other amounts; adding layer 3 or 4
-// ({0.5, 1.5, 0.5..1, 0..0.5}) only overshot layer 3 sooner.
-constexpr double kLayerExtra[kSharpenLayers] = {3.0, 1.0, 0.0, 0.0};
-std::array<double, kSharpenLayers> LayerBoost(double a) {
+// 15.1% (too strong for the lighter blur). They are kMoonSharpen.gain (defined below, outside this namespace).
+// The Sharpen amount a (Task SHARP): each layer's boost (nominal gain - 1) is a x the gain's up to a = 1 (the
+// gains above, B9's sharpening), plus (a - 1) x the profile's extra beyond it (kMoonSharpen.extra). Measured on
+// real 64.6F against Scott's MineralMoon.png (one grid; the reference's luminance quantile-mapped onto ours, starlet
+// rms over the disc interior): at a = 1 our layers 1 / 2 / 3 held 0.37 / 0.68 / 0.94 of the reference's -- the
+// deficit is at the finest scales. Scaling the gains alone (extra 0) brought layer 3 to 1.20 by the time layer 1
+// reached 0.54 (a 2; a boost leaks into its neighbour's band); extra {3, 1, 0, 0} reaches 0.86 / 1.35 / 1.51 at a 2.
+// Its crater rims measure 0.77 / 1.07 / 1.38 / 1.68 of the reference's crispness at a 1 / 1.5 / 2 / 2.5 (Ruling
+// R42: default 1.5). {1.5, 0.5}, {1, 1}, {2.5, 0.5} and {5, 1} lie on nearly the same curve at other amounts; adding
+// layer 3 or 4 ({0.5, 1.5, 0.5..1, 0..0.5}) only overshot layer 3 sooner.
+std::array<double, kSharpenLayers> LayerBoost(double a, const SharpenProfile& p) {
     std::array<double, kSharpenLayers> b{};
-    for (int j = 0; j < kSharpenLayers; ++j)
-        b[static_cast<size_t>(j)] = a * (kLayerGain[j] - 1) + std::max(0.0, a - 1) * kLayerExtra[j];
+    for (int j = 0; j < kSharpenLayers; ++j) {
+        const size_t u = static_cast<size_t>(j);
+        b[u] = a * (p.gain[u] - 1) + std::max(0.0, a - 1) * p.extra[u];
+    }
     return b;
 }
 // Only a coefficient's part beyond this many layer-noise sigmas is boosted (soft threshold), so noise that
@@ -696,8 +696,11 @@ constexpr double kBoostThreshold = 2.0;
 // from the mask edge left a rim of 0.043 (one 8 px ramp for every layer) and 0.017 (per-layer ramps, half a reach
 // to 1.5 reaches) over a flat disc's 0.30, blur 1.5 px (test "sharpen: no bright rim inside the limb"). From the
 // half line, a blurred step's layer-2 coefficient at full weight is under 0.5% of the contrast up to blur 3 px.
+// A SharpenProfile with a fade fraction f > 0 (planets, Ruling P1) uses min(reach, f R) in its place.
 constexpr double kLayerReach[kSharpenLayers] = {2, 6, 14, 30};
-double EdgeWeight(double dist, int j) { return std::clamp((dist - kLayerReach[j]) / kLayerReach[j], 0.0, 1.0); }
+// The weight at `dist` px inside the half-contrast line of a fade that starts at `reach` (a layer's reach, or the
+// disc-scaled one) and is full at twice that.
+double EdgeWeight(double dist, double reach) { return std::clamp((dist - reach) / reach, 0.0, 1.0); }
 // Highlight shoulder: above kKnee the sharpened luminance is rolled off smoothly toward kCeiling, so sharpening
 // never clips a sample the stack did not (kCeiling sits under kClippedLuma, the clip count's level).
 constexpr double kKnee = 0.9, kCeiling = 0.998;
@@ -779,13 +782,17 @@ DiscCore MakeDiscCore(const ser::FloatImage& lum1, const LunarMasks& m, int thre
     return dc;
 }
 
-// Where layer j's boost is at full weight; the statistics of layer j are taken there (its coefficients clear of
-// the edge), or over the whole disc when that leaves under 1000 px (a small disc).
-std::vector<uint8_t> LayerRegion(const DiscCore& dc, const LunarMasks& m, int j) {
+// Where a layer whose fade starts at `reach` has its boost at full weight; the statistics of the layer are taken
+// there (its coefficients clear of the edge), or over the whole disc when that leaves under 1000 px (a small disc).
+std::vector<uint8_t> LayerRegionAt(const DiscCore& dc, const LunarMasks& m, double reach) {
     std::vector<uint8_t> r(dc.core.size());
     size_t k = 0;
-    for (size_t i = 0; i < r.size(); ++i) k += r[i] = dc.core[i] && EdgeWeight(dc.dist[i], j) >= 1.0;
+    for (size_t i = 0; i < r.size(); ++i) k += r[i] = dc.core[i] && EdgeWeight(dc.dist[i], reach) >= 1.0;
     return k >= 1000 ? r : m.disk;
+}
+// The same for layer j's own reach (the Moon's fade).
+std::vector<uint8_t> LayerRegion(const DiscCore& dc, const LunarMasks& m, int j) {
+    return LayerRegionAt(dc, m, kLayerReach[j]);
 }
 
 // White-noise std from layer 1 (which keeps 0.889 of it): the lower of the sky's and the disc's flattest tiles'.
@@ -1007,13 +1014,21 @@ std::vector<float> StackNoiseMap(const ser::FloatImage& stack, const ser::FloatI
 
 }  // namespace
 
+const SharpenProfile kMoonSharpen = {{1.5, 2.5, 1.0, 1.0}, {3.0, 1.0, 0.0, 0.0}, 0.0};
+
 StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads, const std::vector<float>* noise,
-                                 const std::array<double, 4>* layerShape, double amount) {
+                                 const std::array<double, 4>* layerShape, double amount, const SharpenProfile& profile) {
     RequireLuminance(lum1, m, "SharpenLuminanceImage");
     if (noise && noise->size() != Pixels(lum1))
         throw std::invalid_argument("SharpenLuminanceImage: the noise map does not match the image");
     if (!(amount >= 0) || !std::isfinite(amount))
         throw std::invalid_argument("SharpenLuminanceImage: the amount must be finite and >= 0");
+    bool profileOk = profile.fadeRadiusFraction >= 0 && std::isfinite(profile.fadeRadiusFraction);
+    for (size_t u = 0; u < profile.gain.size(); ++u)
+        profileOk = profileOk && profile.gain[u] >= 0 && std::isfinite(profile.gain[u]) && profile.extra[u] >= 0 &&
+                    std::isfinite(profile.extra[u]);
+    if (!profileOk)
+        throw std::invalid_argument("SharpenLuminanceImage: the profile's gains, extras and fade fraction must be finite and >= 0");
     const int w = lum1.width, h = lum1.height;
     const size_t n = Pixels(lum1);
     StepRecord rec;
@@ -1027,7 +1042,13 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
         rec.history = "Sharpen (luminance): amount 0.00, nothing sharpened (L unchanged)";
         return rec;
     }
-    const std::array<double, kSharpenLayers> boost = LayerBoost(amount);
+    const std::array<double, kSharpenLayers> boost = LayerBoost(amount, profile);
+    // Where each layer's limb fade starts (px inside the half-contrast line): its reach, or with a fade fraction f > 0
+    // (Ruling P1), min(reach, f R), R the disc's equivalent radius.
+    const double f = profile.fadeRadiusFraction;
+    const double discR = std::sqrt(static_cast<double>(m.diskCount) / M_PI);
+    double reach[kSharpenLayers];
+    for (int j = 0; j < kSharpenLayers; ++j) reach[j] = f > 0 ? std::min(kLayerReach[j], f * discR) : kLayerReach[j];
     const DiscCore dc = MakeDiscCore(lum1, m, threads);
     const std::vector<ser::FloatImage> layers = StarletLayers(lum1, kSharpenLayers, threads);
     // The white-noise std at each pixel: the given map, or one value measured on lum1 itself.
@@ -1040,7 +1061,7 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
     for (int j = 0; j < kSharpenLayers; ++j) {
         // The layer's own noise limit: a Wiener factor, the share of the layer's energy over the disc that is not
         // noise. A layer that is noise only gets gain 1 (spec step 4: a noise-only gain fails).
-        const std::vector<uint8_t> r = LayerRegion(dc, m, j);
+        const std::vector<uint8_t> r = LayerRegionAt(dc, m, reach[j]);
         double e = 0, nv = 0;
         size_t k = 0;
         for (size_t i = 0; i < n; ++i)
@@ -1060,7 +1081,7 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
             double v = v0;
             if (dc.core[i])
                 for (int j = 0; j < kSharpenLayers; ++j)
-                    v += (gain[j] - 1) * EdgeWeight(dc.dist[i], j) *
+                    v += (gain[j] - 1) * EdgeWeight(dc.dist[i], reach[j]) *
                          Soft(layers[static_cast<size_t>(j)].data[i], kBoostThreshold * sigma(i) * kn[j]);
             lum1.data[i] = static_cast<float>(Shoulder(Toe(v, v0)));
         }
@@ -1077,6 +1098,9 @@ StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int
                           "(noise-limited)",
                           amount, white, gain[0], gain[1], gain[2], gain[3]);
     }
+    if (f > 0)
+        rec.history += Fmt("; limb fade scaled to the disc (radius %.1f px): from %.2g %.2g %.2g %.2g px inside the edge",
+                           discR, reach[0], reach[1], reach[2], reach[3]);
     return rec;
 }
 
