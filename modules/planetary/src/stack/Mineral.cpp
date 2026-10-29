@@ -803,7 +803,7 @@ std::vector<uint8_t> LayerRegion(const DiscCore& dc, const LunarMasks& m, int j)
 // data with additive noise. After a display transfer it is not (the transfer clips the sky at 0 and is steeper
 // on the disc), which is why PrepareMineral measures it before the transfer. Limit: where shot noise makes a
 // linear stack's disc noise exceed its sky's, the sky's lower value lets more disc noise through the threshold;
-// the gains stay bounded by kLayerGain and the Wiener factor.
+// the gains stay bounded by the profile's gain (kMoonSharpen.gain for the Moon) and the Wiener factor.
 // The two estimates WhiteNoise takes the lower of: `tiles` from the disc's flattest tiles, `sky` from the sky (0 under
 // 1000 px of sky). Both already / 0.889.
 void WhiteNoiseParts(const ser::FloatImage& layer1, const DiscCore& dc, const LunarMasks& m, double& tiles, double& sky) {

@@ -124,7 +124,7 @@ inline PlanetScene MakePlanetScene(const PlanetSceneSpec& s) {
         }
         return d;
     };
-    const double pa =s.positionAngleDeg * M_PI / 180, cp = std::cos(pa), sp = std::sin(pa);
+    const double pa = s.positionAngleDeg * M_PI / 180, cp = std::cos(pa), sp = std::sin(pa);
     const double sinB = std::max(1e-3, std::sin(std::fabs(s.ringTiltDeg) * M_PI / 180));
     // Ring-plane radius (globe radii) of a point at planet-frame (u, v), and its distance in px from the radius e
     // (positive outside), linearised: (rr - e) R / |grad(rr R)|.

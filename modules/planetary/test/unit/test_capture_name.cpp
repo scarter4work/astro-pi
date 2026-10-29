@@ -110,6 +110,9 @@ TEST_CASE("ParseCaptureName: a filter holding a separator, Windows paths, any ca
 
 TEST_CASE("ParseCaptureName: ASIAIR's old filterless names", "[capture_name]") {
     Expect("2023-02-11-192403-Mars-Bin1 16.5F.avi", Target::Mars, "", FilterClass::Unknown);
+    // The real 2_12_2023 names, verbatim (NAS astro_data/2_12_2023/).
+    Expect("2023-02-11-190452-Venus-Bin1 15.8F.avi", Target::Venus, "", FilterClass::Unknown);
+    Expect("2023-02-11-191000-Neptune-Bin1 14.9F.avi", Target::Neptune, "", FilterClass::Unknown);
     Expect("2023-02-12-031500-Venus-Bin1 -2.0F.avi", Target::Venus, "", FilterClass::Unknown);
     Expect("2023-02-12-040212-Neptune-Bin1 15.5F_pipp.ser", Target::Neptune, "", FilterClass::Unknown);
     Expect("2023-02-12-025133-Moon-Bin1 15.0F.avi", Target::Moon, "", FilterClass::Unknown);

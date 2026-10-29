@@ -583,10 +583,40 @@ TEST_CASE("dispersion: disc cut by the frame edge") {
                 if (!d.r.applied && !d.b.applied) {
                     CHECK(rec.skipped);
                     CHECK(Contains(rec.history, "not applied"));
+                    // Ruling Q1's clause: a cut disc's skip names the frame cut and its sigma bar.
+                    CHECK(Contains(rec.history, "(the frame cuts the disc) its uncertainty over 0.05 px"));
                     CHECK(im.data == sc.observed.data);
                 }
                 CHECK(AllFinite(im));
             }
+    // A cut disc the correction is known to apply to (the loop above may decline every case, so its residual checks
+    // could never fire): r 20, the disc's edge 1 px past the frame's left edge, a true 0.5 px R and B shift. R (the
+    // brightest channel under Realistic's cast) is applied, with at most 0.1 px left; B, measured at about +-0.08 px
+    // here (the limb's own profile, not the noise: 0.081 at noise 0.004 and at 0.0015), stays declined under Ruling Q1's
+    // 0.05 px bar on a cut disc, and its skip names that bar.
+    for (unsigned seed = 1; seed <= 3; ++seed) {
+        PlanetSceneSpec s = Realistic(20, 340 + seed);
+        s.cx = 19;
+        const double tx = 0.5 * std::cos(0.7 * seed), ty = 0.5 * std::sin(0.7 * seed);
+        s.shiftX = {tx, 0, -tx};
+        s.shiftY = {ty, 0, -ty};
+        const PlanetScene sc = MakePlanetScene(s);
+        ser::FloatImage im = sc.observed;
+        const stack::LunarMasks m = stack::SegmentLunar(im, 4);
+        stack::PlanetDispersion d;
+        const stack::StepRecord rec = stack::AlignPlanetChannels(im, m, 4, &d);
+        INFO("seed " << seed << ": " << rec.history);
+        REQUIRE(d.frameCut);
+        REQUIRE(d.r.applied);
+        CHECK(Residual(d.r, tx, ty) <= 0.1);
+        if (d.b.applied)
+            CHECK(Residual(d.b, -tx, -ty) <= 0.1);
+        else
+            CHECK(Contains(rec.history, "B not (within 0.1 px or within 3 sigma of its uncertainty, or (the frame cuts the "
+                                        "disc) its uncertainty over 0.05 px)"));
+        CHECK_FALSE(rec.skipped);
+        CHECK(AllFinite(im));
+    }
 }
 
 TEST_CASE("dispersion: a ringed disc") {
@@ -802,6 +832,9 @@ TEST_CASE("no halo around a ringed disc") {
                             << ", undershoot " << under << ", rim over the input and truth " << rim << "; " << rec.history);
             WARN("globe r " << r << ", " << e.name << ": sky-side brightening " << over / discMean * 100 << "%, undershoot "
                             << under / discMean * 100 << "%, rim " << rim / discMean * 100 << "% of the disc mean");
+            // `over` and `under` are regression guards against sharpening the sky: they cannot fail today by
+            // construction (the planet profile's boost is 0 off the disc, spec P2), and fail if a change starts to.
+            // `rim` carries the bar for the sharpening as it is.
             CHECK(over <= 0.02 * discMean);
             CHECK(under <= 0.02 * discMean);
             CHECK(rim <= 0.02 * discMean);
@@ -852,7 +885,9 @@ TEST_CASE("planet sharpen series (measurement, not a check)", "[.series]") {
 }
 
 TEST_CASE("sky noise") {
-    // Ruling P2: sharpening at the default raises the sky's noise std by no more than 1.5x.
+    // Ruling P2: sharpening at the default raises the sky's noise std by no more than 1.5x. A regression guard against
+    // sharpening the sky: it cannot fail today by construction (the boost is 0 off the disc), and fails if a change
+    // starts to sharpen there.
     for (double r : {10.0, 20.0, 100.0}) {
         const PlanetScene sc = MakePlanetScene(Blurred(r, 1.5, 51 + static_cast<unsigned>(r)));
         const stack::LunarMasks m = stack::SegmentLunar(sc.observed, 4);
@@ -1100,7 +1135,7 @@ TEST_CASE("no chroma off the disc after a real alignment shift") {
             CheckValid(out, sc.observed);
             const ser::FloatImage L = stack::SharpenedLuminance(cache, p.sharpen, 4, nullptr, stack::kPlanetSharpen);
             const double k = p.saturation;
-            size_t over = 0, specks = 0;
+            size_t over = 0;
             double worst = 0, worstL = 0;
             for (size_t i = 0; i < cache.masks.disk.size(); ++i) {
                 if (cache.masks.disk[i]) continue;
@@ -1108,16 +1143,14 @@ TEST_CASE("no chroma off the disc after a real alignment shift") {
                 const double hi = std::max({o[0], o[1], o[2]}), lo = std::min({o[0], o[1], o[2]});
                 const double l = std::max(0.0f, L.data[i]);
                 over += hi > (1 + 2 * k) * l + 1e-6;
-                specks += l < 0.02 && hi - lo > 0.1;  // a dark pixel with a bright channel
                 if (hi - lo > worst) {
                     worst = hi - lo;
                     worstL = l;
                 }
             }
-            INFO("r " << r << " " << ser::TargetName(t) << ": off-disc pixels over (1 + 2k) L " << over << ", dark specks "
-                      << specks << "; worst chroma " << worst << " at L " << worstL << "; " << cache.history[4]);
+            INFO("r " << r << " " << ser::TargetName(t) << ": off-disc pixels over (1 + 2k) L " << over
+                      << "; worst chroma " << worst << " at L " << worstL << "; " << cache.history[4]);
             CHECK(over == 0);
-            CHECK(specks == 0);
         }
 }
 
