@@ -4,8 +4,9 @@
 A synthetic run dir in run-planet-real.sh's layout: one capture, a smooth 12 px disc in Saturn's catalogue colour.
 Clean, every requirement passes or is not judged and the checker exits 0; with R and B moved 0.8 px apart in the
 output (a limb fringe) it exits 1 on "4 fringe"; a missing stage file, a missing gating run or an empty run dir exit 1;
-a capture with no disc (ruling Q3a) and one the stacker refused are not failures. numpy only (Pillow, when present,
-for the PNG run).
+a capture with no disc (ruling Q3a) and one the stacker refused are not failures; a declined channel (ruling Q4) is
+not judged only under 0.5 px and once per capture, and a NaN limb residual or Saturation 0 sample fails. numpy only
+(Pillow, when present, for the PNG run).
 
     python3 -I test_planet_check.py
 """
@@ -102,10 +103,12 @@ def shift_json(dx=0.0, applied=False):
     return {"dx": dx, "dy": 0.0, "ux": 0.01, "uy": 0.01, "measured": True, "applied": applied, "alongAxis": False}
 
 
-def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshift=0.0, applied=False, nan_cal=False):
+def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshift=0.0, applied=False, nan_cal=False,
+               bshift=0.0, nan_k0_b=False):
     """rshift: R left that many px right of G in the display, the unaligned display and the output (a residual
-    dispersion); applied: the engine says it resampled R (HISTORY gives no reason for the residual) instead of declining
-    it; nan_cal: one disc sample of the calibrated RGB is NaN (a metric that must fail, not pass)."""
+    dispersion); bshift: the same for B (declined too); applied: the engine says it resampled R (HISTORY gives no reason
+    for the residual) instead of declining it; nan_cal: one disc sample of the calibrated RGB is NaN (a metric that must
+    fail, not pass); nan_k0_b: one disc sample of the Saturation 0 output's B is NaN (the "7 grey" metric)."""
     os.makedirs(os.path.join(d, "stages"), exist_ok=True)
     if stack_refused:
         dump(os.path.join(d, "probe.json"), {"capture": "synthetic", "diagnosis": {"kind": "Clipped", "message":
@@ -113,6 +116,8 @@ def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshi
         return
     if rshift:
         rgb = np.stack([shift(rgb[0], 0, rshift), rgb[1], rgb[2]])
+    if bshift:
+        rgb = np.stack([rgb[0], rgb[1], shift(rgb[2], 0, bshift)])
     display = np.clip(rgb, 0, 1)
     L = display.mean(axis=0)
     out = display if out is None else out
@@ -125,7 +130,10 @@ def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshi
         write_fits(os.path.join(d, "planet_s%g.fits" % a), out)
     for s in BLURS:
         write_fits(os.path.join(d, "planet_c%g.fits" % s), out)
-    write_fits(os.path.join(d, "planet_k0.fits"), np.stack([out.mean(axis=0)] * 3))
+    k0 = np.stack([out.mean(axis=0)] * 3)
+    if nan_k0_b:
+        k0[2][tuple(np.argwhere(disk)[0])] = np.nan
+    write_fits(os.path.join(d, "planet_k0.fits"), k0)
     st = os.path.join(d, "stages")
     write_fits(os.path.join(st, "display.fits"), display)
     write_fits(os.path.join(st, "display_unaligned.fits"), display)
@@ -143,7 +151,7 @@ def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshi
         "curve": {"white": 1.0, "balance": 0.5},
         "disc": {"pixels": 0 if notice else int(disk.sum()), "sky": int(sky.sum()), "equivRadius": R,
                  "box": None if notice else [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())], "reason": ""},
-        "dispersion": {"before": None if notice else {"r": shift_json(0.5 if applied else rshift, applied), "b": shift_json(),
+        "dispersion": {"before": None if notice else {"r": shift_json(0.5 if applied else rshift, applied), "b": shift_json(bshift),
                                                        "pixels": 400, "sectors": 16,
                                                        "frameCut": False, "reason": ""},
                        "after": None if notice else {"r": shift_json(), "b": shift_json(), "pixels": 400, "sectors": 16,
@@ -271,6 +279,56 @@ class PlanetCheckFailsClosed(unittest.TestCase):
         code, text = self.check()
         self.assertEqual(code, 1, text)
         self.assertEqual(self.rows().get("3 disp R"), "FAIL", text)
+
+    def test_declined_channel_capped(self):
+        # Ruling Q4 is capped (final review): a declined channel is NOT JUDGED only while its measured residual is
+        # under 0.5 px, and only one per capture -- an over-wide sigma regression that declines everything must fail.
+        self.make(rshift=0.7)
+        write_gate(self.run_dir)
+        code, text = self.check()
+        self.assertEqual(code, 1, text)
+        self.assertEqual(self.rows().get("3 disp R"), "FAIL", text)
+        self.make(rshift=0.4, bshift=-0.4)
+        code, text = self.check()
+        self.assertEqual(code, 1, text)
+        rows = self.rows()
+        self.assertEqual(rows.get("3 disp R"), "NOT JUDGED", text)
+        self.assertEqual(rows.get("3 disp B"), "FAIL", text)
+
+    def test_nan_limb_residual_fails(self):
+        # A NaN limb residual on a declined channel must fail, not fall through "<= 0.1" into ruling Q4's NOT JUDGED.
+        # In-process, with the checker's limb estimator returning NaN for R after the alignment (a finite input cannot
+        # make it).
+        sys.dont_write_bytecode = True
+        sys.path.insert(0, HERE)
+        import planet_check
+        self.make()
+        write_gate(self.run_dir)
+        real = planet_check.limb_shift
+        calls = []
+
+        def nan_after(*a):
+            out = real(*a)
+            calls.append(1)
+            if len(calls) == 2 and out is not None:  # the second call measures the aligned display
+                out["R"] = dict(out["R"], mag=float("nan"))
+            return out
+        planet_check.limb_shift = nan_after
+        try:
+            code = planet_check.main(["--no-png", self.run_dir])
+        finally:
+            planet_check.limb_shift = real
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rows().get("3 disp R"), "FAIL")
+
+    def test_nan_grey_fails(self):
+        # "7 grey": a NaN in Saturation 0's B must fail (builtin max(a, nan) returns a).
+        self.make(nan_k0_b=True)
+        write_gate(self.run_dir)
+        code, text = self.check()
+        self.assertEqual(code, 1, text)
+        self.assertEqual(self.rows().get("7 grey"), "FAIL", text)
 
     def test_pngs(self):
         try:

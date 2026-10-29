@@ -27,8 +27,10 @@ rulings P2, P3 and Q4):
               radius per channel along rays from the disc's centroid; R - G and B - G fitted as a cos + b sin + c,
               1-sigma by a jackknife over 8 groups of rays): |shift| <= 0.1 px. Over 0.1 px, a channel the engine
               declined with HISTORY's reason ("within 0.1 px or within 3 sigma of its uncertainty") is NOT JUDGED
-              (ruling Q4: acceptance 3's "where it skipped, HISTORY gives the reason"), and so is a residual within 2
-              sigma of 0.1 (this estimator cannot tell); neither is ever a PASS. The engine's own before / after
+              (ruling Q4: acceptance 3's "where it skipped, HISTORY gives the reason") while its residual is under
+              0.5 px and it is the capture's only declined channel (otherwise FAIL), and so is a residual within 2
+              sigma of 0.1 (this estimator cannot tell; a non-finite sigma fails); neither is ever a PASS. A
+              non-finite residual fails. The engine's own before / after
               (MeasurePlanetDispersion; after is circular for a resampled channel: the engine's estimate of its own
               correction) are printed with it.
   4 halo      sharpened - unsharpened linear L in the band 1-6 px outside the disc mask: 0.5 / 99.5 percentiles'
@@ -48,7 +50,7 @@ rulings P2, P3 and Q4):
   6 clip      every output finite, in [0, 1]; no sample >= 0.999 whose stack sample is < 0.999.
   7 natural   Saturation 1 (the run's own saturation must be 1): the output's mean B/G and R/G over the disc within
               2 % of the display's (the calibrated colour, aligned); also printed against the catalogue's.
-  7 grey      Saturation 0: max |R - G|, |B - G| <= 1e-6.
+  7 grey      Saturation 0: max |R - G|, |B - G| <= 1e-6 (a NaN fails).
 
 INFO rows: the disc's px / equivalent radius / box, the rings' place in the mask on Saturn (spec P6: the share of
 the pixels at or above 10 % of the disc median that the mask holds), the slider time. The series (every capture):
@@ -85,6 +87,10 @@ SYNTH_SEEDS = 64
 TOLERANCE = 0.1  # acceptance 3's residual (px): the fringe bar's synthetic carries it (Task 5 ruling candidate)
 # AlignPlanetChannels' HISTORY reason for a channel it did not resample.
 DECLINED = "within 0.1 px or within 3 sigma of its uncertainty"
+# Ruling Q4's cap (final review): a declined channel is NOT JUDGED only while the limb estimator's residual is under
+# this, and only one declined channel per capture; past either, it fails (the real declines at 5e29d718: R only, 0.14 px
+# on 2023-02-11 Mars, 0.17 px on 2026-10-23 Neptune).
+DECLINED_MAX = 0.5
 
 
 class HarnessError(Exception):
@@ -649,15 +655,26 @@ def check(run, cid, role, png_dir, expect="image"):
             b, a = before[name], after[name]
             txt += "; limb estimator %+.3f,%+.3f (+-%.3f) -> %+.3f,%+.3f (+-%.3f) = %.3f px (%d rays)" % (
                 b["dx"], b["dy"], b["u"], a["dx"], a["dy"], a["u"], a["mag"], after["rays"])
-            if a["mag"] <= 0.1:
+            if not math.isfinite(a["mag"]):
+                # A NaN residual must fail, not fall through "<= 0.1" into ruling Q4's branch (fail-closed).
+                rep.add("3 disp " + name, txt + "; the limb residual is not finite", "<= 0.1 px", "FAIL", before=b, after=a,
+                        engine=eb)
+            elif a["mag"] <= 0.1:
                 rep.add("3 disp " + name, txt, "<= 0.1 px", "PASS", before=b, after=a, engine=eb)
+            elif not eb["applied"] and DECLINED in line and (a["mag"] >= DECLINED_MAX or declined):
+                # Ruling Q4's cap (final review): a declined channel is excused only under DECLINED_MAX and once per
+                # capture, so a regression that declines everything (an over-wide sigma) fails instead of passing.
+                rep.add("3 disp " + name, txt + "; declined, but %s" % (
+                    "%.3f px is at or over the %.1f px cap on a declined channel" % (a["mag"], DECLINED_MAX)
+                    if a["mag"] >= DECLINED_MAX else "%s was declined already (at most one per capture)" % declined[0]),
+                    "<= 0.1 px", "FAIL", before=b, after=a, engine=eb)
             elif not eb["applied"] and DECLINED in line:
                 # Ruling Q4: acceptance 3's "where it skipped, HISTORY gives the reason" -- the engine declined this
                 # channel and HISTORY says why (within 3 sigma of its uncertainty): not judged, never a PASS.
                 declined.append(name)
                 rep.add("3 disp " + name, txt + "; declined with HISTORY's reason (ruling Q4)", "<= 0.1 px", "NOT JUDGED",
                         before=b, after=a, engine=eb)
-            elif a["mag"] - 2 * a["u"] <= 0.1:
+            elif math.isfinite(a["u"]) and a["mag"] - 2 * a["u"] <= 0.1:
                 # Over 0.1 px but within 2 sigma of it: this estimator cannot tell (never a PASS).
                 rep.add("3 disp " + name, txt + "; %s, within 2 sigma of 0.1" % ("applied" if eb["applied"] else "declined"),
                         "<= 0.1 px", "NOT JUDGED", before=b, after=a, engine=eb)
@@ -752,7 +769,7 @@ def check(run, cid, role, png_dir, expect="image"):
     k0 = outs.get("k0")
     if k0 is None:
         raise HarnessError("%s: no Saturation 0 output (planet_k0.fits)" % cid)
-    grey = float(max(np.abs(k0[0] - k0[1]).max(), np.abs(k0[2] - k0[1]).max()))
+    grey = worst([np.abs(k0[0] - k0[1]).max(), np.abs(k0[2] - k0[1]).max()])  # NaN-aware: a NaN fails
     rep.judge("7 grey", "max |R-G|, |B-G| %.2e" % grey, "<= 1e-6", grey <= 1e-6)
 
     # ---- the series ----
