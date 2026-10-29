@@ -103,4 +103,50 @@ PlanetDispersion MeasurePlanetDispersion(const ser::FloatImage& rgb, const Lunar
 // Throws std::invalid_argument unless rgb is 3 channels and the masks are of its size.
 StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int threads, PlanetDispersion* result = nullptr);
 
+// ---- The planet pipeline (spec calls 2, 4, 6; plan Task 4) ----
+// The sliders (spec call 7): Saturation, a multiple of the natural colour, 1 by default (0 grey, 3 the top); Chroma
+// blur (px, as the Moon's: scaled by width / 2000 above 2000 px); Sharpen (SharpenLuminanceImage's amount, with
+// kPlanetSharpen). The Chroma blur and Sharpen defaults and tops here are placeholders (the Moon's Sharpen, a 1 px
+// blur); Task 5 sets them from the real planet captures (spec calls 5 and 6: the smallest blur that halves the sky's
+// chroma noise; the Sharpen series).
+constexpr double kPlanetSaturationDefault = 1.0, kPlanetSaturationMax = 3.0;
+constexpr double kPlanetChromaBlurDefault = 1.0, kPlanetChromaBlurMax = 6.0;
+constexpr double kPlanetSharpenDefault = kSharpenDefault, kPlanetSharpenMax = kSharpenMax;
+struct PlanetParams {
+    double saturation = kPlanetSaturationDefault, chromaBlurSigma = kPlanetChromaBlurDefault, sharpen = kPlanetSharpenDefault;
+};
+
+// Progress phase of PreparePlanet and FinishPlanet, as kPhaseMineral's: report(kPhasePlanet, step, 7) before each of
+// PreparePlanet's steps 0-4 and at its end (5), then FinishPlanet's (6, 7) after the sharpening and (7, 7) at its end;
+// cancelled() is polled at each report and a true result throws StackCancelled, returning nothing.
+constexpr const char* kPhasePlanet = "Planet";
+
+// PrepareMineral's pipeline for a planet (spec call 2: the same code, parameterised by the target kind), its five
+// steps, each with one HISTORY line:
+//   Planet disc          SegmentLunar (its px and equivalent radius named)
+//   Colour calibration   CalibratePlanetColour to t's catalogue reflectance (call 3), not grey
+//   Background           NeutraliseBackground
+//   Display transfer     linear (call 4): DisplayTransfer with medianTarget 0, the brightest sample the stack did not
+//                        clip at 0.95 (calibration may have lifted it above 1.0: it lands there all the same)
+//   Channel alignment    AlignPlanetChannels (Ruling P1)
+// and the sharpening's noise exactly as PrepareMineral measures it (Mineral.h: the stack's noise model or one level,
+// through the transfer's slope, now 1 / W). No highlight threshold is measured (cache.satThreshold -1: the planet
+// colour has no fade). With no disc found (a faint Neptune, a frame of sky) every later step skips with that reason
+// ("no planet disc distinguished from the sky", also MineralOutcome::notice) and the image is the stack clipped to
+// [0, 1]: an accepted outcome (Ruling P1), not a failure. Memory as PrepareMineral's.
+// Throws std::invalid_argument for a target with no catalogue colour (Moon, Other: the colour reference needs a known
+// body), and as PrepareMineral for a stack that is not 3 channels or holds NaN or infinite samples; StackCancelled on
+// a cancel.
+MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int threads, const Progress& progress,
+                           const StackNoise* noise = nullptr);
+// The finish on the cache (FinishMineral's shape; the module's sliders re-run only this): SharpenedLuminance at
+// p.sharpen with kPlanetSharpen, then MineralColour's transfer on a copy of cache.display with k = p.saturation,
+// chroma blur p.chromaBlurSigma, devClamp 1e3 (no clamp: Mars's B/G is about half its R/G) and satThreshold 1e3 (no
+// highlight fade: Jupiter's zones and Saturn's rings keep their colour), the gamut guard as it is (no new clipping:
+// where a channel would pass 0.998 the pixel's saturation gives, its hue holds). At saturation 1 that is the natural
+// colour, out_c = L (C_c + eps) / (mean(C) + eps), eps 0.002 (the sky's divide guard); at 0, R = G = B = L.
+// HISTORY: the cache's five lines, then "Sharpen ..." and "Saturation ...", each step timed. The notice is the
+// cache's. Throws std::invalid_argument for a parameter negative or not finite; StackCancelled when progress cancels.
+MineralOutcome FinishPlanet(const MineralCache& cache, const PlanetParams& params, int threads, const Progress& progress = {});
+
 }  // namespace planetary::stack

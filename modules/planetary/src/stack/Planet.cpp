@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -517,6 +518,87 @@ StepRecord AlignPlanetChannels(ser::FloatImage& rgb, const LunarMasks& m, int th
                        : (d.r.applied ? "; R resampled onto G (Catmull-Rom), B not" : "; B resampled onto G (Catmull-Rom), R not");
     rec.history += "; at the frame's edge, the channel's ratio to G from the nearest pixels inside";
     return rec;
+}
+
+// ---- The planet pipeline ----
+
+namespace {
+
+constexpr const char* kPlanetProduct = "Planet processing";
+// Step 1 found no disc: every later step says so instead of running (spec anti-goal: no defect hidden; Ruling P1: an
+// accepted outcome for a faint Neptune).
+constexpr const char* kNoPlanet = "no planet disc distinguished from the sky";
+// Spec call 6: the mineral moon's +-6% deviation clamp and highlight fade, off. MineralColour has no switch for them;
+// these values are beyond any reach (Mineral.h: |d| < 2 for non-negative C, and C <= 1 after the display transfer).
+constexpr double kNoClamp = 1e3, kNoFade = 1e3;
+
+void RequirePlanetParams(const PlanetParams& p) {
+    if (!(p.saturation >= 0) || !(p.chromaBlurSigma >= 0) || !(p.sharpen >= 0) || !std::isfinite(p.saturation) ||
+        !std::isfinite(p.chromaBlurSigma) || !std::isfinite(p.sharpen))
+        throw std::invalid_argument("Planet processing: saturation, chroma blur and sharpen must be finite and >= 0");
+}
+
+double Seconds(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+}  // namespace
+
+MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int threads, const Progress& progress,
+                           const StackNoise* noise) {
+    if (!PlanetReflectance(t))
+        throw std::invalid_argument(std::string(kPlanetProduct) +
+                                    " needs a planet target (Mercury, Venus, Mars, Jupiter, Saturn, Uranus or Neptune: its "
+                                    "colour reference is the planet's catalogue reflectance); this one is " +
+                                    ser::TargetName(t));
+    const DiscPipeline planet{kPhasePlanet,
+                              kPlanetProduct,
+                              "Planet disc",
+                              kNoPlanet,
+                              true,
+                              [t](ser::FloatImage& rgb, const LunarMasks& m) { return CalibratePlanetColour(rgb, m, t); },
+                              [threads](ser::FloatImage& rgb, const LunarMasks& m) { return AlignPlanetChannels(rgb, m, threads); },
+                              0.0,  // linear (spec call 4)
+                              false};
+    return PrepareDisc(stack, threads, progress, noise, planet);
+}
+
+MineralOutcome FinishPlanet(const MineralCache& cache, const PlanetParams& params, int threads, const Progress& progress) {
+    RequirePlanetParams(params);
+    MineralOutcome out;
+    StepRecord sharpen, colour;
+    auto t0 = std::chrono::steady_clock::now();
+    const ser::FloatImage L = SharpenedLuminance(cache, params.sharpen, threads, &sharpen, kPlanetSharpen);
+    const double sharpenSecs = Seconds(t0);
+    PipelineSteps(progress, kPhasePlanet, kPlanetProduct, kPipelineSteps).Report(kPipelineSteps - 1);
+    t0 = std::chrono::steady_clock::now();
+    out.image = cache.display;
+    if (cache.masks.diskCount == 0) {
+        colour.skipped = true;
+        colour.history = "Saturation skipped: " + (cache.notice.empty() ? std::string(kNoPlanet) : cache.notice) + "; nothing done";
+    } else {
+        MineralParams q;
+        q.strength = params.saturation;
+        q.chromaBlurSigma = params.chromaBlurSigma;
+        q.sharpen = params.sharpen;
+        q.devClamp = kNoClamp;
+        q.satThreshold = kNoFade;
+        const ColourCounts c = ColourTransfer(out.image, L, q, threads);
+        colour.history = Fmt("Saturation: %.2fx the natural colour (the chroma layer's channel ratios on the sharp "
+                             "luminance), chroma blur %.2f px, eps %.4f; no deviation clamp, no highlight fade",
+                             params.saturation, c.sigma, q.eps) +
+                         "; " + Percent(c.held, Pixels(out.image)) + " of pixels held in gamut";
+    }
+    const double colourSecs = Seconds(t0);
+    PipelineSteps(progress, kPhasePlanet, kPlanetProduct, kPipelineSteps).Report(kPipelineSteps);
+    out.history = cache.history;
+    out.history.push_back(sharpen.history);
+    out.history.push_back(colour.history);
+    out.stepSeconds = cache.stepSeconds;
+    out.stepSeconds.push_back({"Sharpen", sharpenSecs});
+    out.stepSeconds.push_back({"Saturation", colourSecs});
+    out.notice = cache.notice;
+    return out;
 }
 
 }  // namespace planetary::stack

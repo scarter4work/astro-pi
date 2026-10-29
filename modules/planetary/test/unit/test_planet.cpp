@@ -1,14 +1,17 @@
 // Planet processing (spec 2026-10-29-planetary-planet-processing-design.md, call 3 and Ruling P1; plan Task 2):
-// the catalogue colour calibration, the ring's place in the disc mask, and small-disc dispersion alignment, each
-// against its requirement on synthetic planets whose truth is known (PlanetSynth.h).
+// the catalogue colour calibration, the ring's place in the disc mask, small-disc dispersion alignment (Task 2), the
+// sharpen profile (Task 3), and the pipeline -- PreparePlanet / FinishPlanet, the linear display and the saturation
+// (Task 4) -- each against its requirement on synthetic planets whose truth is known (PlanetSynth.h).
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Measure.h"
@@ -606,4 +609,304 @@ TEST_CASE("sharpen profile: refused when not finite and >= 0, and HISTORY names 
     CHECK(Contains(rec.history, "limb fade scaled to the disc"));
     ser::FloatImage M = LumImage(sc.observed);
     CHECK_FALSE(Contains(stack::SharpenLuminanceImage(M, m, 4).history, "limb fade"));  // the Moon's line as it was
+}
+
+// ---- The planet pipeline (spec calls 2, 4, 6; acceptance 6-9; plan Task 4) ----
+
+namespace {
+
+bool Ascii(const std::string& s) {
+    return std::all_of(s.begin(), s.end(), [](char ch) { return static_cast<unsigned char>(ch) < 0x80; });
+}
+
+void CheckValid(const stack::MineralOutcome& out, const ser::FloatImage& in) {
+    REQUIRE(out.image.width == in.width);
+    REQUIRE(out.image.height == in.height);
+    REQUIRE(out.image.channels == 3);
+    REQUIRE(out.image.data.size() == in.data.size());
+    size_t bad = 0;
+    for (float v : out.image.data) bad += !(std::isfinite(v) && v >= 0.0f && v <= 1.0f);
+    CHECK(bad == 0);  // every sample finite and in [0, 1]
+}
+
+// The planet pipeline's seven steps, in order (spec call 2: the mineral moon's order, its own disc and colour step).
+const std::vector<std::string> kPlanetSteps = {"Planet disc", "Colour calibration", "Background", "Display transfer",
+                                               "Channel alignment", "Sharpen", "Saturation"};
+
+// Every line in order, ASCII, and every step that declined says why (spec anti-goal: no defect hidden).
+void CheckHistory(const stack::MineralOutcome& out) {
+    REQUIRE(out.history.size() == kPlanetSteps.size());
+    REQUIRE(out.stepSeconds.size() == kPlanetSteps.size());
+    for (size_t k = 0; k < kPlanetSteps.size(); ++k) {
+        const std::string& h = out.history[k];
+        INFO(h);
+        CHECK(h.rfind(kPlanetSteps[k], 0) == 0);
+        CHECK(out.stepSeconds[k].first == kPlanetSteps[k]);
+        CHECK(Ascii(h));
+        const size_t at = h.find(" skipped: ");
+        if (at != std::string::npos) CHECK(h.size() >= at + std::string(" skipped: ").size() + 10);  // a reason
+    }
+}
+
+// The disc's mean B/G and R/G of an image over a mask.
+std::pair<double, double> MeanRatios(const ser::FloatImage& im, const std::vector<uint8_t>& mask) {
+    double s[3] = {0, 0, 0};
+    for (size_t i = 0; i < mask.size(); ++i)
+        if (mask[i])
+            for (int c = 0; c < 3; ++c) s[c] += im.data[i * 3 + c];
+    return {s[2] / s[1], s[0] / s[1]};
+}
+
+}  // namespace
+
+TEST_CASE("planet pipeline: history, refusals and the parameters") {
+    const PlanetSceneSpec s = Realistic(20, 71);
+    const PlanetScene sc = MakePlanetScene(s);
+    const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Saturn, 4, {});
+    const stack::MineralOutcome out = stack::FinishPlanet(cache, {}, 4);
+    CheckValid(out, sc.observed);
+    CheckHistory(out);
+    CHECK(out.notice.empty());
+    CHECK(Contains(out.history[1], "Saturn"));
+    CHECK(Contains(out.history[3], "linear"));
+    CHECK(Contains(out.history[5], "limb fade scaled to the disc"));  // kPlanetSharpen, not the Moon's profile
+    // Defaults (spec call 7: saturation 1 is the natural colour; Task 5 measures the other two).
+    const stack::PlanetParams p;
+    CHECK(p.saturation == 1.0);
+    CHECK(p.chromaBlurSigma == stack::kPlanetChromaBlurDefault);
+    CHECK(p.sharpen == stack::kPlanetSharpenDefault);
+    // Not a planet: refused (the colour reference needs a known body).
+    for (ser::Target t : {ser::Target::Moon, ser::Target::Other})
+        CHECK_THROWS_AS(stack::PreparePlanet(sc.observed, t, 4, {}), std::invalid_argument);
+    // PrepareMineral's own refusals: mono, NaN, Inf.
+    ser::FloatImage mono{64, 48, 1, std::vector<float>(64 * 48, 0.3f)};
+    CHECK_THROWS_AS(stack::PreparePlanet(mono, ser::Target::Mars, 2, {}), std::invalid_argument);
+    for (float v : {std::nanf(""), HUGE_VALF}) {
+        ser::FloatImage bad = sc.observed;
+        bad.data[100] = v;
+        CHECK_THROWS_AS(stack::PreparePlanet(bad, ser::Target::Mars, 2, {}), std::invalid_argument);
+    }
+    // Parameters out of range.
+    for (double v : {-0.1, std::nan(""), HUGE_VAL}) {
+        stack::PlanetParams a, b, c;
+        a.saturation = v;
+        b.chromaBlurSigma = v;
+        c.sharpen = v;
+        for (const stack::PlanetParams* q : {&a, &b, &c}) CHECK_THROWS_AS(stack::FinishPlanet(cache, *q, 4), std::invalid_argument);
+    }
+}
+
+TEST_CASE("planet pipeline: thread count and re-runs do not change the output") {
+    const PlanetScene sc = MakePlanetScene(Realistic(20, 73));
+    const stack::MineralOutcome a = stack::FinishPlanet(stack::PreparePlanet(sc.observed, ser::Target::Jupiter, 1, {}), {}, 1);
+    const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Jupiter, 7, {});
+    const stack::MineralOutcome b = stack::FinishPlanet(cache, {}, 7), c = stack::FinishPlanet(cache, {}, 7);
+    CHECK(a.image.data == b.image.data);
+    CHECK(b.image.data == c.image.data);
+    CHECK(a.history == b.history);
+}
+
+TEST_CASE("saturation 1 is the natural colour") {
+    // Spec call 6 / acceptance 7: at saturation 1 the processed disc's mean B/G and R/G are the calibrated ones.
+    for (double r : {10.0, 20.0, 60.0})
+        for (ser::Target t : {ser::Target::Mars, ser::Target::Jupiter, ser::Target::Saturn}) {
+            const PlanetScene sc = MakePlanetScene(Realistic(r, 81 + static_cast<unsigned>(r)));
+            const stack::MineralCache cache = stack::PreparePlanet(sc.observed, t, 4, {});
+            const stack::MineralOutcome out = stack::FinishPlanet(cache, {}, 4);
+            CheckValid(out, sc.observed);
+            const auto cal = MeanRatios(cache.display, cache.masks.disk), got = MeanRatios(out.image, cache.masks.disk);
+            const stack::BodyColour want = *stack::PlanetReflectance(t);
+            INFO("r " << r << " " << ser::TargetName(t) << ": calibrated B/G " << cal.first << " R/G " << cal.second
+                      << " (catalogue " << want.bOverG << ", " << want.rOverG << "); processed B/G " << got.first << " R/G "
+                      << got.second << "; " << out.history[1] << "; " << out.history[6]);
+            REQUIRE_FALSE(cache.masks.diskCount == 0);
+            CHECK(std::fabs(got.first / cal.first - 1) <= 0.02);
+            CHECK(std::fabs(got.second / cal.second - 1) <= 0.02);
+        }
+}
+
+TEST_CASE("saturation 0 is grey") {
+    const PlanetScene sc = MakePlanetScene(Realistic(20, 91));
+    const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Mars, 4, {});
+    stack::PlanetParams p;
+    p.saturation = 0;
+    const stack::MineralOutcome out = stack::FinishPlanet(cache, p, 4);
+    CheckValid(out, sc.observed);
+    double worst = 0;
+    for (size_t i = 0; i < out.image.data.size(); i += 3)
+        worst = std::max({worst, static_cast<double>(std::fabs(out.image.data[i] - out.image.data[i + 1])),
+                          static_cast<double>(std::fabs(out.image.data[i + 2] - out.image.data[i + 1]))});
+    INFO(out.history[6]);
+    CHECK(worst <= 1e-6);
+}
+
+TEST_CASE("no new clipping") {
+    // Spec anti-goal and acceptance 6, at the Saturation slider's top on a bright disc with saturated highlights: no
+    // sample above 1.0, and none at or above 0.999 in a pixel the stack did not clip.
+    for (ser::Target t : {ser::Target::Mars, ser::Target::Saturn, ser::Target::Neptune}) {
+        PlanetSceneSpec s = Realistic(30, 101);
+        s.level = 0.85;
+        s.clipFraction = 0.02;
+        const PlanetScene sc = MakePlanetScene(s);
+        const stack::MineralCache cache = stack::PreparePlanet(sc.observed, t, 4, {});
+        stack::PlanetParams p;
+        p.saturation = stack::kPlanetSaturationMax;
+        const stack::MineralOutcome out = stack::FinishPlanet(cache, p, 4);
+        CheckValid(out, sc.observed);
+        size_t stackClipped = 0, newClipped = 0;
+        for (size_t i = 0; i < sc.clipped.size(); ++i) {
+            bool clippedIn = false, clippedOut = false;
+            for (int c = 0; c < 3; ++c) {
+                clippedIn = clippedIn || sc.observed.data[i * 3 + c] >= stack::kClippedLuma;
+                clippedOut = clippedOut || out.image.data[i * 3 + c] >= 0.999f;
+            }
+            stackClipped += clippedIn;
+            newClipped += clippedOut && !clippedIn;
+        }
+        INFO(ser::TargetName(t) << ": pixels clipped in the stack " << stackClipped << ", newly clipped " << newClipped << "; "
+                                << out.history[6]);
+        REQUIRE(stackClipped > 0);
+        CHECK(newClipped == 0);
+    }
+}
+
+TEST_CASE("linear display") {
+    // Spec call 4: no midtones stretch for a planet; the white point puts the brightest sample the stack did not clip
+    // at 0.95. G is untouched by the calibration and the alignment, so with no background (noise-free, no pedestal or
+    // gradient: the sky plane is 0) display G over stack G is the transfer's own slope.
+    PlanetSceneSpec s = Framed(20);
+    s.width = 160;
+    s.height = 120;
+    s.cx = 80.3;
+    s.cy = 59.8;
+    s.blurSigma = 1.2;
+    s.tint = {1.2, 1.0, 0.8};
+    const PlanetScene sc = MakePlanetScene(s);
+    const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Jupiter, 4, {});
+    double lo = 1e9, hi = 0, top = 0;
+    for (size_t i = 0; i < cache.masks.disk.size(); ++i) {
+        for (int c = 0; c < 3; ++c) top = std::max(top, static_cast<double>(cache.display.data[i * 3 + c]));
+        if (!cache.masks.disk[i] || sc.observed.data[i * 3 + 1] < 0.02f) continue;
+        const double q = cache.display.data[i * 3 + 1] / static_cast<double>(sc.observed.data[i * 3 + 1]);
+        lo = std::min(lo, q);
+        hi = std::max(hi, q);
+    }
+    INFO(cache.history[2] << "; " << cache.history[3] << "; display/stack G " << lo << " - " << hi << ", brightest " << top);
+    CHECK(Contains(cache.history[3], "linear"));
+    CHECK(hi / lo - 1 <= 1e-5);
+    CHECK(top <= 0.95 + 1e-6);
+    CHECK(top >= 0.94);
+}
+
+TEST_CASE("tiny or absent disc completes") {
+    // Ruling P1: no disc (a faint Neptune, a frame of sky) or a disc of a few px runs every step, each that cannot
+    // run saying why; the image is valid.
+    // r 2 under the seeing (blur 1.2: SegmentLunar's disc is the blurred blob, about 120 px), and r 1.5 unblurred and
+    // bright (a disc whose unsaturated part is under the colour reference's 30 px).
+    PlanetSceneSpec tiny = Realistic(2, 111);
+    PlanetSceneSpec sharp = Realistic(2, 113);
+    sharp.radius = 1.5;
+    sharp.level = 3;  // its core saturated in the stack: under 30 unsaturated disc px
+    sharp.blurSigma = 0;
+    PlanetSceneSpec none = Realistic(2, 112);
+    none.level = 0;
+    // A sky pedestal and noise, no gradient: SegmentLunar's documented limit takes a frame of sky whose gradient lifts
+    // one half 5 noise sigma over the other for a frame-filling disc (Mineral.h), and Realistic's does (0.010 over
+    // noise 0.004) -- that case is "frame-filling disc completes"'s.
+    none.gradientX = none.gradientY = {0, 0, 0};
+    for (const PlanetSceneSpec* s : {&tiny, &sharp, &none}) {
+        const PlanetScene sc = MakePlanetScene(*s);
+        stack::MineralOutcome out;
+        stack::MineralCache cache;
+        REQUIRE_NOTHROW(cache = stack::PreparePlanet(sc.observed, ser::Target::Neptune, 4, {}));
+        REQUIRE_NOTHROW(out = stack::FinishPlanet(cache, {}, 4));
+        CheckValid(out, sc.observed);
+        CheckHistory(out);
+        std::string all;
+        for (const std::string& h : out.history) all += h + "\n";
+        INFO("level " << s->level << ", blur " << s->blurSigma << ", notice '" << out.notice << "':\n" << all);
+        if (s == &none) {
+            CHECK_FALSE(out.notice.empty());
+            CHECK(Contains(out.history[0], "none"));
+            for (size_t k = 1; k < out.history.size(); ++k) CHECK(Contains(out.history[k], "skipped: " + out.notice));
+        }
+        if (s == &sharp) REQUIRE(cache.masks.diskCount > 0);
+        if (s != &tiny) CHECK(Contains(out.history[1], "skipped"));  // none, or under 30 unsaturated disc px
+    }
+}
+
+TEST_CASE("frame-filling disc completes") {
+    // A disc larger than the frame, no sky (a MoonSynth frame run as Jupiter): every step runs or says why.
+    planetary::testing::MoonSceneSpec s;
+    s.width = 320;
+    s.height = 240;
+    s.cx = 160;
+    s.cy = 120;
+    s.radius = 260;
+    s.cast = {1.1, 1.0, 0.85};
+    s.blurSigma = 1.2;
+    s.noiseStd = 0.003;
+    const planetary::testing::MoonScene sc = planetary::testing::MakeMoonScene(s);
+    stack::MineralOutcome out;
+    REQUIRE_NOTHROW(out = stack::FinishPlanet(stack::PreparePlanet(sc.observed, ser::Target::Jupiter, 4, {}), {}, 4));
+    CheckValid(out, sc.observed);
+    CheckHistory(out);
+    std::string all;
+    for (const std::string& h : out.history) all += h + "\n";
+    INFO(all);
+    CHECK(out.notice.empty());
+}
+
+TEST_CASE("cancel throws StackCancelled") {
+    const PlanetScene sc = MakePlanetScene(Realistic(20, 121));
+    // At the first report, before PreparePlanet's last report (5 of 7, before the Sharpen), and at the end (7 of 7).
+    for (int64_t at : {int64_t(0), int64_t(5), int64_t(7)}) {
+        int64_t last = -1;
+        stack::Progress pr;
+        pr.report = [&](const std::string& phase, int64_t done, int64_t total) {
+            if (phase == stack::kPhasePlanet) {
+                last = done;
+                CHECK(total == 7);
+            }
+        };
+        pr.cancelled = [&] { return last == at; };
+        INFO("cancel at " << at << ", last report " << last);
+        stack::MineralOutcome o;
+        if (at < 6) {
+            CHECK_THROWS_AS(stack::PreparePlanet(sc.observed, ser::Target::Saturn, 4, pr), stack::StackCancelled);
+        } else {
+            const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Saturn, 4, pr);
+            CHECK_THROWS_AS(o = stack::FinishPlanet(cache, {}, 4, pr), stack::StackCancelled);
+            CHECK(o.image.data.empty());
+        }
+        CHECK(last == at);
+    }
+}
+
+TEST_CASE("finish is cheap") {
+    // Spec acceptance 8: a slider move (FinishPlanet on the cache) takes <= 0.2 s at 1920 x 1080 on 32 threads.
+#ifndef NDEBUG
+    SKIP("timed in a Release build only");
+#endif
+    PlanetSceneSpec s = Realistic(200, 131);
+    s.width = 1920;
+    s.height = 1080;
+    s.cx = 960.3;
+    s.cy = 539.8;
+    const PlanetScene sc = MakePlanetScene(s);
+    const int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    const stack::MineralCache cache = stack::PreparePlanet(sc.observed, ser::Target::Jupiter, threads, {});
+    double best = 1e9;
+    for (double sat : {stack::kPlanetSaturationMax, 0.0, stack::kPlanetSaturationDefault}) {
+        stack::PlanetParams p;
+        p.saturation = sat;
+        p.sharpen = stack::kPlanetSharpenMax;
+        p.chromaBlurSigma = stack::kPlanetChromaBlurMax;
+        const auto t0 = std::chrono::steady_clock::now();
+        stack::FinishPlanet(cache, p, threads);
+        best = std::min(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    }
+    WARN(threads << " threads: a slider move (FinishPlanet) " << best << " s at 1920 x 1080");
+    if (threads >= 32) CHECK(best <= 0.2);
+    else WARN("fewer than 32 threads here: not judged");
 }

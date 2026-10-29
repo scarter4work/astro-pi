@@ -175,7 +175,9 @@ double HighlightThreshold(const ser::FloatImage& rgb, const LunarMasks& m, doubl
 // would pass 0.998, w is lowered for the whole pixel (hue kept, saturation given up), so the colour never clips
 // a sample; with k 8 that acts only where L > 0.67 with w > 0.
 // Throws std::invalid_argument unless rgb is 3 channels, lumSharp 1 channel of its size, and the parameters
-// finite with strength, sigma, eps, devClamp >= 0 and satRamp > 0.
+// finite with strength, sigma, eps, devClamp >= 0 and satRamp > 0. No upper bounds: the planet path (Planet.h,
+// FinishPlanet) runs this transfer with k = Saturation (0-3), devClamp 1e3 and satThreshold 1e3, which switch the clamp
+// and the fade off (|d| < 2 for non-negative C; w = 1 below a C of 1000), the gamut guard as it is.
 StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads = 1);
 
 // ---- 8. Display transfer and the pipeline ----
@@ -184,11 +186,15 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
 // not flagged in stackClipped (one flag per sample, as rgb.data; empty: none) that lands it at or under 0.95.
 // Flagged samples may reach 1.0; no other does. Skipped (samples only clipped to [0, 1]) without signal. curve
 // (if given) receives the transfer applied, the default (identity on [0, 1]) when it skipped.
+// medianTarget: where the balance puts the disc's median (0.35, the Moon's). <= 0 is linear (a planet, spec call 4):
+// balance 0.5, y = clamp(v / W, 0, 1), with the same white point rule -- W = brightest unflagged sample / 0.95, so it
+// lands at 0.95 even when calibration lifted it above 1.0 -- and skipped only when that sample is not positive.
+// HISTORY then reads "linear". Throws std::invalid_argument for a target at or above 1 or not finite.
 struct DisplayCurve {
     double white = 1, balance = 0.5;  // y = MTF(clamp(v / white, 0, 1), balance)
 };
 StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped,
-                           DisplayCurve* curve = nullptr);
+                           DisplayCurve* curve = nullptr, double medianTarget = 0.35);
 
 // Progress phase of PrepareMineral, FinishMineral and MakeMineralMoon: report(kPhaseMineral, step, 7) before each
 // of PrepareMineral's steps 0-4 and at its end (5), then FinishMineral's (6, 7) after the sharpening and (7, 7) at
@@ -228,9 +234,11 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
                             const StackNoise* noise = nullptr);
 // Step 4c on the cache: cache.lumBase sharpened by `amount` (SharpenLuminanceImage with the cache's noise and layer
 // shape); record (if given) receives the Sharpen HISTORY line (the noise's source appended). With no disc in the
-// cache it skips (record says why) and returns lumBase as it is. Throws std::invalid_argument for a negative or
-// non-finite amount.
-ser::FloatImage SharpenedLuminance(const MineralCache& cache, double amount, int threads, StepRecord* record = nullptr);
+// cache it skips (record says why: cache.notice) and returns lumBase as it is. profile: the layers' gains and fade
+// (kMoonSharpen; the planet path passes kPlanetSharpen). Throws std::invalid_argument for a negative or non-finite
+// amount.
+ser::FloatImage SharpenedLuminance(const MineralCache& cache, double amount, int threads, StepRecord* record = nullptr,
+                                   const SharpenProfile& profile = kMoonSharpen);
 // Steps 4c-7 on the cache: SharpenedLuminance at p.sharpen, then the colour on a copy of cache.display; record (if
 // given) receives the colour step's HISTORY line, sharpenRecord the Sharpen line. Cheap: a starlet transform, a
 // chroma blur and a few passes (1910 x 1071, 32 threads: about 0.07 s); it allocates about 50 bytes per pixel while

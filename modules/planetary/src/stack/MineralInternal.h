@@ -3,11 +3,14 @@
 // namespaces (only `inline` added), so the mineral moon compiles the same code and stays bit-identical. Internal to
 // the stack engine: not part of its interface.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Mineral.h"
@@ -270,5 +273,65 @@ inline void FillFrameEdge(std::vector<float>& P, const ser::FloatImage& rgb, dou
             if (sg > 0) P[static_cast<size_t>(y) * w + x] = static_cast<float>(g(x, y) * sp / sg);
         }
 }
+
+// ---- The prepare/finish pipeline, shared by the mineral moon and the planets (plan Task 4) ----
+
+// Runs a pipeline's steps, timing each and reporting (phase, step, total); a cancel seen at any report throws
+// StackCancelled ("<product> cancelled") before any image is returned. Moved from Mineral.cpp (the mineral moon's
+// MineralSteps), its phase and product made parameters.
+class PipelineSteps {
+public:
+    PipelineSteps(const Progress& progress, const char* phase, const char* product, int total)
+        : progress_(progress), phase_(phase), product_(product), total_(total) {}
+    template <class Fn>
+    void Run(const std::string& name, std::vector<std::pair<std::string, double>>& seconds, Fn fn) {
+        Tick();
+        const auto t0 = std::chrono::steady_clock::now();
+        fn();
+        seconds.push_back({name, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()});
+        ++done_;
+    }
+    void Tick() {
+        if (progress_.report) progress_.report(phase_, done_, total_);
+        if (progress_.cancelled && progress_.cancelled()) throw StackCancelled(std::string(product_) + " cancelled");
+    }
+    void Report(int done) {
+        done_ = done;
+        Tick();
+    }
+
+private:
+    const Progress& progress_;
+    const char* phase_;
+    const char* product_;
+    int total_, done_ = 0;
+};
+
+// Seven steps: the disc, colour calibration, background, display transfer, channel alignment (PrepareDisc's five),
+// then the sharpening and the colour (the finish).
+constexpr int kPipelineSteps = 7;
+
+// What differs between the mineral moon's prepare and the planet's (spec call 2: one pipeline, parameterised by the
+// target kind, not forked).
+struct DiscPipeline {
+    const char* phase;    // the Progress phase (kPhaseMineral, kPhasePlanet)
+    const char* product;  // "Mineral moon", "Planet processing": refusal and cancel messages
+    const char* discStep; // the first step's name and HISTORY prefix ("Lunar disk", "Planet disc")
+    const char* noDisc;   // the notice, and every later step's skip reason, when the first step finds no disc
+    bool discSize;        // the first step's line also gives the disc's px and equivalent radius
+    std::function<StepRecord(ser::FloatImage&, const LunarMasks&)> calibrate, align;
+    double displayMedian; // DisplayTransfer's medianTarget (<= 0: linear)
+    bool highlightThreshold;  // measure cache.satThreshold (the mineral colour's highlight fade)
+};
+// PrepareMineral's body (Mineral.h gives the contract), for either kind.
+MineralCache PrepareDisc(const ser::FloatImage& stack, int threads, const Progress& progress, const StackNoise* stackNoise,
+                         const DiscPipeline& kind);
+
+// MineralColour's transfer (Mineral.h gives the contract) without its HISTORY line: what the line reports.
+struct ColourCounts {
+    double sigma = 0, threshold = 0;  // the chroma blur applied (px, scaled to the width) and the fade's threshold
+    size_t faded = 0, held = 0;       // pixels with w < 1 by the fade; pixels whose w the gamut guard lowered
+};
+ColourCounts ColourTransfer(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads);
 
 }  // namespace planetary::stack::mineral_internal

@@ -12,6 +12,7 @@
 #include <limits>
 #include <vector>
 
+#include "Measure.h"
 #include "Mineral.h"
 #include "MoonSynth.h"
 
@@ -1052,6 +1053,60 @@ void CheckValidOutput(const stack::MineralOutcome& out, const ser::FloatImage& i
 }
 
 }  // namespace
+
+TEST_CASE("display transfer: a median target <= 0 is linear, with the same white point rule") {
+    // Planet Task 4 (spec call 4): balance 0.5, y = v / W, and W puts the brightest sample the stack did not clip at
+    // 0.95 -- also when calibration pushed it above 1.0 (CalibratePlanetColour scales R and B like CalibrateColour).
+    MoonSceneSpec s = StackScene();
+    s.level = 0.6;
+    s.clipFraction = 0.01;
+    const MoonScene sc = MakeMoonScene(s);
+    std::vector<uint8_t> flags(sc.observed.data.size());
+    for (size_t k = 0; k < flags.size(); ++k) flags[k] = sc.observed.data[k] >= stack::kClippedLuma;
+    ser::FloatImage in = sc.observed;
+    size_t lifted = 0;
+    for (size_t k = 0; k < in.data.size(); k += 3)
+        if (!flags[k]) {
+            in.data[k] *= 1.3f;  // R as a calibration gain of 1.3 leaves it: some unclipped samples above 1.0
+            lifted += in.data[k] > 1.0f;
+        }
+    REQUIRE(lifted > 0);
+    const stack::LunarMasks m = stack::SegmentLunar(in, 4);
+    for (double target : {0.0, -1.0}) {
+        ser::FloatImage out = in;
+        stack::DisplayCurve curve;
+        const stack::StepRecord rec = stack::DisplayTransfer(out, m, flags, &curve, target);
+        INFO(rec.history);
+        REQUIRE_FALSE(rec.skipped);
+        CHECK(curve.balance == 0.5);
+        CHECK(rec.history.find("linear") != std::string::npos);
+        double lo = 1e9, hi = 0, top = 0;
+        size_t flaggedOver = 0;
+        for (size_t k = 0; k < out.data.size(); ++k) {
+            if (flags[k]) {
+                flaggedOver += out.data[k] > 1.0f;
+                continue;
+            }
+            top = std::max(top, static_cast<double>(out.data[k]));
+            if (in.data[k] > 0.02f) {
+                const double q = out.data[k] / static_cast<double>(in.data[k]);
+                lo = std::min(lo, q);
+                hi = std::max(hi, q);
+            }
+        }
+        INFO("out / in " << lo << " - " << hi << ", brightest unclipped " << top << ", white " << curve.white);
+        CHECK(hi / lo - 1 <= 1e-5);
+        CHECK(top <= 0.95 + 1e-6);
+        CHECK(top >= 0.95 - 1e-4);
+        CHECK(flaggedOver == 0);
+        CHECK(std::fabs(1 / curve.white - lo) <= 1e-5 * lo);
+    }
+    // The default is the Moon's 0.35-median stretch.
+    ser::FloatImage moon = in;
+    stack::DisplayCurve curve;
+    stack::DisplayTransfer(moon, m, flags, &curve);
+    CHECK(curve.balance != 0.5);
+}
 
 TEST_CASE("pipeline: display ready") {
     const MoonScene sc = MakeMoonScene(StackScene());
