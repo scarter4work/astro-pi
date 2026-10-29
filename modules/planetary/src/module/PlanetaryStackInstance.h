@@ -44,17 +44,25 @@ using TargetChoice = planetary::stackcards::TargetChoice;
 FITSKeywordArray StackKeywords( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
                                 const TargetChoice& target );
 
+using PostKind = planetary::stackcards::PostKind;
+using PostParams = planetary::stackcards::PostParams;
+
 // The mineral moon's parameters from the mineralStrength, chromaBlur and
 // mineralSharpen values. Throws pcl::Error, prefixed with `process`, for a
 // value outside its parameter's range (a script can set any number).
 planetary::stack::MineralParams MineralParamsFor( double strength, double chromaBlur, double sharpen, const char* process );
 
+// Planet processing's parameters from the planetSaturation, planetChromaBlur
+// and planetSharpen values; out of range as MineralParamsFor.
+planetary::stack::PlanetParams PlanetParamsFor( double saturation, double chromaBlur, double sharpen, const char* process );
+
 // Writes the context lines before a run to the Process Console: version, file,
 // frames, size, colour, depth and threads; for an AVI, its Bayer pattern and
-// where it came from; the target and where it came from, and the mineral moon's
-// parameters when `mineral` is given (nullptr: no mineral moon).
+// where it came from; the target and where it came from, and the product that
+// follows the stack with its parameters when `post` is given (nullptr: none;
+// stackcards::PostContextText).
 void WriteStackContext( const String& path, const planetary::ser::FileInfo& info, int threads, const TargetChoice& target,
-                        const planetary::stack::MineralParams* mineral );
+                        const PostParams* post );
 
 // Writes the outcome to the Process Console: the summary warnings first, one
 // line per condition as stackcards::ShownWarnings gives them for `where` (an
@@ -72,24 +80,25 @@ void WriteStackResult( const String& path, const planetary::stack::StackOutcome&
 IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
                            const TargetChoice& target );
 
-// The mineral moon's window, made in two steps so that a caller opening it
-// beside the stack window can build everything that can fail before either
-// window is shown (both or none; B8 review M1, M2):
-// MakeMineralWindow: the 32-bit float RGB image and its keywords -- the stack's
-// (StackKeywords), then stackcards::MineralHistory's seven lines as HISTORY.
+// The product's window (the mineral moon's or the planet's), made in two steps
+// so that a caller opening it beside the stack window can build everything that
+// can fail before either window is shown (both or none; B8 review M1, M2):
+// MakePostWindow: the 32-bit float RGB image and its keywords -- the stack's
+// (StackKeywords), then stackcards::PostHistory's seven lines as HISTORY.
 // Throws pcl::Error for an image that is not RGB.
-// ShowMineralWindow: shows it as "<file stem>_mineral" (ShowNewImageWindow) and
-// says so on the console; a notice (no disc: the image is the stack clipped) is
-// written as a warning first, so the result line is never read alone. Returns
-// the new view's id.
-struct MineralWindow
+// ShowPostWindow: shows it as "<file stem>_<noun>" (_mineral, _planet;
+// ShowNewImageWindow) and says so on the console; a notice (no disc: the image
+// is the stack clipped) is written as a warning first, so the result line is
+// never read alone. Returns the new view's id.
+struct PostWindow
 {
    Image            image;
    FITSKeywordArray keywords;
 };
-MineralWindow MakeMineralWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
-                                 const TargetChoice& target, const planetary::stack::MineralOutcome& mineral );
-IsoString ShowMineralWindow( const String& path, const MineralWindow& window, const planetary::stack::MineralOutcome& mineral );
+PostWindow MakePostWindow( const String& path, const planetary::stack::StackOutcome& outcome, const StackTimes& times,
+                           const TargetChoice& target, PostKind kind, const planetary::stack::MineralOutcome& post );
+IsoString ShowPostWindow( const String& path, const PostWindow& window, PostKind kind,
+                          const planetary::stack::MineralOutcome& post );
 
 class PlanetaryStackInstance : public ProcessImplementation
 {
@@ -115,7 +124,11 @@ public:
    // p_chromaBlur, p_mineralSharpen; the stack's own noise, StackOutcome::noise)
    // is made after the stack, with the same progress and Abort,
    // and both windows open only once both images exist (an Abort during the
-   // mineral moon leaves no window).
+   // mineral moon leaves no window). p_planetProcess likewise, for a colour
+   // planet not taken through a narrowband or IR-pass filter
+   // (stackcards::PlanetRefusalFor; Target Other is refused): its planet
+   // processing (Planet.h PreparePlanet + FinishPlanet, p_planetSaturation,
+   // p_planetChromaBlur, p_planetSharpen) opens as <stem>_planet.
    bool ExecuteGlobal() override;
 
    void* LockParameter( const MetaParameter*, size_type tableRow ) override;
@@ -129,6 +142,10 @@ public:
    double   p_mineralStrength;
    double   p_chromaBlur;
    double   p_mineralSharpen;
+   pcl_bool p_planetProcess;
+   double   p_planetSaturation;
+   double   p_planetChromaBlur;
+   double   p_planetSharpen;
 };
 
 } // namespace pcl

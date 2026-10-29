@@ -40,6 +40,11 @@ python-xlib), and checks the screenshots. Test-only.
                                       checked again, Execute (20 ... 25)
   gui_drive.py --stack-mineral-cancel OUT SER   a large Moon, Execute, Cancel in the mineral moon (26, 27)
   gui_drive.py --stack-hao3 OUT SER   a HaO3 Moon: Mineral moon off and disabled, its tooltip read (28, 28b, 28c)
+  gui_drive.py --stack-planet OUT SER   a colour Saturn: Planet processing shown, Stack!, checked, Saturation, Chroma blur
+                                      and Sharpen dragged, Execute (30 ... 36)
+  gui_drive.py --stack-planet-moon OUT   the Target set to the Moon: the mineral row, the stack shown (37)
+  gui_drive.py --stack-planet-race OUT SER   a large Saturn: Stack!, Planet processing, Sharpen dragged and the Target
+                                      switched to the Moon at once, then Mineral moon checked (38 ... 40c)
   gui_drive.py --check-stack OUT      pixel checks of the preview, progress bar and Save pattern...
                                       boxes (exit 1 on failure)
 
@@ -152,13 +157,13 @@ def click(x, y):
     time.sleep(0.4)
 
 
-def drag(a, b, steps=12):
+def drag(a, b, steps=12, settle=0.4):
     xtest.fake_input(d, X.MotionNotify, x=a[0], y=a[1]); d.sync(); time.sleep(0.3)
     xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.1)
     for i in range(1, steps + 1):
         xtest.fake_input(d, X.MotionNotify, x=a[0] + (b[0] - a[0]) * i // steps,
                          y=a[1] + (b[1] - a[1]) * i // steps); d.sync(); time.sleep(0.03)
-    xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.4)
+    xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(settle)
 
 
 def park():
@@ -559,14 +564,42 @@ STRENGTH_Y = 69
 SHARPEN_Y = STRENGTH_Y + 52  # two rows below Strength (Task SHARP)
 
 
-def strength_x(box, value):
+def slider_x(box, value, top):
+    """A slider handle's centre at `value` of a 0..top range (every slider row has the same handle travel)."""
     x0, _, x1, _ = box
-    return int(round(x0 + 139 + value / 15.0 * ((x1 - 7) - (x0 + 139))))
+    return int(round(x0 + 139 + value / float(top) * ((x1 - 7) - (x0 + 139))))
+
+
+def strength_x(box, value):
+    return slider_x(box, value, 15.0)
 
 
 def sharpen_x(box, value):
-    x0, _, x1, _ = box
-    return int(round(x0 + 139 + value / 4.0 * ((x1 - 7) - (x0 + 139))))
+    return slider_x(box, value, 4.0)
+
+
+# Planet Task 6: the post-processing row follows the Target. Planet processing's check box takes Mineral moon's
+# place (CTL["mineral"], MINERAL_BOX) with its label to the right of it; Saturation, Chroma blur and Sharpen take the
+# rows of Strength, Chroma blur and Sharpen (CHROMA_Y between them), with the same handle travel over each parameter's
+# range. POST_LABEL_BOX holds the check box's label, SLIDER_LABEL_BOX the first slider row's label and value.
+CHROMA_Y = STRENGTH_Y + 26
+POST_LABEL_BOX = ((286, "bottom", 35), (440, "bottom", 51))
+SLIDER_LABEL_BOX = ((0, "bottom", 61), (132, "bottom", 77))
+
+
+def planet_constants():
+    """Planet processing's slider defaults and tops, read from the engine's headers (Planet.h; its Sharpen is
+    Mineral.h's), so the drags start on the handles whatever Scott's pick (Q3) makes the defaults."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "stack")
+    text = open(os.path.join(src, "Planet.h")).read() + open(os.path.join(src, "Mineral.h")).read()
+
+    def value(name):
+        m = re.search(r"\b%s = ([A-Za-z_][A-Za-z0-9_]*|[0-9.]+)" % name, text)
+        if m is None:
+            raise SystemExit("FAIL: no %s in Planet.h / Mineral.h" % name)
+        return float(m.group(1)) if m.group(1)[0].isdigit() else value(m.group(1))
+
+    return {k: (value("kPlanet%sDefault" % k), value("kPlanet%sMax" % k)) for k in ("Saturation", "ChromaBlur", "Sharpen")}
 
 
 def rel_box(spec, box):
@@ -649,14 +682,21 @@ def stack_and_wait(mid_shot=None, timeout=120):
     wait_for(lambda: idle(BOX), timeout, "the run to end (the progress bar empty, Stack! enabled)")
 
 
-def combo_down(n):
+def combo_down(n, ctl="bayer", wait=0.5, gap=0.2):
     # The combo's list is mapped below PI's interface window on this WM-less Xvfb (see
-    # --open-avi): it is driven blind, Down n times, Return.
-    click(*CTL["bayer"])
-    time.sleep(0.5)
-    for _ in range(n):
-        key("Down")
-        time.sleep(0.2)
+    # --open-avi): it is driven blind, Down n times (Up for a negative n), Return. `wait` and `gap`: the pauses
+    # after the click and between keys (the Target race passes short ones).
+    if wait >= 0.5:
+        click(*CTL[ctl])
+    else:
+        x, y = CTL[ctl]
+        xtest.fake_input(d, X.MotionNotify, x=x, y=y); d.sync(); time.sleep(0.03)
+        xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.03)
+        xtest.fake_input(d, X.ButtonRelease, 1); d.sync()
+    time.sleep(wait)
+    for _ in range(abs(n)):
+        key("Down" if n > 0 else "Up")
+        time.sleep(gap)
     key("Return")
     park()
 
@@ -956,6 +996,74 @@ if MODE == "--stack-hao3":
     text = ocr(OUT + "/28b-tooltip.png", region)
     json.dump({"region": region, "text": text}, open(OUT + "/tooltip.json", "w"))
     log.write("tooltip at %r: %s\n" % (region, text))
+    sys.exit(0)
+
+# ---- PlanetaryStack: Planet processing (planet Task 6) -----------------------------------------
+
+if MODE == "--stack-planet":
+    # A colour Saturn (its ASIAIR name: Saturn, Lqef): the row shows Planet processing, enabled. Stack! with the box
+    # clear, then check it (the planet of that stack, no restack); drag Saturation, Chroma blur and Sharpen from their
+    # defaults (the finish alone, never the stack); Execute (both windows; gui-smoke-stack.sh checks them).
+    P = planet_constants()
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    park()
+    shot("30-planet-loaded.png", 1.5)
+    stack_and_wait()
+    shot("31-planet-stack.png", 1.0)
+    click(*CTL["mineral"])   # Planet processing's box, in Mineral moon's place
+    park()
+    wait_for(lambda: idle(BOX), 60, "the planet processing to be made (the progress bar empty, Stack! enabled)")
+    shot("32-planet.png", 1.0)
+    for name, y, k, to in (("33-saturation.png", STRENGTH_Y, "Saturation", 2.5), ("34-chroma-blur.png", CHROMA_Y, "ChromaBlur", 5.0),
+                           ("35-sharpen.png", SHARPEN_Y, "Sharpen", 4.0)):
+        default, top = P[k]
+        drag((slider_x(BOX, default, top), BOX[3] + y), (slider_x(BOX, to, top), BOX[3] + y), steps=24)
+        park()
+        no_restack(2.0, "%s %g -> %g" % (k, default, to))
+        shot(name, 0.5)
+    click(*CTL["execute"])
+    park()
+    shot("36-planet-execute.png", 1.5)
+    sys.exit(0)
+
+if MODE == "--stack-planet-moon":
+    # The Target set to the Moon (two items down from Auto): the mineral row in its place, the stack shown again --
+    # no planet preview -- and nothing restacked.
+    combo_down(2, "target")
+    no_restack(1.5, "Target Saturn -> Moon")
+    shot("37-planet-to-moon.png", 0.5)
+    sys.exit(0)
+
+if MODE == "--stack-planet-race":
+    # Review Focus 5 on a large Saturn (its finish takes long enough to be caught running): Stack!, Planet processing
+    # checked (the Moon above turned it off), then Sharpen dragged and the Target switched to the Moon at once, the
+    # switch landing while the last finish of the drag runs or waits to be collected. Afterwards: the mineral row,
+    # the stack shown (no stale planet preview, then or once that finish is done), PixInsight still running.
+    P = planet_constants()
+    file_dialog(CTL["open"], OPEN_DIALOG, sys.argv[3])
+    park()
+    shot("38-race-loaded.png", 1.5)
+    stack_and_wait(timeout=180)
+    shot("38b-race-stack.png", 1.0)
+    click(*CTL["mineral"])
+    park()
+    wait_for(lambda: idle(BOX), 120, "the planet processing to be made (the progress bar empty, Stack! enabled)")
+    shot("39-race-planet.png", 1.0)
+    _, top = P["Sharpen"]
+    y = BOX[3] + SHARPEN_Y
+    t0 = time.time()
+    drag((slider_x(BOX, 4.0, top), y), (slider_x(BOX, 1.0, top), y), steps=24, settle=0)
+    combo_down(2, "target", wait=0.15, gap=0.03)
+    log.write("race: the Target switched %.2f s after the Sharpen drag began (its release ~0.4 s in)\n" % (time.time() - t0))
+    shot("40-race-switched.png", 0.3)
+    time.sleep(2.0)
+    shot("40b-race-later.png", 0)
+    # Mineral moon checked now: made from that stack (the planet's data is not the Moon's: a mineral moon finished on
+    # the planet cache, or the planet image kept, would show the planet here).
+    click(*CTL["mineral"])
+    park()
+    wait_for(lambda: idle(BOX), 120, "the mineral moon to be made (the progress bar empty, Stack! enabled)")
+    shot("40c-race-mineral.png", 1.0)
     sys.exit(0)
 
 if MODE == "--check":
@@ -1295,8 +1403,75 @@ if MODE == "--check-stack":
     # The reason word for word, case aside (tesseract has read "is" as "iS" in this font).
     need("mineral moon needs a broadband filter; hao3 is narrowband, so its colours come from the filter." in tip.lower(),
          "28b-tooltip.png: the disabled box's tooltip gives the reason (read: %r)" % tip)
+    # ---- Planet processing (planet Task 6) ----
+    # The Saturn's name gives the target; the row shows Planet processing (not Mineral moon) and Saturation.
+    target = ocr(OUT + "/30-planet-loaded.png", rel_box(TARGET_BOX, box), psm=7)
+    need("Saturn (from file name)" in target, "30-planet-loaded.png: Target shows the file name's Saturn (read: %r)" % target)
+
+    def row_text(name):
+        return (ocr(OUT + "/" + name, rel_box(POST_LABEL_BOX, box), psm=7),
+                ocr(OUT + "/" + name, rel_box(SLIDER_LABEL_BOX, box), psm=7))
+
+    for name, want_box, want_slider, other in (("30-planet-loaded.png", "Planet processing", "Saturation", "Mineral"),
+                                               ("36-planet-execute.png", "Planet processing", "Saturation", "Mineral"),
+                                               ("37-planet-to-moon.png", "Mineral moon", "Strength", "Planet"),
+                                               ("39-race-planet.png", "Planet processing", "Saturation", "Mineral"),
+                                               ("40b-race-later.png", "Mineral moon", "Strength", "Planet")):
+        label, slider = row_text(name)
+        need(want_box in label and other not in label and want_slider in slider,
+             "%s: the row shows %s and %s only (read: %r, %r)" % (name, want_box, want_slider, label, slider))
+    target = ocr(OUT + "/37-planet-to-moon.png", rel_box(TARGET_BOX, box), psm=7)
+    need("Moon" in target, "37-planet-to-moon.png: Target reads Moon (read: %r)" % target)
+    for name, want in (("30-planet-loaded.png", "enabled"), ("31-planet-stack.png", "enabled"), ("32-planet.png", "checked"),
+                       ("33-saturation.png", "checked"), ("34-chroma-blur.png", "checked"), ("35-sharpen.png", "checked"),
+                       ("36-planet-execute.png", "checked"),
+                       # The Moon: the mineral box in its place, enabled (a colour Lqef capture), clear.
+                       ("37-planet-to-moon.png", "enabled"),
+                       ("38b-race-stack.png", "enabled"), ("39-race-planet.png", "checked"),
+                       ("40-race-switched.png", "enabled"), ("40b-race-later.png", "enabled"),
+                       ("40c-race-mineral.png", "checked")):
+        state, mean, darkest = box_state(name)
+        need(state == want, "%s: the row's check box is %s (inside mean %.0f, darkest %d)" % (name, want, mean, darkest))
+
+    # Saturation 2.5 colours the disc more than 1 (the chroma (max - min) / max over the lit preview).
+    def chroma(name):
+        p = px(name)
+        hi, lo = p.max(axis=2), p.min(axis=2)
+        m = hi > 24
+        return float(((hi - lo) / np.maximum(hi, 1))[m].mean())
+
+    c1, c25 = chroma("32-planet.png"), chroma("33-saturation.png")
+    need(c25 > 1.3 * c1, "33-saturation.png: Saturation 2.5 colours more than the default (chroma %.3f vs %.3f)" % (c25, c1))
+    d15, d4 = detail("34-chroma-blur.png"), detail("35-sharpen.png")
+    need(d4 > 1.05 * d15, "35-sharpen.png: Sharpen 4 shows more fine detail than the default (mean |Laplacian| %.2f vs %.2f)"
+         % (d4, d15))
+    for a, b_, what, want in (("31-planet-stack.png", "32-planet.png", "the stack vs its planet processing", "differ"),
+                              ("32-planet.png", "33-saturation.png", "Saturation moved", "differ"),
+                              ("33-saturation.png", "34-chroma-blur.png", "Chroma blur moved", "differ"),
+                              ("34-chroma-blur.png", "35-sharpen.png", "Sharpen moved", "differ"),
+                              ("35-sharpen.png", "36-planet-execute.png", "before vs after Execute (no new stack)", "same"),
+                              ("31-planet-stack.png", "37-planet-to-moon.png", "Target Moon: the stack again, no planet preview", "same"),
+                              ("38b-race-stack.png", "39-race-planet.png", "the large Saturn's stack vs its planet", "differ"),
+                              ("38b-race-stack.png", "40-race-switched.png", "Sharpen dragged and Target switched at once: the stack", "same"),
+                              ("38b-race-stack.png", "40b-race-later.png", "2 s later: still the stack, no stale planet", "same"),
+                              ("38b-race-stack.png", "40c-race-mineral.png", "Mineral moon then: not the stack", "differ"),
+                              ("39-race-planet.png", "40c-race-mineral.png", "Mineral moon then: not the planet", "differ")):
+        v = changed(a, b_)
+        if want == "same":
+            need(v == 0.0, "%s: %s vs %s (%.2f%% changed)" % (what, a, b_, 100 * v))
+        else:
+            # A planet lights a few percent of the preview (the probe's Saturn: a 37 px globe and its ring at Fit), so a
+            # slider's change is judged over the pixels lit in either shot: at least 5% of them (and something changed).
+            pa, pb = px(a), px(b_)
+            lit_ab = (pa.max(axis=2) > 24) | (pb.max(axis=2) > 24)
+            on = float((np.abs(pa - pb).max(axis=2) > 12)[lit_ab].mean()) if lit_ab.any() else 0.0
+            need(on > 0.05 and v > 0.0, "%s: %s vs %s (%.2f%% of the lit pixels changed; %.2f%% of the preview)"
+                 % (what, a, b_, 100 * on, 100 * v))
+
     for name in ("21-moon-stack.png", "22-mineral.png", "23-strength.png", "23b-sharpen.png", "24-unchecked.png", "25-moon-execute.png",
-                 "27-mineral-cancelled.png", "28-hao3.png"):
+                 "27-mineral-cancelled.png", "28-hao3.png", "31-planet-stack.png", "32-planet.png", "33-saturation.png",
+                 "34-chroma-blur.png", "35-sharpen.png", "36-planet-execute.png", "37-planet-to-moon.png", "38b-race-stack.png",
+                 "39-race-planet.png", "40-race-switched.png", "40b-race-later.png", "40c-race-mineral.png"):
         f = bar_fill(box, OUT + "/" + name)
         need(f == 0.0, "%s: the progress bar is empty (%.1f%%)" % (name, 100 * f))
         ring = int((np.abs(crop(name, ibox) - np.array((135, 179, 255))) <= 6).all(axis=2).sum())
@@ -1308,4 +1483,4 @@ if MODE == "--check-stack":
 
 raise SystemExit("usage: gui_drive.py --dismiss|--open|--open-avi|--save-pattern|--shot|--close|--quit|--check OUT ...\n"
                  "       gui_drive.py --stack-open|--stack-run|--stack-unreadable|--stack-execute-again|--stack-cancel|--stack-file|--stack-bayer|--stack-pattern|"
-                 "--stack-close|--stack-quit|--stack-moon|--stack-mineral-cancel|--stack-hao3|--check-stack OUT ...")
+                 "--stack-close|--stack-quit|--stack-moon|--stack-mineral-cancel|--stack-hao3|--stack-planet|--stack-planet-moon|--stack-planet-race|--check-stack OUT ...")

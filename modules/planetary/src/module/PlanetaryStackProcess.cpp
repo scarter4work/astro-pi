@@ -24,6 +24,10 @@ PlanetaryStackProcess::PlanetaryStackProcess()
    new PSMineralStrength( this );
    new PSChromaBlur( this );
    new PSMineralSharpen( this );
+   new PSPlanetProcess( this );
+   new PSPlanetSaturation( this );
+   new PSPlanetChromaBlur( this );
+   new PSPlanetSharpen( this );
 }
 
 IsoString PlanetaryStackProcess::Id() const
@@ -65,6 +69,14 @@ String PlanetaryStackProcess::Description() const
       "not through a narrowband or IR-pass filter (as the file name names it; an unrecognised or missing filter "
       "name is allowed): anything else fails before stacking, saying why. The stack window stays linear; the "
       "mineral image is display-ready, every sample within [0, 1].</p>"
+      "<p>With <i>planetProcess</i> on, a planet capture (Mercury to Neptune) also gives its planet processing, opened "
+      "as a second window (<i>name</i>_planet): the stack colour-calibrated to the planet's own catalogue colour "
+      "(Mallama, Krobusek &amp; Pavlov 2017), its red and blue aligned to green against atmospheric dispersion, shown "
+      "linear and sharpened, with its natural colour scaled by <i>planetSaturation</i> (0 grey, 1 natural), its "
+      "colour noise smoothed by <i>planetChromaBlur</i> (px) and its luminance sharpened by <i>planetSharpen</i> (0 "
+      "none). It needs a planet target (Other is refused: pick the planet), a colour capture, and a broadband "
+      "filter; anything else fails before stacking, saying why. Its image is display-ready, every sample within "
+      "[0, 1].</p>"
       "<p>When the capture has no usable frames (no target, the target leaving the frame, a saturated target, "
       "out of focus, poor seeing, frames that do not line up) no image is made: execution fails with the "
       "diagnosis and its numbers on the Process Console.</p>"

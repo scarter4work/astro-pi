@@ -50,15 +50,18 @@ while IFS= read -r c; do
    fi
    args=( "$path" --json --bayer "$(jq -r .probeBayer <<<"$c")" )
    while IFS= read -r xy; do args+=( --sample "$xy" ); done < <(jq -r '.sample[] | "\(.[0]),\(.[1])"' <<<"$c")
-   # Mineral moon (Task B8): the engine's mineral moon with the case's parameters (unset: stack-probe's own
-   # defaults, the process's: 8, 2.5 and the engine's kSharpenDefault).
-   if jq -e '.kind == "image" and .mineral != null' <<<"$c" >/dev/null; then
-      args+=( --mineral )
-      for p in strength:--strength chromaBlur:--chroma-blur sharpen:--sharpen; do
-         v="$(jq -r ".mineral.${p%%:*} // empty" <<<"$c")"
-         [ -z "$v" ] || args+=( "${p#*:}" "$v" )
-      done
-   fi
+   # Mineral moon (Task B8) and planet processing (planet Task 6): the engine's product with the case's parameters
+   # (unset: stack-probe's own defaults, the process's: the mineral moon's 8, 2.5 and kSharpenDefault, the planet's
+   # Planet.h kPlanet*Default).
+   for product in mineral planet; do
+      if jq -e --arg k "$product" '.kind == "image" and .[$k] != null' <<<"$c" >/dev/null; then
+         args+=( "--$product" )
+         for p in strength:--strength saturation:--saturation chromaBlur:--chroma-blur sharpen:--sharpen; do
+            v="$(jq -r --arg k "$product" ".[\$k].${p%%:*} // empty" <<<"$c")"
+            [ -z "$v" ] || args+=( "${p#*:}" "$v" )
+         done
+      fi
+   done
    rc=0
    "$STACK_PROBE" "${args[@]}" >"$ENGINE" 2>"$PLANETARY_RUN_DIR/stack-probe.err" || rc=$?
    case "$kind" in
@@ -74,13 +77,16 @@ while IFS= read -r c; do
       jq -e '.warnings | any(contains("may be out of focus"))' "$ENGINE" >/dev/null \
          || { echo "FAIL: fixture '$name' is not warned out of focus by the engine: $(jq -c .focus "$ENGINE")"; exit 1; }
    fi
-   # A mineral moon case must give the engine a real mineral moon: seven steps, no notice, within [0, 1].
-   if jq -e '.kind == "image" and .mineral != null' <<<"$c" >/dev/null; then
-      jq -e '.mineral.history | length == 7' "$ENGINE" >/dev/null \
-         || { echo "FAIL: fixture '$name' gives the engine's mineral moon $(jq '.mineral.history | length' "$ENGINE") HISTORY lines, expected 7"; exit 1; }
-      jq -e '.mineral.notice == "" and .mineral.min >= 0 and .mineral.max <= 1' "$ENGINE" >/dev/null \
-         || { echo "FAIL: fixture '$name': the engine's mineral moon has a notice or a sample outside [0, 1]: $(jq -c '.mineral | {notice, min, max}' "$ENGINE")"; exit 1; }
-   fi
+   # A mineral moon (planet) case must give the engine a real mineral moon (planet processing): seven steps, no
+   # notice, within [0, 1].
+   for product in mineral planet; do
+      if jq -e --arg k "$product" '.kind == "image" and .[$k] != null' <<<"$c" >/dev/null; then
+         jq -e --arg k "$product" '.[$k].history | length == 7' "$ENGINE" >/dev/null \
+            || { echo "FAIL: fixture '$name' gives the engine's $product product $(jq --arg k "$product" '.[$k].history | length' "$ENGINE") HISTORY lines, expected 7"; exit 1; }
+         jq -e --arg k "$product" '.[$k].notice == "" and .[$k].min >= 0 and .[$k].max <= 1' "$ENGINE" >/dev/null \
+            || { echo "FAIL: fixture '$name': the engine's $product product has a notice or a sample outside [0, 1]: $(jq -c --arg k "$product" '.[$k] | {notice, min, max}' "$ENGINE")"; exit 1; }
+      fi
+   done
    if [ "$kind" = "cancel" ]; then
       secs="$(jq -r .seconds "$ENGINE")"
       jq -e --argjson s "$secs" '$s >= .minSeconds' <<<"$c" >/dev/null \
@@ -112,6 +118,9 @@ while IFS= read -r c; do
                  consoleContains: (.consoleContains + [ $r.selection, $r.alignment ] + $w) }
              + (if .mineral != null
                 then { mineralSamples: $r.mineral.samples, mineralHistory: $r.mineral.history }
+                else {} end)
+             + (if .planet != null
+                then { planetSamples: $r.planet.samples, planetHistory: $r.planet.history }
                 else {} end)
         elif .kind == "diagnosis" then
            . + { expectError: $r.diagnosis.message,

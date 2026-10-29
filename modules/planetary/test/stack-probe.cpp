@@ -733,6 +733,23 @@ int main(int argc, char** argv) try {
             j += "]";
         }
         j += ",\"target\":" + Json(ser::TargetName(target)) + ",\"filter\":" + Json(FilterName(name.filter));
+        // An RGB product's value at every --sample point in it (x, y less ox, oy: --mineral-crop's L, T), as JSON
+        // objects {x, y, c, v} (Task B8 and planet Task 6: the headless probe compares PlanetaryStack's _mineral and
+        // _planet windows with them).
+        auto productSamples = [&](const ser::FloatImage& im, int ox, int oy) {
+            std::string s;
+            for (const auto& [x, y] : samples) {
+                const int mx = x - ox, my = y - oy;
+                if (mx < 0 || my < 0 || mx >= im.width || my >= im.height) continue;
+                for (int c = 0; c < 3; ++c) {
+                    char v[48];
+                    std::snprintf(v, sizeof v, "%.9g", im.data[(static_cast<size_t>(my) * im.width + mx) * 3 + c]);
+                    s += std::string(s.empty() ? "" : ",") + "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
+                         ",\"c\":" + std::to_string(c) + ",\"v\":" + v + "}";
+                }
+            }
+            return s;
+        };
         if (mcache) {
             double total = 0;
             j += ",\"mineral\":{\"refusal\":null,\"notice\":" + Json(mcache->notice) + ",\"strength\":" + Fmt(strength, 2) +
@@ -755,23 +772,10 @@ int main(int argc, char** argv) try {
                 j += std::string(i ? "," : "") + "{\"sharpen\":" + Fmt(sharpenAlso[i].first, 2) + ",\"output\":" +
                      Json(sharpenAlso[i].second) + "}";
             j += "],\"stages\":" + (mineralStages.empty() ? std::string("null") : Json(mineralStages));
-            // Its smallest and largest sample and its value at every --sample point (Task B8: the headless probe
-            // compares PlanetaryStack's _mineral window with them; --mineral-crop shifts the grid by L, T).
+            // Its smallest and largest sample and its value at every --sample point.
             const auto [lo, hi] = std::minmax_element(mImage->data.begin(), mImage->data.end());
-            j += ",\"min\":" + Fmt(*lo, 6) + ",\"max\":" + Fmt(*hi, 6) + ",\"samples\":[";
-            bool firstM = true;
-            for (const auto& [x, y] : samples) {
-                const int mx = x - mineralCrop[0], my = y - mineralCrop[1];
-                if (mx < 0 || my < 0 || mx >= mImage->width || my >= mImage->height) continue;
-                for (int c = 0; c < 3; ++c) {
-                    char v[48];
-                    std::snprintf(v, sizeof v, "%.9g", mImage->data[(static_cast<size_t>(my) * mImage->width + mx) * 3 + c]);
-                    j += std::string(firstM ? "" : ",") + "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
-                         ",\"c\":" + std::to_string(c) + ",\"v\":" + v + "}";
-                    firstM = false;
-                }
-            }
-            j += "]}";
+            j += ",\"min\":" + Fmt(*lo, 6) + ",\"max\":" + Fmt(*hi, 6) + ",\"samples\":[" +
+                 productSamples(*mImage, mineralCrop[0], mineralCrop[1]) + "]}";
         }
         if (pcache) {
             double total = 0;
@@ -814,7 +818,7 @@ int main(int argc, char** argv) try {
             list("saturationAlso", "saturation", saturationAlso);
             const auto [lo, hi] = std::minmax_element(pImage->data.begin(), pImage->data.end());
             j += ",\"stages\":" + (planetStages.empty() ? std::string("null") : Json(planetStages)) + ",\"min\":" + Fmt(*lo, 6) +
-                 ",\"max\":" + Fmt(*hi, 6) + "}";
+                 ",\"max\":" + Fmt(*hi, 6) + ",\"samples\":[" + productSamples(*pImage, 0, 0) + "]}";
         }
         // The stack's noise (Ruling R35): the model's line and the noise-power frame count k_eff = 1 / alpha2 over the grid.
         if (o.noise) {

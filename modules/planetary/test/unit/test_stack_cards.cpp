@@ -464,3 +464,203 @@ TEST_CASE("the info line reads the target from the same full path as the target 
     CHECK(stackcards::StackInfoLine("stack.ser", i, path) ==
           "stack.ser: 24 frames, 640 x 480, 16-bit, Bayer RGGB, target from file name: Moon");
 }
+
+// ---- Planet processing (planet Task 6) -----------------------------------------------------------
+
+#include "PlanetSynth.h"
+
+namespace {
+
+const std::string kSaturnName = "2026-10-23-041500-Saturn-Bin1 Lqef 17.6F.ser";
+
+// A small ringed Saturn as a stack holds it: the camera's cast, seeing, noise.
+ser::FloatImage SaturnStack() {
+    testing::PlanetSceneSpec s;
+    s.width = 128;
+    s.height = 96;
+    s.cx = 64.3;
+    s.cy = 47.8;
+    s.radius = 16;
+    s.ring = true;
+    s.ringTiltDeg = 15;
+    s.tint = {1.3, 1, 0.68};
+    s.cast = {1.0, 0.8, 0.55};
+    s.pedestal = {0.01, 0.012, 0.015};
+    s.blurSigma = 1.2;
+    s.noiseStd = 0.004;
+    s.seed = 31;
+    return testing::MakePlanetScene(s).observed;
+}
+
+stack::MineralOutcome PlanetSevenSteps(const std::string& notice = "") {
+    stack::MineralOutcome m;
+    m.history = {"Planet disc: 812 px (equivalent radius 16.1 px), sky 91.0%", "Colour calibration: to Saturn's ...",
+                 "Background: plane removed", "Display transfer: linear, white 0.81",
+                 "Channel alignment: R 0.02 px, B 0.03 px; skipped",
+                 "Sharpen (luminance): amount 1.50, starlet layers 1-4; gains 1.60 1.00 1.00 1.00; noise: the stack's model",
+                 "Saturation: 1.00x the natural colour (the chroma layer's channel ratios on the sharp luminance), chroma "
+                 "blur 1.00 px, eps 0.0011; no deviation clamp, no highlight fade; 0.0% of pixels held in gamut"};
+    m.notice = notice;
+    return m;
+}
+
+}  // namespace
+
+TEST_CASE("the post-processing row follows the target: the Moon's mineral moon, planet processing otherwise", "[stackcards][planet]") {
+    CHECK(stackcards::PostKindFor(ser::Target::Moon) == stackcards::PostKind::Mineral);
+    for (ser::Target t : {ser::Target::Mercury, ser::Target::Venus, ser::Target::Mars, ser::Target::Jupiter, ser::Target::Saturn,
+                          ser::Target::Uranus, ser::Target::Neptune, ser::Target::Other})
+        CHECK(stackcards::PostKindFor(t) == stackcards::PostKind::Planet);
+    CHECK(stackcards::PostTitle(stackcards::PostKind::Mineral) == "Mineral moon");
+    CHECK(stackcards::PostTitle(stackcards::PostKind::Planet) == "Planet processing");
+    CHECK(stackcards::PostNoun(stackcards::PostKind::Mineral) == "mineral");
+    CHECK(stackcards::PostNoun(stackcards::PostKind::Planet) == "planet");
+    CHECK(stackcards::PostName(stackcards::PostKind::Mineral) == "mineral moon");
+    CHECK(stackcards::PostName(stackcards::PostKind::Planet) == "planet processing");
+    stackcards::PostParams p;
+    p.kind = stackcards::PostKind::Planet;
+    p.planet.saturation = 2;
+    p.planet.chromaBlurSigma = 0;
+    p.planet.sharpen = 3.5;
+    CHECK(stackcards::PostParamsText(p) == "saturation 2.00, chroma blur 0.00 px, sharpen 3.50");
+    p.kind = stackcards::PostKind::Mineral;
+    CHECK(stackcards::PostParamsText(p) == "strength 8.00, chroma blur 2.50 px, sharpen " + stackcards::Fixed(stack::kSharpenDefault, 2));
+}
+
+TEST_CASE("planet processing is refused from the capture's name, the target and the reader's colour", "[stackcards][planet]") {
+    const ser::FileInfo bayer = BayerSer();
+    CHECK_FALSE(stackcards::PlanetRefusalFor(kSaturnName, bayer, stackcards::ResolveTarget(std::nullopt, kSaturnName)));
+    const std::string hao3 = "/d/2026-10-05-031000-Saturn-Bin1 HaO3 9.0F.ser";
+    const auto nb = stackcards::PlanetRefusalFor(hao3, bayer, stackcards::ResolveTarget(std::nullopt, hao3));
+    REQUIRE(nb);
+    CHECK(*nb == "Planet processing needs a broadband filter; HaO3 is narrowband, so its colours come from the filter.");
+    const auto other = stackcards::PlanetRefusalFor(kSaturnName, bayer, stackcards::ResolveTarget(ser::Target::Other, kSaturnName));
+    REQUIRE(other);
+    CHECK(*other == "Planet processing needs a planet target; pick the planet in the Target list.");
+    const auto moon = stackcards::PlanetRefusalFor(kSaturnName, bayer, stackcards::ResolveTarget(ser::Target::Moon, kSaturnName));
+    REQUIRE(moon);
+    CHECK(moon->find("use Mineral moon") != std::string::npos);
+    ser::FileInfo mono = bayer;
+    mono.colorId = ser::ColorId::Mono;
+    const auto m = stackcards::PlanetRefusalFor(kSaturnName, mono, stackcards::ResolveTarget(std::nullopt, kSaturnName));
+    REQUIRE(m);
+    CHECK(m->find("Planet processing needs a colour capture; this one is mono") == 0);
+    // PostRefusalFor picks the kind's gate.
+    CHECK(stackcards::PostRefusalFor(stackcards::PostKind::Planet, kSaturnName, bayer,
+                                     stackcards::ResolveTarget(ser::Target::Other, kSaturnName)) == other);
+    CHECK(stackcards::PostRefusalFor(stackcards::PostKind::Mineral, kMoonName, bayer,
+                                     stackcards::ResolveTarget(std::nullopt, kMoonName)) ==
+          stackcards::MineralRefusalFor(kMoonName, bayer, stackcards::ResolveTarget(std::nullopt, kMoonName)));
+}
+
+TEST_CASE("the post-processing runs as its engine runs it, bit for bit, mineral moon and planet alike", "[stackcards][planet]") {
+    const ser::FloatImage stacked = SaturnStack();
+    stackcards::PostParams planet;
+    planet.kind = stackcards::PostKind::Planet;
+    planet.target = ser::Target::Saturn;
+    planet.planet.saturation = 1.7;
+    planet.planet.chromaBlurSigma = 0.5;
+    planet.planet.sharpen = 2.5;
+    const stack::MineralCache pc = stackcards::PreparePost(planet, stacked, 3, {}, nullptr);
+    const stack::MineralOutcome po = stackcards::FinishPost(planet, pc, 3);
+    const stack::MineralOutcome want = stack::FinishPlanet(stack::PreparePlanet(stacked, ser::Target::Saturn, 3, {}), planet.planet, 3);
+    CHECK(po.image.data == want.image.data);
+    CHECK(po.history == want.history);
+
+    stackcards::PostParams mineral;
+    mineral.kind = stackcards::PostKind::Mineral;
+    mineral.mineral.strength = 5;
+    const stack::MineralCache mc = stackcards::PreparePost(mineral, stacked, 3, {}, nullptr);
+    const stack::MineralOutcome mo = stackcards::FinishPost(mineral, mc, 3);
+    const stack::MineralOutcome mwant = stack::MakeMineralMoon(stacked, 3, {}, mineral.mineral);
+    CHECK(mo.image.data == mwant.image.data);
+    CHECK(mo.history == mwant.history);
+}
+
+TEST_CASE("the planet window's cards: OBJECT the planet, then one HISTORY line per step, prefixed", "[stackcards][planet]") {
+    const stackcards::TargetChoice saturn = stackcards::ResolveTarget(std::nullopt, kSaturnName);
+    const std::vector<Card> cards = stackcards::StackCards(kSaturnName, Stacked(ser::Container::Ser), Times(), saturn);
+    const Card* object = Find(cards, "OBJECT");
+    REQUIRE(object != nullptr);
+    CHECK(object->value == "Saturn");
+    CHECK(object->comment == "Target, from the file name");
+
+    stackcards::PostParams p;
+    p.kind = stackcards::PostKind::Planet;
+    p.target = ser::Target::Saturn;
+    const stack::MineralOutcome out = stackcards::FinishPost(p, stackcards::PreparePost(p, SaturnStack(), 2, {}, nullptr), 2);
+    const std::vector<std::string> h = stackcards::PostHistory(stackcards::PostKind::Planet, out);
+    REQUIRE(h.size() == 7);
+    const char* steps[] = {"Planet disc", "Colour calibration", "Background", "Display transfer", "Channel alignment", "Sharpen",
+                           "Saturation"};
+    for (size_t i = 0; i < h.size(); ++i) {
+        CHECK(h[i] == "PlanetaryStack planet: " + fits::FitsAscii(out.history[i]));
+        CHECK(h[i].rfind(std::string("PlanetaryStack planet: ") + steps[i], 0) == 0);
+    }
+    // The mineral moon's are unchanged: its own prefix.
+    CHECK(stackcards::PostHistory(stackcards::PostKind::Mineral, SevenSteps()) == stackcards::MineralHistory(SevenSteps()));
+    CHECK(stackcards::MineralHistory(SevenSteps())[0] == "PlanetaryStack mineral: " + SevenSteps().history[0]);
+}
+
+TEST_CASE("the planet's result line: the Saturation step, the Sharpen step up to its noise note, a notice as a warning", "[stackcards][planet]") {
+    CHECK(stackcards::PostNoticeText(stackcards::PostKind::Planet, "").empty());
+    CHECK(stackcards::PostNoticeText(stackcards::PostKind::Planet, "no planet disc distinguished from the sky") ==
+          "Planet processing: no planet disc distinguished from the sky, so the planet image is the stack clipped to [0, 1], "
+          "with no colour or sharpening.");
+    CHECK(stackcards::PostResultText(stackcards::PostKind::Planet, PlanetSevenSteps()) ==
+          "Planet processing shown: " + PlanetSevenSteps().history[6] + "\n"
+          "Sharpen (luminance): amount 1.50, starlet layers 1-4; gains 1.60 1.00 1.00 1.00");
+    const std::string withNotice =
+        stackcards::PostResultText(stackcards::PostKind::Planet, PlanetSevenSteps("no planet disc distinguished from the sky"));
+    CHECK(withNotice.find("\nWarning: Planet processing: no planet disc distinguished from the sky, so the planet image") !=
+          std::string::npos);
+    // The mineral moon's, through the same code, as before.
+    CHECK(stackcards::PostResultText(stackcards::PostKind::Mineral, SevenSteps()) == stackcards::MineralResultText(SevenSteps()));
+    CHECK(stackcards::PostNoticeText(stackcards::PostKind::Mineral, "x") == stackcards::MineralNoticeText("x"));
+}
+
+TEST_CASE("the console's context names the post-processing and its parameters, or its absence", "[stackcards][planet]") {
+    stackcards::PostParams m;
+    m.kind = stackcards::PostKind::Mineral;
+    m.mineral.strength = 5;
+    m.mineral.chromaBlurSigma = 2;
+    m.mineral.sharpen = 2.5;
+    CHECK(stackcards::PostContextText(ser::Target::Moon, &m) ==
+          "; then the mineral moon: strength 5.00, chroma blur 2.00 px, sharpen 2.50");
+    stackcards::PostParams p;
+    p.kind = stackcards::PostKind::Planet;
+    p.target = ser::Target::Saturn;
+    p.planet.saturation = 1.25;
+    CHECK(stackcards::PostContextText(ser::Target::Saturn, &p) ==
+          "; then planet processing: saturation 1.25, chroma blur " + stackcards::Fixed(stack::kPlanetChromaBlurDefault, 2) +
+              " px, sharpen " + stackcards::Fixed(stack::kPlanetSharpenDefault, 2));
+    CHECK(stackcards::PostContextText(ser::Target::Moon, nullptr) == "; no mineral moon");
+    CHECK(stackcards::PostContextText(ser::Target::Saturn, nullptr) == "; no planet processing");
+    CHECK(stackcards::PostContextText(ser::Target::Other, nullptr) == "; no planet processing");
+}
+
+TEST_CASE("post-processing parameters: equal values, and when a cache made for one serves the other", "[stackcards][planet]") {
+    stackcards::PostParams a;
+    a.kind = stackcards::PostKind::Planet;
+    a.target = ser::Target::Saturn;
+    stackcards::PostParams b = a;
+    CHECK(stackcards::SamePostParams(a, b));
+    b.planet.sharpen = 3;
+    CHECK_FALSE(stackcards::SamePostParams(a, b));
+    CHECK(stackcards::SamePostData(a, b));   // the sliders re-run only the finish
+    b.target = ser::Target::Jupiter;
+    CHECK_FALSE(stackcards::SamePostData(a, b));   // another planet's catalogue colour: prepared again
+    stackcards::PostParams m;
+    m.kind = stackcards::PostKind::Mineral;
+    CHECK_FALSE(stackcards::SamePostData(a, m));
+    stackcards::PostParams m2 = m;
+    m2.target = ser::Target::Saturn;   // the mineral moon has no catalogue colour: the target does not enter
+    CHECK(stackcards::SamePostData(m, m2));
+    m2.mineral.strength = 3;
+    CHECK_FALSE(stackcards::SamePostParams(m, m2));
+}
+
+TEST_CASE("the progress text counts planet processing as the mineral moon's step", "[stackcards][window][planet]") {
+    CHECK(stackcards::ProgressText(stack::kPhasePlanet, 3, 7, 1500, 4) == "Step 4 of 4: Planet processing 3/7");
+    CHECK(stackcards::ProgressText(stack::kPhasePlanet, 7, 7, 1500, 1) == "Planet processing 7/7");
+}

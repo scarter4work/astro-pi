@@ -8,6 +8,8 @@
 //                                        (test/gui-smoke-stack.sh; see WriteLongCapture)
 //   make-fixtures --moon <file.ser> <w> <h> <frames>  ->  a Moon capture, 16-bit RGGB SER
 //                                        (test/gui-smoke-stack.sh; see WriteMoonCapture)
+//   make-fixtures --saturn <file.ser> <w> <h> <frames>  ->  a ringed Saturn capture, 16-bit RGGB SER
+//                                        (test/gui-smoke-stack.sh; see SaturnMosaic)
 //
 // SERViewer's expected values come from the same generator formula that fills the files,
 // plus an independent bilinear demosaic written here, never from the reader
@@ -26,6 +28,8 @@
 
 #include "AviWriter.h"
 #include "Mineral.h"
+#include "Planet.h"
+#include "PlanetSynth.h"
 #include "PlanetaryVersion.h"
 #include "SerWriter.h"
 #include "StackSynth.h"
@@ -334,8 +338,49 @@ Capture MoonMosaic(int w, int h, double radius, int n, unsigned seed) {
     return cap;
 }
 
-// The Moon as a 16-bit RGGB SER named like an ASIAIR capture (the name is the test: target and filter).
-void WriteMoonSer(const std::string& path, const Capture& cap) {
+// A small ringed Saturn seen through an RGGB colour filter (planet Task 6's planet processing fixtures):
+// PlanetSynth's globe of `radius` px with Saturn's colour (Planet.h's catalogue ratios), bands and fine detail, its
+// ring open 15 deg, under the camera's per-colour gains (R 1.0, G 0.8, B 0.55: what calibration removes). Each frame
+// has its own seeing blur (1.0-1.6 px), a jitter of up to 1 px and its own noise, and is sampled at the RGGB sites.
+Capture SaturnMosaic(int w, int h, double radius, int n, unsigned seed) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> uni(-1, 1);
+    const planetary::stack::BodyColour saturn = *planetary::stack::PlanetReflectance(planetary::ser::Target::Saturn);
+    Capture cap = planetary::testing::NewCapture(w, h);
+    for (int k = 0; k < n; ++k) {
+        planetary::testing::PlanetSceneSpec s;
+        s.width = w;
+        s.height = h;
+        s.cx = w / 2.0 + 0.3 + uni(rng);
+        s.cy = h / 2.0 - 0.2 + uni(rng);
+        s.radius = radius;
+        s.ring = true;
+        s.ringTiltDeg = 15;
+        s.tint = {saturn.rOverG, 1, saturn.bOverG};
+        s.cast = {1.0, 0.8, 0.55};
+        s.pedestal = {0.01, 0.01, 0.01};
+        s.textureAmplitude = 0.03;
+        s.spotDensity = 2;
+        s.blurSigma = 1.3 + 0.3 * uni(rng);
+        s.noiseStd = 0.006;
+        s.seed = seed;
+        s.noiseSeed = static_cast<unsigned>(k) + 1;
+        const planetary::testing::PlanetScene sc = planetary::testing::MakePlanetScene(s);
+        std::vector<float> v(static_cast<size_t>(w) * h);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int c = (y & 1) == 0 ? ((x & 1) == 0 ? 0 : 1) : ((x & 1) == 0 ? 1 : 2);
+                const size_t i = static_cast<size_t>(y) * w + x;
+                v[i] = sc.observed.data[i * 3 + static_cast<size_t>(c)];
+            }
+        cap.Add(v);
+    }
+    return cap;
+}
+
+// A colour capture (the Moon, Saturn) as a 16-bit RGGB SER named like an ASIAIR capture (the name is the test: target
+// and filter).
+void WriteRggbSer(const std::string& path, const Capture& cap) {
     SerSpec s;
     s.colorId = 8;  // RGGB
     s.width = cap.info.header.width;
@@ -356,7 +401,7 @@ void WriteMoonCapture(const std::string& path, int w, int h, int n) {
     for (int k = 0; k < n; ++k) cap.frames->push_back((*rendered.frames)[static_cast<size_t>(k % unique)]);
     cap.info.frameCount = n;
     cap.info.header.frameCount = n;
-    WriteMoonSer(path, cap);
+    WriteRggbSer(path, cap);
 }
 
 // A planet disc with seeing (drift, local displacement, a blur field around 1.2 px).
@@ -440,7 +485,22 @@ struct StackCase {
     bool mineral = false;
     double strength = -1, chromaBlur = -1, sharpen = -1;
     std::vector<Kw> mineralKeywords;
+    // Planet Task 6: planetProcess on (saturation, and chromaBlur / sharpen above, set unless negative). An image case
+    // with it expects a second window, expectPlanetId, with planetKeywords and the engine's planet processing
+    // (stack-probe --planet: samples, its seven HISTORY lines in order).
+    std::string expectPlanetId;
+    bool planet = false;
+    double saturation = -1;
+    std::vector<Kw> planetKeywords;
 };
+
+// {"a":1,"b":2}: the named values that are set (not negative).
+std::string SetValues(std::initializer_list<std::pair<const char*, double>> values) {
+    std::string o = "{";
+    for (const auto& [name, v] : values)
+        if (v >= 0) o += std::string(o.size() > 1 ? "," : "") + "\"" + name + "\":" + Num(v);
+    return o + "}";
+}
 
 std::string KwList(const std::vector<Kw>& kws) {
     std::ostringstream o;
@@ -458,15 +518,14 @@ std::string ToJson(const StackCase& c) {
       << ",\"probeBayer\":" << Quote(c.probeBayer);
     if (!c.bayerPattern.empty()) o << ",\"bayerPattern\":" << Quote(c.bayerPattern);
     if (!c.target.empty()) o << ",\"target\":" << Quote(c.target);
-    if (c.mineral) {
-        o << ",\"mineral\":{";
-        if (c.strength >= 0) o << "\"strength\":" << Num(c.strength);
-        if (c.chromaBlur >= 0) o << (c.strength >= 0 ? "," : "") << "\"chromaBlur\":" << Num(c.chromaBlur);
-        if (c.sharpen >= 0) o << (c.strength >= 0 || c.chromaBlur >= 0 ? "," : "") << "\"sharpen\":" << Num(c.sharpen);
-        o << "}";
-    }
+    if (c.mineral)
+        o << ",\"mineral\":" << SetValues({{"strength", c.strength}, {"chromaBlur", c.chromaBlur}, {"sharpen", c.sharpen}});
+    if (c.planet)
+        o << ",\"planet\":" << SetValues({{"saturation", c.saturation}, {"chromaBlur", c.chromaBlur}, {"sharpen", c.sharpen}});
     if (!c.expectMineralId.empty())
         o << ",\"expectMineralId\":" << Quote(c.expectMineralId) << ",\"mineralKeywords\":" << KwList(c.mineralKeywords);
+    if (!c.expectPlanetId.empty())
+        o << ",\"expectPlanetId\":" << Quote(c.expectPlanetId) << ",\"planetKeywords\":" << KwList(c.planetKeywords);
     if (!c.expectId.empty()) o << ",\"expectId\":" << Quote(c.expectId);
     if (!c.expectKind.empty()) o << ",\"expectKind\":" << Quote(c.expectKind);
     if (!c.expectError.empty()) o << ",\"expectError\":" << Quote(c.expectError);
@@ -675,7 +734,7 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         const std::string moonName = "2026-10-23-030000-Moon-Bin1 Lqef 64.6F";
         const std::string moonSer = (dir / (moonName + ".ser")).string();
         const Capture moon = MoonMosaic(320, 256, 100, 40, 91);
-        WriteMoonSer(moonSer, moon);
+        WriteRggbSer(moonSer, moon);
         const std::vector<std::pair<int, int>> moonSamples = {{160, 128}, {120, 90}, {200, 170}, {230, 120}, {8, 8}};
 
         StackCase m;
@@ -721,15 +780,22 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
                              "-> " + ViewIdStem(aviName) + "_mineral"};
         cases.push_back(v);
 
-        // Refused before any stacking, each with its reason.
-        auto refused = [&](const std::string& name, const std::string& path, const std::string& target, const std::string& why) {
+        // Refused before any stacking, each with its reason (mineralMoon on; planetRefused: planetProcess on).
+        auto refusedAs = [&](bool planet, const std::string& name, const std::string& path, const std::string& target,
+                             const std::string& why) {
             StackCase r;
-            r.name = name; r.path = path; r.kind = "error"; r.mineral = true; r.target = target; r.expectError = why;
+            r.name = name; r.path = path; r.kind = "error"; r.mineral = !planet; r.planet = planet; r.target = target;
+            r.expectError = why;
             r.consoleAbsent = {"Measuring frames"};
             cases.push_back(r);
         };
+        auto refused = [&](const std::string& name, const std::string& path, const std::string& target, const std::string& why) {
+            refusedAs(false, name, path, target, why);
+        };
+        auto planetRefused = [&](const std::string& name, const std::string& path, const std::string& target,
+                                 const std::string& why) { refusedAs(true, name, path, target, why); };
         const std::string haName = "2026-10-23-033000-Moon-Bin1 HaO3 16.2F.ser";
-        WriteMoonSer((dir / haName).string(), MoonMosaic(160, 128, 50, 8, 92));
+        WriteRggbSer((dir / haName).string(), MoonMosaic(160, 128, 50, 8, 92));
         refused("Moon HaO3, mineralMoon: refused before stacking, the filter named", (dir / haName).string(), "",
                 "Mineral moon needs a broadband filter; HaO3 is narrowband, so its colours come from the filter.");
         refused("Moon Lqef, target Saturn set by the user, mineralMoon: refused", moonSer, "TargetSaturn",
@@ -760,17 +826,68 @@ int WriteStackFixtures(const std::filesystem::path& dir) {
         sat.keywords = {{"OBJECT", "value", "Saturn"},
                         {"OBJECT", "comment", "Target, from the file name"},
                         {"HISTORY", "commentContains", "PlanetaryStack target: Saturn (from file name)"}};
-        sat.consoleContains = {"PlanetaryStack: target Saturn (from file name); no mineral moon"};
+        sat.consoleContains = {"PlanetaryStack: target Saturn (from file name); no planet processing"};
         cases.push_back(sat);
         StackCase jup = sat;
         jup.name = "Saturn SER with target Jupiter set: OBJECT Jupiter, set by the user"; jup.target = "TargetJupiter";
         jup.keywords = {{"OBJECT", "value", "Jupiter"},
                         {"OBJECT", "comment", "Target, set by the user"},
                         {"HISTORY", "commentContains", "PlanetaryStack target: Jupiter (set by user)"}};
-        jup.consoleContains = {"PlanetaryStack: target Jupiter (set by user); no mineral moon"};
+        jup.consoleContains = {"PlanetaryStack: target Jupiter (set by user); no planet processing"};
         cases.push_back(jup);
         refused("Saturn SER, mineralMoon: refused, not the Moon", saturnSer, "",
                 "Mineral moon is for the Moon; the target is Saturn.");
+
+        // Planet processing (planet Task 6): a colour Saturn named as the ASIAIR names it, the stack and its planet
+        // processing; refused before stacking for a narrowband Saturn, a mono one, Target Other and Target Moon.
+        const std::string colourName = "2026-10-23-041500-Saturn-Bin1 Lqef 17.6F";
+        const std::string colourSer = (dir / (colourName + ".ser")).string();
+        WriteRggbSer(colourSer, SaturnMosaic(192, 144, 18, 40, 96));
+        StackCase p;
+        p.name = "Saturn SER (Lqef, RGGB), planetProcess, saturation 1.5, chroma blur 0.5, sharpen 2: the stack and its planet";
+        p.path = colourSer; p.kind = "image"; p.planet = true; p.saturation = 1.5; p.chromaBlur = 0.5; p.sharpen = 2;
+        p.expectId = ViewIdStem(colourName) + "_stack";
+        p.expectPlanetId = ViewIdStem(colourName) + "_planet";
+        p.sample = {{96, 72}, {90, 66}, {104, 78}, {140, 80}, {8, 8}};
+        p.keywords = {{"OBJECT", "value", "Saturn"},
+                      {"OBJECT", "comment", "Target, from the file name"},
+                      {"HISTORY", "commentContains", "PlanetaryStack target: Saturn (from file name)"}};
+        p.absentComments = {"PlanetaryStack planet:"};   // the stack window carries the stack's HISTORY only
+        p.planetKeywords = {{"OBJECT", "value", "Saturn"},
+                            {"SRCVIDEO", "value", colourName + ".ser"},
+                            {"HISTORY", "commentContains", "PlanetaryStack target: Saturn (from file name)"},
+                            {"HISTORY", "commentContains", "PlanetaryStack planet: Colour calibration"},
+                            {"HISTORY", "commentContains", "PlanetaryStack planet: Saturation: 1.50x the natural colour"},
+                            {"HISTORY", "commentContains", "PlanetaryStack planet: Sharpen (luminance): amount 2.00, "}};
+        p.consoleContains = {"PlanetaryStack: target Saturn (from file name); then planet processing: saturation 1.50, "
+                             "chroma blur 0.50 px, sharpen 2.00",
+                             "-> " + ViewIdStem(colourName) + "_planet ("};
+        p.consoleAbsent = {"Planet processing: no planet disc"};
+        cases.push_back(p);
+        StackCase d = p;
+        d.name = "Saturn SER (Lqef, RGGB), planetProcess at the defaults: two windows";
+        d.saturation = -1; d.chromaBlur = -1; d.sharpen = -1;
+        d.planetKeywords = {{"OBJECT", "value", "Saturn"},
+                            {"HISTORY", "commentContains",
+                             "PlanetaryStack planet: Saturation: " + Num2(planetary::stack::kPlanetSaturationDefault) + "x"},
+                            {"HISTORY", "commentContains",
+                             "PlanetaryStack planet: Sharpen (luminance): amount " + Num2(planetary::stack::kPlanetSharpenDefault) + ", "}};
+        d.consoleContains = {"then planet processing: saturation " + Num2(planetary::stack::kPlanetSaturationDefault) +
+                                 ", chroma blur " + Num2(planetary::stack::kPlanetChromaBlurDefault) + " px, sharpen " +
+                                 Num2(planetary::stack::kPlanetSharpenDefault),
+                             "-> " + ViewIdStem(colourName) + "_planet"};
+        cases.push_back(d);
+
+        const std::string hao3Name = "2026-10-05-031000-Saturn-Bin1 HaO3 9.0F.ser";
+        WriteRggbSer((dir / hao3Name).string(), SaturnMosaic(128, 96, 12, 8, 97));
+        planetRefused("Saturn HaO3, planetProcess: refused before stacking, the filter named", (dir / hao3Name).string(), "",
+                      "Planet processing needs a broadband filter; HaO3 is narrowband, so its colours come from the filter.");
+        planetRefused("Saturn Lqef, target Other set by the user, planetProcess: refused, pick the planet", colourSer,
+                      "TargetOther", "Planet processing needs a planet target; pick the planet in the Target list.");
+        planetRefused("Saturn Lqef, target Moon set by the user, planetProcess: refused, use Mineral moon", colourSer,
+                      "TargetMoon", "Planet processing is for the planets; the target is the Moon (use Mineral moon).");
+        planetRefused("mono Saturn, planetProcess: refused, a colour capture needed", saturnSer, "",
+                      "Planet processing needs a colour capture; this one is mono");
     }
 
     // Diagnoses: captures that must give no image, each with the engine's own message.
@@ -902,6 +1019,25 @@ int main(int argc, char** argv) {
         std::printf("make-fixtures: %s, %d x %d, %d frames\n", argv[2], w, h, n);
         return 0;
     }
+    if (argc == 6 && std::string(argv[1]) == "--saturn") {
+        // A ringed Saturn (SaturnMosaic, globe radius 0.15 x the height, 8 rendered frames repeated to `frames`) as a
+        // 16-bit RGGB SER: gui-smoke-stack.sh's large planet, whose finish takes long enough for a Target change to
+        // land while one runs (the file name, chosen there, carries the target and the filter).
+        const int w = std::atoi(argv[3]), h = std::atoi(argv[4]), n = std::atoi(argv[5]);
+        if (w < 128 || h < 96 || n < 1) {
+            std::fprintf(stderr, "make-fixtures: --saturn needs a size of at least 128 x 96 and a frame count >= 1\n");
+            return 2;
+        }
+        const int unique = std::min(n, 8);
+        const Capture rendered = SaturnMosaic(w, h, 0.15 * h, unique, 98);
+        Capture cap = planetary::testing::NewCapture(w, h);
+        for (int k = 0; k < n; ++k) cap.frames->push_back((*rendered.frames)[static_cast<size_t>(k % unique)]);
+        cap.info.frameCount = n;
+        cap.info.header.frameCount = n;
+        WriteRggbSer(argv[2], cap);
+        std::printf("make-fixtures: %s, %d x %d, %d frames\n", argv[2], w, h, n);
+        return 0;
+    }
     if (argc == 4 && std::string(argv[1]) == "--stack-long") {
         const int n = std::atoi(argv[3]);
         if (n < 1) {
@@ -914,8 +1050,9 @@ int main(int argc, char** argv) {
     }
     if (argc != 2) {
         std::fprintf(stderr, "usage: %s <out dir>\n       %s --stack <out dir>\n       %s --stack-long <file.avi> <frames>\n"
-                             "       %s --moon <file.ser> <width> <height> <frames>\n",
-                     argv[0], argv[0], argv[0], argv[0]);
+                             "       %s --moon <file.ser> <width> <height> <frames>\n"
+                             "       %s --saturn <file.ser> <width> <height> <frames>\n",
+                     argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     const std::filesystem::path dir = std::filesystem::absolute(argv[1]);
