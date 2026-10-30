@@ -56,44 +56,6 @@ ser::FloatImage Box3(const ser::FloatImage& L, int threads) {
     return out;
 }
 
-// Otsu's threshold over a 1024-bin histogram of v between its smallest and largest finite values (NaN left out,
-// +-Inf in the end bins). The full range, not a percentile clip: a disc under 0.1% of the frame lies above the
-// 99.9th percentile, and with that clip it shared the top bin with the sky's noise tail, so Otsu split the sky
-// (task ENG review I2). +inf when v has no finite value.
-double Otsu(const std::vector<float>& v) {
-    double a = std::numeric_limits<double>::infinity(), b = -a;
-    for (float x : v)
-        if (std::isfinite(x)) {
-            a = std::min(a, static_cast<double>(x));
-            b = std::max(b, static_cast<double>(x));
-        }
-    if (!(b > a)) return a;
-    constexpr int kBins = 1024;
-    std::vector<double> hist(kBins, 0);
-    for (float x : v)
-        if (!std::isnan(x)) hist[static_cast<size_t>(std::clamp((x - a) / (b - a) * kBins, 0.0, kBins - 1.0))] += 1;
-    double total = 0, sumAll = 0;
-    for (int i = 0; i < kBins; ++i) {
-        total += hist[i];
-        sumAll += i * hist[i];
-    }
-    double w0 = 0, sum0 = 0, best = -1;
-    int bestI = 0;
-    for (int i = 0; i < kBins - 1; ++i) {
-        w0 += hist[i];
-        sum0 += i * hist[i];
-        const double w1 = total - w0;
-        if (w0 <= 0 || w1 <= 0) continue;
-        const double m0 = sum0 / w0, m1 = (sumAll - sum0) / w1;
-        const double between = w0 * w1 * (m0 - m1) * (m0 - m1);
-        if (between > best) {
-            best = between;
-            bestI = i;
-        }
-    }
-    return a + (bestI + 1.0) / kBins * (b - a);
-}
-
 // 4-connected components of `mask` (1 = member). Returns per-pixel labels (0 = none, 1..n) and the sizes
 // (sizes[0] unused).
 std::vector<int> Components(const std::vector<uint8_t>& mask, int w, int h, std::vector<size_t>& sizes) {

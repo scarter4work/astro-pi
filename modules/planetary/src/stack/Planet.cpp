@@ -18,20 +18,22 @@ using namespace mineral_internal;
 
 const SharpenProfile kPlanetSharpen = {{1.2, 1.0, 1.0, 1.0}, {0.6, 0.0, 0.0, 0.0}, 0.15};  // Planet.h: the measurements
 
-// ---- Colour calibration ----
+// ---- The planet's disc ----
 
-// The first window SegmentPlanet tries around the brightest pixel (px a side; it doubles).
-constexpr int kPlanetWindow = 64;
-// The sky-plane test (Planet.h): blocks of kPlaneBlock px, each split into kPlaneTile px tiles in a checkerboard; a block
-// is off the plane when its mean residual is over kPlaneSigmas of the blocks' noise from their median; the frame is a
-// sky plane when under half its blocks are off it. Under kPlaneMinBlocks blocks the frame is not judged.
+// The sky model (Planet.h, SegmentPlanet step 1): blocks of kPlaneBlock px, each split into kPlaneTile px tiles in a
+// checkerboard for its noise; a block is sky while its mean lies within kSkySigmas of that noise of the plane. Under
+// kPlaneMinBlocks blocks the frame is not judged; under kPlaneMinBlocks or kMinSkyBlockShare of them sky, it has no sky.
 constexpr int kPlaneBlock = 16, kPlaneTile = 4;
-constexpr double kPlaneSigmas = 5;
+constexpr double kSkySigmas = 3;
 constexpr size_t kPlaneMinBlocks = 8;
-// The window's sky plane is fitted on its outer kWindowBorder px. The planet in it: SegmentLunar's piece over the sky by
-// kEdgeSigmas of the sky's own scatter, at least kMinPiece px, its mean kWindowSigmas of that scatter over the sky.
-constexpr int kWindowBorder = 4;
-constexpr double kEdgeSigmas = 3, kWindowSigmas = 5;
+constexpr double kMinSkyBlockShare = 0.10;
+// The sky fit's second phase: at most kSkyRounds rounds.
+constexpr int kSkyRounds = 50;
+// The first window SegmentPlanet tries around the candidate (px a side; it doubles).
+constexpr int kPlanetWindow = 64;
+// The planet: SegmentLunar's piece over the sky by kEdgeSigmas of the sky's own scatter, at least kMinPiece px, its
+// mean kDiscSigmas of that scatter over the sky; the sky, within kSkyPixelSigmas of its level.
+constexpr double kEdgeSigmas = 3, kDiscSigmas = 5, kSkyPixelSigmas = 5;
 constexpr size_t kMinPiece = 16;
 
 namespace {
@@ -49,69 +51,161 @@ void FitPlanes(const ser::FloatImage& rgb, std::vector<uint8_t> use, Plane p[3])
     for (int c = 0; c < 3; ++c) p[c] = SkyPlane(rgb, fit, c);
 }
 
-// Is the frame a sky plane (a pedestal and a gradient under noise)? The channels' mean less each channel's plane over
-// the whole frame, in kPlaneBlock px blocks: each block's mean m = (a + b) / 2 and noise d = (a - b) / 2 from the
-// means a and b of its two checkerboard halves (kPlaneTile px tiles: smooth structure cancels in d, the noise does not,
-// correlated or not). The noise is MadStd(d) over the blocks; a block is off the plane when |m - median(m)| is over
-// kPlaneSigmas of it. Measured (SmallInLargeSky's sky, correlated noise 0.006, gradients 0.008-0.12, 1911 x 1071 and
-// 320 x 240, planet or none): 1.9-3.3% of blocks off; the real 2026-10-23 Neptune stack 1.1%; a planet of r 400 in
-// 480 x 360 99.2%; a MoonSynth disc of r 260 in 320 x 240 88.3%.
-struct PlaneTest {
-    size_t blocks = 0, off = 0;
-    double noise = 0;
-    Plane plane[3];  // each channel's plane over the frame
+// The frame's sky (Planet.h, step 1). On the channels' mean in kPlaneBlock px blocks: each block's mean m = (a + b) / 2
+// and noise d = (a - b) / 2 from the means a and b of its two checkerboard halves (kPlaneTile px tiles: smooth structure
+// cancels in d, the noise does not, correlated or not); the blocks' noise sigma is MadStd(d). A least-squares plane over
+// the member blocks, from all of them: first the blocks more than kSkySigmas above it leave, round by round, until none
+// does (a body only adds light, so the plane settles on the sky under it, however much of the frame the body covers);
+// then the members are the blocks within kSkySigmas of it either way (a dark block leaves too), until they settle. Each
+// channel's plane is then fitted (SkyPlane) over the member blocks' pixels.
+struct SkyModel {
+    size_t blocks = 0, skyBlocks = 0;
+    std::vector<uint8_t> sky;  // the member blocks' pixels
+    Plane plane[3];
     bool judged() const { return blocks >= kPlaneMinBlocks; }
-    bool sky() const { return judged() && 2 * off < blocks; }
+    bool hasSky() const {
+        return judged() && skyBlocks >= kPlaneMinBlocks && skyBlocks >= kMinSkyBlockShare * static_cast<double>(blocks);
+    }
 };
-PlaneTest TestSkyPlane(const ser::FloatImage& rgb) {
+SkyModel FitSky(const ser::FloatImage& rgb) {
     const int w = rgb.width, h = rgb.height;
-    PlaneTest t;
-    Plane* p = t.plane;
-    FitPlanes(rgb, std::vector<uint8_t>(Pixels(rgb), 1), p);
-    std::vector<float> mean, diff;
+    SkyModel s;
+    struct Block { int x, y; double u, v, m; };
+    std::vector<Block> blocks;
+    std::vector<float> diff;
     for (int by = 0; by + kPlaneBlock <= h; by += kPlaneBlock)
         for (int bx = 0; bx + kPlaneBlock <= w; bx += kPlaneBlock) {
-            double s[2] = {0, 0};
+            double sum[2] = {0, 0};
             int k[2] = {0, 0};
             for (int y = by; y < by + kPlaneBlock; ++y)
                 for (int x = bx; x < bx + kPlaneBlock; ++x) {
                     const float* q = &rgb.data[(static_cast<size_t>(y) * w + x) * 3];
-                    const double r = (q[0] - p[0].At(x, y, w, h) + q[1] - p[1].At(x, y, w, h) + q[2] - p[2].At(x, y, w, h)) / 3;
-                    if (!std::isfinite(r)) continue;
+                    const double l = (static_cast<double>(q[0]) + q[1] + q[2]) / 3;
+                    if (!std::isfinite(l)) continue;
                     const int half = ((x - bx) / kPlaneTile + (y - by) / kPlaneTile) % 2;
-                    s[half] += r;
+                    sum[half] += l;
                     ++k[half];
                 }
             if (!k[0] || !k[1]) continue;
-            const double a = s[0] / k[0], b = s[1] / k[1];
-            mean.push_back(static_cast<float>((a + b) / 2));
+            const double a = sum[0] / k[0], b = sum[1] / k[1];
+            // The block's centre in Plane's coordinates.
+            const double u = (bx + 0.5 * (kPlaneBlock - 1)) / std::max(1, w - 1) - 0.5;
+            const double v = (by + 0.5 * (kPlaneBlock - 1)) / std::max(1, h - 1) - 0.5;
+            blocks.push_back({bx, by, u, v, (a + b) / 2});
             diff.push_back(static_cast<float>((a - b) / 2));
         }
-    t.blocks = mean.size();
-    if (!t.judged()) return t;
-    t.noise = MadStd(diff);
-    std::vector<float> v(mean);
-    const double mid = Median(v);
-    for (float x : mean) t.off += !(std::fabs(x - mid) <= kPlaneSigmas * t.noise);
-    return t;
+    s.blocks = blocks.size();
+    if (!s.judged()) return s;
+    // The blocks' noise, at least a float sample's rounding at the brightest block's level (a noise-free synthetic
+    // frame's d is 0): at most 1.2e-7 for samples within [0, 1]; the real captures' is 3.8e-6 (2026-10-23 Saturn) to 5.7e-4.
+    double top = 0;
+    for (const Block& b : blocks) top = std::max(top, std::fabs(b.m));
+    const double sigma = std::max(MadStd(diff), std::numeric_limits<float>::epsilon() * top), bound = kSkySigmas * sigma;
+    std::vector<uint8_t> member(blocks.size(), 1), next(blocks.size());
+    // The first phase only removes blocks, so it ends (within as many rounds as there are blocks); the second, which
+    // may readmit blocks, has kSkyRounds.
+    int second = 0;
+    Plane p;
+    for (bool below = true; below || second < kSkyRounds;) {  // below: the first phase, only the blocks above leave
+        if (!below) ++second;
+        double S[9] = {}, r[3] = {};
+        size_t used = 0;
+        for (size_t j = 0; j < blocks.size(); ++j) {
+            if (!member[j]) continue;
+            const double f[3] = {1, blocks[j].u, blocks[j].v};
+            for (int a = 0; a < 3; ++a) {
+                r[a] += f[a] * blocks[j].m;
+                for (int b = 0; b < 3; ++b) S[a * 3 + b] += f[a] * f[b];
+            }
+            ++used;
+        }
+        double q[3];
+        if (used < 3 || !Solve(3, S, r, q)) {  // the members are a line of blocks or fewer: no plane, no sky
+            std::fill(member.begin(), member.end(), 0);
+            break;
+        }
+        p = {q[0], q[1], q[2]};
+        for (size_t j = 0; j < blocks.size(); ++j) {
+            const double res = blocks[j].m - (p.a + p.b * blocks[j].u + p.c * blocks[j].v);
+            next[j] = below ? (member[j] && res <= bound) : std::fabs(res) <= bound;
+        }
+        if (next == member) {
+            if (!below) break;
+            below = false;
+        }
+        member.swap(next);
+    }
+    s.sky.assign(Pixels(rgb), 0);
+    for (size_t j = 0; j < blocks.size(); ++j) {
+        if (!member[j]) continue;
+        ++s.skyBlocks;
+        for (int y = blocks[j].y; y < blocks[j].y + kPlaneBlock; ++y)
+            std::fill_n(s.sky.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * w + blocks[j].x), kPlaneBlock, 1);
+    }
+    if (s.hasSky()) FitPlanes(rgb, s.sky, s.plane);
+    return s;
+}
+
+// The 4-connected piece of `allowed` holding `at`, its holes (what the frame's edge cannot reach, 4-connected) filled.
+std::vector<uint8_t> Piece(const std::vector<uint8_t>& allowed, int w, int h, size_t at) {
+    const size_t n = allowed.size();
+    std::vector<uint8_t> disk(n, 0), out(n, 0);
+    std::vector<size_t> todo;
+    auto grow = [&](std::vector<uint8_t>& mask, auto admit) {
+        while (!todo.empty()) {
+            const size_t j = todo.back();
+            todo.pop_back();
+            const int x = static_cast<int>(j % static_cast<size_t>(w)), y = static_cast<int>(j / static_cast<size_t>(w));
+            const int nb[4][2] = {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}};
+            for (const auto& q : nb) {
+                if (q[0] < 0 || q[1] < 0 || q[0] >= w || q[1] >= h) continue;
+                const size_t k = static_cast<size_t>(q[1]) * w + q[0];
+                if (!mask[k] && admit(k)) {
+                    mask[k] = 1;
+                    todo.push_back(k);
+                }
+            }
+        }
+    };
+    if (!allowed[at]) return disk;
+    disk[at] = 1;
+    todo.push_back(at);
+    grow(disk, [&](size_t k) { return allowed[k] != 0; });
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const size_t j = static_cast<size_t>(y) * w + x;
+            if ((x == 0 || y == 0 || x == w - 1 || y == h - 1) && !disk[j]) {
+                out[j] = 1;
+                todo.push_back(j);
+            }
+        }
+    grow(out, [&](size_t k) { return !disk[k]; });
+    for (size_t j = 0; j < n; ++j) disk[j] = !out[j];
+    return disk;
 }
 
 }  // namespace
 
 LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
-    LunarMasks m = SegmentLunar(rgb, threads);
-    // Only SegmentLunar's "disc with no sky" outcome is in question: it is a disc filling the frame, or a small planet
-    // in a frame of sky that SegmentLunar could not tell from one (Planet.h).
-    if (m.diskCount == 0 || m.skyCount > 0) return m;
-    // A body filling the frame (or a frame too small to judge) keeps SegmentLunar's masks; a sky plane is searched.
-    const PlaneTest plane = TestSkyPlane(rgb);
-    if (!plane.sky()) return m;
+    RequireRgb(rgb, "SegmentPlanet");
+    // 1. The sky: with none (a body filling the frame, or a frame too small to judge), SegmentLunar's masks.
+    const SkyModel sky = FitSky(rgb);
+    if (!sky.hasSky()) return SegmentLunar(rgb, threads);
     const int w = rgb.width, h = rgb.height;
     const size_t n = Pixels(rgb);
-    // The 3 x 3 mean of the channels' mean (SegmentLunar's levels), and F: the same less the frame's sky plane (the
-    // planes' mean; a plane is its own 3 x 3 mean), where the candidates are looked for.
-    std::vector<float> L(n), Ls(n), F(n);
-    for (size_t i = 0; i < n; ++i) L[i] = (rgb.data[i * 3] + rgb.data[i * 3 + 1] + rgb.data[i * 3 + 2]) / 3.0f;
+    // 2. The flattened copy: each channel less its sky plane (the image the pipeline processes is not touched; the
+    // background step removes the sky's plane from it later). F: its channels' mean, 3 x 3 mean (SegmentLunar's levels
+    // of the copy); the sky's level and scatter: the median and MadStd of F over the sky's blocks (correlated noise
+    // included, which SegmentLunar's neighbour differences read low).
+    ser::FloatImage flat = rgb;
+    std::vector<float> L(n), F(n);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const size_t i = static_cast<size_t>(y) * w + x;
+            for (int c = 0; c < 3; ++c)
+                flat.data[i * 3 + c] = static_cast<float>(flat.data[i * 3 + c] - sky.plane[c].At(x, y, w, h));
+            L[i] = (flat.data[i * 3] + flat.data[i * 3 + 1] + flat.data[i * 3 + 2]) / 3.0f;
+        }
     size_t peak = 0;
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
@@ -125,23 +219,19 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
                     ++k;
                 }
             const size_t i = static_cast<size_t>(y) * w + x;
-            Ls[i] = k ? static_cast<float>(s / k) : 0.0f;
-            F[i] = static_cast<float>(Ls[i] - (plane.plane[0].At(x, y, w, h) + plane.plane[1].At(x, y, w, h) +
-                                               plane.plane[2].At(x, y, w, h)) / 3);
-            if (F[i] > F[peak]) peak = i;
+            F[i] = k ? static_cast<float>(s / k) : std::numeric_limits<float>::quiet_NaN();
+            if (std::isfinite(F[i]) && !(F[i] <= F[peak])) peak = i;
         }
-    // The planet, if any: the brightest pixel of the candidate holding the most light (final review). Candidates are
-    // the 8-connected groups over the frame's level (its median) by 5 sigma (its robust std) and by a tenth of the
-    // brightest pixel's height above it; each weighs the light it holds above the level. The frame's brightest pixel
-    // alone took a field star brighter per pixel than a small Neptune or Uranus for the disc; a star's 1-2 px hold far
-    // less light than a disc of a few px radius. With no candidate (a flat frame), the brightest pixel. On the levels
-    // less the sky plane (F): on the raw levels a sky rising 0.12 down the frame inflated the robust std past a faint
-    // planet's height, and its bottom row outshone a level-0.1 disc.
+    std::vector<float> v;
+    for (size_t i = 0; i < n; ++i)
+        if (sky.sky[i] && std::isfinite(F[i])) v.push_back(F[i]);
+    const double skyLevel = Median(v), scatter = MadStd(v);
+    // 3. The candidate: the brightest pixel of the 8-connected group over the sky by 5 scatter and by a tenth of the
+    // brightest pixel's height above it, holding the most light above the sky (final review: the frame's brightest
+    // pixel alone took a field star brighter per pixel than a small Neptune or Uranus; a star's 1-2 px hold far less
+    // light than a disc of a few px radius). With no group (a flat frame), the brightest pixel.
     {
-        std::vector<float> v(F);
-        const double level = Median(v);
-        v.assign(F.begin(), F.end());
-        const double top = level + std::max(5 * MadStd(v), 0.1 * (F[peak] - level));
+        const double top = skyLevel + std::max(5 * scatter, 0.1 * (F[peak] - skyLevel));
         std::vector<uint8_t> seen(n, 0);
         std::vector<size_t> todo;
         double best = 0;
@@ -154,7 +244,7 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
             while (!todo.empty()) {
                 const size_t i = todo.back();
                 todo.pop_back();
-                weight += F[i] - level;
+                weight += F[i] - skyLevel;
                 if (F[i] > F[brightest]) brightest = i;
                 const int x = static_cast<int>(i % static_cast<size_t>(w)), y = static_cast<int>(i / static_cast<size_t>(w));
                 for (int dy = -1; dy <= 1; ++dy)
@@ -174,170 +264,95 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
         }
     }
     const int px = static_cast<int>(peak % static_cast<size_t>(w)), py = static_cast<int>(peak / static_cast<size_t>(w));
-    // Windows of kPlanetWindow px and up, doubling, centred on it (clipped to the frame), while a window is under a
-    // quarter of the frame, then the whole frame. Each is taken less its own sky plane (fitted on its outer
-    // kWindowBorder px): SegmentLunar's sky candidates are darker than a quarter of the disc's level, so on the raw levels
-    // a faint planet on a sky above a quarter of its own level had no sky and the window was all disc (a level-0.2 disc
-    // on a 0.06 sky). The first window gives the masks where SegmentLunar's disc holds the candidate's pixel and the
-    // planet (below) is clear of the window's edges (but where they are the frame's) and leaves half the window sky.
-    std::vector<int> sides;
+    // 4. The flattened copy through SegmentLunar: the whole frame, then windows of kPlanetWindow px and up, doubling,
+    // centred on the candidate (clipped to the frame), while under a quarter of the frame. The first whose split is the
+    // disc's and whose planet passes gives the disc:
+    //  - The split: SegmentLunar's disc level D (the median of the crop's levels over their Otsu threshold) is
+    //    kDiscSigmas of the sky's scatter over the sky. SegmentLunar's own test of D takes the noise from neighbour
+    //    differences, which read correlated noise low, so in a large frame of sky its Otsu split of the sky's own noise
+    //    passes (the real 2026-10-23 Neptune: D 0.0021 on a scatter of 0.0035) and a small disc does not move it; in a
+    //    window the disc is a class of its own (0.285). The whole frame first: a window the disc fills most of puts the
+    //    split inside the disc (Jupiter's belts and zones, Saturn's globe and rings), which raises D and with it the
+    //    edge, 4% of the contrast (the real 2023-11-02 Jupiter: 2314 px in the 64 px window, 2405 in the frame).
+    //  - The planet: SegmentLunar's piece holding the candidate, over the sky by kEdgeSigmas, holes filled; kMinPiece px
+    //    or more, its mean kDiscSigmas over the sky, clear of the window's edges (but where they are the frame's). The
+    //    edge at kEdgeSigmas: on a faint disc SegmentLunar's threshold (5 of its low noise sigma, or 4% of the contrast)
+    //    joined the sky's noise to the disc: a level-0.1 r 3 disc on SmallInLargeSky's sky read 231 px, at 3 sigma 84
+    //    px, as a bright disc's (the seeing's halo to about 2 blur sigma: 92 px); the real 2026-10-23 Neptune reads 88
+    //    px (at 4 sigma 83, at 5 sigma 77).
+    std::vector<int> sides(1, 0);  // 0: the whole frame
     for (int side = kPlanetWindow; static_cast<double>(side) * side < 0.25 * static_cast<double>(n); side *= 2) sides.push_back(side);
-    sides.push_back(0);  // the whole frame
+    const double cut = skyLevel + kEdgeSigmas * scatter;
     for (const int side : sides) {
         const int x0 = side ? std::max(0, px - side / 2) : 0, y0 = side ? std::max(0, py - side / 2) : 0;
         const int x1 = side ? std::min(w, x0 + side) : w, y1 = side ? std::min(h, y0 + side) : h, cw = x1 - x0, ch = y1 - y0;
         const size_t cn = static_cast<size_t>(cw) * ch;
+        std::vector<float> levels;
+        levels.reserve(cn);
+        for (int y = y0; y < y1; ++y)
+            levels.insert(levels.end(), F.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * w + x0),
+                          F.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * w + x1));
+        const double t0 = Otsu(levels);
+        std::vector<float> upper;
+        for (float l : levels)
+            if (l > t0) upper.push_back(l);
+        if (upper.empty() || !(Median(upper) - skyLevel > kDiscSigmas * scatter)) continue;
         ser::FloatImage crop{cw, ch, 3, std::vector<float>(cn * 3)};
         for (int y = 0; y < ch; ++y)
-            std::copy_n(rgb.data.begin() + static_cast<std::ptrdiff_t>((static_cast<size_t>(y + y0) * w + x0) * 3),
+            std::copy_n(flat.data.begin() + static_cast<std::ptrdiff_t>((static_cast<size_t>(y + y0) * w + x0) * 3),
                         static_cast<size_t>(cw) * 3, crop.data.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * cw * 3));
-        std::vector<uint8_t> border(cn, 0);
-        for (int y = 0; y < ch; ++y)
-            for (int x = 0; x < cw; ++x)
-                border[static_cast<size_t>(y) * cw + x] =
-                    x < kWindowBorder || y < kWindowBorder || x >= cw - kWindowBorder || y >= ch - kWindowBorder;
-        Plane p[3];
-        FitPlanes(crop, border, p);
-        // The window less its planes, and its 3 x 3 levels less their mean (the level the rules below read).
-        std::vector<float> flat(cn);
+        const LunarMasks c = SegmentLunar(crop, threads);
+        const size_t at = static_cast<size_t>(py - y0) * cw + (px - x0);
+        if (c.diskCount == 0 || !c.disk[at]) continue;
+        std::vector<uint8_t> allowed(cn);
         for (int y = 0; y < ch; ++y)
             for (int x = 0; x < cw; ++x) {
                 const size_t j = static_cast<size_t>(y) * cw + x;
-                double pm = 0;
-                for (int c = 0; c < 3; ++c) {
-                    const double v = p[c].At(x, y, cw, ch);
-                    crop.data[j * 3 + c] = static_cast<float>(crop.data[j * 3 + c] - v);
-                    pm += v / 3;
-                }
-                flat[j] = static_cast<float>(Ls[static_cast<size_t>(y + y0) * w + (x + x0)] - pm);
+                allowed[j] = c.disk[j] && F[static_cast<size_t>(y + y0) * w + (x + x0)] > cut;
             }
-        const LunarMasks c = SegmentLunar(crop, threads);
-        const size_t at = static_cast<size_t>(py - y0) * cw + (px - x0);
-        if (c.diskCount == 0 || c.skyCount == 0 || !c.disk[at]) continue;
-        // The sky's level and scatter: the median and MadStd of the border's levels less the plane (correlated noise
-        // included, which SegmentLunar's neighbour differences read low; not SegmentLunar's sky, which ends at its own low
-        // threshold and so reads the scatter low as well).
-        std::vector<float> v;
-        for (size_t j = 0; j < cn; ++j)
-            if (border[j] && std::isfinite(flat[j])) v.push_back(flat[j]);
-        const double skyLevel = Median(v), scatter = MadStd(v), cut = skyLevel + kEdgeSigmas * scatter;
-        // The planet: the 4-connected piece of SegmentLunar's disc holding the candidate's pixel and over the sky by
-        // kEdgeSigmas of its scatter, its holes filled. On a faint disc SegmentLunar's threshold (5 of its low noise
-        // sigma, or 4% of a contrast its Otsu split took from the noise) joined the sky's noise to the disc: a level-0.1
-        // r 3 disc on SmallInLargeSky's sky read 231 px, at 3 sigma 84 px (level 0.2: 204 and 99), as a bright disc's
-        // (the seeing's halo to about 2 blur sigma: 92 px); r 8: 443 and 316 px (340); the real 2026-10-23 Neptune keeps
-        // its 88 px (at 4 sigma 83, at 5 sigma 77). Then at least kMinPiece px (SegmentLunar's smallest piece) with a
-        // mean kWindowSigmas of the scatter over the sky, so a noise peak in a frame of sky is not a disc (12 frames of
-        // that sky with no planet: none).
-        std::vector<uint8_t> disk(cn, 0);
-        size_t diskCount = 0;
+        const std::vector<uint8_t> disk = Piece(allowed, cw, ch, at);
+        size_t count = 0;
         double sum = 0;
         bool clear = true;
-        if (flat[at] > cut) {
-            std::vector<size_t> todo(1, at);
-            disk[at] = 1;
-            while (!todo.empty()) {
-                const size_t j = todo.back();
-                todo.pop_back();
-                const int x = static_cast<int>(j % static_cast<size_t>(cw)), y = static_cast<int>(j / static_cast<size_t>(cw));
-                const int nb[4][2] = {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}};
-                for (const auto& q : nb) {
-                    if (q[0] < 0 || q[1] < 0 || q[0] >= cw || q[1] >= ch) continue;
-                    const size_t k = static_cast<size_t>(q[1]) * cw + q[0];
-                    if (c.disk[k] && !disk[k] && flat[k] > cut) {
-                        disk[k] = 1;
-                        todo.push_back(k);
-                    }
-                }
-            }
-            // Holes: what of the rest the window's border cannot reach (4-connected) is enclosed by the planet.
-            std::vector<uint8_t> out(cn, 0);
-            todo.clear();
-            for (int y = 0; y < ch; ++y)
-                for (int x = 0; x < cw; ++x) {
-                    const size_t j = static_cast<size_t>(y) * cw + x;
-                    if ((x == 0 || y == 0 || x == cw - 1 || y == ch - 1) && !disk[j]) {
-                        out[j] = 1;
-                        todo.push_back(j);
-                    }
-                }
-            while (!todo.empty()) {
-                const size_t j = todo.back();
-                todo.pop_back();
-                const int x = static_cast<int>(j % static_cast<size_t>(cw)), y = static_cast<int>(j / static_cast<size_t>(cw));
-                const int nb[4][2] = {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}};
-                for (const auto& q : nb) {
-                    if (q[0] < 0 || q[1] < 0 || q[0] >= cw || q[1] >= ch) continue;
-                    const size_t k = static_cast<size_t>(q[1]) * cw + q[0];
-                    if (!disk[k] && !out[k]) {
-                        out[k] = 1;
-                        todo.push_back(k);
-                    }
-                }
-            }
-            for (int y = 0; y < ch; ++y)
-                for (int x = 0; x < cw; ++x) {
-                    const size_t j = static_cast<size_t>(y) * cw + x;
-                    disk[j] = !out[j];
-                    if (!disk[j]) continue;
-                    ++diskCount;
-                    sum += flat[j];
-                    if ((x == 0 && x0 > 0) || (y == 0 && y0 > 0) || (x == cw - 1 && x1 < w) || (y == ch - 1 && y1 < h)) clear = false;
-                }
-        }
-        if (diskCount < kMinPiece || !clear || !(sum / static_cast<double>(diskCount) > skyLevel + kWindowSigmas * scatter))
-            continue;
-        // The window's sky: more than SegmentLunar's 4 px limb margin from the planet and within 5 sigma of the sky's
-        // level (the other pieces are sky; a star is not).
-        std::vector<uint8_t> near = disk;
-        Dilate(near, cw, ch, 4);
-        std::vector<uint8_t> sky(cn, 0);
-        size_t skyCount = 0;
-        for (size_t j = 0; j < cn; ++j) {
-            sky[j] = !near[j] && std::isfinite(flat[j]) && flat[j] <= skyLevel + 5 * scatter;
-            skyCount += sky[j];
-        }
-        if (skyCount * 2 < cn) continue;
-        // The window's masks in the frame. Sky outside the window: within 5 sigma of the window's sky level (its 3 x 3
-        // mean's median and robust std over the window's sky), so a star or a moon stays out -- the background plane is
-        // fitted over the frame as for any other capture.
-        v.clear();
         for (int y = 0; y < ch; ++y)
-            for (int x = 0; x < cw; ++x)
-                if (sky[static_cast<size_t>(y) * cw + x]) v.push_back(Ls[static_cast<size_t>(y + y0) * w + (x + x0)]);
-        const double level = Median(v), top = level + 5 * MadStd(v);
+            for (int x = 0; x < cw; ++x) {
+                if (!disk[static_cast<size_t>(y) * cw + x]) continue;
+                ++count;
+                sum += F[static_cast<size_t>(y + y0) * w + (x + x0)];
+                if ((x == 0 && x0 > 0) || (y == 0 && y0 > 0) || (x == cw - 1 && x1 < w) || (y == ch - 1 && y1 < h)) clear = false;
+            }
+        if (count < kMinPiece || !clear || !(sum / static_cast<double>(count) > skyLevel + kDiscSigmas * scatter)) continue;
+        // 5. The masks: the disc; the sky, over the whole frame, more than SegmentLunar's 4 px limb margin from it and
+        // within kSkyPixelSigmas of the sky's level (a star or a moon stays out).
         LunarMasks out;
         out.width = w;
         out.height = h;
         out.disk.assign(n, 0);
+        for (int y = 0; y < ch; ++y)
+            for (int x = 0; x < cw; ++x) out.disk[static_cast<size_t>(y + y0) * w + (x + x0)] = disk[static_cast<size_t>(y) * cw + x];
+        std::vector<uint8_t> near = out.disk;
+        Dilate(near, w, h, 4);
         out.sky.assign(n, 0);
-        for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x) {
-                const size_t i = static_cast<size_t>(y) * w + x;
-                if (x >= x0 && x < x1 && y >= y0 && y < y1) {
-                    const size_t j = static_cast<size_t>(y - y0) * cw + (x - x0);
-                    out.disk[i] = disk[j];
-                    out.sky[i] = sky[j];
-                } else {
-                    out.sky[i] = std::isfinite(Ls[i]) && Ls[i] <= top;
-                }
-                out.diskCount += out.disk[i];
-                out.skyCount += out.sky[i];
-            }
+        for (size_t i = 0; i < n; ++i) {
+            out.sky[i] = !near[i] && std::isfinite(F[i]) && F[i] <= skyLevel + kSkyPixelSigmas * scatter;
+            out.diskCount += out.disk[i];
+            out.skyCount += out.sky[i];
+        }
         return out;
     }
-    // A sky plane with no window holding a disc: no disc (spec anti-goal: a step that cannot run says why), never the
-    // frame SegmentLunar took for one.
+    // 6. None: no disc (spec anti-goal: a step that cannot run says why), never the frame SegmentLunar may take for one.
     LunarMasks none;
     none.width = w;
     none.height = h;
     none.disk.assign(n, 0);
     none.sky.assign(n, 0);
-    none.reason = Fmt("the frame is a sky plane (%.0f of %.0f %.0f px blocks off it by %.0f sigma) and no window around its "
-                      "brightest candidate, nor the whole frame, holds a disc %.0f sigma over its sky",
-                      plane.off, plane.blocks, kPlaneBlock, kPlaneSigmas, kWindowSigmas);
+    none.reason = Fmt("no disc stands %.0f sigma over the sky (%.0f of the frame's %.0f %.0f px blocks fit its sky plane): no "
+                      "window around the brightest candidate, nor the whole frame, holds one",
+                      kDiscSigmas, sky.skyBlocks, sky.blocks, kPlaneBlock);
     return none;
 }
+
+// ---- Colour calibration ----
 
 std::optional<BodyColour> PlanetReflectance(ser::Target t) {
     // Mallama, Krobusek & Pavlov 2017, "Comprehensive wide-band magnitudes and albedos for the planets", Icarus 282

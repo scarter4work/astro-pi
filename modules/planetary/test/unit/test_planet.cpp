@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -419,6 +420,153 @@ TEST_CASE("planet disc: a frame of sky on a gradient has no disc, and says why")
     INFO("64 x 48: disc " << m.diskCount << "; " << m.reason);
     CHECK(m.diskCount == 0);
     CHECK_FALSE(m.reason.empty());
+}
+
+namespace {
+
+// The planet disc against the seeing-blurred truth (the faint-planet test's bounds): the truth is the frame's pixels
+// within r + 2 blur of the centre (pi (r + 2 blur)^2 for a whole disc; for one the frame cuts, its part inside). The
+// disc's area within 0.5-2x of the truth's, its centroid within 2 px of the truth's, and over half of the frame
+// outside the truth's 4 px margin (SegmentLunar's limb margin) sky.
+void CheckPlanetDisc(const stack::LunarMasks& m, const PlanetSceneSpec& s, const std::string& what) {
+    const int w = m.width, h = m.height;
+    const double edge = s.radius + 2 * s.blurSigma;
+    double area = 0, tx = 0, ty = 0, margin = 0, sx = 0, sy = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const double d = std::hypot(x - s.cx, y - s.cy);
+            if (d <= edge) {
+                area += 1;
+                tx += x;
+                ty += y;
+            }
+            if (d <= edge + 4) margin += 1;
+            if (m.disk[static_cast<size_t>(y) * w + x]) {
+                sx += x;
+                sy += y;
+            }
+        }
+    const double n = static_cast<double>(w) * h, k = static_cast<double>(std::max<size_t>(1, m.diskCount));
+    INFO(what << ": disc " << m.diskCount << " px (blurred truth " << area << "), centroid " << sx / k << ", " << sy / k
+              << " (truth's " << tx / area << ", " << ty / area << "); sky " << m.skyCount << " of " << n << "; "
+              << m.reason);
+    REQUIRE(m.diskCount > 0);
+    CHECK(m.diskCount >= 0.5 * area);
+    CHECK(m.diskCount <= 2 * area);
+    CHECK(std::hypot(sx / k - tx / area, sy / k - ty / area) < 2);
+    CHECK(m.skyCount > 0.5 * (n - margin));
+}
+
+// A planet of `share` of a 320 x 240 frame (SmallInLargeSky's sky and noise, the sky rising `gradient` down the frame).
+PlanetSceneSpec LargeOnGradient(double level, double share, double gradient) {
+    PlanetSceneSpec s = FaintOnGradient(level, std::sqrt(share * 320 * 240 / 3.14159265358979), gradient, 1);
+    s.width = 320;
+    s.height = 240;
+    s.cx = 160.3;
+    s.cy = 119.8;
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE("planet disc: a large planet on a sky gradient is the planet's, not the frame") {
+    // Review of 12372e2b: SegmentLunar has no sky model. A level-0.2 planet covering 25% of the frame on a sky rising
+    // 0.06 took 62410 px against the true 19200 (its sky, 0.058-0.12, is under a quarter of the disc's level in the
+    // frame's top half only, so SegmentLunar found sky there and the rest became disc); level 0.5 36082 px. At level 0.1
+    // and 42% of the frame or more the disc was the whole frame (76800 px).
+    for (double gradient : {0.02, 0.06})
+        for (double level : {0.1, 0.2, 0.5})
+            for (double share : {0.25, 0.42, 0.55}) {
+                const PlanetSceneSpec s = LargeOnGradient(level, share, gradient);
+                const ser::FloatImage im = WithStackNoise(MakePlanetScene(s).observed, 1);
+                std::ostringstream what;
+                what << "gradient " << gradient << " level " << level << " share " << share << " r " << s.radius;
+                CheckPlanetDisc(stack::SegmentPlanet(im, 4), s, what.str());
+            }
+}
+
+TEST_CASE("planet disc: a faint planet at the frame's edge leaves the rest of the frame sky") {
+    // Review of 12372e2b: a planet at the top edge on a sky rising 0.06 kept the window's sky level for the frame, so
+    // only the frame's top 27% (as dark as the window's sky) was sky.
+    struct At { double cx, cy; };
+    for (const At at : {At{905.3, 2}, At{3, 3}, At{905.3, 1068}})
+        for (double level : {0.1, 0.2})
+            for (double r : {3.0, 8.0, 14.0}) {
+                PlanetSceneSpec s = FaintOnGradient(level, r, 0.06, 1);
+                s.cx = at.cx;
+                s.cy = at.cy;
+                const ser::FloatImage im = WithStackNoise(MakePlanetScene(s).observed, 1);
+                std::ostringstream what;
+                what << "at " << at.cx << ", " << at.cy << " level " << level << " r " << r;
+                CheckPlanetDisc(stack::SegmentPlanet(im, 4), s, what.str());
+            }
+}
+
+TEST_CASE("planet disc: a faint planet beside a brighter star is found, not the star") {
+    // Review of 12372e2b: the star-versus-planet choice had no faint planet. A planet of level 0.1-0.2 on a sky rising
+    // 0.06, and a star brighter per pixel (0.95: 1 px, or 2 x 2 px) 300 px from it: the planet is chosen.
+    for (double level : {0.1, 0.2})
+        for (double r : {5.0, 8.0})
+            for (int starSide : {1, 2})
+                for (unsigned seed : {1u, 2u}) {
+                    const PlanetSceneSpec s = FaintOnGradient(level, r, 0.06, seed);
+                    ser::FloatImage im = MakePlanetScene(s).observed;
+                    const int sx = 1205, sy = 483;
+                    for (int y = sy; y < sy + starSide; ++y)
+                        for (int x = sx; x < sx + starSide; ++x)
+                            for (int c = 0; c < 3; ++c) im.data[(static_cast<size_t>(y) * im.width + x) * 3 + c] = 0.95f;
+                    im = WithStackNoise(im, seed);
+                    const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+                    std::ostringstream what;
+                    what << "level " << level << " r " << r << " star " << starSide << " px seed " << seed;
+                    CheckPlanetDisc(m, s, what.str());
+                    CHECK_FALSE(m.disk[static_cast<size_t>(sy) * im.width + sx]);
+                }
+}
+
+TEST_CASE("planet disc: a 320 x 240 frame of sky on a gradient has no disc, and says why") {
+    // The reviewer's frame with no planet (the 1911 x 1071 and 64 x 48 ones are above).
+    for (double gradient : {0.02, 0.06, 0.12})
+        for (unsigned seed : {1u, 2u}) {
+            const ser::FloatImage im = WithStackNoise(MakePlanetScene(LargeOnGradient(0, 0.25, gradient)).observed, seed);
+            const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+            INFO("gradient " << gradient << " seed " << seed << ": disc " << m.diskCount << " sky " << m.skyCount << "; "
+                             << m.reason);
+            CHECK(m.diskCount == 0);
+            CHECK_FALSE(m.reason.empty());
+        }
+}
+
+TEST_CASE("planet disc: a curved sky with no planet has no disc while a plane holds, and is SegmentLunar's beyond (Planet.h)") {
+    // Planet.h's limit: a vignetted sky (falling `fall` from the centre to the corners, quadratically, over the reviewer's
+    // sky rising 0.06 down the frame) has no disc while a tenth of the frame's blocks fit a plane; beyond, the frame is
+    // taken for a body filling it (SegmentLunar's masks), which a featureless planet larger than the frame is too.
+    struct Case { int width, height; double fall; bool planeHolds; };
+    for (const Case k : {Case{320, 240, 0.005, true}, Case{320, 240, 0.010, true}, Case{320, 240, 0.04, false},
+                         Case{1911, 1071, 0.012, true}, Case{1911, 1071, 0.04, false}}) {
+        PlanetSceneSpec s = FaintOnGradient(0, 8, 0.06, 1);
+        s.width = k.width;
+        s.height = k.height;
+        ser::FloatImage im = MakePlanetScene(s).observed;
+        const double cx = 0.5 * (k.width - 1), cy = 0.5 * (k.height - 1), corner = cx * cx + cy * cy;
+        for (int y = 0; y < k.height; ++y)
+            for (int x = 0; x < k.width; ++x)
+                for (int c = 0; c < 3; ++c)
+                    im.data[(static_cast<size_t>(y) * k.width + x) * 3 + c] +=
+                        static_cast<float>(k.fall * (1 - ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / corner));
+        im = WithStackNoise(im, 1);
+        const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+        INFO(k.width << " x " << k.height << " fall " << k.fall << ": disc " << m.diskCount << " sky " << m.skyCount << "; "
+                     << m.reason);
+        if (k.planeHolds) {
+            CHECK(m.diskCount == 0);
+            CHECK_FALSE(m.reason.empty());
+        } else {
+            const stack::LunarMasks l = stack::SegmentLunar(im, 4);
+            CHECK(m.disk == l.disk);
+            CHECK(m.sky == l.sky);
+        }
+    }
 }
 
 // ---- The ring in the disc mask (spec P6, plan risk 2) ----

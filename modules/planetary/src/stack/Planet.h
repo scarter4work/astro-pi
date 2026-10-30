@@ -32,33 +32,50 @@ namespace planetary::stack {
 // r 6 or 12 (where 0.15 R >= 2 px, layer 1's reach, or the fade lies outside the measured interior), none in the halo.
 extern const SharpenProfile kPlanetSharpen;
 
-// ---- The planet's disc (Task 5) ----
-// SegmentLunar, except where it found a disc and no sky. That is a disc filling the frame -- or a small planet in a
-// large frame of sky that SegmentLunar cannot tell from one: 2026-10-23 Neptune (1911 x 1071, sky 0.058 with
-// correlated noise and a 0.008 rise down the frame, a disc of about 3 px radius) came out as 100% disc, so the sky was
-// calibrated to Neptune's colour. Then:
-// 1. Is the frame a sky plane? Each channel's plane is fitted over the frame (three rounds of 3-sigma rejection); the
-//    channels' mean residual is averaged in 16 px blocks, each block's noise taken from the difference of its two 4 px
-//    checkerboard halves (smooth structure cancels there, correlated noise does not). Under half the blocks more than 5
-//    noise sigma off the plane: a sky plane. Otherwise (or under 8 blocks) SegmentLunar's masks stand: a body filling the
-//    frame stays the frame's. Measured: 1.9-3.3% of blocks off on SmallInLargeSky's sky (gradients 0.008-0.12, 1911 x
-//    1071 and 320 x 240, planet or none), 1.1% on the real 2026-10-23 Neptune; 99.2% for a planet of r 400 in 480 x 360,
-//    88.3% for a MoonSynth disc of r 260 in 320 x 240.
-// 2. The candidate: the brightest pixel of the 8-connected group over the level by 5 robust sigma (and a tenth of the
-//    brightest height) holding the most light, on the 3 x 3 mean less the frame's plane.
-// 3. Windows of 64, 128, ... px (while under a quarter of the frame) centred on it, then the whole frame, each less its own
-//    plane fitted on its outer 4 px, through SegmentLunar. (On the raw window a faint planet failed: SegmentLunar's sky
-//    is darker than a quarter of the disc's level, so a level-0.2 disc on a 0.06 sky had no sky and the window was all
-//    disc.) The planet: the piece of SegmentLunar's disc holding the candidate, over the sky by 3 sigma of the border's
-//    own scatter (its MadStd: correlated noise included), holes filled. The first window where it is 16 px or more, clear
-//    of the window's edges (but where they are the frame's), its mean 5 of that sigma over the sky, and the window half
-//    sky (more than 4 px from the planet, within 5 sigma of the sky) gives the masks: the planet and that sky, and outside
-//    the window the pixels within 5 robust sigma of the window's sky level (a star or a moon stays out).
-// 4. None: no disc, and the reason says so (never the frame SegmentLunar took for one).
-// Measured: the synthetic Neptune above (3 seeds) gives a disc of under 200 px holding the planet and over half the frame
-// sky; the real one 88 px (equivalent radius 5.3 px), sky 99.92%. A planet of level 0.1-0.2, r 3, 8, 14 on that sky
-// rising 0.02-0.12 (2 seeds; the whole frame before): 67-99, 290-356, 788-849 px against the seeing-blurred disc's
-// pi (r + 2 blur)^2 = 92, 340, 845, centroids within 2 px; the same sky with no planet: no disc.
+// ---- The planet's disc (Task 5; ruling Q12) ----
+// SegmentLunar on a copy of the frame less its sky plane (the image the pipeline processes is not touched: the
+// background step removes that plane from it later). SegmentLunar has no sky model: its sky is what lies under a quarter
+// of the disc's level, so a sky over that (a faint planet, a bright sky, a gradient) was disc -- a level-0.2 planet
+// covering 25% of a 320 x 240 frame on a sky of 0.058 rising 0.06 read 62410 px against 19200, at level 0.1 and 42% of
+// the frame or more the whole frame; and 2026-10-23 Neptune (1911 x 1071, sky 0.058 with correlated noise and a 0.008
+// rise down the frame, a disc of about 3 px radius) read 100% disc. Steps:
+// 1. The sky plane. The channels' mean in 16 px blocks, each block's noise from the difference of its two 4 px
+//    checkerboard halves (smooth structure cancels there, correlated noise does not). A plane fitted to the blocks, the
+//    blocks more than 3 noise sigma above it leaving round by round until none does (a body only adds light, so the
+//    plane settles on the sky under it however much of the frame the body covers), then the blocks within 3 sigma of it
+//    either way. Each channel's plane (SkyPlane) over those blocks' pixels. Under 8 blocks, or under 8 or a tenth of them
+//    on the plane, the frame has no sky to model: SegmentLunar's masks of the frame stand (a body filling it).
+//    Measured, blocks on the plane: the six real captures 44-88%; the synthetic skies below 83-86%; planets covering
+//    25-55% of 320 x 240 32-60%; a planet of r 400 in 480 x 360 0.6%, of r 250 3.6%; a MoonSynth disc of r 260 in 320 x
+//    240 4.7%. The first phase ends when no block leaves; the second (which may readmit blocks) settled within 18 rounds
+//    on every frame here but the curved skies below, and is held to 50.
+// 2. The candidate: the brightest pixel of the 8-connected group of the copy's 3 x 3 levels over the sky by 5 of its
+//    scatter (MadStd over the plane's blocks: correlated noise included) and a tenth of the brightest height, holding the
+//    most light (a field star brighter per pixel than a small Neptune holds far less light than its disc).
+// 3. The copy through SegmentLunar: the whole frame, then windows of 64, 128, ... px (while under a quarter of the frame)
+//    centred on the candidate; the first whose split is the disc's -- SegmentLunar's disc level D, the median over its
+//    Otsu threshold, 5 scatter over the sky (SegmentLunar's own test reads correlated noise low and splits a large sky's
+//    noise: the real Neptune's frame D 0.0021, scatter 0.0035; its 64 px window 0.285) -- and whose planet passes. The
+//    whole frame first: a window the disc fills most of puts the split inside the disc and raises its edge (2023-11-02
+//    Jupiter: 2314 px in the 64 px window, 2405 in the frame). The planet: SegmentLunar's piece holding the candidate,
+//    over the sky by 3 scatter, holes filled; 16 px or more, its mean 5 scatter over the sky, clear of the window's edges
+//    (but where they are the frame's).
+// 4. The masks: the disc; the sky, over the whole frame, more than 4 px from it and within 5 scatter of the sky's level
+//    (a star, a moon and the planet's seeing halo stay out). None: no disc, and the reason says so.
+// Measured (WithStackNoise: correlated noise 0.006): a planet of level 0.1-0.5 covering 25-55% of 320 x 240 on a sky
+// rising 0.02 or 0.06 reads 20128-44088 px against the seeing-blurred disc's pi (r + 2 blur)^2 = 20397-44007 (0.987-
+// 1.003 of it; the equivalent radius 1.9-2.5 px over r); one of level 0.1-0.2, r 3, 8, 14 on SmallInLargeSky's sky
+// rising 0.02-0.12 is within 0.5-2x of the blurred disc with the centroid within 2 px, also at the frame's top, bottom
+// and corner (where the rest of the frame is sky); one of level 0.1-0.2, r 5 and 8, is chosen over a 1 px or 2 x 2 px
+// star of 0.95; the same skies with no planet: no disc. The real captures' discs are as before -- 2026-10-23 Neptune
+// 88 px, 2023-02-11 Mars 161, 2026-09-07 and 2026-10-23 Saturn 577 and 598, 2023-11-02 Jupiter 2405, 2023-08-13
+// Jupiter 1582 for 1583 -- and their sky leaves out the planet's seeing halo, 5 scatter over the sky (1-13% of the
+// sky SegmentLunar gave).
+// Limit: a sky a plane does not model. A vignetted sky (falling from the centre to the corners quadratically, under
+// that noise) keeps a tenth of its blocks on a plane, and so has no disc, while the fall is at most 0.012 (320 x 240)
+// or 0.016 (1911 x 1071); from 0.014 / 0.018 it is taken for a body filling the frame (SegmentLunar's masks, 100% disc),
+// as a featureless planet larger than the frame is: the two have the same shape. A planet whose frame has under a tenth
+// of its blocks clear of it (a planet of r 250 in 480 x 360) keeps SegmentLunar's masks of the raw frame.
 LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads);
 
 // ---- Colour calibration (spec call 3) ----
