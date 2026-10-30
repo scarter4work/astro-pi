@@ -62,8 +62,13 @@ if(PLANETARY_PYTHON3)
     add_test(NAME planet_check_fails_closed
              COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_planet_check.py")
     set_tests_properties(planet_check_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
+    # mineral_check.py's R31 / R12 verdicts by rulings R38 (R31 informational) and R39 (0528a's bottom row accepted),
+    # fail-closed for anything else (another capture or side, past the excused level, a NaN). Needs scipy and Pillow too.
+    add_test(NAME mineral_check_fails_closed
+             COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_mineral_check.py")
+    set_tests_properties(mineral_check_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
 else()
-    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed, edge_chroma_fails_closed and planet_check_fails_closed are not registered")
+    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed, edge_chroma_fails_closed, planet_check_fails_closed and mineral_check_fails_closed are not registered")
 endif()
 
 # The PixInsight harness refuses to re-sign a shipped module (a PLANETARY_SO inside the PixInsight install
