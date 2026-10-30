@@ -36,13 +36,29 @@ extern const SharpenProfile kPlanetSharpen;
 // SegmentLunar, except where it found a disc and no sky. That is a disc filling the frame -- or a small planet in a
 // large frame of sky that SegmentLunar cannot tell from one: 2026-10-23 Neptune (1911 x 1071, sky 0.058 with
 // correlated noise and a 0.008 rise down the frame, a disc of about 3 px radius) came out as 100% disc, so the sky was
-// calibrated to Neptune's colour. There, windows of 64, 128, ... px (while under a quarter of the frame) centred on the
-// brightest pixel of the 3 x 3 mean are tried in turn with SegmentLunar; the first whose disc holds that pixel, is clear
-// of the window's edges (but where they are the frame's), and leaves half the window sky gives the masks: the window's
-// disc and sky, and outside the window the pixels within 5 robust sigma of the window's sky level (a gradient stays in,
-// a star or a moon stays out). Otherwise SegmentLunar's masks stand (a planet filling the frame stays the frame's).
+// calibrated to Neptune's colour. Then:
+// 1. Is the frame a sky plane? Each channel's plane is fitted over the frame (three rounds of 3-sigma rejection); the
+//    channels' mean residual is averaged in 16 px blocks, each block's noise taken from the difference of its two 4 px
+//    checkerboard halves (smooth structure cancels there, correlated noise does not). Under half the blocks more than 5
+//    noise sigma off the plane: a sky plane. Otherwise (or under 8 blocks) SegmentLunar's masks stand: a body filling the
+//    frame stays the frame's. Measured: 1.9-3.3% of blocks off on SmallInLargeSky's sky (gradients 0.008-0.12, 1911 x
+//    1071 and 320 x 240, planet or none), 1.1% on the real 2026-10-23 Neptune; 99.2% for a planet of r 400 in 480 x 360,
+//    88.3% for a MoonSynth disc of r 260 in 320 x 240.
+// 2. The candidate: the brightest pixel of the 8-connected group over the level by 5 robust sigma (and a tenth of the
+//    brightest height) holding the most light, on the 3 x 3 mean less the frame's plane.
+// 3. Windows of 64, 128, ... px (while under a quarter of the frame) centred on it, then the whole frame, each less its own
+//    plane fitted on its outer 4 px, through SegmentLunar. (On the raw window a faint planet failed: SegmentLunar's sky
+//    is darker than a quarter of the disc's level, so a level-0.2 disc on a 0.06 sky had no sky and the window was all
+//    disc.) The planet: the piece of SegmentLunar's disc holding the candidate, over the sky by 3 sigma of the border's
+//    own scatter (its MadStd: correlated noise included), holes filled. The first window where it is 16 px or more, clear
+//    of the window's edges (but where they are the frame's), its mean 5 of that sigma over the sky, and the window half
+//    sky (more than 4 px from the planet, within 5 sigma of the sky) gives the masks: the planet and that sky, and outside
+//    the window the pixels within 5 robust sigma of the window's sky level (a star or a moon stays out).
+// 4. None: no disc, and the reason says so (never the frame SegmentLunar took for one).
 // Measured: the synthetic Neptune above (3 seeds) gives a disc of under 200 px holding the planet and over half the frame
-// sky; the real one 88 px (equivalent radius 5.3 px), sky 99.92%.
+// sky; the real one 88 px (equivalent radius 5.3 px), sky 99.92%. A planet of level 0.1-0.2, r 3, 8, 14 on that sky
+// rising 0.02-0.12 (2 seeds; the whole frame before): 67-99, 290-356, 788-849 px against the seeing-blurred disc's
+// pi (r + 2 blur)^2 = 92, 340, 845, centroids within 2 px; the same sky with no planet: no disc.
 LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads);
 
 // ---- Colour calibration (spec call 3) ----
