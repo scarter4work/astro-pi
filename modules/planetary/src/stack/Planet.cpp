@@ -21,7 +21,7 @@ const SharpenProfile kPlanetSharpen = {{1.2, 1.0, 1.0, 1.0}, {0.6, 0.0, 0.0, 0.0
 // ---- The planet's disc ----
 
 // The sky model (Planet.h, SegmentPlanet step 1): blocks of kPlaneBlock px, each split into kPlaneTile px tiles in a
-// checkerboard for its noise; a block is sky while its mean lies within kSkySigmas of that noise of the plane. Under
+// checkerboard for its noise; a block is sky while its mean lies within kSkySigmas of that noise of the surface. Under
 // kPlaneMinBlocks blocks the frame is not judged; under kPlaneMinBlocks or kMinSkyBlockShare of them sky, it has no sky.
 constexpr int kPlaneBlock = 16, kPlaneTile = 4;
 constexpr double kSkySigmas = 3;
@@ -51,26 +51,173 @@ void FitPlanes(const ser::FloatImage& rgb, std::vector<uint8_t> use, Plane p[3])
     for (int c = 0; c < 3; ++c) p[c] = SkyPlane(rgb, fit, c);
 }
 
+// The quadratic sky (ruling Q14): a + b u + c v + d u^2 + e u v + f v^2 in Plane's coordinates (u, v in [-0.5, 0.5]).
+constexpr int kQuadTerms = 6;
+struct Quadratic {
+    double q[kQuadTerms] = {0, 0, 0, 0, 0, 0};
+    double At(double u, double v) const { return q[0] + q[1] * u + q[2] * v + q[3] * u * u + q[4] * u * v + q[5] * v * v; }
+    double At(int x, int y, int w, int h) const {
+        return At(static_cast<double>(x) / std::max(1, w - 1) - 0.5, static_cast<double>(y) / std::max(1, h - 1) - 0.5);
+    }
+};
+void QuadTerms(double u, double v, double* f) {
+    f[0] = 1;
+    f[1] = u;
+    f[2] = v;
+    f[3] = u * u;
+    f[4] = u * v;
+    f[5] = v * v;
+}
+
+// Solves the k x k normal equations S q = r (copies), false when a pivot falls under kQuadPivot of the largest
+// diagonal (the members do not pin a quadratic down: a line of blocks, or blocks on a circle about the centre).
+constexpr double kQuadPivot = 1e-10;
+bool SolveNormal(int k, const double* S, const double* r, double* q) {
+    double A[kQuadTerms * kQuadTerms], b[kQuadTerms];
+    std::copy(S, S + k * k, A);
+    std::copy(r, r + k, b);
+    double top = 0;
+    for (int a = 0; a < k; ++a) top = std::max(top, std::fabs(S[a * k + a]));
+    for (int col = 0; col < k; ++col) {
+        int piv = col;
+        for (int a = col + 1; a < k; ++a)
+            if (std::fabs(A[a * k + col]) > std::fabs(A[piv * k + col])) piv = a;
+        if (!(std::fabs(A[piv * k + col]) > kQuadPivot * top)) return false;
+        if (piv != col) {
+            for (int j = 0; j < k; ++j) std::swap(A[piv * k + j], A[col * k + j]);
+            std::swap(b[piv], b[col]);
+        }
+        for (int a = col + 1; a < k; ++a) {
+            const double f = A[a * k + col] / A[col * k + col];
+            for (int j = col; j < k; ++j) A[a * k + j] -= f * A[col * k + j];
+            b[a] -= f * b[col];
+        }
+    }
+    for (int a = k - 1; a >= 0; --a) {
+        double t = b[a];
+        for (int j = a + 1; j < k; ++j) t -= A[a * k + j] * q[j];
+        q[a] = t / A[a * k + a];
+        if (!std::isfinite(q[a])) return false;
+    }
+    return true;
+}
+
+// Channel ch's least-squares quadratic over the finite pixels `sky` holds: SkyPlane's rejection (four fits, after
+// each of the first three the pixels beyond 3 MadStd of it leave). False when the pixels do not pin one down.
+bool SkyQuadratic(const ser::FloatImage& rgb, const std::vector<uint8_t>& sky, int ch, Quadratic& out) {
+    const int w = rgb.width, h = rgb.height;
+    const size_t n = Pixels(rgb);
+    std::vector<uint8_t> use = sky;
+    for (size_t i = 0; i < n; ++i)  // FitPlanes' rule: a pixel with a sample not finite is not sky
+        if (!(std::isfinite(rgb.data[i * 3]) && std::isfinite(rgb.data[i * 3 + 1]) && std::isfinite(rgb.data[i * 3 + 2]))) use[i] = 0;
+    const std::vector<uint8_t> base = use;
+    for (int round = 0; round < 4; ++round) {
+        double S[kQuadTerms * kQuadTerms] = {}, r[kQuadTerms] = {};
+        for (int y = 0; y < h; ++y) {
+            const double v = static_cast<double>(y) / std::max(1, h - 1) - 0.5;
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (!use[i]) continue;
+                double f[kQuadTerms];
+                QuadTerms(static_cast<double>(x) / std::max(1, w - 1) - 0.5, v, f);
+                const double s = rgb.data[i * 3 + ch];
+                for (int a = 0; a < kQuadTerms; ++a) {
+                    r[a] += f[a] * s;
+                    for (int b = a; b < kQuadTerms; ++b) S[a * kQuadTerms + b] += f[a] * f[b];
+                }
+            }
+        }
+        for (int a = 0; a < kQuadTerms; ++a)
+            for (int b = 0; b < a; ++b) S[a * kQuadTerms + b] = S[b * kQuadTerms + a];
+        Quadratic q;
+        if (!SolveNormal(kQuadTerms, S, r, q.q)) return false;
+        out = q;
+        if (round == 3) break;
+        std::vector<float> res;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (use[i]) res.push_back(static_cast<float>(rgb.data[i * 3 + ch] - q.At(x, y, w, h)));
+            }
+        const double sd = MadStd(res);
+        if (!(sd > 0)) break;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                if (base[i]) use[i] = std::fabs(rgb.data[i * 3 + ch] - q.At(x, y, w, h)) <= 3 * sd;
+            }
+    }
+    return true;
+}
+
 // The frame's sky (Planet.h, step 1). On the channels' mean in kPlaneBlock px blocks: each block's mean m = (a + b) / 2
 // and noise d = (a - b) / 2 from the means a and b of its two checkerboard halves (kPlaneTile px tiles: smooth structure
-// cancels in d, the noise does not, correlated or not); the blocks' noise sigma is MadStd(d). A least-squares plane over
-// the member blocks, from all of them: first the blocks more than kSkySigmas above it leave, round by round, until none
-// does (a body only adds light, so the plane settles on the sky under it, however much of the frame the body covers);
-// then the members are the blocks within kSkySigmas of it either way (a dark block leaves too), until they settle. Each
-// channel's plane is then fitted (SkyPlane) over the member blocks' pixels.
+// cancels in d, the noise does not, correlated or not); the blocks' noise sigma is MadStd(d). A least-squares surface
+// (the plane, then the quadratic) over the member blocks, from all of them: first the blocks more than kSkySigmas above it
+// leave, round by round, until none does (a body only adds light, so the surface settles on the sky under it, however
+// much of the frame the body covers); then the members are the blocks within kSkySigmas of it either way (a dark block
+// leaves too), until they settle. The quadratic is the sky when it pins one down (SolveNormal) and keeps at least as
+// many blocks as the plane, each channel's (SkyQuadratic) fitted over its member blocks' pixels; else the plane, each
+// channel's plane (SkyPlane) fitted over the plane's member blocks' pixels.
 struct SkyModel {
-    size_t blocks = 0, skyBlocks = 0;
+    size_t blocks = 0, skyBlocks = 0, planeBlocks = 0;
+    bool quadratic = false;    // the sky is the quadratic (ruling Q14), else the plane
     std::vector<uint8_t> sky;  // the member blocks' pixels
     Plane plane[3];
+    Quadratic quad[3];
     bool judged() const { return blocks >= kPlaneMinBlocks; }
     bool hasSky() const {
         return judged() && skyBlocks >= kPlaneMinBlocks && skyBlocks >= kMinSkyBlockShare * static_cast<double>(blocks);
     }
+    double At(int c, int x, int y, int w, int h) const { return quadratic ? quad[c].At(x, y, w, h) : plane[c].At(x, y, w, h); }
 };
+struct Block { int x, y; double u, v, m; };
+// The member blocks of the k-term surface (3: the plane, kQuadTerms: the quadratic) by SkyModel's two phases, and false
+// when the members stop pinning one down (none are then members).
+bool FitBlocks(const std::vector<Block>& blocks, double bound, int k, std::vector<uint8_t>& member) {
+    member.assign(blocks.size(), 1);
+    std::vector<uint8_t> next(blocks.size());
+    // The first phase only removes blocks, so it ends (within as many rounds as there are blocks); the second, which
+    // may readmit blocks, has kSkyRounds.
+    int second = 0;
+    for (bool below = true; below || second < kSkyRounds;) {  // below: the first phase, only the blocks above leave
+        if (!below) ++second;
+        double S[kQuadTerms * kQuadTerms] = {}, r[kQuadTerms] = {};
+        size_t used = 0;
+        for (size_t j = 0; j < blocks.size(); ++j) {
+            if (!member[j]) continue;
+            double f[kQuadTerms];
+            QuadTerms(blocks[j].u, blocks[j].v, f);
+            for (int a = 0; a < k; ++a) {
+                r[a] += f[a] * blocks[j].m;
+                for (int b = 0; b < k; ++b) S[a * k + b] += f[a] * f[b];
+            }
+            ++used;
+        }
+        double q[kQuadTerms] = {0, 0, 0, 0, 0, 0};
+        // The plane as it always was (Solve); the quadratic held to SolveNormal's pivot bound.
+        if (used < static_cast<size_t>(k) || !(k == 3 ? Solve(3, S, r, q) : SolveNormal(k, S, r, q))) {
+            std::fill(member.begin(), member.end(), 0);
+            return false;
+        }
+        for (size_t j = 0; j < blocks.size(); ++j) {
+            const double u = blocks[j].u, v = blocks[j].v;
+            double fit = q[0] + q[1] * u + q[2] * v;
+            if (k == kQuadTerms) fit += q[3] * u * u + q[4] * u * v + q[5] * v * v;
+            const double res = blocks[j].m - fit;
+            next[j] = below ? (member[j] && res <= bound) : std::fabs(res) <= bound;
+        }
+        if (next == member) {
+            if (!below) break;
+            below = false;
+        }
+        member.swap(next);
+    }
+    return true;
+}
 SkyModel FitSky(const ser::FloatImage& rgb) {
     const int w = rgb.width, h = rgb.height;
     SkyModel s;
-    struct Block { int x, y; double u, v, m; };
     std::vector<Block> blocks;
     std::vector<float> diff;
     for (int by = 0; by + kPlaneBlock <= h; by += kPlaneBlock)
@@ -101,47 +248,29 @@ SkyModel FitSky(const ser::FloatImage& rgb) {
     double top = 0;
     for (const Block& b : blocks) top = std::max(top, std::fabs(b.m));
     const double sigma = std::max(MadStd(diff), std::numeric_limits<float>::epsilon() * top), bound = kSkySigmas * sigma;
-    std::vector<uint8_t> member(blocks.size(), 1), next(blocks.size());
-    // The first phase only removes blocks, so it ends (within as many rounds as there are blocks); the second, which
-    // may readmit blocks, has kSkyRounds.
-    int second = 0;
-    Plane p;
-    for (bool below = true; below || second < kSkyRounds;) {  // below: the first phase, only the blocks above leave
-        if (!below) ++second;
-        double S[9] = {}, r[3] = {};
-        size_t used = 0;
+    std::vector<uint8_t> plane, quad;
+    FitBlocks(blocks, bound, 3, plane);
+    const bool quadOk = FitBlocks(blocks, bound, kQuadTerms, quad);
+    auto count = [](const std::vector<uint8_t>& m) { return static_cast<size_t>(std::count(m.begin(), m.end(), 1)); };
+    s.planeBlocks = count(plane);
+    auto pixels = [&](const std::vector<uint8_t>& member) {
+        std::vector<uint8_t> px(Pixels(rgb), 0);
         for (size_t j = 0; j < blocks.size(); ++j) {
             if (!member[j]) continue;
-            const double f[3] = {1, blocks[j].u, blocks[j].v};
-            for (int a = 0; a < 3; ++a) {
-                r[a] += f[a] * blocks[j].m;
-                for (int b = 0; b < 3; ++b) S[a * 3 + b] += f[a] * f[b];
-            }
-            ++used;
+            for (int y = blocks[j].y; y < blocks[j].y + kPlaneBlock; ++y)
+                std::fill_n(px.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * w + blocks[j].x), kPlaneBlock, 1);
         }
-        double q[3];
-        if (used < 3 || !Solve(3, S, r, q)) {  // the members are a line of blocks or fewer: no plane, no sky
-            std::fill(member.begin(), member.end(), 0);
-            break;
-        }
-        p = {q[0], q[1], q[2]};
-        for (size_t j = 0; j < blocks.size(); ++j) {
-            const double res = blocks[j].m - (p.a + p.b * blocks[j].u + p.c * blocks[j].v);
-            next[j] = below ? (member[j] && res <= bound) : std::fabs(res) <= bound;
-        }
-        if (next == member) {
-            if (!below) break;
-            below = false;
-        }
-        member.swap(next);
+        return px;
+    };
+    if (quadOk && count(quad) >= s.planeBlocks) {
+        s.skyBlocks = count(quad);
+        s.sky = pixels(quad);
+        s.quadratic = s.hasSky();
+        for (int c = 0; c < 3 && s.quadratic; ++c) s.quadratic = SkyQuadratic(rgb, s.sky, c, s.quad[c]);
+        if (s.quadratic) return s;
     }
-    s.sky.assign(Pixels(rgb), 0);
-    for (size_t j = 0; j < blocks.size(); ++j) {
-        if (!member[j]) continue;
-        ++s.skyBlocks;
-        for (int y = blocks[j].y; y < blocks[j].y + kPlaneBlock; ++y)
-            std::fill_n(s.sky.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(y) * w + blocks[j].x), kPlaneBlock, 1);
-    }
+    s.skyBlocks = s.planeBlocks;
+    s.sky = pixels(plane);
     if (s.hasSky()) FitPlanes(rgb, s.sky, s.plane);
     return s;
 }
@@ -193,17 +322,17 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
     if (!sky.hasSky()) return SegmentLunar(rgb, threads);
     const int w = rgb.width, h = rgb.height;
     const size_t n = Pixels(rgb);
-    // 2. The flattened copy: each channel less its sky plane (the image the pipeline processes is not touched; the
-    // background step removes the sky's plane from it later). F: its channels' mean, 3 x 3 mean (SegmentLunar's levels
-    // of the copy); the sky's level and scatter: the median and MadStd of F over the sky's blocks (correlated noise
-    // included, which SegmentLunar's neighbour differences read low).
+    // 2. The flattened copy: each channel less its sky surface, the plane or the quadratic (ruling Q14: masks only; the
+    // image the pipeline processes is not touched, and the background step removes a plane from it later). F: its
+    // channels' mean, 3 x 3 mean (SegmentLunar's levels of the copy); the sky's level and scatter: the median and MadStd
+    // of F over the sky's blocks (correlated noise included, which SegmentLunar's neighbour differences read low).
     ser::FloatImage flat = rgb;
     std::vector<float> L(n), F(n);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             const size_t i = static_cast<size_t>(y) * w + x;
             for (int c = 0; c < 3; ++c)
-                flat.data[i * 3 + c] = static_cast<float>(flat.data[i * 3 + c] - sky.plane[c].At(x, y, w, h));
+                flat.data[i * 3 + c] = static_cast<float>(flat.data[i * 3 + c] - sky.At(c, x, y, w, h));
             L[i] = (flat.data[i * 3] + flat.data[i * 3 + 1] + flat.data[i * 3 + 2]) / 3.0f;
         }
     size_t peak = 0;
@@ -346,9 +475,10 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
     none.height = h;
     none.disk.assign(n, 0);
     none.sky.assign(n, 0);
-    none.reason = Fmt("no disc stands %.0f sigma over the sky (%.0f of the frame's %.0f %.0f px blocks fit its sky plane): no "
-                      "window around the brightest candidate, nor the whole frame, holds one",
-                      kDiscSigmas, sky.skyBlocks, sky.blocks, kPlaneBlock);
+    none.reason = Fmt("no disc stands %.0f sigma over the sky (%.0f of the frame's %.0f %.0f px blocks fit its sky ", kDiscSigmas,
+                      sky.skyBlocks, sky.blocks, kPlaneBlock) +
+                  (sky.quadratic ? "quadratic" : "plane") +
+                  "): no window around the brightest candidate, nor the whole frame, holds one";
     return none;
 }
 
@@ -927,7 +1057,7 @@ std::string FrameFillingCaution(const LunarMasks& m) {
     const size_t n = m.disk.size();
     if (n == 0 || static_cast<double>(m.diskCount) < kFrameFillingShare * static_cast<double>(n)) return std::string();
     return Fmt("the planet disc is %.0f%% or more of the frame: the disc fills the frame, or the sky is curved more than "
-               "a plane models; colour calibration, the background and the sharpening then treat the whole frame as the "
+               "a quadratic models; colour calibration, the background and the sharpening then treat the whole frame as the "
                "planet",
                100 * kFrameFillingShare);
 }

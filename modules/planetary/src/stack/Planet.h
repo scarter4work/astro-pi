@@ -32,26 +32,33 @@ namespace planetary::stack {
 // r 6 or 12 (where 0.15 R >= 2 px, layer 1's reach, or the fade lies outside the measured interior), none in the halo.
 extern const SharpenProfile kPlanetSharpen;
 
-// ---- The planet's disc (Task 5; ruling Q12) ----
-// SegmentLunar on a copy of the frame less its sky plane (the image the pipeline processes is not touched: the
-// background step removes that plane from it later). SegmentLunar has no sky model: its sky is what lies under a quarter
-// of the disc's level, so a sky over that (a faint planet, a bright sky, a gradient) was disc -- a level-0.2 planet
-// covering 25% of a 320 x 240 frame on a sky of 0.058 rising 0.06 read 62410 px against 19200, at level 0.1 and 42% of
-// the frame or more the whole frame; and 2026-10-23 Neptune (1911 x 1071, sky 0.058 with correlated noise and a 0.008
-// rise down the frame, a disc of about 3 px radius) read 100% disc. Steps:
-// 1. The sky plane. The channels' mean in 16 px blocks, each block's noise from the difference of its two 4 px
-//    checkerboard halves (smooth structure cancels there, correlated noise does not). A plane fitted to the blocks, the
-//    blocks more than 3 noise sigma above it leaving round by round until none does (a body only adds light, so the
-//    plane settles on the sky under it however much of the frame the body covers), then the blocks within 3 sigma of it
-//    either way. Each channel's plane (SkyPlane) over those blocks' pixels. Under 8 blocks, or under 8 or a tenth of them
-//    on the plane, the frame has no sky to model: SegmentLunar's masks of the frame stand (a body filling it).
-//    Measured, blocks on the plane: the six real captures 44-88%; the synthetic skies below 83-86%; planets covering
-//    25-55% of 320 x 240 32-60%; a planet of r 400 in 480 x 360 0.6%, of r 250 3.6%; a MoonSynth disc of r 260 in 320 x
-//    240 4.7%. The first phase ends when no block leaves; the second (which may readmit blocks) settled within 18 rounds
-//    on every frame here but the curved skies below, and is held to 50.
+// ---- The planet's disc (Task 5; rulings Q12, Q14) ----
+// SegmentLunar on a copy of the frame less its sky surface, a plane or a quadratic (masks only: the image the pipeline
+// processes is not touched; the background step later removes a plane from it, so a curved sky's curvature stays in the
+// output's background). SegmentLunar has no sky model: its sky is what lies under a quarter of the disc's level, so a
+// sky over that (a faint planet, a bright sky, a gradient) was disc -- a level-0.2 planet covering 25% of a 320 x 240
+// frame on a sky of 0.058 rising 0.06 read 62410 px against 19200, at level 0.1 and 42% of the frame or more the whole
+// frame; and 2026-10-23 Neptune (1911 x 1071, sky 0.058 with correlated noise and a 0.008 rise down the frame, a disc of
+// about 3 px radius) read 100% disc. Steps:
+// 1. The sky surface. The channels' mean in 16 px blocks, each block's noise from the difference of its two 4 px
+//    checkerboard halves (smooth structure cancels there, correlated noise does not). A surface fitted to the blocks,
+//    the blocks more than 3 noise sigma above it leaving round by round until none does (a body only adds light, so the
+//    surface settles on the sky under it however much of the frame the body covers), then the blocks within 3 sigma of
+//    it either way -- once for a plane, once for the quadratic a + b x + c y + d x^2 + e x y + f y^2 (ruling Q14), each
+//    from all the blocks. The quadratic is the sky when its blocks pin one down (no pivot of its normal equations under
+//    1e-10 of their largest diagonal) and it keeps at least as many blocks as the plane; else the plane. Each channel's
+//    surface is then fitted over those blocks' pixels (SkyPlane's rejection). Under 8 blocks, or under 8 or a tenth of
+//    them on the surface, the frame has no sky to model: SegmentLunar's masks of the frame stand (a body filling it).
+//    Measured, blocks on the sky: the six real captures 44-91% -- the quadratic on 2026-09-07 Saturn (189 of 266
+//    against the plane's 171), 2023-02-11 Mars (214 / 209) and 2026-10-23 Neptune (7185 / 6890 of 7854), the plane on
+//    2026-10-23 Saturn (116 / 91), 2023-08-13 Jupiter (977 / 974) and 2023-11-02 Jupiter (123 / 90); a planet of r 400
+//    in 480 x 360 with bands 0.6% (the quadratic does not solve), of r 250 3.6% (the quadratic keeps 8-9 blocks). On a
+//    flat sky the two keep within a few blocks of each other and either may stand. The second phase settled within 19
+//    rounds on every synthetic frame of the tests but a featureless planet larger than the frame (below), and is held
+//    to 50.
 // 2. The candidate: the brightest pixel of the 8-connected group of the copy's 3 x 3 levels over the sky by 5 of its
-//    scatter (MadStd over the plane's blocks: correlated noise included) and a tenth of the brightest height, holding the
-//    most light (a field star brighter per pixel than a small Neptune holds far less light than its disc).
+//    scatter (MadStd over the surface's blocks: correlated noise included) and a tenth of the brightest height, holding
+//    the most light (a field star brighter per pixel than a small Neptune holds far less light than its disc).
 // 3. The copy through SegmentLunar: the whole frame, then windows of 64, 128, ... px (while under a quarter of the frame)
 //    centred on the candidate; the first whose split is the disc's -- SegmentLunar's disc level D, the median over its
 //    Otsu threshold, 5 scatter over the sky (SegmentLunar's own test reads correlated noise low and splits a large sky's
@@ -61,29 +68,45 @@ extern const SharpenProfile kPlanetSharpen;
 //    over the sky by 3 scatter, holes filled; 16 px or more, its mean 5 scatter over the sky, clear of the window's edges
 //    (but where they are the frame's).
 // 4. The masks: the disc; the sky, over the whole frame, more than 4 px from it and within 5 scatter of the sky's level
-//    (a star, a moon and the planet's seeing halo stay out). None: no disc, and the reason says so.
+//    (a star, a moon and the planet's seeing halo stay out). None: no disc, and the reason says so (and names the sky
+//    model: "fit its sky quadratic" or "plane").
 // Measured (WithStackNoise: correlated noise 0.006): a planet of level 0.1-0.5 covering 25-55% of 320 x 240 on a sky
 // rising 0.02 or 0.06 reads 20128-44088 px against the seeing-blurred disc's pi (r + 2 blur)^2 = 20397-44007 (0.987-
 // 1.003 of it; the equivalent radius 1.9-2.5 px over r); one of level 0.1-0.2, r 3, 8, 14 on SmallInLargeSky's sky
 // rising 0.02-0.12 is within 0.5-2x of the blurred disc with the centroid within 2 px, also at the frame's top, bottom
 // and corner (where the rest of the frame is sky); one of level 0.1-0.2, r 5 and 8, is chosen over a 1 px or 2 x 2 px
-// star of 0.95; the same skies with no planet: no disc. The real captures' discs are as before -- 2026-10-23 Neptune
-// 88 px, 2023-02-11 Mars 161, 2026-09-07 and 2026-10-23 Saturn 577 and 598, 2023-11-02 Jupiter 2405, 2023-08-13
-// Jupiter 1582 for 1583 -- and their sky leaves out the planet's seeing halo, 5 scatter over the sky (1-13% of the
-// sky SegmentLunar gave).
-// Limit: a sky a plane does not model. A vignetted sky (falling from the centre to the corners quadratically, under
-// that noise) keeps a tenth of its blocks on a plane, and so has no disc, while the fall is at most 0.012 (320 x 240)
-// or 0.016 (1911 x 1071). Beyond that:
-// - With no planet, from 0.014 / 0.018 the frame is taken for a body filling it (SegmentLunar's masks, 100% disc), as a
-//   featureless planet larger than the frame is: the two have the same shape.
-// - With a planet, it is lost in the sky's bulge. On 320 x 240, the sky rising 0.06 and falling 0.02-0.04 to the
-//   corners, a planet of r 8-50 px (blurred disc 330-8700 px) reads, at level 0.1-0.15, the whole frame or all but a
-//   sliver of sky (64591-76800 px of 76800); at 0.2, 57899-60366 px; at 0.3, 38737-46174 px; at 0.5, 14511-23692 px
-//   (the planet and the bulge around it).
-// A disc of 75% of the frame or more (the planet's 100% disc, a planet of r 250 or 400 in 480 x 360 whose frame has
-// under a tenth of its blocks clear of it and keeps SegmentLunar's masks of the raw frame, or a lost planet's 57899 px
-// and up above) is processed and says so (ruling Q13; PreparePlanet). A lost planet's smaller disc (here level 0.3-0.5)
-// gives no such notice: the "Planet disc" line's px and share of the frame are all that show it.
+// star of 0.95; the same skies with no planet: no disc. Vignetted (ruling Q14): that 320 x 240 sky rising 0.06, falling
+// 0.02 or 0.04 to the farthest corner as the distance squared from the frame's centre or from (0.32 w, 0.62 h) -- with
+// the plane a planet there read 14511-76800 px against a blurred disc of 330-8700 -- now gives, for a planet of level
+// 0.1-0.5, r 3, 8, 14 at the centre, the top edge and two corners, or of 15% and 30% of the frame centred and off
+// centre, the disc within 0.5-2x of the blurred disc and the centroid within 2 px; with no planet, no disc (also at
+// 1911 x 1071). The real captures' discs are as before -- 2026-10-23 Neptune 88 px, 2023-02-11 Mars 161, 2026-09-07 and
+// 2026-10-23 Saturn 577 and 598, 2023-11-02 Jupiter 2405, 2023-08-13 Jupiter 1582 for 1583 -- and their sky leaves
+// out the planet's seeing halo, 5 scatter over the sky (1-13% of the sky SegmentLunar gave); the quadratic's sky is a
+// little larger (2026-09-07 Saturn 91.50% of the frame against the plane's 90.87%, 2023-02-11 Mars 98.42 / 98.39%).
+// Limit: a sky a quadratic does not model, and a sky the planet hides. Measured on that sky (and on one of 0.25, so a
+// steeper fall stays above 0), planets of level 0.1-0.5 and r 8, 20, 50, and none, the sky falling from the centre to
+// the corners as t, the squared distance over the corner's: as t, every case right to 0.16 (the largest tried); as a
+// cos^4 law, 1 - (1 + 0.36 t)^-2 scaled to the fall, to 0.08; as (t + t^2) / 2, to 0.08; as t^2 (flat in the middle,
+// steep at the corners), to 0.04. At 1911 x 1071 every shape holds to 0.05, the largest tried on a sky of 0.058. Beyond:
+// - loud, a disc of 75% of the frame or more (Q13's notice, below): t^2 at 0.12-0.16 with no planet or one of r 8-20
+//   (one of r 50 reads right but at level 0.1), at 0.08 with no planet or one of r 20 and level 0.1-0.2, at 0.05 with
+//   one of r 8 and level 0.5 on the sky of 0.25; (t + t^2) / 2 at 0.16 with no planet or one of r 20 and level 0.1-0.2;
+//   or a faint planet lost, no disc (the no-disc notice: t^2 at 0.05, r 8 and level 0.1, on either sky);
+// - silent, a wrong disc under 75% of the frame: cos^4 at 0.12-0.16, 448-4312 px for a blurred disc of 340-1576;
+//   (t + t^2) / 2 at 0.12-0.16, 10849-19254 px for 340-1576, and 15733 px on a frame with no planet; t^2 at 0.08
+//   (r 8, level 0.1-0.2), 19084-19254 px for 340, and at 0.05 on the sky of 0.058 (r 8, level 0.5), 16849 px for 340.
+// - A planet of 55% of the frame centred on a vignetted sky (0.02-0.04 as t) leaves sky only in the corners, which do
+//   not pin a quadratic down, and neither surface keeps a tenth of the blocks: SegmentLunar's masks of the frame stand,
+//   and the disc reads 1.15-1.71x the blurred disc (level 0.1-0.3: 59586-75115 px, with Q13's notice; level 0.5:
+//   50671-53099 px, without).
+// - A featureless planet larger than the frame (no limb in it, no bands: r 400 in 480 x 360) is a dome a quadratic
+//   fits: it is taken for sky, and there is no disc (the no-disc notice; the stack is not processed). With bands the
+//   quadratic does not fit it, and with its limb in the frame (r 250) it keeps fewer blocks than the plane: the frame
+//   keeps SegmentLunar's masks (Q13's notice).
+// A disc of 75% of the frame or more (a planet's 100% disc, a planet of r 250 or 400 in 480 x 360 with bands, whose
+// frame has under a tenth of its blocks clear of it and keeps SegmentLunar's masks of the raw frame, or a planet lost
+// in a sky past the quadratic above) is processed and says so (ruling Q13; PreparePlanet).
 LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads);
 
 // ---- Colour calibration (spec call 3) ----
@@ -232,9 +255,9 @@ constexpr const char* kPhasePlanet = "Planet";
 // colour has no fade). With no disc found (a faint Neptune, a frame of sky) every later step skips with that reason
 // ("no planet disc distinguished from the sky", also MineralOutcome::notice) and the image is the stack clipped to
 // [0, 1]: an accepted outcome (Ruling P1), not a failure. A disc of 75% of the frame or more (ruling Q13: a planet
-// filling the frame, or a planet lost in a sky curved more than a plane models -- SegmentPlanet's limit) is processed,
+// filling the frame, or a planet lost in a sky curved more than a quadratic models -- SegmentPlanet's limit) is processed,
 // every step running, and the "Planet disc" line ends with the notice (MineralOutcome::notice, clipped false): "the
-// planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved more than a plane models;
+// planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved more than a quadratic models;
 // colour calibration, the background and the sharpening then treat the whole frame as the planet". (A disc wholly
 // inside a 4:3 frame covers at most 59% of it; the planets in a sky measured above reach 57%, the real captures 3%.)
 // Memory as PrepareMineral's.

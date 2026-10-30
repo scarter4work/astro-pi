@@ -539,36 +539,140 @@ TEST_CASE("planet disc: a 320 x 240 frame of sky on a gradient has no disc, and 
         }
 }
 
-TEST_CASE("planet disc: a curved sky with no planet has no disc while a plane holds, and is SegmentLunar's beyond (Planet.h)") {
-    // Planet.h's limit: a vignetted sky (falling `fall` from the centre to the corners, quadratically, over the reviewer's
-    // sky rising 0.06 down the frame) has no disc while a tenth of the frame's blocks fit a plane; beyond, the frame is
-    // taken for a body filling it (SegmentLunar's masks), which a featureless planet larger than the frame is too.
-    struct Case { int width, height; double fall; bool planeHolds; };
-    for (const Case k : {Case{320, 240, 0.005, true}, Case{320, 240, 0.010, true}, Case{320, 240, 0.04, false},
-                         Case{1911, 1071, 0.012, true}, Case{1911, 1071, 0.04, false}}) {
+namespace {
+
+// Vignetting (ruling Q14): the sky falls `fall` from (vx, vy) -- the frame's centre, or off it -- to the frame's
+// farthest corner from there, as the distance squared (power 1: a radial quadratic) or its square (power 2: the
+// distance to the fourth, flat in the middle and steep at the corners: no quadratic fits it).
+struct Vignette { double fall, vx, vy; int power = 1; };
+void AddVignette(ser::FloatImage& im, const Vignette& v) {
+    const int w = im.width, h = im.height;
+    double far2 = 0;
+    for (int cy : {0, h - 1})
+        for (int cx : {0, w - 1}) far2 = std::max(far2, (cx - v.vx) * (cx - v.vx) + (cy - v.vy) * (cy - v.vy));
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            for (int c = 0; c < 3; ++c)
+                im.data[(static_cast<size_t>(y) * w + x) * 3 + c] -= static_cast<float>(
+                    v.fall * std::pow(((x - v.vx) * (x - v.vx) + (y - v.vy) * (y - v.vy)) / far2, v.power));
+}
+
+// The reviewer's vignetted frames: 320 x 240, SmallInLargeSky's sky rising 0.06 down the frame, the stack's noise,
+// falling 0.02 or 0.04 to the corners from the centre or from a point off it.
+std::vector<Vignette> Vignettes(int w, int h) {
+    std::vector<Vignette> out;
+    for (double fall : {0.02, 0.04}) {
+        out.push_back({fall, 0.5 * (w - 1), 0.5 * (h - 1)});
+        out.push_back({fall, 0.32 * w, 0.62 * h});
+    }
+    return out;
+}
+ser::FloatImage VignettedScene(const PlanetSceneSpec& s, const Vignette& v, unsigned seed) {
+    ser::FloatImage im = MakePlanetScene(s).observed;
+    AddVignette(im, v);
+    return WithStackNoise(im, seed);
+}
+
+}  // namespace
+
+TEST_CASE("planet disc: a planet on a vignetted sky is the planet's (ruling Q14)") {
+    // q13-report: on these skies (a plane does not model them) a planet of level 0.3-0.5 read 14511-46174 px against a
+    // blurred disc of 330-8700, with no notice, and one of 0.1-0.2 the whole frame. Small planets at the centre, the
+    // top edge and two corners; the disc within CheckPlanetDisc's bounds.
+    struct At { double cx, cy; };
+    for (const Vignette& v : Vignettes(320, 240))
+        for (double level : {0.1, 0.2, 0.3, 0.5})
+            for (double r : {3.0, 8.0, 14.0})
+                for (const At at : {At{160.3, 119.8}, At{160.3, 2}, At{3, 3}, At{316, 236}}) {
+                    PlanetSceneSpec s = LargeOnGradient(level, 0.25, 0.06);
+                    s.radius = r;
+                    s.cx = at.cx;
+                    s.cy = at.cy;
+                    const ser::FloatImage im = VignettedScene(s, v, 1);
+                    std::ostringstream what;
+                    what << "fall " << v.fall << " from " << v.vx << ", " << v.vy << "; level " << level << " r " << r
+                         << " at " << at.cx << ", " << at.cy;
+                    CheckPlanetDisc(stack::SegmentPlanet(im, 4), s, what.str());
+                }
+}
+
+TEST_CASE("planet disc: a large planet on a vignetted sky is the planet's, not the sky's bulge (ruling Q14)") {
+    // A planet of 15-30% of the frame, centred and off centre: the sky model must not take it in.
+    struct At { double cx, cy; };
+    for (const Vignette& v : Vignettes(320, 240))
+        for (double level : {0.1, 0.2, 0.3, 0.5})
+            for (double share : {0.15, 0.30})
+                for (const At at : {At{160.3, 119.8}, At{215.6, 140.2}}) {
+                    PlanetSceneSpec s = LargeOnGradient(level, share, 0.06);
+                    s.cx = at.cx;
+                    s.cy = at.cy;
+                    const ser::FloatImage im = VignettedScene(s, v, 1);
+                    std::ostringstream what;
+                    what << "fall " << v.fall << " from " << v.vx << ", " << v.vy << "; level " << level << " share "
+                         << share << " r " << s.radius << " at " << at.cx << ", " << at.cy;
+                    CheckPlanetDisc(stack::SegmentPlanet(im, 4), s, what.str());
+                }
+}
+
+TEST_CASE("planet disc: a vignetted sky with no planet has no disc, and says why (ruling Q14)") {
+    for (const Vignette& v : Vignettes(320, 240))
+        for (unsigned seed : {1u, 2u}) {
+            const ser::FloatImage im = VignettedScene(LargeOnGradient(0, 0.25, 0.06), v, seed);
+            const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+            INFO("fall " << v.fall << " from " << v.vx << ", " << v.vy << " seed " << seed << ": disc " << m.diskCount
+                         << " sky " << m.skyCount << "; " << m.reason);
+            CHECK(m.diskCount == 0);
+            CHECK_FALSE(m.reason.empty());
+        }
+    // 2026-10-23 Neptune's frame size.
+    for (const Vignette& v : Vignettes(1911, 1071)) {
+        const ser::FloatImage im = VignettedScene(FaintOnGradient(0, 8, 0.06, 1), v, 1);
+        const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
+        INFO("1911 x 1071 fall " << v.fall << ": disc " << m.diskCount << " sky " << m.skyCount << "; " << m.reason);
+        CHECK(m.diskCount == 0);
+        CHECK_FALSE(m.reason.empty());
+    }
+}
+
+TEST_CASE("planet disc: a curved sky with no planet has no disc while a quadratic holds, and fills the frame beyond (Planet.h)") {
+    // Planet.h's limit. A radial quadratic of any fall is the quadratic's (the plane held only to 0.012 on 320 x 240 and
+    // 0.016 on 1911 x 1071). A sky falling as the fourth power of the distance (flat in the middle, steep at the corners),
+    // 0.08 on a sky of 0.25, is not: there the frame is taken for a body filling it, the Q13 notice's case.
+    struct Case { int width, height; double pedestal; Vignette v; bool holds; };
+    for (const Case k : {Case{320, 240, 0.058, {0.005, 159.5, 119.5}, true}, Case{320, 240, 0.058, {0.010, 159.5, 119.5}, true},
+                         Case{1911, 1071, 0.058, {0.012, 955, 535}, true}, Case{320, 240, 0.25, {0.08, 159.5, 119.5, 2}, false}}) {
         PlanetSceneSpec s = FaintOnGradient(0, 8, 0.06, 1);
         s.width = k.width;
         s.height = k.height;
-        ser::FloatImage im = MakePlanetScene(s).observed;
-        const double cx = 0.5 * (k.width - 1), cy = 0.5 * (k.height - 1), corner = cx * cx + cy * cy;
-        for (int y = 0; y < k.height; ++y)
-            for (int x = 0; x < k.width; ++x)
-                for (int c = 0; c < 3; ++c)
-                    im.data[(static_cast<size_t>(y) * k.width + x) * 3 + c] +=
-                        static_cast<float>(k.fall * (1 - ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / corner));
-        im = WithStackNoise(im, 1);
+        s.pedestal = {k.pedestal, k.pedestal, k.pedestal};
+        const ser::FloatImage im = VignettedScene(s, k.v, 1);
         const stack::LunarMasks m = stack::SegmentPlanet(im, 4);
-        INFO(k.width << " x " << k.height << " fall " << k.fall << ": disc " << m.diskCount << " sky " << m.skyCount << "; "
-                     << m.reason);
-        if (k.planeHolds) {
+        const size_t n = static_cast<size_t>(k.width) * k.height;
+        INFO(k.width << " x " << k.height << " fall " << k.v.fall << " power " << k.v.power << ": disc " << m.diskCount
+                     << " sky " << m.skyCount << "; " << m.reason);
+        if (k.holds) {
             CHECK(m.diskCount == 0);
-            CHECK_FALSE(m.reason.empty());
+            CHECK(Contains(m.reason, "fit its sky quadratic"));
         } else {
-            const stack::LunarMasks l = stack::SegmentLunar(im, 4);
-            CHECK(m.disk == l.disk);
-            CHECK(m.sky == l.sky);
+            CHECK(static_cast<double>(m.diskCount) >= 0.75 * static_cast<double>(n));
         }
     }
+    // The same shape the other way round: a featureless planet larger than the frame (no limb in it, no bands) is a dome
+    // a quadratic fits, so it is taken for sky -- no disc, and the reason says so (the no-disc notice: the stack is not
+    // processed). With bands it keeps SegmentLunar's frame (the test above and the Q13 tests).
+    PlanetSceneSpec s = Framed(20);
+    s.width = 480;
+    s.height = 360;
+    s.cx = 240;
+    s.cy = 180;
+    s.radius = 400;
+    s.noiseStd = 0.004;
+    s.bandAmplitude = 0;
+    s.bandTint = 0;
+    const stack::LunarMasks m = stack::SegmentPlanet(MakePlanetScene(s).observed, 4);
+    INFO("featureless r 400: disc " << m.diskCount << " sky " << m.skyCount << "; " << m.reason);
+    CHECK(m.diskCount == 0);
+    CHECK(Contains(m.reason, "fit its sky quadratic"));
 }
 
 // ---- The ring in the disc mask (spec P6, plan risk 2) ----
@@ -1183,13 +1287,13 @@ void CheckHistory(const stack::MineralOutcome& out) {
     }
 }
 
-// Ruling Q13: a disc filling the frame (or a sky curved past a plane) is processed, and both the "Planet disc" line and
+// Ruling Q13: a disc filling the frame (or a sky curved past a quadratic) is processed, and both the "Planet disc" line and
 // the notice say so and what follows (spec anti-goal: never a silent wrong result).
 void CheckFrameFillingNotice(const stack::MineralOutcome& out) {
     INFO("notice '" << out.notice << "'");
     CHECK_FALSE(out.clipped);  // processed: not the no-disc outcome
     for (const std::string& text : {out.notice, out.history.at(0)}) {
-        CHECK(Contains(text, "the disc fills the frame, or the sky is curved more than a plane models"));
+        CHECK(Contains(text, "the disc fills the frame, or the sky is curved more than a quadratic models"));
         CHECK(Contains(text, "treat the whole frame as the planet"));
         CHECK(Ascii(text));
     }
@@ -1538,23 +1642,29 @@ TEST_CASE("a featureless planet larger than the frame completes and says the dis
     }
 }
 
-TEST_CASE("a planet on a sky curved past a plane says the disc fills the frame (ruling Q13)") {
+TEST_CASE("a planet on a vignetted sky is processed as the planet; past a quadratic, it says the disc fills the frame (rulings Q13, Q14)") {
     // The reviewer's probe: a sky falling 0.03 from the centre to the corners (quadratically, over a sky rising 0.06 down
-    // a 320 x 240 frame) is more than a plane models, and the planet in it is lost to a disc of the whole frame (level
-    // 0.1, r 20: 76800 px) or of all but a sliver of sky (level 0.1, r 50: about 72700 px, sky about 2300 px).
+    // a 320 x 240 frame) was more than a plane models, and the level-0.1 planet in it was lost to a disc of the whole
+    // frame (r 20: 76800 px) or of all but a sliver of sky (r 50: about 72700 px). The quadratic sky models it: the
+    // planet's disc, no notice.
+    for (double r : {20.0, 50.0}) {
+        const PlanetSceneSpec s = LargeOnGradient(0.1, 3.14159265358979 * r * r / (320.0 * 240.0), 0.06);
+        const ser::FloatImage im = VignettedScene(s, {0.03, 159.5, 119.5}, 1);
+        const stack::MineralCache cache = stack::PreparePlanet(im, ser::Target::Neptune, 4, {});
+        std::ostringstream what;
+        what << "quadratic fall 0.03, r " << r << ": " << cache.history[0];
+        CheckPlanetDisc(cache.masks, s, what.str());
+        CHECK(cache.notice.empty());
+    }
+    // A sky past the quadratic (falling 0.12 as the fourth power of the distance, on a sky of 0.25): the planet is lost
+    // to a disc of the frame, and the notice says so.
     for (double r : {20.0, 50.0}) {
         PlanetSceneSpec s = LargeOnGradient(0.1, 3.14159265358979 * r * r / (320.0 * 240.0), 0.06);
-        ser::FloatImage im = MakePlanetScene(s).observed;
-        const double cx = 0.5 * (s.width - 1), cy = 0.5 * (s.height - 1), corner = cx * cx + cy * cy;
-        for (int y = 0; y < s.height; ++y)
-            for (int x = 0; x < s.width; ++x)
-                for (int c = 0; c < 3; ++c)
-                    im.data[(static_cast<size_t>(y) * s.width + x) * 3 + c] -=
-                        static_cast<float>(0.03 * ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / corner);
-        im = WithStackNoise(im, 1);
+        s.pedestal = {0.25, 0.25, 0.25};
+        const ser::FloatImage im = VignettedScene(s, {0.12, 159.5, 119.5, 2}, 1);
         stack::MineralOutcome out;
         REQUIRE_NOTHROW(out = stack::FinishPlanet(stack::PreparePlanet(im, ser::Target::Neptune, 4, {}), {}, 4));
-        INFO("r " << r << ": " << out.history[0]);
+        INFO("quartic fall 0.12, r " << r << ": " << out.history[0]);
         CheckValid(out, im);
         CheckHistory(out);
         CheckFrameFillingNotice(out);

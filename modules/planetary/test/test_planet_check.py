@@ -242,10 +242,10 @@ class PlanetCheckFailsClosed(unittest.TestCase):
         self.assertEqual(self.rows("refused").get("stack"), "PASS", text)
 
     def test_frame_filling_caution_fails_and_is_not_no_disc(self):
-        # Ruling Q13: a real capture's planet is in a sky a plane models, so the caution (a disc filling the frame) is a
+        # Ruling Q13: a real capture's planet is in a sky a quadratic models, so the caution (a disc filling the frame) is a
         # FAIL of its own, and the capture is still judged as processed, not as the no-disc outcome.
         self.make(caution="the planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved "
-                          "more than a plane models; colour calibration, the background and the sharpening then treat "
+                          "more than a quadratic models; colour calibration, the background and the sharpening then treat "
                           "the whole frame as the planet")
         write_gate(self.run_dir)
         code, text = self.check()

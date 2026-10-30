@@ -17,7 +17,7 @@ declined and HISTORY says why (ruling Q4) -- never for a missing file or a NaN m
 refused with (Venus "Clipped", the 2023 Neptune "NoTarget"). The "stack" row passes only on that outcome: any other
 refusal fails, and so does an image where a refusal was expected. A notice with a disc is the engine's caution on a
 processed image (ruling Q13: the disc is 75% of the frame or more -- it fills the frame, or the sky is curved more than a
-plane models); no capture here is either, so its "Q13 frame disc" row fails, and the rest is judged as usual. The
+quadratic models); no capture here is either, so its "Q13 frame disc" row fails, and the rest is judged as usual. The
 requirements (spec "Acceptance (the bar)", with
 rulings P2, P3 and Q4):
 
@@ -579,8 +579,8 @@ def check(run, cid, role, png_dir, expect="image"):
 
     if pj["notice"] and disc["pixels"] > 0:
         # Ruling Q13: the engine's caution on a processed image (a disc of 75% of the frame or more: the disc fills the
-        # frame, or the sky is curved past a plane). No real capture is either, so it fails; the rest is judged as usual.
-        rep.judge("Q13 frame disc", "notice: %s" % pj["notice"], "none (every capture's planet is in a sky a plane models)",
+        # frame, or the sky is curved past a quadratic). No real capture is either, so it fails; the rest is judged as usual.
+        rep.judge("Q13 frame disc", "notice: %s" % pj["notice"], "none (every capture's planet is in a sky a quadratic models)",
                   False)
     elif pj["notice"]:
         same = np.array_equal(outs["planet"], np.clip(stack, 0, 1).astype(np.float32).astype(np.float64))

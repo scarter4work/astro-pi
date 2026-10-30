@@ -623,7 +623,7 @@ TEST_CASE("the planet's result line: the Saturation step, the Sharpen step up to
 
 TEST_CASE("a planet disc filling the frame reaches the console and the window as a caution on a processed image (ruling Q13)", "[stackcards][planet]") {
     const std::string caution =
-        "the planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved more than a plane "
+        "the planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved more than a quadratic "
         "models; colour calibration, the background and the sharpening then treat the whole frame as the planet";
     stack::MineralOutcome post = PlanetSevenSteps(caution);
     post.clipped = false;
