@@ -237,13 +237,12 @@ IsoString ShowPostWindow( const String& path, const PostWindow& window, PostKind
    if ( !post.history.empty() )
       console.WriteLn( "PlanetaryStack: " + Html( post.history.back() ) );
    if ( !post.notice.empty() )
-      console.WarningLn( "PlanetaryStack warning: " + Html( stackcards::PostNoticeText( kind, post.notice ) ) );
+      console.WarningLn( "PlanetaryStack warning: " + Html( stackcards::PostNoticeText( kind, post ) ) );
    const IsoString viewId = ShowNewImageWindow( window.image, ViewIdStem( path ) + "_" + stackcards::PostNoun( kind ).c_str(),
                                                 window.keywords, "PlanetaryStack: " + fileName );
    console.WriteLn( "PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + " -> " + String( viewId ) + " (" +
                     Num( post.image.width ) + "x" + Num( post.image.height ) + ", RGB, 32-bit float, " +
-                    (post.notice.empty() ? name + ", display-ready)"
-                                         : "the stack clipped to [0, 1]: no " + name + ", see the warning above)") );
+                    Html( stackcards::PostImageText( kind, post ) ) + ")" );
    return viewId;
 }
 

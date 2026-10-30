@@ -15,7 +15,10 @@ input this capture does not have -- no disc was found (an accepted outcome, ruli
 declined and HISTORY says why (ruling Q4) -- never for a missing file or a NaN metric, which fail (fail-closed).
 <expect> is the stacker's outcome the capture table expects: "image" (the default), or the diagnosis kind it must be
 refused with (Venus "Clipped", the 2023 Neptune "NoTarget"). The "stack" row passes only on that outcome: any other
-refusal fails, and so does an image where a refusal was expected. The requirements (spec "Acceptance (the bar)", with
+refusal fails, and so does an image where a refusal was expected. A notice with a disc is the engine's caution on a
+processed image (ruling Q13: the disc is 75% of the frame or more -- it fills the frame, or the sky is curved more than a
+plane models); no capture here is either, so its "Q13 frame disc" row fails, and the rest is judged as usual. The
+requirements (spec "Acceptance (the bar)", with
 rulings P2, P3 and Q4):
 
   1 calib     linear calibrated RGB (stages/calibrated.fits: after calibration and the sky plane), disc pixels with no
@@ -574,7 +577,12 @@ def check(run, cid, role, png_dir, expect="image"):
     rep.info("time", "slider %.4f s at %d threads, %dx%d" % (pj["sliderSeconds"], j["threads"], j["image"]["width"],
              j["image"]["height"]))
 
-    if pj["notice"]:
+    if pj["notice"] and disc["pixels"] > 0:
+        # Ruling Q13: the engine's caution on a processed image (a disc of 75% of the frame or more: the disc fills the
+        # frame, or the sky is curved past a plane). No real capture is either, so it fails; the rest is judged as usual.
+        rep.judge("Q13 frame disc", "notice: %s" % pj["notice"], "none (every capture's planet is in a sky a plane models)",
+                  False)
+    elif pj["notice"]:
         same = np.array_equal(outs["planet"], np.clip(stack, 0, 1).astype(np.float32).astype(np.float64))
         rep.judge("no disc", "notice: %s; output == the stack clipped to [0, 1]: %s" % (pj["notice"], same),
                   "Q3a: the stack clipped, with the reason", same)

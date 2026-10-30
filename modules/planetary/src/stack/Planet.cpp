@@ -921,6 +921,16 @@ constexpr const char* kPlanetProduct = "Planet processing";
 // Step 1 found no disc: every later step says so instead of running (spec anti-goal: no defect hidden; Ruling P1: an
 // accepted outcome for a faint Neptune).
 constexpr const char* kNoPlanet = "no planet disc distinguished from the sky";
+// Ruling Q13: a disc of kFrameFillingShare of the frame or more is processed, and says so (Planet.h, PreparePlanet).
+constexpr double kFrameFillingShare = 0.75;
+std::string FrameFillingCaution(const LunarMasks& m) {
+    const size_t n = m.disk.size();
+    if (n == 0 || static_cast<double>(m.diskCount) < kFrameFillingShare * static_cast<double>(n)) return std::string();
+    return Fmt("the planet disc is %.0f%% or more of the frame: the disc fills the frame, or the sky is curved more than "
+               "a plane models; colour calibration, the background and the sharpening then treat the whole frame as the "
+               "planet",
+               100 * kFrameFillingShare);
+}
 // Spec call 6: the mineral moon's +-6% deviation clamp and highlight fade, off. MineralColour has no switch for them;
 // these values are beyond any reach: PreparePlanet clamps its display to [0, 1] after the alignment (AlignAndClamp), so
 // C >= 0 and |d| < 2, and C <= 1 keeps w at 1.
@@ -990,7 +1000,8 @@ MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int thre
                               [threads](ser::FloatImage& rgb, const LunarMasks& m) { return AlignAndClamp(rgb, m, threads); },
                               0.0,  // linear (spec call 4)
                               false,
-                              [](const ser::FloatImage& rgb, int n) { return SegmentPlanet(rgb, n); }};
+                              [](const ser::FloatImage& rgb, int n) { return SegmentPlanet(rgb, n); },
+                              FrameFillingCaution};
     return PrepareDisc(stack, threads, progress, noise, planet);
 }
 
@@ -1031,6 +1042,7 @@ MineralOutcome FinishPlanet(const MineralCache& cache, const PlanetParams& param
     out.stepSeconds.push_back({"Sharpen", sharpenSecs});
     out.stepSeconds.push_back({"Saturation", colourSecs});
     out.notice = cache.notice;
+    out.clipped = cache.masks.diskCount == 0;
     return out;
 }
 

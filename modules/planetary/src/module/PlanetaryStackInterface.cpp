@@ -951,8 +951,8 @@ void PlanetaryStackInterface::FinishStack()
    // still stands: nothing it made is kept (as ExecuteGlobal's Abort).
    const bool cancelled = run->cancelled || run->cancel.load();
 
-   // The product (the mineral moon or planet processing) the run made, kept with its notice (no disc) said as a
-   // warning, or its failure said: each gives the status line's text.
+   // The product (the mineral moon or planet processing) the run made, kept with its notice (no disc, or a caution on
+   // the processed image: ruling Q13) said as a warning, or its failure said: each gives the status line's text.
    const PostKind kind = run->params.kind;
    const String title = stackcards::PostTitle( kind ).c_str();
    const String name = stackcards::PostName( kind ).c_str();
@@ -962,11 +962,10 @@ void PlanetaryStackInterface::FinishStack()
       m_postShown = std::move( run->postMade );
       m_shownParams = run->params;
       m_postFor = run->params;
-      if ( m_postShown->notice.empty() )
-         return title + " shown.";
-      Console().WarningLn( "<end><cbr>PlanetaryStack warning: " +
-                           FromUtf8( stackcards::PostNoticeText( kind, m_postShown->notice ) ).EncodedHTMLSpecialChars() );
-      return title + (kind == PostKind::Mineral ? ": no lunar disk; see below." : ": no planet disc; see below.");
+      if ( !m_postShown->notice.empty() )
+         Console().WarningLn( "<end><cbr>PlanetaryStack warning: " +
+                              FromUtf8( stackcards::PostNoticeText( kind, *m_postShown ) ).EncodedHTMLSpecialChars() );
+      return FromUtf8( stackcards::PostStatusText( kind, *m_postShown ) );
    };
    const auto failPost = [&]( const std::string& why ) -> String
    {

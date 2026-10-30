@@ -1183,6 +1183,19 @@ void CheckHistory(const stack::MineralOutcome& out) {
     }
 }
 
+// Ruling Q13: a disc filling the frame (or a sky curved past a plane) is processed, and both the "Planet disc" line and
+// the notice say so and what follows (spec anti-goal: never a silent wrong result).
+void CheckFrameFillingNotice(const stack::MineralOutcome& out) {
+    INFO("notice '" << out.notice << "'");
+    CHECK_FALSE(out.clipped);  // processed: not the no-disc outcome
+    for (const std::string& text : {out.notice, out.history.at(0)}) {
+        CHECK(Contains(text, "the disc fills the frame, or the sky is curved more than a plane models"));
+        CHECK(Contains(text, "treat the whole frame as the planet"));
+        CHECK(Ascii(text));
+    }
+    CHECK_FALSE(Contains(out.history.at(1), "skipped: no planet disc"));
+}
+
 // The disc's mean B/G and R/G of an image over a mask.
 std::pair<double, double> MeanRatios(const ser::FloatImage& im, const std::vector<uint8_t>& mask) {
     double s[3] = {0, 0, 0};
@@ -1472,6 +1485,7 @@ TEST_CASE("tiny or absent disc completes") {
         INFO("level " << s->level << ", blur " << s->blurSigma << ", notice '" << out.notice << "':\n" << all);
         if (s == &none) {
             CHECK_FALSE(out.notice.empty());
+            CHECK(out.clipped);  // the no-disc outcome: the stack clipped (ruling Q13 tells it from a caution)
             CHECK(Contains(out.history[0], "none"));
             for (size_t k = 1; k < out.history.size(); ++k) CHECK(Contains(out.history[k], "skipped: " + out.notice));
         }
@@ -1499,7 +1513,65 @@ TEST_CASE("frame-filling disc completes") {
     std::string all;
     for (const std::string& h : out.history) all += h + "\n";
     INFO(all);
-    CHECK(out.notice.empty());
+    // Ruling Q13: processed (no step skipped for want of a disc), and it says the disc fills the frame.
+    CheckFrameFillingNotice(out);
+}
+
+TEST_CASE("a featureless planet larger than the frame completes and says the disc fills the frame (ruling Q13)") {
+    // SegmentPlanet's own frame-filling cases (planets of r 250 and 400 in 480 x 360: under a tenth of the frame's blocks
+    // clear of them, so SegmentLunar's masks of the raw frame).
+    for (double r : {250.0, 400.0}) {
+        PlanetSceneSpec s = Framed(20);
+        s.width = 480;
+        s.height = 360;
+        s.cx = 240;
+        s.cy = 180;
+        s.radius = r;
+        s.noiseStd = 0.004;
+        const ser::FloatImage im = MakePlanetScene(s).observed;
+        stack::MineralOutcome out;
+        REQUIRE_NOTHROW(out = stack::FinishPlanet(stack::PreparePlanet(im, ser::Target::Saturn, 4, {}), {}, 4));
+        CheckValid(out, im);
+        CheckHistory(out);
+        INFO("r " << r << ": " << out.history[0]);
+        CheckFrameFillingNotice(out);
+    }
+}
+
+TEST_CASE("a planet on a sky curved past a plane says the disc fills the frame (ruling Q13)") {
+    // The reviewer's probe: a sky falling 0.03 from the centre to the corners (quadratically, over a sky rising 0.06 down
+    // a 320 x 240 frame) is more than a plane models, and the planet in it is lost to a disc of the whole frame (level
+    // 0.1, r 20: 76800 px) or of all but a sliver of sky (level 0.1, r 50: about 72700 px, sky about 2300 px).
+    for (double r : {20.0, 50.0}) {
+        PlanetSceneSpec s = LargeOnGradient(0.1, 3.14159265358979 * r * r / (320.0 * 240.0), 0.06);
+        ser::FloatImage im = MakePlanetScene(s).observed;
+        const double cx = 0.5 * (s.width - 1), cy = 0.5 * (s.height - 1), corner = cx * cx + cy * cy;
+        for (int y = 0; y < s.height; ++y)
+            for (int x = 0; x < s.width; ++x)
+                for (int c = 0; c < 3; ++c)
+                    im.data[(static_cast<size_t>(y) * s.width + x) * 3 + c] -=
+                        static_cast<float>(0.03 * ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / corner);
+        im = WithStackNoise(im, 1);
+        stack::MineralOutcome out;
+        REQUIRE_NOTHROW(out = stack::FinishPlanet(stack::PreparePlanet(im, ser::Target::Neptune, 4, {}), {}, 4));
+        INFO("r " << r << ": " << out.history[0]);
+        CheckValid(out, im);
+        CheckHistory(out);
+        CheckFrameFillingNotice(out);
+    }
+}
+
+TEST_CASE("a small planet on a flat sky has no frame-filling notice (ruling Q13)") {
+    for (double r : {6.0, 20.0, 60.0}) {
+        PlanetSceneSpec s = Realistic(r, 131);
+        s.gradientX = s.gradientY = {0, 0, 0};
+        const PlanetScene sc = MakePlanetScene(s);
+        const stack::MineralOutcome out = stack::FinishPlanet(stack::PreparePlanet(sc.observed, ser::Target::Mars, 4, {}), {}, 4);
+        INFO("r " << r << ": " << out.history[0] << "; notice '" << out.notice << "'");
+        CHECK(out.notice.empty());
+        CHECK_FALSE(out.clipped);
+        CHECK_FALSE(Contains(out.history[0], "fills the frame"));
+    }
 }
 
 TEST_CASE("cancel throws StackCancelled") {

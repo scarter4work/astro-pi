@@ -318,6 +318,7 @@ stack::MineralOutcome SevenSteps(const std::string& notice = "") {
                  "(noise-limited); noise: the sky's (no stack noise model given)",
                  "Mineral colour: k 8.00, chroma blur 2.50 px, eps 0.0020"};
     m.notice = notice;
+    m.clipped = !notice.empty();  // a no-disc notice (the caution on a processed image: ruling Q13's test)
     return m;
 }
 
@@ -501,6 +502,7 @@ stack::MineralOutcome PlanetSevenSteps(const std::string& notice = "") {
                  "Saturation: 1.00x the natural colour (the chroma layer's channel ratios on the sharp luminance), chroma "
                  "blur 1.00 px, eps 0.0011; no deviation clamp, no highlight fade; 0.0% of pixels held in gamut"};
     m.notice = notice;
+    m.clipped = !notice.empty();  // a no-disc notice (the caution on a processed image: ruling Q13's test)
     return m;
 }
 
@@ -617,6 +619,39 @@ TEST_CASE("the planet's result line: the Saturation step, the Sharpen step up to
     // The mineral moon's, through the same code, as before.
     CHECK(stackcards::PostResultText(stackcards::PostKind::Mineral, SevenSteps()) == stackcards::MineralResultText(SevenSteps()));
     CHECK(stackcards::PostNoticeText(stackcards::PostKind::Mineral, "x") == stackcards::MineralNoticeText("x"));
+}
+
+TEST_CASE("a planet disc filling the frame reaches the console and the window as a caution on a processed image (ruling Q13)", "[stackcards][planet]") {
+    const std::string caution =
+        "the planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved more than a plane "
+        "models; colour calibration, the background and the sharpening then treat the whole frame as the planet";
+    stack::MineralOutcome post = PlanetSevenSteps(caution);
+    post.clipped = false;
+    // The console's warning (ShowPostWindow, the window's keepPost): the caution as the engine gives it, never "the
+    // stack clipped".
+    CHECK(stackcards::PostNoticeText(stackcards::PostKind::Planet, post) == "Planet processing: " + caution + ".");
+    CHECK(stackcards::PostResultText(stackcards::PostKind::Planet, post).find("\nWarning: Planet processing: " + caution + ".") !=
+          std::string::npos);
+    CHECK(stackcards::PostResultText(stackcards::PostKind::Planet, post).find("clipped") == std::string::npos);
+    CHECK(stackcards::PostImageText(stackcards::PostKind::Planet, post) ==
+          "planet processing, display-ready, see the warning above");
+    CHECK(stackcards::PostStatusText(stackcards::PostKind::Planet, post) == "Planet processing shown, with a warning; see below.");
+    // No disc: as before (the stack clipped).
+    stack::MineralOutcome none = PlanetSevenSteps("no planet disc distinguished from the sky");
+    none.clipped = true;
+    CHECK(stackcards::PostNoticeText(stackcards::PostKind::Planet, none) ==
+          stackcards::PostNoticeText(stackcards::PostKind::Planet, none.notice));
+    CHECK(stackcards::PostImageText(stackcards::PostKind::Planet, none) ==
+          "the stack clipped to [0, 1]: no planet processing, see the warning above");
+    CHECK(stackcards::PostStatusText(stackcards::PostKind::Planet, none) == "Planet processing: no planet disc; see below.");
+    stack::MineralOutcome noLunar = SevenSteps("no lunar disk distinguished from the sky");
+    noLunar.clipped = true;
+    CHECK(stackcards::PostStatusText(stackcards::PostKind::Mineral, noLunar) == "Mineral moon: no lunar disk; see below.");
+    // No notice: shown, display-ready.
+    CHECK(stackcards::PostNoticeText(stackcards::PostKind::Planet, PlanetSevenSteps()).empty());
+    CHECK(stackcards::PostImageText(stackcards::PostKind::Planet, PlanetSevenSteps()) == "planet processing, display-ready");
+    CHECK(stackcards::PostStatusText(stackcards::PostKind::Planet, PlanetSevenSteps()) == "Planet processing shown.");
+    CHECK(stackcards::PostStatusText(stackcards::PostKind::Mineral, SevenSteps()) == "Mineral moon shown.");
 }
 
 TEST_CASE("the console's context names the post-processing and its parameters, or its absence", "[stackcards][planet]") {

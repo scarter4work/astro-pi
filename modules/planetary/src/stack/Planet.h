@@ -73,9 +73,17 @@ extern const SharpenProfile kPlanetSharpen;
 // sky SegmentLunar gave).
 // Limit: a sky a plane does not model. A vignetted sky (falling from the centre to the corners quadratically, under
 // that noise) keeps a tenth of its blocks on a plane, and so has no disc, while the fall is at most 0.012 (320 x 240)
-// or 0.016 (1911 x 1071); from 0.014 / 0.018 it is taken for a body filling the frame (SegmentLunar's masks, 100% disc),
-// as a featureless planet larger than the frame is: the two have the same shape. A planet whose frame has under a tenth
-// of its blocks clear of it (a planet of r 250 in 480 x 360) keeps SegmentLunar's masks of the raw frame.
+// or 0.016 (1911 x 1071). Beyond that:
+// - With no planet, from 0.014 / 0.018 the frame is taken for a body filling it (SegmentLunar's masks, 100% disc), as a
+//   featureless planet larger than the frame is: the two have the same shape.
+// - With a planet, it is lost in the sky's bulge. On 320 x 240, the sky rising 0.06 and falling 0.02-0.04 to the
+//   corners, a planet of r 8-50 px (blurred disc 330-8700 px) reads, at level 0.1-0.15, the whole frame or all but a
+//   sliver of sky (64591-76800 px of 76800); at 0.2, 57899-60366 px; at 0.3, 38737-46174 px; at 0.5, 14511-23692 px
+//   (the planet and the bulge around it).
+// A disc of 75% of the frame or more (the planet's 100% disc, a planet of r 250 or 400 in 480 x 360 whose frame has
+// under a tenth of its blocks clear of it and keeps SegmentLunar's masks of the raw frame, or a lost planet's 57899 px
+// and up above) is processed and says so (ruling Q13; PreparePlanet). A lost planet's smaller disc (here level 0.3-0.5)
+// gives no such notice: the "Planet disc" line's px and share of the frame are all that show it.
 LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads);
 
 // ---- Colour calibration (spec call 3) ----
@@ -223,7 +231,13 @@ constexpr const char* kPhasePlanet = "Planet";
 // through the transfer's slope, now 1 / W). No highlight threshold is measured (cache.satThreshold -1: the planet
 // colour has no fade). With no disc found (a faint Neptune, a frame of sky) every later step skips with that reason
 // ("no planet disc distinguished from the sky", also MineralOutcome::notice) and the image is the stack clipped to
-// [0, 1]: an accepted outcome (Ruling P1), not a failure. Memory as PrepareMineral's.
+// [0, 1]: an accepted outcome (Ruling P1), not a failure. A disc of 75% of the frame or more (ruling Q13: a planet
+// filling the frame, or a planet lost in a sky curved more than a plane models -- SegmentPlanet's limit) is processed,
+// every step running, and the "Planet disc" line ends with the notice (MineralOutcome::notice, clipped false): "the
+// planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved more than a plane models;
+// colour calibration, the background and the sharpening then treat the whole frame as the planet". (A disc wholly
+// inside a 4:3 frame covers at most 59% of it; the planets in a sky measured above reach 57%, the real captures 3%.)
+// Memory as PrepareMineral's.
 // Throws std::invalid_argument for a target with no catalogue colour (Moon, Other: the colour reference needs a known
 // body), and as PrepareMineral for a stack that is not 3 channels or holds NaN or infinite samples; StackCancelled on
 // a cancel.

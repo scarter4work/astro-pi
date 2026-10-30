@@ -259,8 +259,12 @@ struct MineralOutcome {
     std::vector<std::pair<std::string, double>> stepSeconds;
     // Empty, or why the image is not a mineral moon, for the result line (spec anti-goal: a step that cannot run
     // says why in HISTORY and in the result line): "no lunar disk distinguished from the sky", when step 1 finds
-    // none. Every step then skips with that reason and the image is the stack clipped to [0, 1].
+    // none. Every step then skips with that reason and the image is the stack clipped to [0, 1]. The planet path also
+    // gives one on a processed image (ruling Q13: a disc filling the frame; Planet.h, PreparePlanet).
     std::string notice;
+    // The notice is step 1's no-disc reason: the image is the stack clipped to [0, 1]. False with a notice: the image
+    // was processed and the notice is a caution about it.
+    bool clipped = false;
 };
 // ApplyMineralColour as an outcome: the cache's five HISTORY lines and step times plus the Sharpen and Mineral colour
 // lines, each step timed; the notice is the cache's. The window's sliders and MakeMineralMoon both take this path, so

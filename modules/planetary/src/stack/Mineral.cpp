@@ -1374,10 +1374,12 @@ MineralCache mineral_internal::PrepareDisc(const ser::FloatImage& stack, int thr
                 ? Fmt("%.0f px (equivalent radius %.1f px), ", static_cast<double>(cache.masks.diskCount),
                       std::sqrt(cache.masks.diskCount / M_PI))
                 : std::string();
+        if (!noDisk && kind.caution) cache.notice = kind.caution(cache.masks);
         cache.history.push_back(noDisk ? std::string(kind.discStep) + ": none, " + kind.noDisc + " (" + cache.masks.reason +
                                              "); the image is the stack clipped to [0, 1]"
                                        : std::string(kind.discStep) + ": " + size + Percent(cache.masks.diskCount, n) +
-                                             " of the frame, sky " + Percent(cache.masks.skyCount, n));
+                                             " of the frame, sky " + Percent(cache.masks.skyCount, n) +
+                                             (cache.notice.empty() ? std::string() : "; " + cache.notice));
     });
     if (noDisk) {
         cache.notice = kind.noDisc;
@@ -1528,6 +1530,7 @@ MineralOutcome FinishMineral(const MineralCache& cache, const MineralParams& par
     out.stepSeconds.push_back({"Sharpen", sharpenSecs});
     out.stepSeconds.push_back({"Mineral colour", colourSecs});
     out.notice = cache.notice;
+    out.clipped = cache.masks.diskCount == 0;
     return out;
 }
 

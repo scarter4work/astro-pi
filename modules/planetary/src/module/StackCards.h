@@ -387,14 +387,51 @@ inline std::vector<std::string> PostHistory( PostKind k, const stack::MineralOut
    return h;
 }
 
-// Why the product's image is only the stack clipped (MineralOutcome::notice),
-// for the console, the result line and the window; empty without a notice.
+// Why the product's image is only the stack clipped (a no-disc notice,
+// MineralOutcome::notice with clipped), for the console, the result line and
+// the window; empty without a notice.
 inline std::string PostNoticeText( PostKind k, const std::string& notice )
 {
    if ( notice.empty() )
       return std::string();
    return PostTitle( k ) + ": " + notice + ", so the " + PostNoun( k ) +
           " image is the stack clipped to [0, 1], with no colour or sharpening.";
+}
+
+// The outcome's notice as the console's warning and the window's: the no-disc
+// text above when the image is the stack clipped, else the caution on the
+// processed image as the engine gives it (ruling Q13: a planet disc filling
+// the frame); empty without a notice.
+inline std::string PostNoticeText( PostKind k, const stack::MineralOutcome& post )
+{
+   if ( post.notice.empty() )
+      return std::string();
+   if ( post.clipped )
+      return PostNoticeText( k, post.notice );
+   return PostTitle( k ) + ": " + post.notice + ".";
+}
+
+// The status line's text once the product is shown: shown, shown with a
+// caution, or no disc (each warning is on the console below it).
+inline std::string PostStatusText( PostKind k, const stack::MineralOutcome& post )
+{
+   if ( post.notice.empty() )
+      return PostTitle( k ) + " shown.";
+   if ( post.clipped )
+      return PostTitle( k ) + (k == PostKind::Mineral ? ": no lunar disk; see below." : ": no planet disc; see below.");
+   return PostTitle( k ) + " shown, with a warning; see below.";
+}
+
+// What the console's result line says of the product's image, inside its
+// parentheses after the format: display-ready, display-ready with a caution,
+// or the stack clipped (no disc); each warning was written above it.
+inline std::string PostImageText( PostKind k, const stack::MineralOutcome& post )
+{
+   if ( post.notice.empty() )
+      return PostName( k ) + ", display-ready";
+   if ( post.clipped )
+      return "the stack clipped to [0, 1]: no " + PostName( k ) + ", see the warning above";
+   return PostName( k ) + ", display-ready, see the warning above";
 }
 
 // The window's product lines, after ResultText: the colour step's line (the
@@ -411,7 +448,7 @@ inline std::string PostResultText( PostKind k, const stack::MineralOutcome& post
          break;
       }
    if ( !post.notice.empty() )
-      t += "\nWarning: " + PostNoticeText( k, post.notice );
+      t += "\nWarning: " + PostNoticeText( k, post );
    return t;
 }
 

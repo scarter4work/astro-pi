@@ -88,8 +88,9 @@ IsoString OpenStackWindow( const String& path, const planetary::stack::StackOutc
 // Throws pcl::Error for an image that is not RGB.
 // ShowPostWindow: shows it as "<file stem>_<noun>" (_mineral, _planet;
 // ShowNewImageWindow) and says so on the console; a notice (no disc: the image
-// is the stack clipped) is written as a warning first, so the result line is
-// never read alone. Returns the new view's id.
+// is the stack clipped; or a caution on the processed image, ruling Q13) is
+// written as a warning first, so the result line is never read alone. Returns
+// the new view's id.
 struct PostWindow
 {
    Image            image;

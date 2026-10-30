@@ -104,8 +104,9 @@ def shift_json(dx=0.0, applied=False):
 
 
 def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshift=0.0, applied=False, nan_cal=False,
-               bshift=0.0, nan_k0_b=False):
-    """rshift: R left that many px right of G in the display, the unaligned display and the output (a residual
+               bshift=0.0, nan_k0_b=False, caution=""):
+    """caution: the engine's notice on a processed image (ruling Q13: a disc filling the frame), the disc kept;
+    rshift: R left that many px right of G in the display, the unaligned display and the output (a residual
     dispersion); bshift: the same for B (declined too); applied: the engine says it resampled R (HISTORY gives no reason
     for the residual) instead of declining it; nan_cal: one disc sample of the calibrated RGB is NaN (a metric that must
     fail, not pass); nan_k0_b: one disc sample of the Saturation 0 output's B is NaN (the "7 grey" metric)."""
@@ -147,7 +148,7 @@ def write_part(d, rgb, disk, sky, out=None, notice="", stack_refused=False, rshi
     write_fits(os.path.join(st, "masks.fits"), np.stack([disk, sky]).astype(np.float32))
     ys, xs = np.nonzero(disk)
     planet = {
-        "refusal": None, "notice": notice, "saturation": 1.0, "chromaBlur": 1.0, "sharpen": 1.5, "sliderSeconds": 0.001,
+        "refusal": None, "notice": notice or caution, "saturation": 1.0, "chromaBlur": 1.0, "sharpen": 1.5, "sliderSeconds": 0.001,
         "curve": {"white": 1.0, "balance": 0.5},
         "disc": {"pixels": 0 if notice else int(disk.sum()), "sky": int(sky.sum()), "equivRadius": R,
                  "box": None if notice else [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())], "reason": ""},
@@ -239,6 +240,21 @@ class PlanetCheckFailsClosed(unittest.TestCase):
         self.assertEqual(code, 0, text)
         self.assertEqual(self.rows("nodisc").get("no disc"), "PASS", text)
         self.assertEqual(self.rows("refused").get("stack"), "PASS", text)
+
+    def test_frame_filling_caution_fails_and_is_not_no_disc(self):
+        # Ruling Q13: a real capture's planet is in a sky a plane models, so the caution (a disc filling the frame) is a
+        # FAIL of its own, and the capture is still judged as processed, not as the no-disc outcome.
+        self.make(caution="the planet disc is 75% or more of the frame: the disc fills the frame, or the sky is curved "
+                          "more than a plane models; colour calibration, the background and the sharpening then treat "
+                          "the whole frame as the planet")
+        write_gate(self.run_dir)
+        code, text = self.check()
+        self.assertEqual(code, 1, text)
+        rows = self.rows()
+        self.assertEqual(rows.get("Q13 frame disc"), "FAIL", text)
+        self.assertNotIn("no disc", rows, text)
+        self.assertIn("6 clip", rows, text)
+        self.assertIn("2 sky", rows, text)
 
     def test_unexpected_refusal_fails(self):
         # A capture the table expects an image of (a Saturn, a Jupiter) refused by the stacker: a regression, not an

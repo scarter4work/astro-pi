@@ -363,6 +363,9 @@ struct DiscPipeline {
     bool highlightThreshold;  // measure cache.satThreshold (the mineral colour's highlight fade)
     // The first step's masks: SegmentLunar when empty (the Moon); the planet's SegmentPlanet.
     std::function<LunarMasks(const ser::FloatImage&, int)> segment = {};
+    // With a disc found: a caution about it (empty: none). Non-empty, it ends the first step's line and is the notice;
+    // every step runs (the planet's: a disc filling the frame, ruling Q13). None for the Moon.
+    std::function<std::string(const LunarMasks&)> caution = {};
 };
 // PrepareMineral's body (Mineral.h gives the contract), for either kind.
 MineralCache PrepareDisc(const ser::FloatImage& stack, int threads, const Progress& progress, const StackNoise* stackNoise,
