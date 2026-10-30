@@ -1056,10 +1056,12 @@ constexpr double kFrameFillingShare = 0.75;
 std::string FrameFillingCaution(const LunarMasks& m) {
     const size_t n = m.disk.size();
     if (n == 0 || static_cast<double>(m.diskCount) < kFrameFillingShare * static_cast<double>(n)) return std::string();
-    return Fmt("the planet disc is %.0f%% or more of the frame: the disc fills the frame, or the sky is curved more than "
-               "a quadratic models; colour calibration, the background and the sharpening then treat the whole frame as the "
-               "planet",
-               100 * kFrameFillingShare);
+    // Floored, so the share named is never more than the disc covers (75% at the threshold, 100% only for a whole frame).
+    const double share = std::floor(100.0 * static_cast<double>(m.diskCount) / static_cast<double>(n));
+    return Fmt("the planet disc covers %.0f%% of the frame (%.0f%% or more): the disc fills the frame, or the sky is curved "
+               "more than a quadratic models; colour calibration, the background and the sharpening use that disc and what "
+               "little sky is left",
+               share, 100 * kFrameFillingShare);
 }
 // Spec call 6: the mineral moon's +-6% deviation clamp and highlight fade, off. MineralColour has no switch for them;
 // these values are beyond any reach: PreparePlanet clamps its display to [0, 1] after the alignment (AlignAndClamp), so

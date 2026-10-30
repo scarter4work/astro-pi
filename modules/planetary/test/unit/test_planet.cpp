@@ -1294,7 +1294,10 @@ void CheckFrameFillingNotice(const stack::MineralOutcome& out) {
     CHECK_FALSE(out.clipped);  // processed: not the no-disc outcome
     for (const std::string& text : {out.notice, out.history.at(0)}) {
         CHECK(Contains(text, "the disc fills the frame, or the sky is curved more than a quadratic models"));
-        CHECK(Contains(text, "treat the whole frame as the planet"));
+        CHECK(Contains(text, "the planet disc covers "));
+        CHECK(Contains(text, "% of the frame (75% or more)"));
+        CHECK(Contains(text, "use that disc and what little sky is left"));
+        CHECK_FALSE(Contains(text, "treat the whole frame"));  // true only at 100%: the notice names what the steps use
         CHECK(Ascii(text));
     }
     CHECK_FALSE(Contains(out.history.at(1), "skipped: no planet disc"));

@@ -204,6 +204,15 @@ holds.</li>
 <p>A step that cannot run says why in its line and leaves the image as it was. If no planet disc can be told from the
 sky (a very faint planet, a frame of sky), the later steps are skipped, the result is the stack clipped to [0, 1], and
 the result line and the Process Console say so.</p>
+<p>The opposite case is a warning, not a skip. If the planet disc covers 75% of the frame or more, every step still
+runs, but the <b>Planet disc</b> line, the result line and the Process Console end with &ldquo;the planet disc covers
+N% of the frame (75% or more): the disc fills the frame, or the sky is curved more than a quadratic models; colour
+calibration, the background and the sharpening use that disc and what little sky is left&rdquo;. A whole planet disc
+inside a 4:3 frame covers at most 59% of it, so the warning usually means the sky was not told from the planet. What
+to do: check the <b>Target</b> (a capture of the Moon or of a surface region belongs to Moon or Other, not to a
+planet); if the planet is small on the frame, the sky is uneven, most often from vignetting (corners darker than the
+centre) or a gradient from moonlight or twilight, so crop the capture to the planet and the even sky near it, or
+capture with a smaller region of interest (ROI), or calibrate with flats. Check the result by eye before using it.</p>
 <p>The processed planet opens as a second window, <code>&lt;name&gt;_planet</code>, beside the linear
 <code>&lt;name&gt;_stack</code>. It is display-ready (scaled linearly, not stretched), 32-bit floating point, and
 carries the stack's keywords plus the seven planet lines.</p>
