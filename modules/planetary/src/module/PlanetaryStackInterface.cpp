@@ -41,9 +41,9 @@ const char* const kNoImageNote = "No image -- the diagnosis is below.";
 const RGBA kProgressFill = RGBAColor( 58, 110, 165 );
 
 // Run::progress: the phase (1-3, the engine's in Engine.h's order; 4 the
-// mineral moon's; 0 before the first report) and its done / total counts, in
-// one atomic so they always agree: phase << 60 | total << 30 | done (each count
-// at most 2^30 - 1).
+// mineral moon's, 5 planet processing's; 0 before the first report) and its
+// done / total counts, in one atomic so they always agree: phase << 60 | total
+// << 30 | done (each count at most 2^30 - 1).
 struct ProgressSnapshot
 {
    int phase = 0;
@@ -51,13 +51,14 @@ struct ProgressSnapshot
 };
 
 const char* const kPhases[] = { "Starting", stack::kPhaseMeasuring, stack::kPhaseAligning, stack::kPhaseStacking,
-                                stack::kPhaseMineral };
-const int kMineralPhase = 4;
+                                stack::kPhaseMineral, stack::kPhasePlanet };
+const int kPostStep = 4;      // the product's phase is the run's fourth step, whichever it is
+const int kLastPhase = 5;
 
 uint64_t PackProgress( const std::string& phase, int64_t done, int64_t total )
 {
    uint64_t index = 0;
-   for ( int i = 1; i <= kMineralPhase; ++i )
+   for ( int i = 1; i <= kLastPhase; ++i )
       if ( phase == kPhases[i] )
          index = uint64_t( i );
    const int64_t limit = (int64_t( 1 ) << 30) - 1;
@@ -74,18 +75,18 @@ ProgressSnapshot UnpackProgress( uint64_t packed )
 
 // The bar's fill: the whole run, each of its `steps` an equal share, so it only
 // grows (a bar that restarts at every phase reads as a run that ended; the text
-// names the step and how far into it). A Mineral run (1 step) is its one phase.
+// names the step and how far into it). A Post run (1 step) is its one phase.
 double OverallFraction( const ProgressSnapshot& p, int steps )
 {
    if ( p.phase < 1 )
       return 0.0;
-   const int before = steps <= 1 ? 0 : p.phase - 1;
+   const int before = steps <= 1 ? 0 : Min( p.phase, kPostStep ) - 1;
    return (before + stackcards::ProgressFraction( p.done, p.total )) / Max( 1, steps );
 }
 
 const char* PhaseName( int index )
 {
-   return kPhases[index >= 0 && index <= kMineralPhase ? index : 0];
+   return kPhases[index >= 0 && index <= kLastPhase ? index : 0];
 }
 
 // The Target combo's items (index == PSTarget value); Auto's text names what
@@ -100,10 +101,26 @@ const char* const kMineralTip =
    "Checking or unchecking it never stacks again. Needs the Moon and a colour capture, not through a narrowband or "
    "IR-pass filter (as the file name names it).</p>";
 
-bool SameParams( const stack::MineralParams& a, const stack::MineralParams& b )
+const char* const kPlanetTip =
+   "<p>Also process the planet: the stack colour-calibrated to the planet's own colour (its catalogue reflectance, "
+   "not grey), its red and blue aligned to green (atmospheric dispersion), shown linear and sharpened, with its "
+   "natural colour scaled by Saturation. The preview shows it; Execute opens it as a second window "
+   "(&lt;name&gt;_planet) beside the linear stack. Checking or unchecking it never stacks again. Needs a planet "
+   "(Mercury to Neptune, from the file name or chosen under Target) and a colour capture, not through a narrowband "
+   "or IR-pass filter (as the file name names it).</p>";
+
+// A slider value in a tooltip: "1", "1.5" (the planet's ranges and defaults come from Planet.h).
+String TipNum( double v )
 {
-   return a.strength == b.strength && a.chromaBlurSigma == b.chromaBlurSigma && a.sharpen == b.sharpen;
+   return String().Format( "%g", v );
 }
+
+// The kind's check box and its three sliders.
+struct PostRow
+{
+   CheckBox* box;
+   NumericControl* sliders[3];
+};
 
 } // namespace
 
@@ -279,7 +296,7 @@ bool PlanetaryStackInterface::ImportProcess( const ProcessImplementation& p )
          GUI->Bayer_ComboBox.SetCurrentItem( instance.p_bayerPattern );
       // The target, the check box and the sliders follow the instance (UpdateControls);
       // an out-of-range target is reported by ReadInfo (TargetFor).
-      m_mineralOff.clear();
+      m_postOff.clear();
       // A hidden interface holds nothing: e_Show reads the file when it appears.
       if ( IsVisible() )
          LoadFromInstance();
@@ -404,7 +421,7 @@ bool PlanetaryStackInterface::ReadInfo( bool interactive )
    m_warnings.clear();
    for ( const std::string& w : info.warnings )
       m_warnings += "\nWarning: " + planetary::preview::StackWindowWarning( w );
-   ApplyMineralRefusal();
+   ApplyPostRefusals();
    ShowText();
    UpdateControls();
    return true;
@@ -415,81 +432,131 @@ TargetChoice PlanetaryStackInterface::Target() const
    return stackcards::ResolveTarget( TargetFor( instance.p_target, "PlanetaryStack" ), ToUtf8( instance.p_filePath.Trimmed() ) );
 }
 
-std::optional<std::string> PlanetaryStackInterface::MineralRefusal() const
+PostKind PlanetaryStackInterface::ActiveKind() const
+{
+   return stackcards::PostKindFor( Target().target );
+}
+
+pcl_bool& PlanetaryStackInterface::PostFlag( PostKind kind )
+{
+   return kind == PostKind::Mineral ? instance.p_mineralMoon : instance.p_planetProcess;
+}
+
+bool PlanetaryStackInterface::PostChecked() const
+{
+   return ActiveKind() == PostKind::Mineral ? bool( instance.p_mineralMoon ) : bool( instance.p_planetProcess );
+}
+
+std::optional<std::string> PlanetaryStackInterface::PostRefusal( PostKind kind ) const
 {
    if ( !m_info )
-      return std::string( "Mineral moon: open a Moon capture first." );
-   return stackcards::MineralRefusalFor( ToUtf8( instance.p_filePath.Trimmed() ), *m_info, Target() );
+      return kind == PostKind::Mineral ? std::string( "Mineral moon: open a Moon capture first." )
+                                       : std::string( "Planet processing: open a planet capture first." );
+   return stackcards::PostRefusalFor( kind, ToUtf8( instance.p_filePath.Trimmed() ), *m_info, Target() );
 }
 
-void PlanetaryStackInterface::ApplyMineralRefusal()
+void PlanetaryStackInterface::ApplyPostRefusals()
 {
-   if ( !instance.p_mineralMoon || !m_info )
+   if ( !m_info )
       return;
-   if ( const std::optional<std::string> why = MineralRefusal() )
-   {
-      instance.p_mineralMoon = false;
-      m_mineralOff = *why;
+   bool off = false;
+   for ( PostKind kind : { PostKind::Mineral, PostKind::Planet } )
+      if ( PostFlag( kind ) )
+         if ( const std::optional<std::string> why = PostRefusal( kind ) )
+         {
+            PostFlag( kind ) = false;
+            m_postOff += (m_postOff.empty() ? "" : "\n") + stackcards::PostTitle( kind ) + " turned off: " + *why;
+            off = true;
+         }
+   if ( off )
       ShowPreview();
-   }
 }
 
-stack::MineralParams PlanetaryStackInterface::CurrentParams() const
+void PlanetaryStackInterface::DropStalePost()
 {
-   return MineralParamsFor( instance.p_mineralStrength, instance.p_chromaBlur, instance.p_mineralSharpen, "PlanetaryStack" );
+   if ( !m_post && !m_postShown && m_postError.empty() )
+      return;
+   if ( stackcards::SamePostData( m_postFor, CurrentPost() ) )
+      return;
+   // A colour run still in flight holds the old cache: PollColour sees it is no longer m_post and drops its result.
+   m_post.reset();
+   m_postShown.reset();
+   m_postError.clear();
+   // The bar's line named that product ("Planet processing shown."): it is gone, and the line says so.
+   m_status = String( stackcards::PostTitle( m_postFor.kind ).c_str() ) + " dropped: the Target changed.";
+   if ( GUI != nullptr )
+      GUI->Progress_Bar.SetIdle( m_status );
+}
+
+PostParams PlanetaryStackInterface::CurrentPost() const
+{
+   PostParams p;
+   p.target = Target().target;
+   p.kind = stackcards::PostKindFor( p.target );
+   if ( p.kind == PostKind::Mineral )
+      p.mineral = MineralParamsFor( instance.p_mineralStrength, instance.p_chromaBlur, instance.p_mineralSharpen, "PlanetaryStack" );
+   else
+      p.planet = PlanetParamsFor( instance.p_planetSaturation, instance.p_planetChromaBlur, instance.p_planetSharpen,
+                                  "PlanetaryStack" );
+   return p;
 }
 
 void PlanetaryStackInterface::ShowPreview()
 {
    if ( GUI == nullptr || !m_outcome || !m_outcome->image )
       return;
-   if ( instance.p_mineralMoon && m_mineralShown )
-      GUI->Preview_Control.ReplaceBitmap( MakeDisplayPreviewBitmap( m_mineralShown->image ) );
+   if ( PostChecked() && m_postShown )
+      GUI->Preview_Control.ReplaceBitmap( MakeDisplayPreviewBitmap( m_postShown->image ) );
    else
       GUI->Preview_Control.ReplaceBitmap( MakeStackPreviewBitmap( *m_outcome->image ) );
 }
 
-stack::MineralOutcome PlanetaryStackInterface::CurrentMineral() const
+stack::MineralOutcome PlanetaryStackInterface::CurrentPostOutcome() const
 {
-   const stack::MineralParams params = CurrentParams();
-   if ( m_mineralShown && SameParams( params, m_shownParams ) )
-      return *m_mineralShown;
-   if ( !m_mineral )
-      throw Error( "PlanetaryStack: internal error - no mineral moon data to colour" );
-   return stack::FinishMineral( *m_mineral, params, StackThreads() );
+   const PostParams params = CurrentPost();
+   if ( m_postShown && stackcards::SamePostParams( params, m_shownParams ) )
+      return *m_postShown;
+   if ( !m_post || !stackcards::SamePostData( m_postFor, params ) )
+      throw Error( "PlanetaryStack: internal error - no " + String( stackcards::PostName( params.kind ).c_str() ) +
+                   " data to finish" );
+   return stackcards::FinishPost( params, *m_post, StackThreads() );
 }
 
 void PlanetaryStackInterface::OpenWindows()
 {
-   // Both or none (B8 review M2): the mineral moon at the current parameters (possibly coloured now) and its
-   // window's contents are made before the stack window is shown.
+   // Both or none (B8 review M2): the product at the current parameters (possibly finished now) and its window's
+   // contents are made before the stack window is shown.
    const TargetChoice target = Target();
-   std::optional<stack::MineralOutcome> mineral;
-   std::optional<MineralWindow> mineralWindow;
-   if ( instance.p_mineralMoon && m_mineral )
+   std::optional<stack::MineralOutcome> post;
+   std::optional<PostWindow> postWindow;
+   if ( PostChecked() && m_post )
    {
-      mineral = CurrentMineral();
-      mineralWindow = MakeMineralWindow( m_outcomePath, *m_outcome, m_times, target, *mineral );
+      post = CurrentPostOutcome();
+      postWindow = MakePostWindow( m_outcomePath, *m_outcome, m_times, target, m_postFor.kind, *post );
    }
    OpenStackWindow( m_outcomePath, *m_outcome, m_times, target );
-   if ( mineralWindow )
-      ShowMineralWindow( m_outcomePath, *mineralWindow, *mineral );
+   if ( postWindow )
+      ShowPostWindow( m_outcomePath, *postWindow, m_postFor.kind, *post );
 }
 
 void PlanetaryStackInterface::RequestColour()
 {
-   if ( !m_mineral || GUI == nullptr )
+   if ( !m_post || GUI == nullptr )
       return;
    if ( m_colour )
    {
       m_colourPending = true;
       return;
    }
+   const PostParams params = CurrentPost();
+   // The cache serves only the kind and planet it was made for (DropStalePost drops it on a Target change).
+   if ( !stackcards::SamePostData( m_postFor, params ) )
+      return;
    std::unique_ptr<ColourRun> run = std::make_unique<ColourRun>();
-   run->cache = m_mineral;
-   run->params = CurrentParams();
+   run->cache = m_post;
+   run->params = params;
    run->threads = StackThreads();
-   // PCL-free: FinishMineral on the cache the run holds; then `finished`.
+   // PCL-free: FinishPost on the cache the run holds; then `finished`.
    ColourRun* r = run.get();
    m_colour = std::move( run );
    m_colourPending = false;
@@ -499,7 +566,7 @@ void PlanetaryStackInterface::RequestColour()
       {
          try
          {
-            r->mineral = stack::FinishMineral( *r->cache, r->params, r->threads );
+            r->post = stackcards::FinishPost( r->params, *r->cache, r->threads );
          }
          catch ( ... )
          {
@@ -522,21 +589,22 @@ void PlanetaryStackInterface::PollColour()
       return;
    m_colourWorker.join();
    std::unique_ptr<ColourRun> run = std::move( m_colour );
-   // A result for a stack since dropped or replaced is nobody's, and so is a request queued behind it: the
-   // new stack's mineral moon is coloured at the parameters current then (B8 review M4).
-   if ( run->cache != m_mineral )
+   // A result for a stack since dropped or replaced -- or for a product the Target no longer asks for (another
+   // kind or planet: DropStalePost) -- is nobody's, and so is a request queued behind it: the new product is
+   // finished at the parameters current then (B8 review M4).
+   if ( run->cache != m_post )
    {
       m_colourPending = false;
       return;
    }
    if ( !run->error.empty() )
    {
-      m_error = "PlanetaryStack: mineral moon: " + run->error;
+      m_error = "PlanetaryStack: " + stackcards::PostName( run->params.kind ) + ": " + run->error;
       Console().CriticalLn( "<end><cbr>*** " + FromUtf8( m_error ).EncodedHTMLSpecialChars() );
    }
    else
    {
-      m_mineralShown = std::move( run->mineral );
+      m_postShown = std::move( run->post );
       m_shownParams = run->params;
       ShowPreview();
    }
@@ -546,7 +614,7 @@ void PlanetaryStackInterface::PollColour()
    if ( m_colourPending )
    {
       m_colourPending = false;
-      if ( !m_mineralShown || !SameParams( CurrentParams(), m_shownParams ) )
+      if ( !m_postShown || !stackcards::SamePostParams( CurrentPost(), m_shownParams ) )
          RequestColour();
    }
 }
@@ -566,9 +634,9 @@ void PlanetaryStackInterface::DropResult()
    m_outcomePattern = 0;
    m_times = StackTimes();
    m_status.Clear();
-   m_mineral.reset();
-   m_mineralShown.reset();
-   m_mineralError.clear();
+   m_post.reset();
+   m_postShown.reset();
+   m_postError.clear();
    if ( GUI != nullptr )
    {
       GUI->Preview_Control.Clear();
@@ -583,7 +651,7 @@ void PlanetaryStackInterface::ClearAll()
    m_infoLine.clear();
    m_warnings.clear();
    m_error.clear();
-   m_mineralOff.clear();
+   m_postOff.clear();
    if ( GUI != nullptr )
    {
       ShowText();
@@ -600,12 +668,20 @@ void PlanetaryStackInterface::ShowText()
       t += "\n\n" + stackcards::ResultText( *m_outcome );
    else
       t += m_warnings;
-   if ( m_outcome && instance.p_mineralMoon && m_mineralShown )
-      t += "\n" + stackcards::MineralResultText( *m_mineralShown );
-   if ( !m_mineralError.empty() )
-      t += "\nMineral moon failed: " + m_mineralError;
-   if ( !m_mineralOff.empty() )
-      t += "\nMineral moon turned off: " + m_mineralOff;
+   bool checked = false;
+   try
+   {
+      checked = PostChecked();
+   }
+   catch ( const Error& )   // an out-of-range target: the error itself is shown (ReadInfo reports it)
+   {
+   }
+   if ( m_outcome && checked && m_postShown )
+      t += "\n" + stackcards::PostResultText( m_shownParams.kind, *m_postShown );
+   if ( !m_postError.empty() )
+      t += "\n" + stackcards::PostTitle( m_postFor.kind ) + " failed: " + m_postError;
+   if ( !m_postOff.empty() )
+      t += "\n" + m_postOff;
    if ( !m_error.empty() )
       t += "\n\nError: " + m_error;
    GUI->Info_TextBox.SetPlainText( FromUtf8( planetary::preview::RawSafe( t ) ) );
@@ -654,27 +730,49 @@ void PlanetaryStackInterface::UpdateControls()
       GUI->Target_ComboBox.SetCurrentItem( instance.p_target );
    GUI->Target_Label.Enable( !running );
    GUI->Target_ComboBox.Enable( !running );
-   // Mineral moon: only for a colour Moon, not through a narrowband or IR-pass
-   // filter; the tooltip says why not.
+   // The post-processing row follows the target: Mineral moon and its sliders
+   // for the Moon, Planet processing and its sliders otherwise; only that set
+   // is shown. Its box is enabled only where it can run (a colour Moon or
+   // planet, not through a narrowband or IR-pass filter); the tooltip says why not.
+   PostKind kind = PostKind::Planet;
    std::optional<std::string> refusal;
    try
    {
-      refusal = MineralRefusal();
+      kind = ActiveKind();
+      refusal = PostRefusal( kind );
    }
    catch ( const Error& e )   // an out-of-range target (ReadInfo reports it)
    {
       refusal = ToUtf8( e.Message() );
    }
-   GUI->Mineral_CheckBox.SetChecked( instance.p_mineralMoon );
-   GUI->Mineral_CheckBox.Enable( !running && !refusal );
-   GUI->Mineral_CheckBox.SetToolTip( refusal ? "<p>" + FromUtf8( *refusal ).EncodedHTMLSpecialChars() + "</p>"
-                                             : String( kMineralTip ) );
-   GUI->Strength_NumericControl.SetValue( instance.p_mineralStrength );
-   GUI->ChromaBlur_NumericControl.SetValue( instance.p_chromaBlur );
-   GUI->Sharpen_NumericControl.SetValue( instance.p_mineralSharpen );
-   GUI->Strength_NumericControl.Enable( !running && instance.p_mineralMoon );
-   GUI->ChromaBlur_NumericControl.Enable( !running && instance.p_mineralMoon );
-   GUI->Sharpen_NumericControl.Enable( !running && instance.p_mineralMoon );
+   const PostRow rows[] = {
+      { &GUI->Mineral_CheckBox, { &GUI->Strength_NumericControl, &GUI->ChromaBlur_NumericControl, &GUI->Sharpen_NumericControl } },
+      { &GUI->Planet_CheckBox, { &GUI->Saturation_NumericControl, &GUI->PlanetChromaBlur_NumericControl,
+                                 &GUI->PlanetSharpen_NumericControl } } };
+   const double values[2][3] = {
+      { instance.p_mineralStrength, instance.p_chromaBlur, instance.p_mineralSharpen },
+      { instance.p_planetSaturation, instance.p_planetChromaBlur, instance.p_planetSharpen } };
+   // The other set is hidden before the target's is shown: with both shown for a moment the window would grow by
+   // their three rows (measured, GUI smoke: the preview 77 px taller after the first switch) and never shrink back.
+   const PostKind other = kind == PostKind::Mineral ? PostKind::Planet : PostKind::Mineral;
+   for ( PostKind k : { other, kind } )
+   {
+      const PostRow& row = rows[k == PostKind::Mineral ? 0 : 1];
+      const bool active = k == kind;
+      const bool on = bool( PostFlag( k ) );
+      row.box->SetChecked( on );
+      row.box->Enable( active && !running && !refusal );
+      if ( active )
+         row.box->SetToolTip( refusal ? "<p>" + FromUtf8( *refusal ).EncodedHTMLSpecialChars() + "</p>"
+                                      : String( k == PostKind::Mineral ? kMineralTip : kPlanetTip ) );
+      row.box->SetVisible( active );
+      for ( int i = 0; i < 3; ++i )
+      {
+         row.sliders[i]->SetValue( values[k == PostKind::Mineral ? 0 : 1][i] );
+         row.sliders[i]->Enable( active && !running && on );
+         row.sliders[i]->SetVisible( active );
+      }
+   }
 
    const bool zoom = GUI->Preview_Control.HasBitmap();
    GUI->Fit_PushButton.Enable( zoom );
@@ -692,12 +790,12 @@ void PlanetaryStackInterface::StartStack( bool openWhenDone )
       return;
    const String path = instance.p_filePath.Trimmed();
    const TargetChoice target = Target();
-   std::optional<stack::MineralParams> params;
-   if ( instance.p_mineralMoon )
+   std::optional<PostParams> params;
+   if ( PostChecked() )
    {
-      if ( const std::optional<std::string> why = MineralRefusal() )
+      if ( const std::optional<std::string> why = PostRefusal( ActiveKind() ) )
          throw Error( "PlanetaryStack: " + File::ExtractNameAndExtension( path ) + ": " + FromUtf8( *why ) );
-      params = CurrentParams();
+      params = CurrentPost();
    }
    DropResult();
    m_error.clear();
@@ -709,7 +807,7 @@ void PlanetaryStackInterface::StartStack( bool openWhenDone )
    run->pattern = instance.p_bayerPattern;
    run->threads = StackThreads();
    run->frames = m_info->frameCount;
-   run->mineral = bool( params );
+   run->post = bool( params );
    run->steps = params ? 4 : 3;
    if ( params )
       run->params = *params;
@@ -718,26 +816,24 @@ void PlanetaryStackInterface::StartStack( bool openWhenDone )
    StartWorker( openWhenDone );
 }
 
-void PlanetaryStackInterface::StartMineral( bool openWhenDone )
+void PlanetaryStackInterface::StartPost( bool openWhenDone )
 {
    if ( Running() || !m_outcome || !m_outcome->image )
       return;
    std::unique_ptr<Run> run = std::make_unique<Run>();
-   run->job = Job::Mineral;
+   run->job = Job::Post;
    run->path = ToUtf8( m_outcomePath );
    run->pattern = m_outcomePattern;
    run->threads = StackThreads();
    run->steps = 1;
-   run->mineral = true;
-   run->params = CurrentParams();
+   run->post = true;
+   run->params = CurrentPost();
    run->input = *m_outcome->image;
    run->inputNoise = m_outcome->noise;
-   m_mineralError.clear();
-   Console().WriteLn( "<end><cbr>PlanetaryStack: the mineral moon of " +
-                      File::ExtractNameAndExtension( m_outcomePath ).EncodedHTMLSpecialChars() + ": strength " +
-                      String( stackcards::Fixed( run->params.strength, 2 ).c_str() ) + ", chroma blur " +
-                      String( stackcards::Fixed( run->params.chromaBlurSigma, 2 ).c_str() ) + " px, sharpen " +
-                      String( stackcards::Fixed( run->params.sharpen, 2 ).c_str() ) );
+   m_postError.clear();
+   Console().WriteLn( "<end><cbr>PlanetaryStack: the " + String( stackcards::PostName( run->params.kind ).c_str() ) + " of " +
+                      File::ExtractNameAndExtension( m_outcomePath ).EncodedHTMLSpecialChars() + ": " +
+                      String( stackcards::PostParamsText( run->params ).c_str() ) );
    m_run = std::move( run );
    StartWorker( openWhenDone );
 }
@@ -746,8 +842,8 @@ void PlanetaryStackInterface::StartWorker( bool openWhenDone )
 {
    // The worker: a Stack run's RunStack and, for a SER's DATE-OBS, the frame
    // times (CaptureTimes, PCL-free) through a reader of its own, then (with
-   // `mineral`) PrepareMineral and FinishMineral; a Mineral run's
-   // PrepareMineral and FinishMineral on its copy of the stack. It writes only the
+   // `post`) PreparePost and FinishPost; a Post run's PreparePost and
+   // FinishPost on its copy of the stack. It writes only the
    // run's atomics and, before `finished`, its results; it never touches a PCL
    // object. The engine's report() and cancelled() run on this thread.
    Run* r = m_run.get();
@@ -771,25 +867,25 @@ void PlanetaryStackInterface::StartWorker( bool openWhenDone )
                if ( outcome.image && !stackcards::IsAvi( outcome.info ) )
                   r->times = CaptureTimes( *ser::OpenVideo( r->path, r->bayer ), outcome );
                r->outcome = std::move( outcome );
-               if ( r->mineral && r->outcome->image )
+               if ( r->post && r->outcome->image )
                   stacked = &*r->outcome->image;
             }
             else
                stacked = &*r->input;
             if ( stacked != nullptr )
             {
-               // A stack the mineral moon refuses (NaN or infinite samples) stands: the reason is shown.
+               // A stack the product refuses (NaN or infinite samples) stands: the reason is shown.
                try
                {
                   // The stack's own noise drives the sharpening's noise limit (Ruling R35): a Stack run's from
-                  // RunStack, a Mineral run's kept with the stack shown.
+                  // RunStack, a Post run's kept with the stack shown.
                   const stack::StackNoise* noise = r->job == Job::Stack ? (r->outcome->noise ? &*r->outcome->noise : nullptr)
                                                                         : (r->inputNoise ? &*r->inputNoise : nullptr);
-                  std::shared_ptr<stack::MineralCache> cache =
-                     std::make_shared<stack::MineralCache>( stack::PrepareMineral( *stacked, r->threads, progress, noise ) );
-                  r->mineralMade = stack::FinishMineral( *cache, r->params, r->threads );
+                  std::shared_ptr<stack::MineralCache> cache = std::make_shared<stack::MineralCache>(
+                     stackcards::PreparePost( r->params, *stacked, r->threads, progress, noise ) );
+                  r->postMade = stackcards::FinishPost( r->params, *cache, r->threads );
                   r->cache = std::move( cache );
-                  progress.report( stack::kPhaseMineral, 1, 1 );
+                  progress.report( r->params.kind == PostKind::Mineral ? stack::kPhaseMineral : stack::kPhasePlanet, 1, 1 );
                }
                catch ( const stack::StackCancelled& )
                {
@@ -797,7 +893,7 @@ void PlanetaryStackInterface::StartWorker( bool openWhenDone )
                }
                catch ( ... )
                {
-                  r->mineralError = planetary::preview::DescribeException( std::current_exception() );
+                  r->postError = planetary::preview::DescribeException( std::current_exception() );
                }
             }
          }
@@ -855,33 +951,46 @@ void PlanetaryStackInterface::FinishStack()
    // still stands: nothing it made is kept (as ExecuteGlobal's Abort).
    const bool cancelled = run->cancelled || run->cancel.load();
 
-   if ( run->job == Job::Mineral )
+   // The product (the mineral moon or planet processing) the run made, kept with its notice (no disc, or a caution on
+   // the processed image: ruling Q13) said as a warning, or its failure said: each gives the status line's text.
+   const PostKind kind = run->params.kind;
+   const String title = stackcards::PostTitle( kind ).c_str();
+   const String name = stackcards::PostName( kind ).c_str();
+   const auto keepPost = [&]() -> String
    {
-      // The stack shown stays whatever happens to its mineral moon.
+      m_post = run->cache;
+      m_postShown = std::move( run->postMade );
+      m_shownParams = run->params;
+      m_postFor = run->params;
+      if ( !m_postShown->notice.empty() )
+         Console().WarningLn( "<end><cbr>PlanetaryStack warning: " +
+                              FromUtf8( stackcards::PostNoticeText( kind, *m_postShown ) ).EncodedHTMLSpecialChars() );
+      return FromUtf8( stackcards::PostStatusText( kind, *m_postShown ) );
+   };
+   const auto failPost = [&]( const std::string& why ) -> String
+   {
+      m_postError = why;
+      m_postFor = run->params;
+      Console().CriticalLn( "<end><cbr>*** PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + ": " + name + ": " +
+                            FromUtf8( m_postError ).EncodedHTMLSpecialChars() );
+      return title + " failed: see below.";
+   };
+
+   if ( run->job == Job::Post )
+   {
+      // The stack shown stays whatever happens to its product.
       if ( cancelled )
       {
-         Console().WriteLn( "<end><cbr>PlanetaryStack: mineral moon cancelled; the stack is kept" );
-         instance.p_mineralMoon = false;
-         m_status = "Mineral moon cancelled: the stack is shown.";
+         Console().WriteLn( "<end><cbr>PlanetaryStack: " + name + " cancelled; the stack is kept" );
+         PostFlag( kind ) = false;
+         m_status = title + " cancelled: the stack is shown.";
          ShowPreview();
       }
-      else if ( !run->error.empty() || !run->mineralError.empty() )
-      {
-         m_mineralError = run->error.empty() ? run->mineralError : run->error;
-         Console().CriticalLn( "<end><cbr>*** PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + ": mineral moon: " +
-                               FromUtf8( m_mineralError ).EncodedHTMLSpecialChars() );
-         m_status = "Mineral moon failed: see below.";
-      }
+      else if ( !run->error.empty() || !run->postError.empty() )
+         m_status = failPost( run->error.empty() ? run->postError : run->error );
       else
       {
-         m_mineral = run->cache;
-         m_mineralShown = std::move( run->mineralMade );
-         m_shownParams = run->params;
-         if ( !m_mineralShown->notice.empty() )
-            Console().WarningLn( "<end><cbr>PlanetaryStack warning: " +
-                                 FromUtf8( stackcards::MineralNoticeText( m_mineralShown->notice ) ).EncodedHTMLSpecialChars() );
-         m_status = m_mineralShown->notice.empty() ? String( "Mineral moon shown." )
-                                                   : String( "Mineral moon: no lunar disk; see below." );
+         m_status = keepPost();
          ShowPreview();
       }
    }
@@ -907,30 +1016,12 @@ void PlanetaryStackInterface::FinishStack()
       {
          m_status = String().Format( "Stacked in %.2f s.", m_outcome->summary.seconds );
          if ( run->cache )
-         {
-            m_mineral = run->cache;
-            m_mineralShown = std::move( run->mineralMade );
-            m_shownParams = run->params;
-            if ( !m_mineralShown->notice.empty() )
-            {
-               Console().WarningLn( "<end><cbr>PlanetaryStack warning: " +
-                                    FromUtf8( stackcards::MineralNoticeText( m_mineralShown->notice ) ).EncodedHTMLSpecialChars() );
-               m_status += " Mineral moon: no lunar disk; see below.";
-            }
-            else
-               m_status += " Mineral moon shown.";
-         }
-         else if ( !run->mineralError.empty() )
-         {
-            m_mineralError = run->mineralError;
-            Console().CriticalLn( "<end><cbr>*** PlanetaryStack: " + fileName.EncodedHTMLSpecialChars() + ": mineral moon: " +
-                                  FromUtf8( m_mineralError ).EncodedHTMLSpecialChars() );
-            m_status += " Mineral moon failed: see below.";
-         }
+            m_status += " " + keepPost();
+         else if ( !run->postError.empty() )
+            m_status += " " + failPost( run->postError );
          // A new stack is shown at Fit.
-         GUI->Preview_Control.SetBitmap( instance.p_mineralMoon && m_mineralShown
-                                            ? MakeDisplayPreviewBitmap( m_mineralShown->image )
-                                            : MakeStackPreviewBitmap( *m_outcome->image ) );
+         GUI->Preview_Control.SetBitmap( PostChecked() && m_postShown ? MakeDisplayPreviewBitmap( m_postShown->image )
+                                                                      : MakeStackPreviewBitmap( *m_outcome->image ) );
       }
       else
       {
@@ -946,15 +1037,15 @@ void PlanetaryStackInterface::FinishStack()
       GUI->Execute_PushButton.Focus();
    else
       GUI->Stack_PushButton.Focus();
-   // The slider moved while the mineral moon was being made: the sharpening and
+   // The slider moved while the product was being made: the sharpening and
    // colour steps for the newest values.
-   if ( m_mineralShown && !SameParams( CurrentParams(), m_shownParams ) )
+   if ( m_postShown && !stackcards::SamePostParams( CurrentPost(), m_shownParams ) )
       RequestColour();
    if ( open && !cancelled && m_outcome && m_outcome->image )
    {
-      if ( instance.p_mineralMoon && !m_mineralError.empty() )
-         throw Error( "PlanetaryStack: " + File::ExtractNameAndExtension( m_outcomePath ) + ": mineral moon: " +
-                      FromUtf8( m_mineralError ) );
+      if ( PostChecked() && !m_postError.empty() )
+         throw Error( "PlanetaryStack: " + File::ExtractNameAndExtension( m_outcomePath ) + ": " + name + ": " +
+                      FromUtf8( m_postError ) );
       OpenWindows();
    }
 }
@@ -1017,19 +1108,20 @@ void PlanetaryStackInterface::ExecuteStack()
          MessageBox( message, "PlanetaryStack", StdIcon::Error, StdButton::Ok ).Execute();
          return;
       }
-      // The stack shown (and, Mineral moon checked, its mineral moon): opened as
-      // ExecuteGlobal would, without stacking again.
-      if ( instance.p_mineralMoon )
+      // The stack shown (and, the target's option checked, its product): opened
+      // as ExecuteGlobal would, without stacking again.
+      if ( PostChecked() )
       {
-         if ( const std::optional<std::string> why = MineralRefusal() )
+         const PostKind kind = ActiveKind();
+         if ( const std::optional<std::string> why = PostRefusal( kind ) )
             throw Error( "PlanetaryStack: " + File::ExtractNameAndExtension( m_outcomePath ) + ": " + FromUtf8( *why ) );
-         if ( !m_mineralError.empty() )
-            throw Error( "PlanetaryStack: " + File::ExtractNameAndExtension( m_outcomePath ) + ": mineral moon: " +
-                         FromUtf8( m_mineralError ) );
+         if ( !m_postError.empty() )
+            throw Error( "PlanetaryStack: " + File::ExtractNameAndExtension( m_outcomePath ) + ": " +
+                         String( stackcards::PostName( kind ).c_str() ) + ": " + FromUtf8( m_postError ) );
          // Checked after the stack and not made yet: made first (never a restack).
-         if ( !m_mineral )
+         if ( !m_post )
          {
-            StartMineral( true/*openWhenDone*/ );
+            StartPost( true/*openWhenDone*/ );
             return;
          }
       }
@@ -1079,7 +1171,7 @@ void PlanetaryStackInterface::e_Click( Button& sender, bool /*checked*/ )
             instance.p_filePath = path;
             instance.p_bayerPattern = PSBayerPattern::Auto;
             instance.p_target = PSTarget::Auto;
-            m_mineralOff.clear();
+            m_postOff.clear();
             // The last run's line (a cancel, a failure) was about the old file.
             m_status.Clear();
             GUI->Progress_Bar.SetIdle( m_status );
@@ -1105,29 +1197,37 @@ void PlanetaryStackInterface::e_Click( Button& sender, bool /*checked*/ )
          ExecuteStack();
       else if ( sender == GUI->SavePattern_PushButton )
          SavePattern();
-      else if ( sender == GUI->Mineral_CheckBox )
+      else if ( sender == GUI->Mineral_CheckBox || sender == GUI->Planet_CheckBox )
       {
-         const bool checked = GUI->Mineral_CheckBox.IsChecked();
-         if ( checked == bool( instance.p_mineralMoon ) )
+         const PostKind kind = sender == GUI->Mineral_CheckBox ? PostKind::Mineral : PostKind::Planet;
+         const bool checked = static_cast<CheckBox&>( sender ).IsChecked();
+         if ( checked == bool( PostFlag( kind ) ) )
             return;
          if ( checked )
-            if ( const std::optional<std::string> why = MineralRefusal() )
+         {
+            std::optional<std::string> why;
+            if ( kind != ActiveKind() )   // the other set's box (hidden): a click racing a Target change
+               why = "the Target shown asks for " + stackcards::PostTitle( ActiveKind() );
+            else
+               why = PostRefusal( kind );
+            if ( why )
             {
                // It cannot run here (the box is disabled for this; a click racing a change).
-               m_mineralOff = *why;
+               m_postOff = stackcards::PostTitle( kind ) + " turned off: " + *why;
                ShowText();
                UpdateControls();
                return;
             }
-         instance.p_mineralMoon = checked;
-         m_mineralOff.clear();
-         // Neither way restacks: a stack shown gets its mineral moon made once
-         // (a Mineral run), then shown or hidden; the colour follows the sliders.
-         if ( checked && m_outcome && m_outcome->image && !m_mineral && m_mineralError.empty() )
-            StartMineral( false/*openWhenDone*/ );
+         }
+         PostFlag( kind ) = checked;
+         m_postOff.clear();
+         // Neither way restacks: a stack shown gets its product made once
+         // (a Post run), then shown or hidden; the colour follows the sliders.
+         if ( checked && m_outcome && m_outcome->image && !m_post && m_postError.empty() )
+            StartPost( false/*openWhenDone*/ );
          else
          {
-            if ( checked && m_mineralShown && !SameParams( CurrentParams(), m_shownParams ) )
+            if ( checked && m_postShown && !stackcards::SamePostParams( CurrentPost(), m_shownParams ) )
                RequestColour();
             ShowPreview();
             ShowText();
@@ -1166,13 +1266,23 @@ void PlanetaryStackInterface::e_ItemSelected( ComboBox& sender, int itemIndex )
    else if ( sender == GUI->Target_ComboBox && itemIndex != instance.p_target )
       Guarded( [this, itemIndex]()
       {
-         // The target names the stack (OBJECT) and gates Mineral moon; the stack
-         // itself does not depend on it, so it stays.
+         // The target names the stack (OBJECT) and chooses and gates its product
+         // (Mineral moon for the Moon, Planet processing for a planet); the stack
+         // itself does not depend on it, so it stays. A product made for another
+         // kind or planet goes -- with any colour result still in flight for it
+         // (PollColour) -- and, its option checked, the target's own is made.
          instance.p_target = pcl_enum( itemIndex );
-         m_mineralOff.clear();
-         ApplyMineralRefusal();
-         ShowText();
-         UpdateControls();
+         m_postOff.clear();
+         ApplyPostRefusals();
+         DropStalePost();
+         if ( PostChecked() && m_outcome && m_outcome->image && !m_post && m_postError.empty() )
+            StartPost( false/*openWhenDone*/ );
+         else
+         {
+            ShowPreview();
+            ShowText();
+            UpdateControls();
+         }
       }, true/*interactive*/ );
 }
 
@@ -1186,11 +1296,17 @@ void PlanetaryStackInterface::e_ValueUpdated( NumericEdit& sender, double value 
          instance.p_chromaBlur = value;
       else if ( sender == GUI->Sharpen_NumericControl )
          instance.p_mineralSharpen = value;
+      else if ( sender == GUI->Saturation_NumericControl )
+         instance.p_planetSaturation = value;
+      else if ( sender == GUI->PlanetChromaBlur_NumericControl )
+         instance.p_planetChromaBlur = value;
+      else if ( sender == GUI->PlanetSharpen_NumericControl )
+         instance.p_planetSharpen = value;
       else
          return;
-      // Only the sharpening and the colour run again, on the mineral data already made; a run
+      // Only the sharpening and the colour run again, on the product's data already made; a run
       // in progress picks the newest values up when it ends (FinishStack).
-      if ( instance.p_mineralMoon && m_mineral && !Running() )
+      if ( PostChecked() && m_post && !Running() )
          RequestColour();
    }, false/*interactive*/ );
 }
@@ -1263,17 +1379,18 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Stack_PushButton.SetText( "Stack!" );
    Stack_PushButton.SetToolTip( "<p>Stack the video: every frame is measured, the sharpest are chosen from the "
                                 "capture's own statistics, aligned to the target and region by region, and stacked. "
-                                "With Mineral moon checked, the mineral moon is made from the stack too. Nothing "
+                                "With Mineral moon or Planet processing checked, that is made from the stack too. Nothing "
                                 "to set. The bar shows how far it is; the window stays usable.</p>" );
    Stack_PushButton.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
    Progress_Bar.SetToolTip( "<p>The run's progress: measuring every frame, aligning, stacking, then the mineral moon "
-                            "when Mineral moon is checked. Checking it on a stack already made runs that last step "
-                            "alone.</p>" );
+                            "or the planet processing when its option is checked. Checking it on a stack already made "
+                            "runs that last step alone.</p>" );
 
    Cancel_PushButton.SetText( "Cancel" );
    Cancel_PushButton.SetToolTip( "<p>Stop the run. A stack stopped leaves nothing behind: no image, no file. A "
-                                 "mineral moon stopped on a stack already made leaves that stack shown.</p>" );
+                                 "mineral moon or planet processing stopped on a stack already made leaves that stack "
+                                 "shown.</p>" );
    Cancel_PushButton.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
    Run_Sizer.SetSpacing( 6 );
@@ -1283,7 +1400,7 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
 
    Preview_Control.SetScaledMinSize( 400, 300 );
    Preview_Control.SetToolTip( "<p>The stack, stretched for display only (the stack Execute opens is linear); "
-                               "with Mineral moon checked, the mineral moon as Execute opens it. "
+                               "with Mineral moon or Planet processing checked, that image as Execute opens it. "
                                "Drag to move around it when zoomed in.</p>" );
 
    Fit_PushButton.SetText( "Fit" );
@@ -1313,7 +1430,8 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Zoom_Sizer.AddStretch();
    Zoom_Sizer.Add( Zoom_Label );
 
-   const int labelWidth = w.Font().Width( String( "Chroma blur:" ) ) + w.LogicalPixelsToPhysical( 6 );
+   const int labelWidth = Max( w.Font().Width( String( "Chroma blur:" ) ), w.Font().Width( String( "Saturation:" ) ) ) +
+                          w.LogicalPixelsToPhysical( 6 );
    const int editWidth = w.Font().Width( String( "00.00" ) ) + w.LogicalPixelsToPhysical( 16 );
 
    Target_Label.SetText( "Target:" );
@@ -1327,65 +1445,78 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Target_ComboBox.SetToolTip( "<p>What the video is of. The first item reads it from an ASIAIR capture name "
                                "(&lt;date&gt;-&lt;time&gt;-&lt;Target&gt;-Bin1 &lt;Filter&gt; &lt;temp&gt;F); choose another "
                                "when the name is wrong or not one. It names the stack (its OBJECT keyword) and decides "
-                               "whether Mineral moon can run. Changing it never stacks again.</p>" );
+                               "what it can be processed into: Mineral moon for the Moon, Planet processing for a "
+                               "planet. Changing it never stacks again.</p>" );
    Target_ComboBox.OnItemSelected( (ComboBox::item_event_handler)&PlanetaryStackInterface::e_ItemSelected, w );
 
+   // The two options share the row's place: only the target's is shown (UpdateControls).
    Mineral_CheckBox.SetText( "Mineral moon" );
    Mineral_CheckBox.SetToolTip( kMineralTip );
    Mineral_CheckBox.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
+   Planet_CheckBox.SetText( "Planet processing" );
+   Planet_CheckBox.SetToolTip( kPlanetTip );
+   Planet_CheckBox.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
    Target_Sizer.SetSpacing( 6 );
    Target_Sizer.Add( Target_Label );
    Target_Sizer.Add( Target_ComboBox );
    Target_Sizer.AddSpacing( 12 );
    Target_Sizer.Add( Mineral_CheckBox );
+   Target_Sizer.Add( Planet_CheckBox );
    Target_Sizer.AddStretch();
 
-   // The mineral moon's sliders: each re-runs only the sharpening and colour steps
-   // (FinishMineral on the cache), never the stack.
-   Strength_NumericControl.label.SetText( "Strength:" );
-   Strength_NumericControl.label.SetMinWidth( labelWidth );
-   Strength_NumericControl.slider.SetRange( 0, 150 );
-   Strength_NumericControl.slider.SetScaledMinWidth( 250 );
-   Strength_NumericControl.SetReal();
-   Strength_NumericControl.SetRange( ThePSMineralStrengthParameter->MinimumValue(), ThePSMineralStrengthParameter->MaximumValue() );
-   Strength_NumericControl.SetPrecision( 2 );
-   Strength_NumericControl.EnableFixedPrecision();   // "14.00", as "8.00": never "14.0"
-   Strength_NumericControl.edit.SetFixedWidth( editWidth );
-   Strength_NumericControl.SetToolTip( "<p>How strongly the Moon's colour differences are amplified (the colour "
-                                       "gain k): 0 is grey, 8 the default, 15 the most. Only the colour is computed "
-                                       "again; the stack stays.</p>" );
-   Strength_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
+   // The sliders: each re-runs only the sharpening and colour steps (FinishPost on the cache), never the stack.
+   // `steps`: the slider's positions over the parameter's range.
+   const auto slider = [&]( NumericControl& c, const char* label, const MetaDouble* p, int steps, const String& tip )
+   {
+      c.label.SetText( label );
+      c.label.SetMinWidth( labelWidth );
+      c.slider.SetRange( 0, steps );
+      c.slider.SetScaledMinWidth( 250 );
+      c.SetReal();
+      c.SetRange( p->MinimumValue(), p->MaximumValue() );
+      c.SetPrecision( 2 );
+      c.EnableFixedPrecision();   // "14.00", as "8.00": never "14.0"
+      c.edit.SetFixedWidth( editWidth );
+      c.SetToolTip( tip );
+      c.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
+   };
+   // A planet slider moves in steps of 0.05 over whatever range Planet.h gives it.
+   const auto planetSteps = []( const MetaDouble* p ) { return RoundInt( (p->MaximumValue() - p->MinimumValue()) / 0.05 ); };
 
-   ChromaBlur_NumericControl.label.SetText( "Chroma blur:" );
-   ChromaBlur_NumericControl.label.SetMinWidth( labelWidth );
-   ChromaBlur_NumericControl.slider.SetRange( 0, 110 );
-   ChromaBlur_NumericControl.slider.SetScaledMinWidth( 250 );
-   ChromaBlur_NumericControl.SetReal();
-   ChromaBlur_NumericControl.SetRange( ThePSChromaBlurParameter->MinimumValue(), ThePSChromaBlurParameter->MaximumValue() );
-   ChromaBlur_NumericControl.SetPrecision( 2 );
-   ChromaBlur_NumericControl.EnableFixedPrecision();
-   ChromaBlur_NumericControl.edit.SetFixedWidth( editWidth );
-   ChromaBlur_NumericControl.SetToolTip( "<p>How far the colour is smoothed, in pixels (frames up to 2000 px wide; "
-                                         "scaled for wider ones): more hides the colour's noise, less keeps small "
-                                         "colour features. The detail always comes from the sharp luminance. Only the "
-                                         "colour is computed again.</p>" );
-   ChromaBlur_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
+   // The mineral moon's.
+   slider( Strength_NumericControl, "Strength:", ThePSMineralStrengthParameter, 150,
+           "<p>How strongly the Moon's colour differences are amplified (the colour gain k): 0 is grey, 8 the "
+           "default, 15 the most. Only the colour is computed again; the stack stays.</p>" );
+   slider( ChromaBlur_NumericControl, "Chroma blur:", ThePSChromaBlurParameter, 110,
+           "<p>How far the colour is smoothed, in pixels (frames up to 2000 px wide; scaled for wider ones): more "
+           "hides the colour's noise, less keeps small colour features. The detail always comes from the sharp "
+           "luminance. Only the colour is computed again.</p>" );
+   slider( Sharpen_NumericControl, "Sharpen:", ThePSMineralSharpenParameter, 80,
+           "<p>How much the luminance is sharpened: 0 is none, 1.5 the default, 4 the most. Above 1 the finest detail "
+           "(crater rims) gains most. Noise is held back at every amount, but noise riding on texture grows with it. "
+           "Only the sharpening and the colour are computed again.</p>" );
 
-   Sharpen_NumericControl.label.SetText( "Sharpen:" );
-   Sharpen_NumericControl.label.SetMinWidth( labelWidth );
-   Sharpen_NumericControl.slider.SetRange( 0, 80 );
-   Sharpen_NumericControl.slider.SetScaledMinWidth( 250 );
-   Sharpen_NumericControl.SetReal();
-   Sharpen_NumericControl.SetRange( ThePSMineralSharpenParameter->MinimumValue(), ThePSMineralSharpenParameter->MaximumValue() );
-   Sharpen_NumericControl.SetPrecision( 2 );
-   Sharpen_NumericControl.EnableFixedPrecision();
-   Sharpen_NumericControl.edit.SetFixedWidth( editWidth );
-   Sharpen_NumericControl.SetToolTip( "<p>How much the luminance is sharpened: 0 is none, 1.5 the default, 4 the most. "
-                                      "Above 1 the finest detail (crater rims) gains most. Noise is held back at every "
-                                      "amount, but noise riding on texture grows with it. Only the sharpening and the "
-                                      "colour are computed again.</p>" );
-   Sharpen_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&PlanetaryStackInterface::e_ValueUpdated, w );
+   // The planet's: ranges and defaults from Planet.h (through the parameters), so the tooltips name them.
+   const MetaDouble* sat = ThePSPlanetSaturationParameter;
+   const MetaDouble* blur = ThePSPlanetChromaBlurParameter;
+   const MetaDouble* sharp = ThePSPlanetSharpenParameter;
+   slider( Saturation_NumericControl, "Saturation:", sat, planetSteps( sat ),
+           "<p>How strong the planet's colour is, as a multiple of its natural colour (the catalogue colour the "
+           "stack was calibrated to): 0 is grey, " + TipNum( sat->DefaultValue() ) + " the default (natural), " +
+           TipNum( sat->MaximumValue() ) + " the most. Highlights never clip: where a channel would, the colour "
+           "gives way and the hue holds. Only the colour is computed again; the stack stays.</p>" );
+   slider( PlanetChromaBlur_NumericControl, "Chroma blur:", blur, planetSteps( blur ),
+           "<p>How far the colour is smoothed, in pixels at any frame size (a planet's disc does not grow with the "
+           "frame): " + TipNum( blur->MinimumValue() ) + " is none, " + TipNum( blur->DefaultValue() ) + " the default, " +
+           TipNum( blur->MaximumValue() ) + " the most. More hides the colour's noise; less keeps a planet's small "
+           "colour features (belts, spots), a few pixels across. The detail always comes from the sharp luminance. "
+           "Only the colour is computed again.</p>" );
+   slider( PlanetSharpen_NumericControl, "Sharpen:", sharp, planetSteps( sharp ),
+           "<p>How much the luminance is sharpened: " + TipNum( sharp->MinimumValue() ) + " is none, " +
+           TipNum( sharp->DefaultValue() ) + " the default, " + TipNum( sharp->MaximumValue() ) + " the most. On a "
+           "small disc the finest detail gains most; noise is held back at every amount, and the sky is left as it "
+           "is. Only the sharpening and the colour are computed again.</p>" );
 
    Info_TextBox.SetReadOnly();
    // Never focused (mouse selection and copy still work): a button that disables
@@ -1397,8 +1528,9 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Execute_PushButton.SetText( "Execute" );
    Execute_PushButton.SetToolTip( "<p>Open the stack as a new image window: 32-bit float, linear, with FITS keywords "
                                   "(source video, frames used, how they were chosen and aligned). With Mineral "
-                                  "moon checked, the mineral moon opens too, as a second window (&lt;name&gt;_mineral), "
-                                  "stretched for display. When nothing is stacked yet, it stacks first.</p>" );
+                                  "moon (Planet processing) checked, the mineral moon (the processed planet) opens "
+                                  "too, as a second window (&lt;name&gt;_mineral, &lt;name&gt;_planet), display-ready. "
+                                  "When nothing is stacked yet, it stacks first.</p>" );
    Execute_PushButton.OnClick( (Button::click_event_handler)&PlanetaryStackInterface::e_Click, w );
 
    Execute_Sizer.AddStretch();
@@ -1407,7 +1539,8 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    // The GUI smoke (test/gui_drive.py stack_controls()) clicks relative to the
    // preview: two rows above it (Open... / Bayer pattern / Save pattern..., then
    // Stack! / the progress bar / Cancel), the zoom row below it, then Target /
-   // Mineral moon, Strength, Chroma blur and Sharpen, the info
+   // Mineral moon, Strength, Chroma blur and Sharpen -- or, in the same places,
+   // Planet processing, Saturation, Chroma blur and Sharpen -- the info
    // block and Execute. A layout change here means re-measuring those offsets.
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 6 );
@@ -1419,8 +1552,17 @@ PlanetaryStackInterface::GUIData::GUIData( PlanetaryStackInterface& w )
    Global_Sizer.Add( Strength_NumericControl );
    Global_Sizer.Add( ChromaBlur_NumericControl );
    Global_Sizer.Add( Sharpen_NumericControl );
+   Global_Sizer.Add( Saturation_NumericControl );
+   Global_Sizer.Add( PlanetChromaBlur_NumericControl );
+   Global_Sizer.Add( PlanetSharpen_NumericControl );
    Global_Sizer.Add( Info_TextBox );
    Global_Sizer.Add( Execute_Sizer );
+
+   // Laid out with one option's set (a hidden control takes no room), so the
+   // window has the height of the row it shows; UpdateControls shows the target's.
+   for ( Control* c : std::initializer_list<Control*>{ &Planet_CheckBox, &Saturation_NumericControl,
+                                                       &PlanetChromaBlur_NumericControl, &PlanetSharpen_NumericControl } )
+      c->Hide();
 
    w.SetSizer( Global_Sizer );
    w.EnsureLayoutUpdated();

@@ -99,6 +99,54 @@ public:
    double MaximumValue() const override;
 };
 
+// Also make the planet processing (Planet.h) of a planet stack, as a second image.
+class PSPlanetProcess : public MetaBoolean
+{
+public:
+   PSPlanetProcess( MetaProcess* );
+   IsoString Id() const override;
+   bool DefaultValue() const override;
+};
+
+// Planet processing's Saturation (PlanetParams::saturation): a multiple of the
+// natural colour, 0 grey, 1 the default; range and default from Planet.h.
+class PSPlanetSaturation : public MetaDouble
+{
+public:
+   PSPlanetSaturation( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double DefaultValue() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+};
+
+// Planet processing's chroma blur, px (PlanetParams::chromaBlurSigma); range
+// and default from Planet.h.
+class PSPlanetChromaBlur : public MetaDouble
+{
+public:
+   PSPlanetChromaBlur( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double DefaultValue() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+};
+
+// Planet processing's Sharpen amount (PlanetParams::sharpen, with
+// kPlanetSharpen): 0 none; range and default from Planet.h.
+class PSPlanetSharpen : public MetaDouble
+{
+public:
+   PSPlanetSharpen( MetaProcess* );
+   IsoString Id() const override;
+   int Precision() const override;
+   double DefaultValue() const override;
+   double MinimumValue() const override;
+   double MaximumValue() const override;
+};
+
 extern PSFilePath*        ThePSFilePathParameter;
 extern PSBayerPattern*    ThePSBayerPatternParameter;
 extern PSTarget*          ThePSTargetParameter;
@@ -106,6 +154,10 @@ extern PSMineralMoon*     ThePSMineralMoonParameter;
 extern PSMineralStrength* ThePSMineralStrengthParameter;
 extern PSChromaBlur*      ThePSChromaBlurParameter;
 extern PSMineralSharpen*  ThePSMineralSharpenParameter;
+extern PSPlanetProcess*    ThePSPlanetProcessParameter;
+extern PSPlanetSaturation* ThePSPlanetSaturationParameter;
+extern PSPlanetChromaBlur* ThePSPlanetChromaBlurParameter;
+extern PSPlanetSharpen*    ThePSPlanetSharpenParameter;
 
 } // namespace pcl
 

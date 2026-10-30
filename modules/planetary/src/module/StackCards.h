@@ -22,6 +22,7 @@
 #include "Engine.h"
 #include "FitsText.h"
 #include "Mineral.h"
+#include "Planet.h"
 #include "PlanetaryVersion.h"
 #include "SerInfoText.h"
 
@@ -266,45 +267,227 @@ inline std::vector<std::string> StackHistory( const std::string& fileNameUtf8, c
    return h;
 }
 
-// ---- The mineral moon (Mineral.h) ------------------------------------------
+// ---- Post-processing: the mineral moon (Mineral.h) or planet processing (Planet.h) ---------
+// A stack can carry one display-ready product made from it: the mineral moon of
+// a Moon, or the planet processing of a planet. Both are the engine's prepare /
+// finish pair on one cache (stack::MineralCache), so the window's sliders, its
+// worker and its second window serve either through these.
 
-// The mineral image's own HISTORY texts, after the stack's: one per step of the
-// mineral moon, in the engine's order (seven: Lunar disk .. Mineral colour),
-// each "PlanetaryStack mineral: <the step's line>".
-inline std::vector<std::string> MineralHistory( const stack::MineralOutcome& mineral )
+enum class PostKind { Mineral, Planet };
+
+// The product a target's row offers: the mineral moon for the Moon, planet
+// processing for anything else (a planet; Other, which planet processing
+// refuses with "pick the planet in the Target list").
+inline PostKind PostKindFor( ser::Target t )
+{
+   return t == ser::Target::Moon ? PostKind::Mineral : PostKind::Planet;
+}
+
+// "Mineral moon" / "Planet processing": the option's name, as its check box reads.
+inline std::string PostTitle( PostKind k )
+{
+   return k == PostKind::Mineral ? "Mineral moon" : "Planet processing";
+}
+
+// "mineral" / "planet": its HISTORY prefix ("PlanetaryStack mineral: "), its
+// window's id suffix ("_mineral") and its image ("the mineral image").
+inline std::string PostNoun( PostKind k )
+{
+   return k == PostKind::Mineral ? "mineral" : "planet";
+}
+
+// "mineral moon" / "planet processing": the product in running text (the
+// console, errors).
+inline std::string PostName( PostKind k )
+{
+   return k == PostKind::Mineral ? "mineral moon" : "planet processing";
+}
+
+// One product's parameters: the kind's own and, for a planet, the body whose
+// catalogue colour calibrates it (Planet.h PreparePlanet).
+struct PostParams
+{
+   PostKind kind = PostKind::Mineral;
+   ser::Target target = ser::Target::Moon;
+   stack::MineralParams mineral;
+   stack::PlanetParams planet;
+};
+
+// The same product at the same slider values.
+inline bool SamePostParams( const PostParams& a, const PostParams& b )
+{
+   if ( a.kind != b.kind )
+      return false;
+   if ( a.kind == PostKind::Mineral )
+      return a.mineral.strength == b.mineral.strength && a.mineral.chromaBlurSigma == b.mineral.chromaBlurSigma &&
+             a.mineral.sharpen == b.mineral.sharpen;
+   return a.target == b.target && a.planet.saturation == b.planet.saturation &&
+          a.planet.chromaBlurSigma == b.planet.chromaBlurSigma && a.planet.sharpen == b.planet.sharpen;
+}
+
+// A cache prepared for `a` serves `b` (only the finish runs again): the same
+// kind and, for a planet, the same body.
+inline bool SamePostData( const PostParams& a, const PostParams& b )
+{
+   return a.kind == b.kind && (a.kind == PostKind::Mineral || a.target == b.target);
+}
+
+// Why planet processing cannot run for this capture (ser::PlanetRefusal, the
+// filter read from the capture name), or nullopt; `info` as for MineralRefusalFor.
+inline std::optional<std::string> PlanetRefusalFor( const std::string& pathUtf8, const ser::FileInfo& info,
+                                                    const TargetChoice& target )
+{
+   const ser::CaptureName c = ser::ParseCaptureName( pathUtf8 );
+   return ser::PlanetRefusal( target.target, c.filter, info, c.filterToken );
+}
+
+// Why the two products cannot both be asked for (the window offers one, by the
+// target; a script can set both parameters), or nullopt.
+inline std::optional<std::string> PostConflict( bool mineralMoon, bool planetProcess )
+{
+   if ( mineralMoon && planetProcess )
+      return std::string( "Mineral moon and Planet processing are both on; only one of the two can run (Mineral moon "
+                          "for the Moon, Planet processing for a planet)." );
+   return std::nullopt;
+}
+
+// The kind's gate: MineralRefusalFor or PlanetRefusalFor.
+inline std::optional<std::string> PostRefusalFor( PostKind k, const std::string& pathUtf8, const ser::FileInfo& info,
+                                                  const TargetChoice& target )
+{
+   return k == PostKind::Mineral ? MineralRefusalFor( pathUtf8, info, target ) : PlanetRefusalFor( pathUtf8, info, target );
+}
+
+// The expensive half, made once per stack (and per planet): PrepareMineral or
+// PreparePlanet. Exceptions as theirs.
+inline stack::MineralCache PreparePost( const PostParams& p, const ser::FloatImage& stacked, int threads,
+                                        const stack::Progress& progress, const stack::StackNoise* noise )
+{
+   return p.kind == PostKind::Mineral ? stack::PrepareMineral( stacked, threads, progress, noise )
+                                      : stack::PreparePlanet( stacked, p.target, threads, progress, noise );
+}
+
+// The cheap half on its cache at the sliders' values: FinishMineral or
+// FinishPlanet. Exceptions as theirs.
+inline stack::MineralOutcome FinishPost( const PostParams& p, const stack::MineralCache& cache, int threads,
+                                         const stack::Progress& progress = {} )
+{
+   return p.kind == PostKind::Mineral ? stack::FinishMineral( cache, p.mineral, threads, progress )
+                                      : stack::FinishPlanet( cache, p.planet, threads, progress );
+}
+
+// The product's own HISTORY texts, after the stack's: one per step, in the
+// engine's order (seven: the mineral moon's Lunar disk .. Mineral colour, the
+// planet's Planet disc .. Saturation), each "PlanetaryStack <noun>: <the step's line>".
+inline std::vector<std::string> PostHistory( PostKind k, const stack::MineralOutcome& post )
 {
    std::vector<std::string> h;
-   for ( const std::string& line : mineral.history )
-      h.push_back( "PlanetaryStack mineral: " + fits::FitsAscii( line ) );
+   for ( const std::string& line : post.history )
+      h.push_back( "PlanetaryStack " + PostNoun( k ) + ": " + fits::FitsAscii( line ) );
    return h;
 }
 
-// Why the mineral image is not a mineral moon (MineralOutcome::notice), for the
-// console, the result line and the window; empty without a notice.
-inline std::string MineralNoticeText( const std::string& notice )
+// Why the product's image is only the stack clipped (a no-disc notice,
+// MineralOutcome::notice with clipped), for the console, the result line and
+// the window; empty without a notice.
+inline std::string PostNoticeText( PostKind k, const std::string& notice )
 {
    if ( notice.empty() )
       return std::string();
-   return "Mineral moon: " + notice + ", so the mineral image is the stack clipped to [0, 1], with no colour or "
-          "sharpening.";
+   return PostTitle( k ) + ": " + notice + ", so the " + PostNoun( k ) +
+          " image is the stack clipped to [0, 1], with no colour or sharpening.";
 }
 
-// The window's mineral lines, after ResultText: the colour step's line (the
-// last of the mineral history: its strength and chroma blur), the Sharpen
-// line up to its noise note (the slider's amount and the gains it gave), then
-// the notice as a warning.
-inline std::string MineralResultText( const stack::MineralOutcome& mineral )
+// The outcome's notice as the console's warning and the window's: the no-disc
+// text above when the image is the stack clipped, else the caution on the
+// processed image as the engine gives it (ruling Q13: a planet disc filling
+// the frame); empty without a notice.
+inline std::string PostNoticeText( PostKind k, const stack::MineralOutcome& post )
 {
-   std::string t = "Mineral moon shown: " + (mineral.history.empty() ? std::string() : mineral.history.back());
-   for ( const std::string& h : mineral.history )
+   if ( post.notice.empty() )
+      return std::string();
+   if ( post.clipped )
+      return PostNoticeText( k, post.notice );
+   return PostTitle( k ) + ": " + post.notice + ".";
+}
+
+// The status line's text once the product is shown: shown, shown with a
+// caution, or no disc (each warning is on the console below it).
+inline std::string PostStatusText( PostKind k, const stack::MineralOutcome& post )
+{
+   if ( post.notice.empty() )
+      return PostTitle( k ) + " shown.";
+   if ( post.clipped )
+      return PostTitle( k ) + (k == PostKind::Mineral ? ": no lunar disk; see below." : ": no planet disc; see below.");
+   return PostTitle( k ) + " shown, with a warning; see below.";
+}
+
+// What the console's result line says of the product's image, inside its
+// parentheses after the format: display-ready, display-ready with a caution,
+// or the stack clipped (no disc); each warning was written above it.
+inline std::string PostImageText( PostKind k, const stack::MineralOutcome& post )
+{
+   if ( post.notice.empty() )
+      return PostName( k ) + ", display-ready";
+   if ( post.clipped )
+      return "the stack clipped to [0, 1]: no " + PostName( k ) + ", see the warning above";
+   return PostName( k ) + ", display-ready, see the warning above";
+}
+
+// The window's product lines, after ResultText: the colour step's line (the
+// last of its history: Mineral colour's strength and chroma blur, or
+// Saturation's), the Sharpen line up to its noise note (the slider's amount
+// and the gains it gave), then the notice as a warning.
+inline std::string PostResultText( PostKind k, const stack::MineralOutcome& post )
+{
+   std::string t = PostTitle( k ) + " shown: " + (post.history.empty() ? std::string() : post.history.back());
+   for ( const std::string& h : post.history )
       if ( h.rfind( "Sharpen", 0 ) == 0 )
       {
          t += "\n" + h.substr( 0, h.find( "; noise:" ) );
          break;
       }
-   if ( !mineral.notice.empty() )
-      t += "\nWarning: " + MineralNoticeText( mineral.notice );
+   if ( !post.notice.empty() )
+      t += "\nWarning: " + PostNoticeText( k, post );
    return t;
+}
+
+// The mineral moon's (PostKind::Mineral).
+inline std::vector<std::string> MineralHistory( const stack::MineralOutcome& mineral )
+{
+   return PostHistory( PostKind::Mineral, mineral );
+}
+inline std::string MineralNoticeText( const std::string& notice )
+{
+   return PostNoticeText( PostKind::Mineral, notice );
+}
+inline std::string MineralResultText( const stack::MineralOutcome& mineral )
+{
+   return PostResultText( PostKind::Mineral, mineral );
+}
+
+// The kind's slider values: "strength 8.00, chroma blur 2.50 px, sharpen 1.50"
+// or "saturation 1.00, chroma blur 1.00 px, sharpen 1.50".
+inline std::string PostParamsText( const PostParams& p )
+{
+   if ( p.kind == PostKind::Mineral )
+      return "strength " + Fixed( p.mineral.strength, 2 ) + ", chroma blur " + Fixed( p.mineral.chromaBlurSigma, 2 ) +
+             " px, sharpen " + Fixed( p.mineral.sharpen, 2 );
+   return "saturation " + Fixed( p.planet.saturation, 2 ) + ", chroma blur " + Fixed( p.planet.chromaBlurSigma, 2 ) +
+          " px, sharpen " + Fixed( p.planet.sharpen, 2 );
+}
+
+// The console's context after the target: the product that follows the stack
+// and its parameters ("; then the mineral moon: strength 8.00, chroma blur 2.50
+// px, sharpen 1.50", "; then planet processing: saturation 1.00, ..."), or,
+// with none (`post` null), "; no mineral moon" for the Moon and "; no planet
+// processing" for anything else.
+inline std::string PostContextText( ser::Target target, const PostParams* post )
+{
+   if ( post == nullptr )
+      return PostKindFor( target ) == PostKind::Mineral ? "; no mineral moon" : "; no planet processing";
+   return post->kind == PostKind::Mineral ? "; then the mineral moon: " + PostParamsText( *post )
+                                          : "; then planet processing: " + PostParamsText( *post );
 }
 
 // ---- The PlanetaryStack window's text (PlanetaryStackInterface) ------------
@@ -374,8 +557,9 @@ inline double ProgressFraction( int64_t done, int64_t total )
 }
 
 // The progress bar's text for the engine's three phases (Engine.h, in order)
-// and the mineral moon's, of `steps` in the run (3: a stack; 4: a stack and
-// its mineral moon; 1: the mineral moon of a stack already made, unnumbered):
+// and the mineral moon's or planet processing's (kPhasePlanet, shown as
+// "Planet processing"), of `steps` in the run (3: a stack; 4: a stack and its
+// product; 1: the product of a stack already made, unnumbered):
 // "Step 1 of 3: Measuring frames 1234/4088" -- the engine's total there is the
 // hot-pixel frames plus every frame, so the count is of the capture's
 // `frames`, after the hot-pixel frames; "Step 2 of 3: Aligning 50%" (its total
@@ -387,8 +571,8 @@ inline std::string ProgressText( const std::string& phase, int64_t done, int64_t
    {
       return steps <= 1 ? std::string() : "Step " + std::to_string( i ) + " of " + std::to_string( steps ) + ": ";
    };
-   if ( phase == stack::kPhaseMineral )
-      return step( steps ) + phase + " " + std::to_string( std::clamp<int64_t>( done, 0, total ) ) + "/" +
+   if ( phase == stack::kPhaseMineral || phase == stack::kPhasePlanet )
+      return step( steps ) + (phase == stack::kPhasePlanet ? PostTitle( PostKind::Planet ) : phase) + " " + std::to_string( std::clamp<int64_t>( done, 0, total ) ) + "/" +
              std::to_string( total );
    if ( phase == stack::kPhaseMeasuring )
    {

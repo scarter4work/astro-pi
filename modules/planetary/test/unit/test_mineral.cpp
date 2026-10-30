@@ -7,9 +7,12 @@
 #include <thread>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <vector>
 
+#include "Measure.h"
 #include "Mineral.h"
 #include "MoonSynth.h"
 
@@ -1051,6 +1054,60 @@ void CheckValidOutput(const stack::MineralOutcome& out, const ser::FloatImage& i
 
 }  // namespace
 
+TEST_CASE("display transfer: a median target <= 0 is linear, with the same white point rule") {
+    // Planet Task 4 (spec call 4): balance 0.5, y = v / W, and W puts the brightest sample the stack did not clip at
+    // 0.95 -- also when calibration pushed it above 1.0 (CalibratePlanetColour scales R and B like CalibrateColour).
+    MoonSceneSpec s = StackScene();
+    s.level = 0.6;
+    s.clipFraction = 0.01;
+    const MoonScene sc = MakeMoonScene(s);
+    std::vector<uint8_t> flags(sc.observed.data.size());
+    for (size_t k = 0; k < flags.size(); ++k) flags[k] = sc.observed.data[k] >= stack::kClippedLuma;
+    ser::FloatImage in = sc.observed;
+    size_t lifted = 0;
+    for (size_t k = 0; k < in.data.size(); k += 3)
+        if (!flags[k]) {
+            in.data[k] *= 1.3f;  // R as a calibration gain of 1.3 leaves it: some unclipped samples above 1.0
+            lifted += in.data[k] > 1.0f;
+        }
+    REQUIRE(lifted > 0);
+    const stack::LunarMasks m = stack::SegmentLunar(in, 4);
+    for (double target : {0.0, -1.0}) {
+        ser::FloatImage out = in;
+        stack::DisplayCurve curve;
+        const stack::StepRecord rec = stack::DisplayTransfer(out, m, flags, &curve, target);
+        INFO(rec.history);
+        REQUIRE_FALSE(rec.skipped);
+        CHECK(curve.balance == 0.5);
+        CHECK(rec.history.find("linear") != std::string::npos);
+        double lo = 1e9, hi = 0, top = 0;
+        size_t flaggedOver = 0;
+        for (size_t k = 0; k < out.data.size(); ++k) {
+            if (flags[k]) {
+                flaggedOver += out.data[k] > 1.0f;
+                continue;
+            }
+            top = std::max(top, static_cast<double>(out.data[k]));
+            if (in.data[k] > 0.02f) {
+                const double q = out.data[k] / static_cast<double>(in.data[k]);
+                lo = std::min(lo, q);
+                hi = std::max(hi, q);
+            }
+        }
+        INFO("out / in " << lo << " - " << hi << ", brightest unclipped " << top << ", white " << curve.white);
+        CHECK(hi / lo - 1 <= 1e-5);
+        CHECK(top <= 0.95 + 1e-6);
+        CHECK(top >= 0.95 - 1e-4);
+        CHECK(flaggedOver == 0);
+        CHECK(std::fabs(1 / curve.white - lo) <= 1e-5 * lo);
+    }
+    // The default is the Moon's 0.35-median stretch.
+    ser::FloatImage moon = in;
+    stack::DisplayCurve curve;
+    stack::DisplayTransfer(moon, m, flags, &curve);
+    CHECK(curve.balance != 0.5);
+}
+
 TEST_CASE("pipeline: display ready") {
     const MoonScene sc = MakeMoonScene(StackScene());
     const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, 4, {});
@@ -1780,4 +1837,51 @@ TEST_CASE("pipeline: 1080p within the time budget") {
     }
     WARN(threads << " threads: a slider move (FinishMineral) " << slider << " s at 1920 x 1080");
     if (threads >= 32) CHECK(slider <= 0.25);
+}
+
+namespace {
+
+// FNV-1a 64 over the samples' bit patterns: any change to any sample changes it.
+uint64_t ImageHash(const ser::FloatImage& im) {
+    uint64_t h = 1469598103934665603ull;
+    for (float v : im.data) {
+        uint32_t u;
+        std::memcpy(&u, &v, sizeof u);
+        for (int b = 0; b < 4; ++b) {
+            h ^= (u >> (8 * b)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    }
+    return h;
+}
+
+}  // namespace
+
+TEST_CASE("mineral output bit-identical") {
+    // Planet Task 3 (controller ruling Q0a): the planet path's sharpen profile reworked SharpenLuminanceImage's fade;
+    // the Moon's output must stay what it was, bit for bit. These are MakeMineralMoon's outputs before that change
+    // (2026-10-29, commit 83364194), at 1 and 7 threads: StackScene at the default Sharpen, at 0 and at the slider's
+    // top, and a 60 px disc.
+    struct Case { const char* name; double radius, amount; uint64_t hash; };
+    const Case cases[] = {
+        {"default", 0, stack::kSharpenDefault, 0x661a860bd2bb6244ull},
+        {"amount 0", 0, 0.0, 0xe89b0d750d05cdf1ull},
+        {"amount 4", 0, stack::kSharpenMax, 0x0033157e44c11f63ull},
+        {"60 px disc", 60, stack::kSharpenDefault, 0x861e38359081b18eull},
+    };
+    for (const Case& c : cases) {
+        MoonSceneSpec s = StackScene();
+        if (c.radius > 0) s.radius = c.radius;
+        const MoonScene sc = MakeMoonScene(s);
+        stack::MineralParams p;
+        p.sharpen = c.amount;
+        for (int threads : {1, 7}) {
+            const stack::MineralOutcome out = stack::MakeMineralMoon(sc.observed, threads, {}, p);
+            const uint64_t h = ImageHash(out.image);
+            char hex[32];
+            std::snprintf(hex, sizeof hex, "0x%016llx", static_cast<unsigned long long>(h));
+            INFO(c.name << ", " << threads << " threads: " << hex);
+            CHECK(h == c.hash);
+        }
+    }
 }

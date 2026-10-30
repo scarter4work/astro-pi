@@ -13,10 +13,12 @@
 //     { kind: "diagnosis", name, path, bayerPattern?, expectError,      (the engine's message)
 //       numbers: [ {name, value} ] },                                   (its numbers, on the console too)
 //     { kind: "error", name, path, expectError, consoleAbsent? },
-//   Any case may set target (an enum element id, e.g. "TargetJupiter") and mineral
-//   ({ strength?, chromaBlur?, sharpen? }: mineralMoon on). An image case with mineral also
+//   Any case may set target (an enum element id, e.g. "TargetJupiter"), mineral
+//   ({ strength?, chromaBlur?, sharpen? }: mineralMoon on) and planet ({ saturation?,
+//   chromaBlur?, sharpen? }: planetProcess on). An image case with mineral also
 //   has expectMineralId, mineralKeywords, mineralSamples and mineralHistory (the
-//   engine's, stack-probe --mineral): its second window, checkMineralWindow.
+//   engine's, stack-probe --mineral), one with planet expectPlanetId, planetKeywords,
+//   planetSamples and planetHistory (stack-probe --planet): its second window, checkPostWindow.
 //     { kind: "cancel", name, path, abortAfter, after: <an image case> } ] }
 // Output: $PLANETARY_PROBE_OUT -- { "ok": bool, "cases": [ {name, ok, errors[], note?} ] }
 //
@@ -65,6 +67,16 @@ function newProcess( c )
          throw new Error( "PlanetaryStack has no enum element " + c.target );
       P.target = target;
    }
+   if ( c.planet !== undefined )
+   {
+      P.planetProcess = true;
+      if ( c.planet.saturation !== undefined )
+         P.planetSaturation = c.planet.saturation;
+      if ( c.planet.chromaBlur !== undefined )
+         P.planetChromaBlur = c.planet.chromaBlur;
+      if ( c.planet.sharpen !== undefined )
+         P.planetSharpen = c.planet.sharpen;
+   }
    if ( c.mineral !== undefined )
    {
       P.mineralMoon = true;
@@ -112,71 +124,91 @@ function historyText( kws )
    return parts.join( " " );
 }
 
-// The mineral moon's window (Task B8): the stack's size, RGB 32-bit float, every
-// sample within [0, 1], the engine's mineral samples, its keywords, and the
-// engine's seven step lines in HISTORY, in order, each once, after every line of the stack's.
-function checkMineralWindow( c, stackImage, r )
+// The products a case expects beside its stack (Task B8's mineral moon, planet
+// Task 6's planet processing), each as { noun, id, keywords, samples, history }
+// from the case's expect<Noun>Id, <noun>Keywords, <noun>Samples, <noun>History.
+function postsOf( c )
 {
-   var mw = ImageWindow.windowById( c.expectMineralId );
+   var posts = [];
+   var nouns = [ [ "mineral", "Mineral" ], [ "planet", "Planet" ] ];
+   for ( var i = 0; i < nouns.length; ++i )
+   {
+      var id = c["expect" + nouns[i][1] + "Id"];
+      if ( id !== undefined )
+         posts.push( { noun: nouns[i][0], id: id, keywords: c[nouns[i][0] + "Keywords"],
+                       samples: c[nouns[i][0] + "Samples"], history: c[nouns[i][0] + "History"] } );
+   }
+   return posts;
+}
+
+// A product's window (the mineral moon's, Task B8; the planet's, planet Task 6):
+// the stack's size, RGB 32-bit float, every sample within [0, 1], the engine's
+// samples, its keywords, and the engine's seven step lines in HISTORY
+// ("PlanetaryStack <noun>: "), in order, each once, after every line of the stack's.
+function checkPostWindow( post, stackImage, r )
+{
+   var what = post.noun + " window";
+   var prefix = "PlanetaryStack " + post.noun + ": ";
+   var mw = ImageWindow.windowById( post.id );
    if ( mw.isNull )
    {
-      r.errors.push( "no mineral moon window " + c.expectMineralId + "; have: " + windowIds().join( "," ) );
+      r.errors.push( "no " + what + " " + post.id + "; have: " + windowIds().join( "," ) );
       return;
    }
    var img = mw.mainView.image;
    if ( img.width != stackImage.width || img.height != stackImage.height || img.numberOfChannels != 3 || !img.isColor )
-      r.errors.push( "mineral moon geometry " + img.width + "x" + img.height + "x" + img.numberOfChannels +
+      r.errors.push( what + " geometry " + img.width + "x" + img.height + "x" + img.numberOfChannels +
                      ", expected the stack's " + stackImage.width + "x" + stackImage.height + "x3" );
    else
    {
       if ( img.bitsPerSample != 32 || !img.isReal )
-         r.errors.push( "mineral moon sample format " + img.bitsPerSample + "-bit real=" + img.isReal );
+         r.errors.push( what + " sample format " + img.bitsPerSample + "-bit real=" + img.isReal );
       for ( var ch = 0; ch < 3; ++ch )
       {
          img.selectedChannel = ch;
          if ( img.minimum() < 0 || img.maximum() > 1 )
-            r.errors.push( "mineral moon channel " + ch + " has samples outside [0, 1]: " + img.minimum() + " .. " +
+            r.errors.push( what + " channel " + ch + " has samples outside [0, 1]: " + img.minimum() + " .. " +
                            img.maximum() );
       }
       img.resetSelections();
-      if ( c.mineralSamples.length == 0 )
-         r.errors.push( "no engine mineral samples to compare" );
-      for ( var i = 0; i < c.mineralSamples.length; ++i )
+      if ( post.samples.length == 0 )
+         r.errors.push( "no engine " + post.noun + " samples to compare" );
+      for ( var i = 0; i < post.samples.length; ++i )
       {
-         var s = c.mineralSamples[i];
+         var s = post.samples[i];
          var got = img.sample( s.x, s.y, s.c );
          if ( Math.abs( got - s.v ) > MINERAL_TOLERANCE )
-            r.errors.push( "mineral sample(" + s.x + "," + s.y + "," + s.c + ") = " + got + ", engine " + s.v );
+            r.errors.push( post.noun + " sample(" + s.x + "," + s.y + "," + s.c + ") = " + got + ", engine " + s.v );
       }
    }
    var kws = mw.keywords;
-   checkKeywords( kws, c.mineralKeywords, [], r.errors );
+   checkKeywords( kws, post.keywords, [], r.errors );
    var text = historyText( kws );
-   if ( c.mineralHistory.length != 7 )
-      r.errors.push( "the engine gave " + c.mineralHistory.length + " mineral HISTORY lines, expected 7" );
+   if ( post.history.length != 7 )
+      r.errors.push( "the engine gave " + post.history.length + " " + post.noun + " HISTORY lines, expected 7" );
    // The stack's own lines end with its counts line ("... frames measured, ...") and any warnings: its last
-   // "PlanetaryStack: " or "PlanetaryStack warning: " line. Every mineral line comes after that one (B8 review M3).
+   // "PlanetaryStack: " or "PlanetaryStack warning: " line. Every product line comes after that one (B8 review M3).
    var lastStack = Math.max( text.lastIndexOf( "PlanetaryStack: " ), text.lastIndexOf( "PlanetaryStack warning: " ) );
    if ( lastStack < 0 || text.indexOf( " frames measured, " ) < 0 )
-      r.errors.push( "the mineral moon window lacks the stack's HISTORY lines: " + text );
-   var firstMineral = text.indexOf( "PlanetaryStack mineral: " );
-   if ( firstMineral >= 0 && firstMineral < lastStack )
-      r.errors.push( "a mineral HISTORY line comes before the stack's last line: " + text );
+      r.errors.push( "the " + what + " lacks the stack's HISTORY lines: " + text );
+   var firstPost = text.indexOf( prefix );
+   if ( firstPost >= 0 && firstPost < lastStack )
+      r.errors.push( "a " + post.noun + " HISTORY line comes before the stack's last line: " + text );
    var pos = 0;
-   for ( var k = 0; k < c.mineralHistory.length; ++k )
+   for ( var k = 0; k < post.history.length; ++k )
    {
-      var line = "PlanetaryStack mineral: " + c.mineralHistory[k];
+      var line = prefix + post.history[k];
       var at = text.indexOf( line, pos );
       if ( at < 0 )
       {
-         r.errors.push( "mineral HISTORY lacks, in order, '" + line + "': " + text );
+         r.errors.push( post.noun + " HISTORY lacks, in order, '" + line + "': " + text );
          break;
       }
       pos = at + line.length;
    }
-   var count = text.split( "PlanetaryStack mineral: " ).length - 1;
+   var count = text.split( prefix ).length - 1;
    if ( count != 7 )
-      r.errors.push( count + " 'PlanetaryStack mineral: ' lines in HISTORY, expected 7" );
+      r.errors.push( count + " '" + prefix + "' lines in HISTORY, expected 7" );
    mw.forceClose();
 }
 
@@ -190,7 +222,8 @@ function runImageCase( c, r )
                      x.log.substring( Math.max( 0, x.log.length - 1500 ) ) );
       return;
    }
-   var wanted = c.expectMineralId !== undefined ? 2 : 1;
+   var posts = postsOf( c );
+   var wanted = 1 + posts.length;
    if ( windowIds().length != before + wanted )
       r.errors.push( "expected " + wanted + " new window(s), have: " + windowIds().join( "," ) );
    var w = ImageWindow.windowById( c.expectId );
@@ -232,8 +265,8 @@ function runImageCase( c, r )
    for ( var u = 0; u < absent.length; ++u )
       if ( x.log.indexOf( absent[u] ) >= 0 )
          r.errors.push( "console carries '" + absent[u] + "': " + x.log.substring( 0, 1500 ) );
-   if ( c.expectMineralId !== undefined )
-      checkMineralWindow( c, img, r );
+   for ( var p = 0; p < posts.length; ++p )
+      checkPostWindow( posts[p], img, r );
    w.forceClose();
 }
 

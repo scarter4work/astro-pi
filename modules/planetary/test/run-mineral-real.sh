@@ -26,13 +26,16 @@ ROOT="$(cd "$HERE/.." && pwd)"
 PROBE="${PLANETARY_STACK_PROBE:-$ROOT/build/test/stack-probe}"
 THREADS="${PLANETARY_MINERAL_THREADS:-32}"
 PY="${PLANETARY_MINERAL_PYTHON:-python3}"
+# -E -P, not -I: no PYTHON* variables and nothing imported from the script's directory or the current one (what -I
+# guards), but the user site-packages stay on the path -- -I also drops them (-s), and scipy is installed there.
+PYFLAGS=(-E -P)
 NAS=/mnt/qnap/astro_data
 
 [ $# -ge 1 ] || { echo "usage: run-mineral-real.sh <out-dir> [capture-id ...]"; exit 1; }
 OUT="$1"; shift
 [ -x "$PROBE" ] || { echo "FAIL: stack-probe not built at $PROBE"; exit 1; }
 [ -d "$NAS" ] || { echo "FAIL: $NAS not mounted"; exit 1; }
-"$PY" -I -c 'import numpy, scipy, PIL' 2>/dev/null || { echo "FAIL: $PY lacks numpy / scipy / Pillow"; exit 1; }
+"$PY" "${PYFLAGS[@]}" -c 'import numpy, scipy, PIL' 2>/dev/null || { echo "FAIL: $PY lacks numpy / scipy / Pillow"; exit 1; }
 mkdir -p "$OUT"
 
 # The reference capture is also coloured at these Sharpen amounts (Task SHARP; the run's own amount is the
@@ -103,7 +106,7 @@ for entry in "${CAPTURES[@]}"; do
   done
   # The halves again, each cut to their common field before the mineral moon (R12's equal-field check).
   if [ ! -s "$OUT/$id/even_eq/probe.json" ] || [ "${PLANETARY_MINERAL_RESTACK:-0}" = 1 ]; then
-    if crops=$("$PY" -I "$HERE/mineral_check.py" --equal-field "$OUT/$id"); then
+    if crops=$("$PY" "${PYFLAGS[@]}" "$HERE/mineral_check.py" --equal-field "$OUT/$id"); then
       read -r ce co <<< "$crops"
       for part in even odd; do
         d="$OUT/$id/${part}_eq"; mkdir -p "$d/stages"
@@ -131,5 +134,5 @@ for entry in "${CAPTURES[@]}"; do
   IFS='|' read -r id rel bayer extras role <<< "$entry"
   want "$id" && ids+=("$id:$role")
 done
-"$PY" -I "$HERE/mineral_check.py" "$OUT" "${ids[@]}" || fail=1
+"$PY" "${PYFLAGS[@]}" "$HERE/mineral_check.py" "$OUT" "${ids[@]}" || fail=1
 exit $fail

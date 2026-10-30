@@ -35,7 +35,8 @@ there, and the B9 dispatch):
   8 median    disk median of the output's luminance in [0.25, 0.45] (the transfer aims at 0.35).
   R12 edge    edge_chroma --noise on the even / odd mineral outputs, per frame side, bands 0:6 vs 20:40, along the
               longest run where both bands are disc 12 px clear of the limb (disc_span; at least 50 px, else that
-              side is not judged): every judgeable side <= 1.5x; none judgeable = NOT JUDGED. Each judged side
+              side is not judged): every judgeable side <= 1.5x; none judgeable = NOT JUDGED; Ruling R39: 0528a's
+              bottom side alone over the bar (B/G within it, R/G under 2.5) = ACCEPTED, never a PASS. Each judged side
               also prints its per-depth ratios (depth 0-3) and the same ratio on the display RGB (before the
               colour step), the stage of origin.
   R31 gain    sharpening's noise gain on the disc: the halves registered (on the mineral images' G; every stage
@@ -46,6 +47,8 @@ there, and the B9 dispatch):
               riding boosted texture and scales with the gain; the bar is noise gain <= detail gain, the rms of the
               sharpened bands (starlet layers 1-4) of the halves' mean, sharpened over unsharpened (the limiter
               failing would boost noise beyond the detail). The noise-only guarantee is the unit tests' (flat disc).
+              Ruling R38: informational -- the R37 bar is reported (INFO, "met" / "not met"), not graded; a measure
+              that is not finite fails.
   M3 align    the Channel alignment HISTORY line of the full stack and both halves (shift +- uncertainty,
               applied or not); a channel resampled at |shift| < 0.2 px is flagged LOOK (a limb-fringe look).
   M4 stretch  the Display transfer line, and the disk's top / median (99.99th percentile of unsaturated / median
@@ -272,10 +275,34 @@ def split_half_edges(rep, even, odd, reg, req="R12 edge", info=False):
     value = "B/G / R/G edge/interior noise: " + ", ".join(parts) + ("; " + "; ".join(origin) if origin else "")
     if not judged:
         rep.add(req, value + " (no side judgeable)", "each judgeable side <= 1.5x", "NOT JUDGED", sides=results)
+    elif info:
+        rep.add(req, value, "each judgeable side <= 1.5x", "INFO", sides=results)
     else:
-        ok = all(r["verdict"] == "pass" for r in judged.values())
-        rep.add(req, value, "each judgeable side <= 1.5x", "INFO" if info else ("PASS" if ok else "FAIL"),
-                  sides=results)
+        failing = sorted(s for s, r in judged.items() if r["verdict"] != "pass")
+        if not failing:
+            rep.add(req, value, "each judgeable side <= 1.5x", "PASS", sides=results)
+        elif r39_accepts(rep.cid, failing, judged):
+            rep.add(req, value + "; bottom accepted (ruling R39)", "each judgeable side <= 1.5x", "ACCEPTED", sides=results)
+        else:
+            rep.add(req, value, "each judgeable side <= 1.5x", "FAIL", sides=results)
+
+
+# Ruling R39 (2026-10-27-planetary-mineral-moon/progress.md): "R12 0528a bottom R/G 2.1: the stack's own last row
+# carries 1.6x chroma noise and sits inside R19's coverage floor, so it is not cropped -- a Part A edge limit of the
+# same class as R21 (one outer line on one capture), accepted and documented, not widened now". Encoded narrowly, so
+# the gate stays fail-closed for anything else: capture 0528a, its bottom side alone failing, B/G within the 1.5x bar
+# and R/G finite and under R39_RG_MAX (the ruling's 2.1, 2.05 at 5e29d718, with headroom for run-to-run noise but well
+# short of a real regression's).
+R39_CAPTURE, R39_SIDE, R39_RG_MAX = "0528a", "bottom", 2.5
+
+
+def r39_accepts(cid, failing, judged):
+    if cid != R39_CAPTURE or failing != [R39_SIDE]:
+        return False
+    r = judged[R39_SIDE]
+    bg, rg = r.get("B/G"), r.get("R/G")
+    return (bg is not None and rg is not None and math.isfinite(bg) and math.isfinite(rg) and bg <= 1.5
+            and rg < R39_RG_MAX)
 
 
 def chroma_noise_split(rep, even, odd, reg):
@@ -338,12 +365,19 @@ def noise_gain(rep, even, odd, reg):
     ns = starlet(o0[1] - (a * o1[1] + b))
     pern = [float(np.sqrt((s_[interior] ** 2).mean() / (u_[interior] ** 2).mean())) for u_, s_ in zip(nu, ns)]
     ok = all(n <= d for n, d in zip(pern, per))
-    rep.judge("R31 gain", "noise gain %.3f (robust %.3f, flattest 10%% %.3f) vs detail gain %.3f; per layer 1-4 noise / detail: "
-              "%s; diff std unsharp %.5f, sharp %.5f; %d px; halves at (%d, %d) + (%.2f, %.2f), G match %.3f" % (
-                  g, gr, gf, detail, " ".join("%.2f/%.2f" % nd for nd in zip(pern, per)), np.std(du), np.std(ds),
-                  interior.sum(), reg["dx"], reg["dy"], reg["rx"], reg["ry"], reg["match"]),
-              "per layer, noise gain <= detail gain (R37)", ok, gain=g, robust=gr, flat=gf, detail=detail, layers=per,
-              noiseLayers=pern, wholeImagePass=g <= detail)
+    # Ruling R38 (2026-10-27-planetary-mineral-moon/progress.md): "R31 under R37: informational. With soft-threshold
+    # gains, noise riding above-threshold texture takes the full gain while the texture's coefficients are shrunk by the
+    # threshold, so noise gain > detail gain by construction on a surface textured everywhere ... the engine guarantee
+    # stays the unit noise-only tests". So R37's bar is reported (INFO), not graded; a measure that is not finite still
+    # fails (fail-closed: INFO is for a number that was measured).
+    finite = all(math.isfinite(v) for v in [g, gr, gf, detail] + per + pern)
+    rep.add("R31 gain", "noise gain %.3f (robust %.3f, flattest 10%% %.3f) vs detail gain %.3f; per layer 1-4 noise / detail: "
+            "%s; diff std unsharp %.5f, sharp %.5f; %d px; halves at (%d, %d) + (%.2f, %.2f), G match %.3f; R37's bar %s "
+            "(informational, ruling R38)" % (
+                g, gr, gf, detail, " ".join("%.2f/%.2f" % nd for nd in zip(pern, per)), np.std(du), np.std(ds),
+                interior.sum(), reg["dx"], reg["dy"], reg["rx"], reg["ry"], reg["match"], "met" if ok else "not met"),
+            "per layer, noise gain <= detail gain (R37), reported per R38", "INFO" if finite else "FAIL", gain=g, robust=gr,
+            flat=gf, detail=detail, layers=per, noiseLayers=pern, wholeImagePass=g <= detail, r37=ok)
 
 
 def starlet(x, n=4):

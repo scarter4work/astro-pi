@@ -27,7 +27,9 @@ SERViewer: SER files, and uncompressed 8-bit greyscale or raw Bayer AVI files su
 every frame, chooses the sharpest frames from the capture's own statistics, aligns them to the target and then region
 by region, and stacks them with outlier rejection. There is nothing to set: no percentage of frames to keep and no
 alignment points to place. When a capture has nothing usable, it makes no image and says why, with the numbers
-behind the verdict.</p>
+behind the verdict. From the stack it can also make a finished image: a mineral moon for the Moon, or a processed
+planet (colour-calibrated, dispersion-corrected and sharpened) for Mercury to Neptune, each tuned live with three
+sliders.</p>
 
 <h2>The interface</h2>
 <ul>
@@ -46,8 +48,9 @@ behind the verdict.</p>
   <li><b>Stack!</b> stacks the video. The progress bar shows the step and how far it has got: &ldquo;Step 1 of 3:
   Measuring frames&rdquo; (with a frame count), &ldquo;Step 2 of 3: Aligning&rdquo; (a percentage), &ldquo;Step 3 of 3:
   Stacking&rdquo; (the frames stacked so far). The window stays usable while it runs.</li>
-  <li><b>Cancel</b> stops a running stack. Nothing is left behind: no image and no file. A mineral moon cancelled while
-  it is made from a stack already shown (Mineral moon checked after Stack!) leaves that stack shown. Closing the window, or quitting
+  <li><b>Cancel</b> stops a running stack. Nothing is left behind: no image and no file. A mineral moon or planet
+  processing cancelled while it is made from a stack already shown (Mineral moon or Planet processing checked after
+  Stack!) leaves that stack shown. Closing the window, or quitting
   PixInsight, cancels a running stack the same way and waits for it to stop.</li>
   <li>The <b>preview</b> shows the stack, stretched for display only: black at the 0.5th percentile of its samples (the
   sky's level around a planet) and white at the 99.99th percentile, so one hot pixel or satellite trail cannot dim it. The
@@ -60,7 +63,9 @@ behind the verdict.</p>
   <li><b>Target</b>: Auto, Other, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus or Neptune. Auto reads it from
   the ASIAIR file name (<code>&lt;date&gt;-&lt;time&gt;-&lt;Target&gt;-Bin1 &lt;Filter&gt; &lt;temp&gt;F.avi</code>); the
   combo shows where it came from, for example &ldquo;Moon (from file name)&rdquo;. Choose a target to override it. It is
-  written to the image's <code>OBJECT</code> keyword.</li>
+  written to the image's <code>OBJECT</code> keyword, and it decides the processing offered beside it: Mineral moon and
+  its sliders for the Moon, Planet processing and its sliders for any other target. Only that set is shown. Changing
+  the target never stacks again.</li>
   <li><b>Mineral moon</b> (see <a href="#mineral">The mineral moon</a>) is offered when the target is the Moon, the
   capture is colour and the file name's filter is not a narrowband or an IR-pass one (a filter not named, or not
   recognised, is allowed). Narrowband: HaO3, S2O3, Ha, OIII (O3), SII (S2), Hb, D1, D2, Duo, NBZ, ALP-T, L-eNhance,
@@ -71,13 +76,40 @@ behind the verdict.</p>
   filter.&rdquo; Checked after Stack!, the preview shows the mineral moon; unchecked, the stack again. Neither restacks.</li>
   <li><b>Strength</b>, <b>Chroma blur</b> and <b>Sharpen</b> tune the mineral moon live: each change re-runs only the
   colour and sharpening steps on the stack already made (a fraction of a second), never the stack itself.</li>
+  <li><b>Planet processing</b> (see <a href="#planet">Planet processing</a>) is offered when the target is Mercury, Venus,
+  Mars, Jupiter, Saturn, Uranus or Neptune, the capture is colour and the file name's filter is not a narrowband or an
+  IR-pass one: the same colour and filter rules as the mineral moon's above. Otherwise the box is disabled and its
+  tooltip says why:
+    <ul>
+    <li>Target Other: &ldquo;Planet processing needs a planet target; pick the planet in the Target list.&rdquo; (the
+    colour calibration needs a known body).</li>
+    <li>A mono capture: &ldquo;Planet processing needs a colour capture; this one is mono (set the Bayer pattern if it
+    is a colour camera).&rdquo;</li>
+    <li>A narrowband or IR-pass filter, for example &ldquo;Planet processing needs a broadband filter; IR685 is IR-pass,
+    so its colours come from the filter.&rdquo;</li>
+    </ul>
+  Checked after Stack!, the preview shows the processed planet; unchecked, the stack again. Neither restacks.</li>
+  <li><b>Saturation</b>, <b>Chroma blur</b> and <b>Sharpen</b> tune the processed planet live, as the mineral moon's
+  sliders do: each change re-runs only the sharpening and colour steps on the stack already made.
+    <ul>
+    <li><b>Saturation</b>, 0 to 3, default 1: the planet's colour as a multiple of its natural colour (the catalogue
+    colour the stack was calibrated to). 0 is grey, 1 the natural colour, 3 the most. Highlights never clip: where a
+    channel would, the colour gives way and the hue holds.</li>
+    <li><b>Chroma blur</b>, 0 to 6 px, default 1: how far the colour is smoothed, in pixels at any frame size (a
+    planet's disc does not grow with the frame, unlike the Moon's). 0 is none. More hides the colour's noise; less keeps a planet's small colour features (belts, spots), a
+    few pixels across. The detail always comes from the sharp luminance.</li>
+    <li><b>Sharpen</b>, 0 to 4, default 1.5: how much the luminance is sharpened. 0 is none. On a small disc the finest
+    detail gains most; noise is held back at every amount, and the sky is left as it is.</li>
+    </ul></li>
   <li><b>Execute</b> (and Apply Global, the round button) opens the stack shown as a new image window, without stacking
-  again. With Mineral moon checked it opens two windows, the stack and the mineral moon. If nothing has been stacked yet for the file and pattern shown, it stacks first and then opens the result. The file is read
+  again. With Mineral moon or Planet processing checked it opens two windows, the stack and the mineral moon or the
+  processed planet. If nothing has been stacked yet for the file and pattern shown, it stacks first and then opens the result. The file is read
   again first: if it has been replaced by a different capture (another frame count, size, bit depth or colour layout),
   the old stack is dropped rather than opened.</li>
 </ul>
 <p>Dragging the interface's instance triangle onto the workspace saves a process icon with the file, Bayer pattern,
-target and mineral moon settings; executing that icon stacks the file.</p>
+target, mineral moon and planet processing settings (the Moon's and the planet's are kept apart, so each icon keeps
+its own); executing that icon stacks the file.</p>
 
 <h2>Parameters</h2>
 <table>
@@ -89,10 +121,15 @@ target and mineral moon settings; executing that icon stacks the file.</p>
 <tr><td><code>mineralStrength</code></td><td>Real</td><td>8</td><td>0 to 15: how far the Moon's colour differences are amplified.</td></tr>
 <tr><td><code>chromaBlur</code></td><td>Real</td><td>2.5</td><td>0.5 to 6 px: the blur applied to the colour (not the detail), which keeps chroma noise from being amplified.</td></tr>
 <tr><td><code>mineralSharpen</code></td><td>Real</td><td>1.5</td><td>0 to 4: luminance sharpening. 0 is none; higher values sharpen the finest scales more, always limited by the stack's own measured noise.</td></tr>
+<tr><td><code>planetProcess</code></td><td>Boolean</td><td>false</td><td>Also make the processed planet (Mercury to Neptune, a colour capture, no narrowband or IR-pass filter).</td></tr>
+<tr><td><code>planetSaturation</code></td><td>Real</td><td>1</td><td>0 to 3: the planet's colour as a multiple of its natural colour. 0 is grey, 1 natural.</td></tr>
+<tr><td><code>planetChromaBlur</code></td><td>Real</td><td>1</td><td>0 to 6 px: the blur applied to the planet's colour (not the detail). 0 is none.</td></tr>
+<tr><td><code>planetSharpen</code></td><td>Real</td><td>1.5</td><td>0 to 4: luminance sharpening of the planet. 0 is none; always limited by the stack's own measured noise, and none off the disc.</td></tr>
 </table>
 <p>Executed globally from a script or a process icon, the process stacks <code>filePath</code> and opens the
 stack as an image window, or fails with the diagnosis when the capture gives no image. It cannot run on a view. With
-<code>mineralMoon</code> set on a capture that cannot make one, it fails with the reason before stacking.</p>
+<code>mineralMoon</code> or <code>planetProcess</code> set on a capture that cannot make that product, it fails with
+the reason (the tooltip's text above) before stacking.</p>
 
 <h2 id="mineral">The mineral moon</h2>
 <p>A mineral moon exaggerates the Moon's subtle true colour differences (titanium-rich maria blue, iron-rich ones
@@ -116,6 +153,69 @@ as it was. If no lunar disc can be told from the sky, the result line and the Pr
 <p>The mineral moon opens as a second window, <code>&lt;name&gt;_mineral</code>, beside the linear
 <code>&lt;name&gt;_stack</code>. It is stretched for display (non-linear), 32-bit floating point, and carries the
 stack's keywords plus the seven mineral lines.</p>
+
+<h2 id="planet">Planet processing</h2>
+<p>Planet processing turns a planet's stack into a finished, display-ready image in its natural colour: no grey Mars,
+no white Saturn. PlanetaryStack makes it from the stack itself, with no other process, in seven steps, each reported in
+one <code>HISTORY</code> line beginning <code>PlanetaryStack planet:</code> and naming what it measured:</p>
+<ol>
+<li><b>Planet disc</b>: the disc (Saturn's rings included) and the sky are told apart, also for a small planet in a
+large frame of sky. The line gives the disc's size in pixels and its equivalent radius.</li>
+<li><b>Colour calibration</b>: red and blue are scaled about the sky so that the disc's mean colour equals the
+planet's own colour relative to sunlight (green is unchanged; saturated pixels are left out). That colour is the ratio
+of the planet's geometric albedos in the Johnson B, Johnson V and Sloan r&prime; bands, from Mallama, Krobusek &amp;
+Pavlov 2017, &ldquo;Comprehensive wide-band magnitudes and albedos for the planets&rdquo;, <i>Icarus</i> 282, Table 7.
+The camera's B, G and R are taken as B, V and r&prime;, an approximation the line states along with the source, the
+target ratios and the disc's colour before and after. Red is Sloan r&prime; rather than Cousins Rc because a colour
+camera's red channel ends at its UV/IR-cut filter, near 690 nm, while the Rc band reaches past 800 nm into methane
+absorption bands the camera never sees.
+  <table>
+  <tr><th>Planet</th><th>B/G</th><th>R/G</th></tr>
+  <tr><td>Mercury</td><td>0.739</td><td>1.190</td></tr>
+  <tr><td>Venus</td><td>0.955</td><td>1.033</td></tr>
+  <tr><td>Mars</td><td>0.518</td><td>1.441</td></tr>
+  <tr><td>Jupiter</td><td>0.823</td><td>1.069</td></tr>
+  <tr><td>Saturn</td><td>0.679</td><td>1.238</td></tr>
+  <tr><td>Uranus</td><td>1.150</td><td>0.727</td></tr>
+  <tr><td>Neptune</td><td>1.271</td><td>0.695</td></tr>
+  </table>
+  Saturn's values are the paper's at ring inclination 0, so they are the globe's; with the rings open, the disc's mean
+  includes ring light, and its colour is that much off. The step is skipped, and the line says why, when the disc has
+  fewer than 30 unsaturated pixels or a channel has no positive level. With under 1% of the frame in sky it runs
+  without a background reference, and the line says so.</li>
+<li><b>Background</b>: a sky plane is removed from each channel.</li>
+<li><b>Display transfer</b>: linear, with no midtones stretch, as planetary images are shown. The brightest sample the
+stack did not clip is put at 0.95, so a dim capture (Neptune) is not left dark.</li>
+<li><b>Channel alignment</b>: red and blue are moved onto green to undo atmospheric dispersion. The shift of each is
+measured on the disc's limb (not its interior, whose belts and markings would read as a shift), and a channel is moved
+only when its shift exceeds 0.1 px and three times its uncertainty; on a disc the frame cuts, only when that
+uncertainty is also within 0.05 px. Dispersion puts red and blue on opposite sides of green along one line, so when one
+channel passes and the other does not, the other is tested again along the first one's line and, if it passes there,
+moved along that line only. A shift that cannot be measured reliably (too small a disc, too little of its limb in the
+frame, a colour that differs around the limb) is declined, not guessed: the line gives each channel's shift, its
+uncertainty and why it was or was not applied.</li>
+<li><b>Sharpen</b>: the luminance is sharpened on wavelet scales by the Sharpen amount, tuned for small discs (the
+finest scale gains most), each scale limited by the stack's own measured noise. The sky is not sharpened.</li>
+<li><b>Saturation</b>: the colour, taken from a blurred colour layer (Chroma blur), is applied to the sharp luminance
+at Saturation times the natural colour. There is no highlight fade (Jupiter's zones and Saturn's rings keep their
+colour), and no sample is clipped: where a channel would pass full scale, that pixel's colour gives way and its hue
+holds.</li>
+</ol>
+<p>A step that cannot run says why in its line and leaves the image as it was. If no planet disc can be told from the
+sky (a very faint planet, a frame of sky), the later steps are skipped, the result is the stack clipped to [0, 1], and
+the result line and the Process Console say so.</p>
+<p>The opposite case is a warning, not a skip. If the planet disc covers 75% of the frame or more, every step still
+runs, but the <b>Planet disc</b> line, the result line and the Process Console end with &ldquo;the planet disc covers
+N% of the frame (75% or more): the disc fills the frame, or the sky is curved more than a quadratic models; colour
+calibration, the background and the sharpening use that disc and what little sky is left&rdquo;. A whole planet disc
+inside a 4:3 frame covers at most 59% of it, so the warning usually means the sky was not told from the planet. What
+to do: check the <b>Target</b> (a capture of the Moon or of a surface region belongs to Moon or Other, not to a
+planet); if the planet is small on the frame, the sky is uneven, most often from vignetting (corners darker than the
+centre) or a gradient from moonlight or twilight, so crop the capture to the planet and the even sky near it, or
+capture with a smaller region of interest (ROI), or calibrate with flats. Check the result by eye before using it.</p>
+<p>The processed planet opens as a second window, <code>&lt;name&gt;_planet</code>, beside the linear
+<code>&lt;name&gt;_stack</code>. It is display-ready (scaled linearly, not stretched), 32-bit floating point, and
+carries the stack's keywords plus the seven planet lines.</p>
 
 <h2>How the frames are chosen</h2>
 <p>Everything below is decided from the capture itself. The video is read from start to end several times (once to

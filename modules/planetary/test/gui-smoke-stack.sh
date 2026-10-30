@@ -74,6 +74,23 @@
 #                                                                  -> 28-hao3.png
 #     the pointer on the box: its tooltip (read with tesseract: "HaO3 is narrowband")
 #                                                                  -> 28b-tooltip.png, 28c-no-tooltip.png
+#  7c. Planet processing (planet Task 6), on Saturn captures named as the ASIAIR names them:
+#     --stack-planet: Open... the colour Saturn (Lqef): Target reads "Saturn (from file name)", the row shows
+#     Planet processing (enabled) and Saturation, not the mineral set   -> 30-planet-loaded.png
+#     Stack!                                                       -> 31-planet-stack.png
+#     Planet processing checked: its planet made from that stack   -> 32-planet.png
+#     Saturation, Chroma blur and Sharpen dragged from their defaults (Planet.h) to 2.5, 5 and 4, each changing
+#     the preview, never restacking                                -> 33-saturation.png, 34-chroma-blur.png, 35-sharpen.png
+#     Execute                                                      -> 36-planet-execute.png
+#     gui-smoke-stack-ipc.js: exactly <stem>_stack and <stem>_planet, the engine's size, OBJECT Saturn, the
+#     seven planet steps in order in the planet window only, the three sliders' values in its HISTORY.
+#     --stack-planet-moon: the Target set to the Moon: the mineral row in its place, the stack shown again
+#                                                                  -> 37-planet-to-moon.png
+#     --stack-planet-race: a 2560 x 1440 Saturn (its planet finish >= 0.05 s, from the engine): Stack!
+#     -> 38b-race-stack.png; Planet processing checked -> 39-race-planet.png; Sharpen dragged and the Target
+#     switched to the Moon at once -> 40-race-switched.png, and 2 s later -> 40b-race-later.png: the mineral row,
+#     the stack shown (no stale planet preview); Mineral moon checked then: the mineral moon of that stack, neither
+#     the stack nor the planet -> 40c-race-mineral.png; PixInsight running, no window, the thread count back.
 #  8. --stack-close: Open... gui-long.avi, Stack!, mid-run         -> 17-close-progress.png
 #     the interface's close button                                 -> 18-closed.png
 #     no video file held open, the thread count back.
@@ -125,6 +142,14 @@ MOON_LONG="$FIX/2026-10-23-050000-Moon-Bin1 Lqef 63.0F.ser"
 "$MAKE_FIXTURES" --moon "$MOON_LONG" 2400 1800 24 >>"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
    || { echo "FAIL: make-fixtures --moon failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
 [ -f "$MOON" ] && [ -f "$HAO3" ] || { echo "FAIL: make-fixtures --stack wrote no Moon / HaO3 Moon capture"; exit 1; }
+# Planet Task 6: the probe's colour Saturn, and a large one whose planet finish takes long enough for a Target
+# change to land while one runs (checked below, from the engine).
+SATURN="$FIX/2026-10-23-041500-Saturn-Bin1 Lqef 17.6F.ser"
+SATURN_ID="_2026_10_23_041500_Saturn_Bin1_Lqef_17_6F"
+SATURN_BIG="$FIX/2026-10-23-043000-Saturn-Bin1 Lqef 17.2F.ser"
+[ -f "$SATURN" ] || { echo "FAIL: make-fixtures --stack wrote no colour Saturn capture"; exit 1; }
+"$MAKE_FIXTURES" --saturn "$SATURN_BIG" 2560 1440 12 >>"$PLANETARY_RUN_DIR/make-fixtures.log" 2>&1 \
+   || { echo "FAIL: make-fixtures --saturn failed: $(cat "$PLANETARY_RUN_DIR/make-fixtures.log")"; exit 1; }
 DIAG="$FIX/diag-notarget.ser" MOSAIC="$FIX/stack-mosaic.avi" SOFT="$FIX/stack-soft-disc.ser" BAYER="$FIX/stack-bayer.avi"
 [ ! -e "$MOSAIC.txt" ] || { echo "FAIL: $MOSAIC must have no sidecar (Save pattern... writes one)"; exit 1; }
 [ -f "$BAYER.txt" ] || { echo "FAIL: $BAYER must have its RG sidecar"; exit 1; }
@@ -169,6 +194,15 @@ LONG_MOON_JSON="$OUT/engine-moon-long-mineral.json"
 jq -e '.mineral.notice == "" and (.mineral.seconds - .mineral.stepSeconds["Lunar disk"]) >= 1.2' "$LONG_MOON_JSON" >/dev/null \
    || { echo "FAIL: $(basename "$MOON_LONG"): its mineral moon is too quick (or not one) for a Cancel to land in it: $(jq -c '.mineral | {seconds, stepSeconds, notice}' "$LONG_MOON_JSON")"; exit 1; }
 echo "engine: $(basename "$MOON_LONG"): stack $(jq .seconds "$LONG_MOON_JSON") s, mineral moon $(jq .mineral.seconds "$LONG_MOON_JSON") s"
+engine "$SATURN" auto image "" || exit 1
+# The large Saturn: a planet finish (what each slider move runs) of at least 0.05 s, so the drag's last one is still
+# running, or waiting for the window's 0.1 s timer, when the Target switch lands right after the release.
+BIG_SATURN_JSON="$OUT/engine-saturn-big-planet.json"
+"$STACK_PROBE" "$SATURN_BIG" --json --planet >"$BIG_SATURN_JSON" 2>"$PLANETARY_RUN_DIR/stack-probe.err" \
+   || { echo "FAIL: $(basename "$SATURN_BIG") gives no planet processing from the engine"; exit 1; }
+jq -e '.planet.notice == "" and .planet.sliderSeconds >= 0.05' "$BIG_SATURN_JSON" >/dev/null \
+   || { echo "FAIL: $(basename "$SATURN_BIG"): its planet finish is too quick (or no planet found) for the race: $(jq -c '.planet | {sliderSeconds, notice}' "$BIG_SATURN_JSON")"; exit 1; }
+echo "engine: $(basename "$SATURN_BIG"): stack $(jq .seconds "$BIG_SATURN_JSON") s, planet finish $(jq .planet.sliderSeconds "$BIG_SATURN_JSON") s"
 LONG_JSON="$OUT/engine-gui-long.avi-auto.json"
 # At least 3 s (as before the final fix round): Execute's checks (3, 3b) tell "opened the stack made" from
 # "stacked again" by the window existing 1.5 s after the click, and Cancel, the close and the Quit act at once
@@ -354,6 +388,43 @@ expect_threads "after a Cancel in the mineral moon" "$T2" || exit 1
 drive --stack-hao3 "$OUT" "$HAO3" || exit 1
 echo "HaO3 Moon: the tooltip reads: $(jq -r .text "$OUT/tooltip.json")"
 
+# Planet Task 6: Planet processing on the colour Saturn -- the row, Stack!, the box checked, each slider moved
+# (never a restack), Execute: the stack and its planet, the sliders' values in its HISTORY.
+SATURN_JSON="$OUT/engine-$(basename "$SATURN")-auto.json"
+drive --stack-planet "$OUT" "$SATURN" || exit 1
+ipc '{"mode":"windows","out":"windows-planet.json","close":true}' windows-planet.json || exit 1
+jq -e --slurpfile e "$SATURN_JSON" --arg s "${SATURN_ID}_stack" --arg p "${SATURN_ID}_planet" '
+   (.windows | length == 2)
+   and ([.windows[].id] | sort == ([$s, $p] | sort))
+   and all(.windows[]; .width == $e[0].image.width and .height == $e[0].image.height and .channels == 3
+                       and .keywords.OBJECT == "Saturn" and (.history | contains("PlanetaryStack target: Saturn (from file name)")))
+   and (.windows[] | select(.id == $s) | .history | contains("PlanetaryStack planet:") | not)' "$OUT/windows-planet.json" >/dev/null \
+   || { echo "FAIL: Execute on Saturn: expected ${SATURN_ID}_stack and ${SATURN_ID}_planet, OBJECT Saturn, the engine's size; got $(jq -c '[.windows[] | {id, width, height, channels, keywords}]' "$OUT/windows-planet.json")"; exit 1; }
+python3 - "$OUT/windows-planet.json" "${SATURN_ID}_planet" <<'PY' || exit 1
+import json, re, sys
+w = [x for x in json.load(open(sys.argv[1]))["windows"] if x["id"] == sys.argv[2]][0]
+steps = re.findall(r"PlanetaryStack planet: (Planet disc|Colour calibration|Background|Display transfer|Channel alignment|Sharpen|Saturation)", w["history"])
+if steps != ["Planet disc", "Colour calibration", "Background", "Display transfer", "Channel alignment", "Sharpen", "Saturation"]:
+    sys.exit("FAIL: the planet's HISTORY steps are %r" % steps)
+s = re.search(r"PlanetaryStack planet: Saturation: ([0-9.]+)x the natural colour \(.*?\), chroma blur ([0-9.]+) px", w["history"])
+if not s or not 2.3 <= float(s.group(1)) <= 2.7 or not 4.6 <= float(s.group(2)) <= 5.4:
+    sys.exit("FAIL: the planet was not finished at the Saturation (about 2.5) and Chroma blur (about 5) the sliders were dragged to: %s" % (s.group(0) if s else w["history"][-400:]))
+a = re.search(r"PlanetaryStack planet: Sharpen \(luminance\): amount ([0-9.]+)", w["history"])
+if not a or not 3.7 <= float(a.group(1)) <= 4.0:
+    sys.exit("FAIL: the planet was not sharpened at the amount the Sharpen slider was dragged to (about 4): %s" % (a.group(0) if a else w["history"][-400:]))
+print("Execute on Saturn: %s with its seven planet steps in HISTORY, saturation %s, chroma blur %s px, %s (the sliders')"
+      % (sys.argv[2], s.group(1), s.group(2), a.group(0)))
+PY
+expect_no_open_video "after Saturn's Execute" || exit 1
+# The Target set to the Moon: the mineral row, the stack shown, no planet preview.
+drive --stack-planet-moon "$OUT" || exit 1
+# Review Focus 5: Sharpen dragged and the Target switched at once, on the large Saturn: no stale planet, no crash.
+T3="$(threads)"
+drive --stack-planet-race "$OUT" "$SATURN_BIG" || exit 1
+kill -0 "$PI_PROC" 2>/dev/null || { echo "FAIL: PixInsight is gone after the Sharpen drag and Target switch"; exit 1; }
+expect_no_window "after the planet race" windows-planet-race.json || exit 1
+expect_threads "after the planet race" "$T3" || exit 1
+
 T1="$(threads)"
 drive --stack-close "$OUT" "$LONG" || exit 1
 expect_no_open_video "after closing the interface mid-run" || exit 1
@@ -372,7 +443,9 @@ for png in 01-opened 02-loaded 03-progress 04-fit 05-zoom-100 06-zoom-200 06b-zo
            08-cancel-progress 09-cancelled 09b-shade-progress 09c-shaded 09c2-expanded 09d-unshaded 10-diagnosis 11-warning-mosaic 12-warning-focus 13-bayer-auto \
            13b-bayer-changed 14-bayer-bggr 15-pattern-rggb 15b-confirm 16-pattern-saved 17-close-progress 18-closed \
            19-quit-progress 20-moon-loaded 21-moon-stack 22-mineral 23-strength 23b-sharpen 24-unchecked 24b-rechecked \
-           25-moon-execute 26-mineral-phase 27-mineral-cancelled 28-hao3 28b-tooltip 28c-no-tooltip; do
+           25-moon-execute 26-mineral-phase 27-mineral-cancelled 28-hao3 28b-tooltip 28c-no-tooltip \
+           30-planet-loaded 31-planet-stack 32-planet 33-saturation 34-chroma-blur 35-sharpen 36-planet-execute \
+           37-planet-to-moon 38-race-loaded 38b-race-stack 39-race-planet 40-race-switched 40b-race-later 40c-race-mineral; do
    [ -s "$OUT/$png.png" ] || { echo "FAIL: $png.png missing"; ok=0; }
 done
 python3 "$HERE/gui_drive.py" --check-stack "$OUT" || ok=0

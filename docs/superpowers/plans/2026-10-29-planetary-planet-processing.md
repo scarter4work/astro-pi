@@ -37,21 +37,21 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
 - **No outside code:** no `ProcessInstance` calls, third-party tools, external programs or network.
 - **Samples:** no output sample above 1.0, and no new clipping.
 - **Steps that cannot run:** a step that cannot run says why in HISTORY and the result line. It never invents data.
-- **Mineral moon:** its parameters, defaults, HISTORY and pixels are unchanged. Test: T4's `mineral output bit-identical`.
+- **Mineral moon:** its parameters, defaults, HISTORY and pixels are unchanged. Test: Task 4's `mineral output bit-identical`.
 - **NAS:** `/mnt/qnap` is read-only.
 - **Release:** 0.5.0.0 ships after Scott picks the Sharpen and Chroma blur defaults (spec P5) and the final review is clean. It goes through `./release.sh`.
 
 ## Review Focus
 
-1. **A planet that fills almost nothing** (Neptune about 5 px, or no disc at all): every step skips with its reason and the output is valid. Test: T4's `tiny or absent disc completes`.
-2. **Saturn's rings at the limb:** sharpening must not ring around the ring tips and Cassini gap, and the rings stay in the disc mask. Tests: T2's `ring stays in the disc`, and T3's `no halo around a ringed disc`.
-3. **A planet near the frame edge** (a cropped ROI, or drift): alignment and sharpening must not fringe or ring at the frame edge. Test: T2's `disc cut by the frame edge`.
-4. **Target overridden to a planet on a Moon capture** (a huge disc): the planet path completes and the small-disc rules do not break a large disc. Test: T4's `frame-filling disc completes`.
-5. **A slider dragged while a finish run is in flight**, then the Target switched to the Moon: there is no stale planet preview and no crash. Test: T6's GUI smoke steps.
+1. **A planet that fills almost nothing** (Neptune about 5 px, or no disc at all): every step skips with its reason and the output is valid. Test: Task 4's `tiny or absent disc completes`.
+2. **Saturn's rings at the limb:** sharpening must not ring around the ring tips and Cassini gap, and the rings stay in the disc mask. Tests: Task 2's `ring stays in the disc`, and Task 3's `no halo around a ringed disc`.
+3. **A planet near the frame edge** (a cropped ROI, or drift): alignment and sharpening must not fringe or ring at the frame edge. Test: Task 2's `disc cut by the frame edge`.
+4. **Target overridden to a planet on a Moon capture** (a huge disc): the planet path completes and the small-disc rules do not break a large disc. Test: Task 4's `frame-filling disc completes`.
+5. **A slider dragged while a finish run is in flight**, then the Target switched to the Moon: there is no stale planet preview and no crash. Test: Task 6's GUI smoke steps.
 
 ---
 
-### Task T1: Capture names and the planet gate
+### Task 1: Capture names and the planet gate
 
 **Files:**
 - Modify: `src/ser/CaptureName.{h,cpp}`
@@ -79,7 +79,7 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
 - [ ] **Step 4:** Run `ctest` and confirm everything is green.
 - [ ] **Step 5:** Commit: `feat(planetary): parse ASIAIR's filterless capture names; the planet gate`.
 
-### Task T2: Planet colour calibration, the ring check and small-disc dispersion
+### Task 2: Planet colour calibration, the ring check and small-disc dispersion
 
 **Files:**
 - Create: `src/stack/Planet.{h,cpp}` (add both to `src/stack/CMakeLists.txt`)
@@ -119,7 +119,7 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
 - [ ] **Step 4:** Run `ctest` and confirm everything is green.
 - [ ] **Step 5:** Commit: `feat(planetary-stack): planet colour calibration to the catalogue reflectance, small-disc dispersion alignment`.
 
-### Task T3: Sharpening for small discs (profile + disc-scaled fade)
+### Task 3: Sharpening for small discs (profile + disc-scaled fade)
 
 **Files:**
 - Modify: `src/stack/Mineral.{h,cpp}` (`SharpenLuminanceImage`)
@@ -131,7 +131,7 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
   - `extern const SharpenProfile kMoonSharpen;` holds `{1.5,2.5,1,1}`, `{3,1,0,0}` and fade fraction 0, where 0 means today's reach-based fade.
   - `SharpenLuminanceImage(..., double amount, const SharpenProfile& profile = kMoonSharpen)`.
     - With a fade fraction f > 0, layer j's fade runs from min(reach_j, f·R) to 2·min(reach_j, f·R). R is the disc's equivalent radius, sqrt(diskCount/π).
-- Produces (Planet.h): `extern const SharpenProfile kPlanetSharpen;`. Its initial values are the Moon's gains and f = 0.15; T5 retunes them.
+- Produces (Planet.h): `extern const SharpenProfile kPlanetSharpen;`. Its initial values are the Moon's gains and f = 0.15; Task 5 retunes them.
 
 - [ ] **Step 1: Tests (RED).**
   - `small-disc sharpening reduces error against the truth`: PlanetSynth r = 10, 20, 100, blurred by a Gaussian of 1.0 and 1.5 px, noise 0.005. At amount 1.5 with `kPlanetSharpen`, the disc's RMS error against the sharp truth falls.
@@ -143,7 +143,7 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
 - [ ] **Step 4:** Run `ctest` and confirm everything is green.
 - [ ] **Step 5:** Commit: `feat(planetary-stack): sharpen profiles; disc-scaled limb fade for planets`.
 
-### Task T4: The planet pipeline (prepare/finish) and its colour
+### Task 4: The planet pipeline (prepare/finish) and its colour
 
 **Files:**
 - Modify: `src/stack/Planet.{h,cpp}`; `src/stack/Mineral.{h,cpp}` (the `DisplayTransfer` option)
@@ -153,11 +153,11 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
 - Produces (Mineral.h): `DisplayTransfer(..., DisplayCurve* curve = nullptr, double medianTarget = 0.35)`. A `medianTarget` ≤ 0 means linear (balance 0.5), with the same white-point rule.
 - Produces (Planet.h):
   - `constexpr double kPlanetSaturationDefault = 1.0, kPlanetSaturationMax = 3.0;`
-  - `inline double kPlanetChromaBlurDefault = 1.0, kPlanetChromaBlurMax = 6.0, kPlanetSharpenDefault = kSharpenDefault, kPlanetSharpenMax = kSharpenMax;` These are placeholders that T5 replaces with constexpr measured values.
+  - `inline double kPlanetChromaBlurDefault = 1.0, kPlanetChromaBlurMax = 6.0, kPlanetSharpenDefault = kSharpenDefault, kPlanetSharpenMax = kSharpenMax;` These are placeholders that Task 5 replaces with constexpr measured values.
   - `struct PlanetParams { double saturation = kPlanetSaturationDefault, chromaBlurSigma = kPlanetChromaBlurDefault, sharpen = kPlanetSharpenDefault; };`
   - `constexpr const char* kPhasePlanet = "Planet";`
   - `MineralCache PreparePlanet(const ser::FloatImage& stack, ser::Target t, int threads, const Progress&, const StackNoise* = nullptr);`
-    - Its steps, in order, each with a HISTORY line: Planet disc, Colour calibration (T2), Background, Display transfer (linear), Channel alignment (T2), and the sharpen noise exactly as PrepareMineral measures it.
+    - Its steps, in order, each with a HISTORY line: Planet disc, Colour calibration (Task 2), Background, Display transfer (linear), Channel alignment (Task 2), and the sharpen noise exactly as PrepareMineral measures it.
     - Shared code is factored out of `PrepareMineral`, not copied.
     - Throws `std::invalid_argument` for a non-planet target, as well as for PrepareMineral's own refusals.
   - `MineralOutcome FinishPlanet(const MineralCache&, const PlanetParams&, int threads, const Progress& = {});`
@@ -184,7 +184,7 @@ The planet path keeps the prepare/finish split and its cache, so a slider re-run
 - [ ] **Step 4:** Run `ctest` and confirm everything is green. Run `stack-probe --mineral` on 64.6F and confirm it is identical to Step 0.
 - [ ] **Step 5:** Commit: `feat(planetary-stack): the planet pipeline -- linear display, catalogue colour, natural-colour saturation`.
 
-### Task T5: Real planets — probe, measured defaults, series for Scott
+### Task 5: Real planets — probe, measured defaults, series for Scott
 
 **Files:**
 - Modify: `test/stack-probe.cpp`, adding `--planet`, `--planet-out`, `--planet-stages`, `--saturation`, `--chroma-blur` and `--sharpen`, mirroring the `--mineral*` flags.
@@ -202,17 +202,17 @@ The captures are the spec's acceptance table, with Bayer RGGB explicit where the
   - **Chroma blur:** the smallest σ (from 0, 0.5, 1, 1.5, 2, 2.5) that halves the sky's chroma noise on every capture with a sky.
   - **Sharpen:** a series of amounts 0, 1, 1.5, 2, 3 and 4 on Saturn 2026-10-23, Jupiter 11_3_2023 and Mars. Report each amount's crispness (limb/edge gradient), its noise gain, and the error against the truth on the synth. Retune `kPlanetSharpen` gains, extra and f only if the series shows a deficit at the fine layers. Raise the max if 4 is not enough.
   - Write the picks as ruling Q2.
-- [ ] **Step 4: Send to Scott.** Put PNG grids on `~/Desktop/planet-series/` (8-bit, upscaled ×4 nearest so 20 px discs are visible): the Sharpen series, the Chroma blur series, and plain-vs-processed for Saturn, Jupiter and Mars. Tell Scott in one message that they are there, with the measured default marked. This is the only stop. Carry on with T6 while he looks, and put his pick in as ruling Q3.
+- [ ] **Step 4: Send to Scott.** Put PNG grids on `~/Desktop/planet-series/` (8-bit, upscaled ×4 nearest so 20 px discs are visible): the Sharpen series, the Chroma blur series, and plain-vs-processed for Saturn, Jupiter and Mars. Tell Scott in one message that they are there, with the measured default marked. This is the only stop. Carry on with Task 6 while he looks, and put his pick in as ruling Q3.
 - [ ] **Step 5:** Commit: `test(planetary-stack): real-planet acceptance runner; measured planet defaults (Q2)`.
 
-### Task T6: Module wiring — parameters, row, window, probes
+### Task 6: Module wiring — parameters, row, window, probes
 
 **Files:**
 - Modify: `src/module/PlanetaryStackParameters.{h,cpp}`, `PlanetaryStackProcess.cpp`, `PlanetaryStackInstance.{h,cpp}`, `PlanetaryStackInterface.{h,cpp}`, and `StackCards.h`
 - Test: `test/unit/test_stack_cards.cpp`, `test/probe-stack.js` / `run-probe-stack.sh`, and `test/gui-smoke-stack.sh` (+ `gui_drive.py` if needed)
 
 **Interfaces:**
-- Consumes: T1's `PlanetRefusal` and `IsPlanet`; T4's `PreparePlanet`, `FinishPlanet`, `PlanetParams` and the k*Planet* constants.
+- Consumes: Task 1's `PlanetRefusal` and `IsPlanet`; Task 4's `PreparePlanet`, `FinishPlanet`, `PlanetParams` and the k*Planet* constants.
 - Produces: these parameters, with ranges and defaults from the Planet.h constants.
 
   | Id | Type |
@@ -245,7 +245,7 @@ The captures are the spec's acceptance table, with Bayer RGGB explicit where the
   - Also drag Sharpen and switch Target at once (Review Focus 5).
 - [ ] **Step 5:** Run `ctest`, `run-probe-stack.sh` and `gui-smoke-stack.sh`, and confirm all are green. Commit: `feat(planetary-stack): Planet processing option with Saturation / Chroma blur / Sharpen sliders`.
 
-### Task T7: Docs, version, portability, final review, release
+### Task 7: Docs, version, portability, final review, release
 
 **Files:**
 - `doc/tools/PlanetaryStack/` (the planet section, the parameters, the colour source)

@@ -29,6 +29,7 @@ planetary_add_test(test_accumulate unit/test_accumulate.cpp planetary_stack)
 planetary_add_test(test_engine unit/test_engine.cpp planetary_stack)
 planetary_add_test(test_noise unit/test_noise.cpp planetary_stack)
 planetary_add_test(test_mineral unit/test_mineral.cpp planetary_stack)
+planetary_add_test(test_planet unit/test_planet.cpp planetary_stack)
 # Its own executable: it replaces the global operator new / delete with a counting allocator (PlanRegions' heap).
 planetary_add_test(test_plan_memory unit/test_plan_memory.cpp planetary_stack)
 # FitsText.h is the module's PCL-free keyword-text helper (header only).
@@ -56,8 +57,18 @@ if(PLANETARY_PYTHON3)
     add_test(NAME edge_chroma_fails_closed
              COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_edge_chroma.py")
     set_tests_properties(edge_chroma_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
+    # planet_check.py (planet Task 5) on a synthetic run dir: clean passes (0), a limb fringe fails (1), a missing stage
+    # file, gating run or capture fails (1); a capture with no disc (ruling Q3a) or refused by the stacker is no failure.
+    add_test(NAME planet_check_fails_closed
+             COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_planet_check.py")
+    set_tests_properties(planet_check_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
+    # mineral_check.py's R31 / R12 verdicts by rulings R38 (R31 informational) and R39 (0528a's bottom row accepted),
+    # fail-closed for anything else (another capture or side, past the excused level, a NaN). Needs scipy and Pillow too.
+    add_test(NAME mineral_check_fails_closed
+             COMMAND "${PLANETARY_PYTHON3}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_mineral_check.py")
+    set_tests_properties(mineral_check_fails_closed PROPERTIES SKIP_RETURN_CODE 77)
 else()
-    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed and edge_chroma_fails_closed are not registered")
+    message(STATUS "planetary: python3 not found -- fpn_verdict_fails_closed, edge_chroma_fails_closed, planet_check_fails_closed and mineral_check_fails_closed are not registered")
 endif()
 
 # The PixInsight harness refuses to re-sign a shipped module (a PLANETARY_SO inside the PixInsight install

@@ -7,6 +7,8 @@
 //               [--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--sharpen A]
 //               [--mineral-out x.fits] [--mineral-also K:y.fits]... [--sharpen-also A:z.fits]...
 //               [--mineral-stages DIR] [--mineral-crop L,T,R,B]
+//               [--planet] [--saturation K] [--planet-out x.fits] [--planet-stages DIR]
+//               [--chroma-blur-also S:y.fits]... [--saturation-also K:y.fits]...
 //
 // Runs RunStack on the video (default: Auto pattern, every hardware thread) and prints the summary --
 // as one JSON object with --json, else as plain lines -- including the phase times, the read
@@ -52,7 +54,20 @@
 // (StackOutcome::noise, Ruling R35) goes to PrepareMineral, and the JSON's "stackNoise" gives its model line and the
 // frame count k_eff over its grid. --mineral-crop L,T,R,B cuts the stack (and its noise) by those px before the
 // mineral moon, which then runs on that field (--out still writes the whole stack): B9's equal-field split-half check.
-// Exit 0 with an image, 2 when diagnosed, 1 on error, 4 when --mineral is refused.
+// Planet processing (planet Task 5, real-data acceptance; spec 2026-10-29-planetary-planet-processing-design.md).
+// --planet applies the window's gate first (PlanetRefusal on the target, the name's filter and the resolved pattern):
+// refused, it prints the reason and exits 4 without stacking. Otherwise PreparePlanet + FinishPlanet on the stack at
+// --saturation (default kPlanetSaturationDefault), --chroma-blur and --sharpen (under --planet their defaults are
+// kPlanetChromaBlurDefault and kPlanetSharpenDefault), with the stack's noise; the JSON gains "planet": the seven
+// HISTORY lines, the step times, "sliderSeconds" (FinishPlanet alone), the notice, the display's white point, the
+// disc's px and box, and "dispersion": MeasurePlanetDispersion before the alignment (on a replica of steps 1-4, with
+// what AlignPlanetChannels applied there; the replica's aligned and clamped display is checked equal to the cache's)
+// and after it (on the cache's display). --planet-out writes the output (FITS); --sharpen-also A:PATH,
+// --chroma-blur-also S:PATH and --saturation-also K:PATH (repeatable) re-run FinishPlanet on the same cache with that
+// one slider moved, as the window's sliders do. --planet-stages DIR writes display.fits (the cache's: calibrated,
+// background-neutral, linear, aligned, clamped), display_unaligned.fits (the replica's, before the alignment),
+// lum_sharp.fits, lin_unsharp.fits, lin_sharp.fits, calibrated.fits and masks.fits, as --mineral-stages does.
+// Exit 0 with an image, 2 when diagnosed, 1 on error, 4 when --mineral or --planet is refused.
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -76,6 +91,7 @@
 #include "Measure.h"
 #include "Mineral.h"
 #include "Noise.h"
+#include "Planet.h"
 #include "ProbeFits.h"
 #include "ProbeSource.h"
 #include "SerFile.h"
@@ -228,6 +244,17 @@ ser::FloatImage UnDisplay(ser::FloatImage l, const stack::DisplayCurve& c) {
     return l;
 }
 
+// --planet: one MeasurePlanetDispersion result (with what AlignPlanetChannels applied, where it ran) as JSON.
+std::string DispersionJson(const stack::PlanetDispersion& d) {
+    auto ch = [](const stack::DispersionShift& s) {
+        return "{\"dx\":" + Fmt(s.dx, 4) + ",\"dy\":" + Fmt(s.dy, 4) + ",\"ux\":" + Fmt(s.ux, 4) + ",\"uy\":" + Fmt(s.uy, 4) +
+               ",\"measured\":" + (s.measured ? "true" : "false") + ",\"applied\":" + (s.applied ? "true" : "false") +
+               ",\"alongAxis\":" + (s.alongAxis ? "true" : "false") + "}";
+    };
+    return "{\"r\":" + ch(d.r) + ",\"b\":" + ch(d.b) + ",\"pixels\":" + std::to_string(d.pixels) + ",\"sectors\":" +
+           std::to_string(d.sectors) + ",\"frameCut\":" + (d.frameCut ? "true" : "false") + ",\"reason\":" + Json(d.reason) + "}";
+}
+
 bool EndsWith(const std::string& s, const std::string& t) { return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0; }
 
 // --keep-best F, --parity: the engine sees only these frames of the source (ascending), as frames 0..n-1.
@@ -258,7 +285,9 @@ int main(int argc, char** argv) try {
         std::fprintf(stderr, "usage: stack-probe <video> [--bayer auto|none|RGGB|GRBG|GBRG|BGGR] [--threads N] "
                              "[--out stack.fits|stack.tif] [--bits 16|32] [--json] [--frames N] [--blur S] [--keep-best F] [--sample X,Y]... [--parity even|odd] "
                              "[--target auto|<name>] [--mineral] [--strength K] [--chroma-blur S] [--sharpen A] [--mineral-out x.fits] "
-                             "[--mineral-also K:y.fits]... [--sharpen-also A:z.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B]\n");
+                             "[--mineral-also K:y.fits]... [--sharpen-also A:z.fits]... [--mineral-stages DIR] [--mineral-crop L,T,R,B] "
+                             "[--planet] [--saturation K] [--planet-out x.fits] [--planet-stages DIR] "
+                             "[--chroma-blur-also S:y.fits]... [--saturation-also K:y.fits]...\n");
         return 1;
     }
     const std::string path = argv[1];
@@ -273,10 +302,17 @@ int main(int argc, char** argv) try {
     int parity = -1;  // --parity: 0 even, 1 odd, -1 every frame
     std::vector<std::pair<int, int>> samples;
     std::string targetArg = "auto";
-    bool mineral = false;
-    double strength = 8.0, chromaBlur = 2.5, sharpen = stack::kSharpenDefault;
-    std::string mineralOut, mineralStages;
-    std::vector<std::pair<double, std::string>> mineralAlso, sharpenAlso;
+    bool mineral = false, planet = false;
+    double strength = 8.0, saturation = stack::kPlanetSaturationDefault;
+    std::optional<double> chromaBlurArg, sharpenArg;  // unset: the mineral moon's or the planet's default
+    std::string mineralOut, mineralStages, planetOut, planetStages;
+    std::vector<std::pair<double, std::string>> mineralAlso, sharpenAlso, chromaAlso, saturationAlso;
+    // V:PATH (the --*-also flags).
+    auto valuePath = [](const std::string& flag, const std::string& v, std::vector<std::pair<double, std::string>>& to) {
+        const size_t colon = v.find(':');
+        if (colon == std::string::npos) throw std::invalid_argument(flag + ": V:PATH");
+        to.emplace_back(std::stod(v.substr(0, colon)), v.substr(colon + 1));
+    };
     int mineralCrop[4] = {0, 0, 0, 0};  // --mineral-crop L,T,R,B
     // --cancel-at PHASE,F (test only): cancelled() turns true once PHASE has reported F of its total (or a
     // later phase has started) -- the engine's own cancel path mid-run, as the window's Cancel and Quit
@@ -315,8 +351,14 @@ int main(int argc, char** argv) try {
         else if (a == "--target") targetArg = next();
         else if (a == "--mineral") mineral = true;
         else if (a == "--strength") strength = std::stod(next());
-        else if (a == "--chroma-blur") chromaBlur = std::stod(next());
-        else if (a == "--sharpen") sharpen = std::stod(next());
+        else if (a == "--chroma-blur") chromaBlurArg = std::stod(next());
+        else if (a == "--sharpen") sharpenArg = std::stod(next());
+        else if (a == "--planet") planet = true;
+        else if (a == "--saturation") saturation = std::stod(next());
+        else if (a == "--planet-out") planetOut = next();
+        else if (a == "--planet-stages") planetStages = next();
+        else if (a == "--chroma-blur-also") valuePath(a, next(), chromaAlso);
+        else if (a == "--saturation-also") valuePath(a, next(), saturationAlso);
         else if (a == "--mineral-out") mineralOut = next();
         else if (a == "--mineral-stages") mineralStages = next();
         else if (a == "--mineral-crop") {
@@ -325,18 +367,8 @@ int main(int argc, char** argv) try {
                 *std::min_element(mineralCrop, mineralCrop + 4) < 0)
                 throw std::invalid_argument("--mineral-crop: L,T,R,B (px, >= 0)");
         }
-        else if (a == "--mineral-also") {
-            const std::string v = next();
-            const size_t colon = v.find(':');
-            if (colon == std::string::npos) throw std::invalid_argument("--mineral-also: K:PATH");
-            mineralAlso.emplace_back(std::stod(v.substr(0, colon)), v.substr(colon + 1));
-        }
-        else if (a == "--sharpen-also") {
-            const std::string v = next();
-            const size_t colon = v.find(':');
-            if (colon == std::string::npos) throw std::invalid_argument("--sharpen-also: A:PATH");
-            sharpenAlso.emplace_back(std::stod(v.substr(0, colon)), v.substr(colon + 1));
-        }
+        else if (a == "--mineral-also") valuePath(a, next(), mineralAlso);
+        else if (a == "--sharpen-also") valuePath(a, next(), sharpenAlso);
         else if (a == "--cancel-at") {
             const std::string v = next();
             const size_t comma = v.find(',');
@@ -352,14 +384,22 @@ int main(int argc, char** argv) try {
     }
     if (bits != 16 && bits != 32) throw std::invalid_argument("--bits: 16 or 32");
     if (parity >= 0 && keepBest > 0) throw std::invalid_argument("--parity and --keep-best do not combine");
-    if (!mineral && (!mineralOut.empty() || !mineralStages.empty() || !mineralAlso.empty() || !sharpenAlso.empty()))
-        throw std::invalid_argument("--mineral-out, --mineral-also, --sharpen-also and --mineral-stages need --mineral");
-    for (const auto& f : mineralAlso)
-        if (!EndsWith(f.second, ".fits") && !EndsWith(f.second, ".fit")) throw std::invalid_argument("--mineral-also: K:PATH.fits");
-    for (const auto& f : sharpenAlso)
-        if (!EndsWith(f.second, ".fits") && !EndsWith(f.second, ".fit")) throw std::invalid_argument("--sharpen-also: A:PATH.fits");
-    if (!mineralOut.empty() && !EndsWith(mineralOut, ".fits") && !EndsWith(mineralOut, ".fit"))
-        throw std::invalid_argument("--mineral-out: a .fits/.fit path");
+    if (mineral && planet) throw std::invalid_argument("--mineral and --planet do not combine");
+    if (!mineral && (!mineralOut.empty() || !mineralStages.empty() || !mineralAlso.empty() ||
+                     (mineralCrop[0] | mineralCrop[1] | mineralCrop[2] | mineralCrop[3])))
+        throw std::invalid_argument("--mineral-out, --mineral-also, --mineral-crop and --mineral-stages need --mineral");
+    if (!planet && (!planetOut.empty() || !planetStages.empty() || !chromaAlso.empty() || !saturationAlso.empty()))
+        throw std::invalid_argument("--planet-out, --planet-stages, --chroma-blur-also and --saturation-also need --planet");
+    if (!mineral && !planet && !sharpenAlso.empty()) throw std::invalid_argument("--sharpen-also needs --mineral or --planet");
+    const double chromaBlur = chromaBlurArg.value_or(planet ? stack::kPlanetChromaBlurDefault : 2.5);
+    const double sharpen = sharpenArg.value_or(planet ? stack::kPlanetSharpenDefault : stack::kSharpenDefault);
+    for (const auto* list : {&mineralAlso, &sharpenAlso, &chromaAlso, &saturationAlso})
+        for (const auto& f : *list)
+            if (!EndsWith(f.second, ".fits") && !EndsWith(f.second, ".fit"))
+                throw std::invalid_argument("--*-also: V:PATH with a .fits/.fit path (" + f.second + ")");
+    for (const std::string* f : {&mineralOut, &planetOut})
+        if (!f->empty() && !EndsWith(*f, ".fits") && !EndsWith(*f, ".fit"))
+            throw std::invalid_argument("--mineral-out / --planet-out: a .fits/.fit path");
     const ser::CaptureName name = ser::ParseCaptureName(path);
     const ser::Target target = targetArg == "auto" ? name.target : ParseTarget(targetArg);
 
@@ -427,15 +467,19 @@ int main(int argc, char** argv) try {
         factory = [probeFactory, k]() -> std::unique_ptr<ser::FrameSource> { return std::make_unique<SubsetSource>(probeFactory(), k); };
     }
     // --mineral: the window's gate, before any stacking (the option is disabled there, so nothing is stacked).
-    if (mineral) {
+    // --planet: the same with PlanetRefusal.
+    if (mineral || planet) {
+        const char* key = mineral ? "mineral" : "planet";
         const std::optional<std::string> refusal =
-            ser::MineralMoonRefusal(target, name.filter, probeFactory()->Info(), name.filterToken);
+            mineral ? ser::MineralMoonRefusal(target, name.filter, probeFactory()->Info(), name.filterToken)
+                    : ser::PlanetRefusal(target, name.filter, probeFactory()->Info(), name.filterToken);
         if (refusal) {
             if (json)
-                std::printf("{\"capture\":%s,\"target\":%s,\"filter\":%s,\"mineral\":{\"refusal\":%s}}\n", Json(path).c_str(),
-                            Json(ser::TargetName(target)).c_str(), Json(FilterName(name.filter)).c_str(), Json(*refusal).c_str());
+                std::printf("{\"capture\":%s,\"target\":%s,\"filter\":%s,\"%s\":{\"refusal\":%s}}\n", Json(path).c_str(),
+                            Json(ser::TargetName(target)).c_str(), Json(FilterName(name.filter)).c_str(), key,
+                            Json(*refusal).c_str());
             else
-                std::printf("mineral   refused: %s\n", refusal->c_str());
+                std::printf("%-9s refused: %s\n", key, refusal->c_str());
             if (std::fflush(stdout) != 0) throw std::runtime_error("cannot write the refusal to standard output");
             return 4;
         }
@@ -549,7 +593,81 @@ int main(int argc, char** argv) try {
             WriteFits(d + "masks.fits", masks);
         }
     }
-
+    // --planet: PreparePlanet + FinishPlanet (the window's two halves), timed as the window times a slider move.
+    std::optional<stack::MineralCache> pcache;
+    std::optional<ser::FloatImage> pImage;
+    std::vector<std::string> pHistory;
+    std::vector<std::pair<std::string, double>> pSeconds;
+    double pSliderSeconds = 0;
+    stack::DisplayCurve pCurve;
+    std::optional<stack::PlanetDispersion> dispBefore, dispAfter;
+    if (planet && o.image) {
+        pcache = stack::PreparePlanet(*o.image, target, threads, progress, o.noise ? &*o.noise : nullptr);
+        stack::PlanetParams p;
+        p.saturation = saturation;
+        p.chromaBlurSigma = chromaBlur;
+        p.sharpen = sharpen;
+        const auto t0 = std::chrono::steady_clock::now();
+        stack::MineralOutcome finished = stack::FinishPlanet(*pcache, p, threads);
+        pSliderSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const ser::FloatImage& img = pImage.emplace(std::move(finished.image));
+        pHistory = std::move(finished.history);
+        pSeconds = std::move(finished.stepSeconds);
+        if (!planetOut.empty()) WriteFits(planetOut, img);
+        auto also = [&](const std::vector<std::pair<double, std::string>>& list, double stack::PlanetParams::*field) {
+            for (const auto& [v, file] : list) {
+                stack::PlanetParams q = p;
+                q.*field = v;
+                WriteFits(file, stack::FinishPlanet(*pcache, q, threads).image);
+            }
+        };
+        also(sharpenAlso, &stack::PlanetParams::sharpen);
+        also(chromaAlso, &stack::PlanetParams::chromaBlurSigma);
+        also(saturationAlso, &stack::PlanetParams::saturation);
+        // Steps 1-4 again on a copy (deterministic; the masks are checked equal): the linear calibrated RGB, the display
+        // curve and the display before the alignment, which the cache does not keep; the dispersion is measured there
+        // (before) and on the cache's display (after). The replica's own alignment and clamp must give the cache's
+        // display bit for bit, or the "before" is not the cache's.
+        ser::FloatImage lin = *o.image, unaligned;
+        std::vector<uint8_t> clipped(lin.data.size());
+        for (size_t k = 0; k < lin.data.size(); ++k) clipped[k] = lin.data[k] >= stack::kClippedLuma;
+        const stack::LunarMasks m = stack::SegmentPlanet(lin, threads);
+        if (m.disk != pcache->masks.disk || m.sky != pcache->masks.sky)
+            throw std::runtime_error("--planet: the replica's masks differ from PreparePlanet's");
+        if (m.diskCount > 0) {
+            stack::CalibratePlanetColour(lin, m, target);
+            stack::NeutraliseBackground(lin, m);
+            unaligned = lin;
+            stack::DisplayTransfer(unaligned, m, clipped, &pCurve, 0.0);
+            ser::FloatImage aligned = unaligned;
+            stack::PlanetDispersion before;
+            const stack::StepRecord rec = stack::AlignPlanetChannels(aligned, m, threads, &before);
+            if (!rec.skipped)
+                for (float& v : aligned.data) v = std::clamp(v, 0.0f, 1.0f);
+            if (aligned.data != pcache->display.data)
+                throw std::runtime_error("--planet: the replica's aligned display differs from PreparePlanet's");
+            dispBefore = before;
+            dispAfter = stack::MeasurePlanetDispersion(pcache->display, m, threads);
+        } else {
+            unaligned = pcache->display;
+        }
+        if (!planetStages.empty()) {
+            const std::string d = planetStages + "/";
+            WriteFits(d + "display.fits", pcache->display);
+            WriteFits(d + "display_unaligned.fits", unaligned);
+            const ser::FloatImage lumSharp = stack::SharpenedLuminance(*pcache, sharpen, threads, nullptr, stack::kPlanetSharpen);
+            WriteFits(d + "lum_sharp.fits", lumSharp);
+            WriteFits(d + "lin_unsharp.fits", UnDisplay(Mean3(pcache->display), pCurve));
+            WriteFits(d + "lin_sharp.fits", UnDisplay(lumSharp, pCurve));
+            WriteFits(d + "calibrated.fits", lin);
+            ser::FloatImage masks{lin.width, lin.height, 2, std::vector<float>(m.disk.size() * 2)};
+            for (size_t i = 0; i < m.disk.size(); ++i) {
+                masks.data[i * 2] = m.disk[i];
+                masks.data[i * 2 + 1] = m.sky[i];
+            }
+            WriteFits(d + "masks.fits", masks);
+        }
+    }
 
     if (json) {
         std::string j = "{";
@@ -615,6 +733,23 @@ int main(int argc, char** argv) try {
             j += "]";
         }
         j += ",\"target\":" + Json(ser::TargetName(target)) + ",\"filter\":" + Json(FilterName(name.filter));
+        // An RGB product's value at every --sample point in it (x, y less ox, oy: --mineral-crop's L, T), as JSON
+        // objects {x, y, c, v} (Task B8 and planet Task 6: the headless probe compares PlanetaryStack's _mineral and
+        // _planet windows with them).
+        auto productSamples = [&](const ser::FloatImage& im, int ox, int oy) {
+            std::string s;
+            for (const auto& [x, y] : samples) {
+                const int mx = x - ox, my = y - oy;
+                if (mx < 0 || my < 0 || mx >= im.width || my >= im.height) continue;
+                for (int c = 0; c < 3; ++c) {
+                    char v[48];
+                    std::snprintf(v, sizeof v, "%.9g", im.data[(static_cast<size_t>(my) * im.width + mx) * 3 + c]);
+                    s += std::string(s.empty() ? "" : ",") + "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
+                         ",\"c\":" + std::to_string(c) + ",\"v\":" + v + "}";
+                }
+            }
+            return s;
+        };
         if (mcache) {
             double total = 0;
             j += ",\"mineral\":{\"refusal\":null,\"notice\":" + Json(mcache->notice) + ",\"strength\":" + Fmt(strength, 2) +
@@ -637,23 +772,53 @@ int main(int argc, char** argv) try {
                 j += std::string(i ? "," : "") + "{\"sharpen\":" + Fmt(sharpenAlso[i].first, 2) + ",\"output\":" +
                      Json(sharpenAlso[i].second) + "}";
             j += "],\"stages\":" + (mineralStages.empty() ? std::string("null") : Json(mineralStages));
-            // Its smallest and largest sample and its value at every --sample point (Task B8: the headless probe
-            // compares PlanetaryStack's _mineral window with them; --mineral-crop shifts the grid by L, T).
+            // Its smallest and largest sample and its value at every --sample point.
             const auto [lo, hi] = std::minmax_element(mImage->data.begin(), mImage->data.end());
-            j += ",\"min\":" + Fmt(*lo, 6) + ",\"max\":" + Fmt(*hi, 6) + ",\"samples\":[";
-            bool firstM = true;
-            for (const auto& [x, y] : samples) {
-                const int mx = x - mineralCrop[0], my = y - mineralCrop[1];
-                if (mx < 0 || my < 0 || mx >= mImage->width || my >= mImage->height) continue;
-                for (int c = 0; c < 3; ++c) {
-                    char v[48];
-                    std::snprintf(v, sizeof v, "%.9g", mImage->data[(static_cast<size_t>(my) * mImage->width + mx) * 3 + c]);
-                    j += std::string(firstM ? "" : ",") + "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
-                         ",\"c\":" + std::to_string(c) + ",\"v\":" + v + "}";
-                    firstM = false;
-                }
+            j += ",\"min\":" + Fmt(*lo, 6) + ",\"max\":" + Fmt(*hi, 6) + ",\"samples\":[" +
+                 productSamples(*mImage, mineralCrop[0], mineralCrop[1]) + "]}";
+        }
+        if (pcache) {
+            double total = 0;
+            const stack::LunarMasks& pm = pcache->masks;
+            int bx0 = pm.width, bx1 = -1, by0 = pm.height, by1 = -1;
+            for (int y = 0; y < pm.height; ++y)
+                for (int x = 0; x < pm.width; ++x)
+                    if (pm.disk[static_cast<size_t>(y) * pm.width + x]) {
+                        bx0 = std::min(bx0, x);
+                        bx1 = std::max(bx1, x);
+                        by0 = std::min(by0, y);
+                        by1 = std::max(by1, y);
+                    }
+            j += ",\"planet\":{\"refusal\":null,\"notice\":" + Json(pcache->notice) + ",\"saturation\":" + Fmt(saturation, 2) +
+                 ",\"chromaBlur\":" + Fmt(chromaBlur, 2) + ",\"sharpen\":" + Fmt(sharpen, 2) + ",\"sliderSeconds\":" +
+                 Fmt(pSliderSeconds, 4) + ",\"curve\":{\"white\":" + Fmt(pCurve.white, 8) + ",\"balance\":" +
+                 Fmt(pCurve.balance, 8) + "},\"disc\":{\"pixels\":" + std::to_string(pm.diskCount) + ",\"sky\":" +
+                 std::to_string(pm.skyCount) + ",\"equivRadius\":" + Fmt(std::sqrt(pm.diskCount / M_PI), 2) +
+                 ",\"box\":" + (bx1 < 0 ? std::string("null")
+                                        : "[" + std::to_string(bx0) + "," + std::to_string(by0) + "," + std::to_string(bx1) +
+                                              "," + std::to_string(by1) + "]") +
+                 ",\"reason\":" + Json(pm.reason) + "},\"dispersion\":{\"before\":" +
+                 (dispBefore ? DispersionJson(*dispBefore) : std::string("null")) + ",\"after\":" +
+                 (dispAfter ? DispersionJson(*dispAfter) : std::string("null")) + "},\"history\":[";
+            for (size_t i = 0; i < pHistory.size(); ++i) j += (i ? "," : "") + Json(pHistory[i]);
+            j += "],\"stepSeconds\":{";
+            for (size_t i = 0; i < pSeconds.size(); ++i) {
+                j += (i ? "," : "") + Json(pSeconds[i].first) + ":" + Fmt(pSeconds[i].second, 4);
+                total += pSeconds[i].second;
             }
-            j += "]}";
+            j += "},\"seconds\":" + Fmt(total, 4) + ",\"output\":" + (planetOut.empty() ? std::string("null") : Json(planetOut));
+            auto list = [&](const char* key, const char* field, const std::vector<std::pair<double, std::string>>& l) {
+                j += std::string(",\"") + key + "\":[";
+                for (size_t i = 0; i < l.size(); ++i)
+                    j += std::string(i ? "," : "") + "{\"" + field + "\":" + Fmt(l[i].first, 3) + ",\"output\":" + Json(l[i].second) + "}";
+                j += "]";
+            };
+            list("sharpenAlso", "sharpen", sharpenAlso);
+            list("chromaBlurAlso", "chromaBlur", chromaAlso);
+            list("saturationAlso", "saturation", saturationAlso);
+            const auto [lo, hi] = std::minmax_element(pImage->data.begin(), pImage->data.end());
+            j += ",\"stages\":" + (planetStages.empty() ? std::string("null") : Json(planetStages)) + ",\"min\":" + Fmt(*lo, 6) +
+                 ",\"max\":" + Fmt(*hi, 6) + ",\"samples\":[" + productSamples(*pImage, 0, 0) + "]}";
         }
         // The stack's noise (Ruling R35): the model's line and the noise-power frame count k_eff = 1 / alpha2 over the grid.
         if (o.noise) {
@@ -704,6 +869,18 @@ int main(int argc, char** argv) try {
             std::printf(" total %.3f s\n", total);
             if (!mcache->notice.empty()) std::printf("mineral   NOTICE: %s\n", mcache->notice.c_str());
             if (!mineralOut.empty()) std::printf("wrote     %s\n", mineralOut.c_str());
+        }
+        if (pcache) {
+            for (const auto& h : pHistory) std::printf("planet    %s\n", h.c_str());
+            double total = 0;
+            std::printf("planet    time:");
+            for (const auto& p : pSeconds) {
+                std::printf(" %s %.3f;", p.first.c_str(), p.second);
+                total += p.second;
+            }
+            std::printf(" total %.3f s; slider %.3f s\n", total, pSliderSeconds);
+            if (!pcache->notice.empty()) std::printf("planet    NOTICE: %s\n", pcache->notice.c_str());
+            if (!planetOut.empty()) std::printf("wrote     %s\n", planetOut.c_str());
         }
         // Focus profiles pooled over the windows judged: the share of the signal power at periods under
         // P sensor px, for a few P.

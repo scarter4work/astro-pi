@@ -6,6 +6,7 @@
 #include <pcl/ErrorHandler.h>
 
 #include "Mineral.h"
+#include "Planet.h"
 
 namespace ser = planetary::ser;
 
@@ -19,6 +20,10 @@ PSMineralMoon*     ThePSMineralMoonParameter = nullptr;
 PSMineralStrength* ThePSMineralStrengthParameter = nullptr;
 PSChromaBlur*      ThePSChromaBlurParameter = nullptr;
 PSMineralSharpen*  ThePSMineralSharpenParameter = nullptr;
+PSPlanetProcess*    ThePSPlanetProcessParameter = nullptr;
+PSPlanetSaturation* ThePSPlanetSaturationParameter = nullptr;
+PSPlanetChromaBlur* ThePSPlanetChromaBlurParameter = nullptr;
+PSPlanetSharpen*    ThePSPlanetSharpenParameter = nullptr;
 
 PSFilePath::PSFilePath( MetaProcess* p ) : MetaString( p )
 {
@@ -125,5 +130,48 @@ int PSMineralSharpen::Precision() const { return 2; }
 double PSMineralSharpen::DefaultValue() const { return planetary::stack::kSharpenDefault; }
 double PSMineralSharpen::MinimumValue() const { return 0.0; }
 double PSMineralSharpen::MaximumValue() const { return planetary::stack::kSharpenMax; }
+
+// ----------------------------------------------------------------------------
+
+PSPlanetProcess::PSPlanetProcess( MetaProcess* p ) : MetaBoolean( p )
+{
+   ThePSPlanetProcessParameter = this;
+}
+
+IsoString PSPlanetProcess::Id() const { return "planetProcess"; }
+bool PSPlanetProcess::DefaultValue() const { return false; }
+
+PSPlanetSaturation::PSPlanetSaturation( MetaProcess* p ) : MetaDouble( p )
+{
+   ThePSPlanetSaturationParameter = this;
+}
+
+IsoString PSPlanetSaturation::Id() const { return "planetSaturation"; }
+int PSPlanetSaturation::Precision() const { return 2; }
+double PSPlanetSaturation::DefaultValue() const { return planetary::stack::kPlanetSaturationDefault; }
+double PSPlanetSaturation::MinimumValue() const { return 0.0; }
+double PSPlanetSaturation::MaximumValue() const { return planetary::stack::kPlanetSaturationMax; }
+
+PSPlanetChromaBlur::PSPlanetChromaBlur( MetaProcess* p ) : MetaDouble( p )
+{
+   ThePSPlanetChromaBlurParameter = this;
+}
+
+IsoString PSPlanetChromaBlur::Id() const { return "planetChromaBlur"; }
+int PSPlanetChromaBlur::Precision() const { return 2; }
+double PSPlanetChromaBlur::DefaultValue() const { return planetary::stack::kPlanetChromaBlurDefault; }
+double PSPlanetChromaBlur::MinimumValue() const { return 0.0; }
+double PSPlanetChromaBlur::MaximumValue() const { return planetary::stack::kPlanetChromaBlurMax; }
+
+PSPlanetSharpen::PSPlanetSharpen( MetaProcess* p ) : MetaDouble( p )
+{
+   ThePSPlanetSharpenParameter = this;
+}
+
+IsoString PSPlanetSharpen::Id() const { return "planetSharpen"; }
+int PSPlanetSharpen::Precision() const { return 2; }
+double PSPlanetSharpen::DefaultValue() const { return planetary::stack::kPlanetSharpenDefault; }
+double PSPlanetSharpen::MinimumValue() const { return 0.0; }
+double PSPlanetSharpen::MaximumValue() const { return planetary::stack::kPlanetSharpenMax; }
 
 } // namespace pcl

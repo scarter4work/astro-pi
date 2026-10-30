@@ -98,7 +98,7 @@ double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& regi
 // white noise (1 for every layer).
 // amount (the Sharpen slider, Task SHARP): 0 leaves lum1 exactly as it is (the step is skipped, HISTORY says so);
 // 1 is the nominal gains above; above 1 each layer's boost grows by (amount - 1) x {3, 1, 0, 0} more, the finest
-// layer most, as a deconvolution would (Mineral.cpp, kLayerExtra: measured on real 64.6F against Scott's
+// layer most, as a deconvolution would (Mineral.cpp, kMoonSharpen: measured on real 64.6F against Scott's
 // reference). The noise limit (Wiener factor, soft threshold at the per-pixel noise) holds at every amount: a
 // noise-only (flat) disc's noise gain is 1.006 at 1, 1.04 at 2, 1.13 at 4. Noise riding texture above the threshold
 // takes the full gain, so on a textured disc it grows with the amount (MoonSynth, two realisations: 1.39 at 1, 1.86
@@ -107,10 +107,25 @@ double LayerNoise(const ser::FloatImage& layer, const std::vector<uint8_t>& regi
 // 64.6F's crater rims measure 1.07x his reference's crispness (2: 1.38x, at ~3.6x the disc noise; Task SHARP
 // report). Range 0 - 4. Throws std::invalid_argument for a negative or non-finite amount. HISTORY's Sharpen line
 // names the amount.
+// profile (plan Task 3, spec Ruling P1): the layers' nominal gains, their extra per amount above 1, and the limb
+// fade's scale. gain and extra are what the paragraph above calls {1.5, 2.5, 1, 1} and {3, 1, 0, 0} (kMoonSharpen's).
+// fadeRadiusFraction f: 0 is the fade above, from one to two layer reaches (2, 6, 14, 30 px) inside the half-contrast
+// line, whatever the disc's size. f > 0 scales it to the disc: layer j's fade runs from min(reach_j, f R) to
+// 2 min(reach_j, f R), R the disc's equivalent radius sqrt(diskCount / pi), and the Wiener factor is taken where
+// that fade is at full weight. A planet disc is 12-50 px across (Ruling P1): with the reach-based fade a 20 px disc
+// gives layers 2-4 no boost anywhere. With f > 0 HISTORY's Sharpen line names R and the reaches. kMoonSharpen gives
+// the Moon's output bit for bit (test_mineral "mineral output bit-identical"). Throws std::invalid_argument for a
+// negative or non-finite fade fraction, gain or extra.
 constexpr double kSharpenDefault = 1.5, kSharpenMax = 4.0;
+struct SharpenProfile {
+    std::array<double, 4> gain, extra;  // per layer 1-4: nominal gain at amount 1; boost added per amount above 1
+    double fadeRadiusFraction;          // 0: the reach-based limb fade; > 0: each reach capped at this x R
+};
+extern const SharpenProfile kMoonSharpen;  // {1.5, 2.5, 1, 1}, {3, 1, 0, 0}, 0
 StepRecord SharpenLuminanceImage(ser::FloatImage& lum1, const LunarMasks& m, int threads,
                                  const std::vector<float>* noise = nullptr,
-                                 const std::array<double, 4>* layerShape = nullptr, double amount = kSharpenDefault);
+                                 const std::array<double, 4>* layerShape = nullptr, double amount = kSharpenDefault,
+                                 const SharpenProfile& profile = kMoonSharpen);
 // The noise's shape over the starlet layers 1-4 (Ruling R33): per layer j, the robust std of layer j over the sky
 // (eroded by the layer's reach, so the disc's edge stays out) over kStarletNoise[j] times the white-noise std that
 // layer 1 implies there; layer 1 is 1 by construction. A stack's noise is correlated (the demosaic, the warp's
@@ -132,12 +147,16 @@ std::array<double, 4> LayerNoiseShape(const ser::FloatImage& lum1, const LunarMa
 // reduction. sigma 0 returns a copy. Throws std::invalid_argument for a negative or non-finite sigma.
 ser::FloatImage ChromaLayer(const ser::FloatImage& rgb, double sigma, int threads);
 // strength: k, the colour gain (the module's mineralStrength, 0-15, default 8). chromaBlurSigma: px at frames up
-// to 2000 px wide, scaled by width / 2000 above (the module's chromaBlur, 0.5-6, default 2.5). eps, devClamp and
-// satRamp are internal (amendment). satThreshold < 0 means automatic: AutoSatThreshold in MineralColour itself, the
-// cache's HighlightThreshold in ApplyMineralColour (the module's only path); the tests set it to switch the fade off.
+// to 2000 px wide, scaled by width / 2000 above (the module's chromaBlur, 0.5-6, default 2.5) while scaleBlurWithWidth
+// is set (the default: a frame-filling Moon, whose disc grows with the frame). eps, devClamp and satRamp are internal
+// (amendment). satThreshold < 0 means automatic: AutoSatThreshold in MineralColour itself, the cache's
+// HighlightThreshold in ApplyMineralColour (the module's only path); the tests set it to switch the fade off.
+// scaleBlurWithWidth false: chromaBlurSigma is px at any width (FinishPlanet: a planet's disc is the same size in a full
+// 3840 px frame as in a 320 px ROI, so the Moon's scale would blur a full-frame planet's colour 1.92x as far).
 struct MineralParams {
     double strength = 8.0, chromaBlurSigma = 2.5, sharpen = kSharpenDefault, eps = 0.002, devClamp = 0.06, satRamp = 0.12;
     double satThreshold = -1;  // < 0: automatic (see above)
+    bool scaleBlurWithWidth = true;
 };
 // 0.92 x the lowest, over R, G and B, of the channel's 99.99th percentile (linear interpolation between order
 // statistics, numpy's default) over every pixel.
@@ -160,7 +179,10 @@ double HighlightThreshold(const ser::FloatImage& rgb, const LunarMasks& m, doubl
 // would pass 0.998, w is lowered for the whole pixel (hue kept, saturation given up), so the colour never clips
 // a sample; with k 8 that acts only where L > 0.67 with w > 0.
 // Throws std::invalid_argument unless rgb is 3 channels, lumSharp 1 channel of its size, and the parameters
-// finite with strength, sigma, eps, devClamp >= 0 and satRamp > 0.
+// finite with strength, sigma, eps, devClamp >= 0 and satRamp > 0. No upper bounds: the planet path (Planet.h,
+// FinishPlanet) runs this transfer with k = Saturation (0-3), devClamp 1e3 and satThreshold 1e3, which switch the clamp
+// and the fade off (|d| < 2 for non-negative C -- PreparePlanet clamps its display to [0, 1] after the resampling, which
+// overshoots below 0 beside the limb; w = 1 below a C of 1000), the gamut guard as it is.
 StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, const MineralParams& p, int threads = 1);
 
 // ---- 8. Display transfer and the pipeline ----
@@ -169,11 +191,15 @@ StepRecord MineralColour(ser::FloatImage& rgb, const ser::FloatImage& lumSharp, 
 // not flagged in stackClipped (one flag per sample, as rgb.data; empty: none) that lands it at or under 0.95.
 // Flagged samples may reach 1.0; no other does. Skipped (samples only clipped to [0, 1]) without signal. curve
 // (if given) receives the transfer applied, the default (identity on [0, 1]) when it skipped.
+// medianTarget: where the balance puts the disc's median (0.35, the Moon's). <= 0 is linear (a planet, spec call 4):
+// balance 0.5, y = clamp(v / W, 0, 1), with the same white point rule -- W = brightest unflagged sample / 0.95, so it
+// lands at 0.95 even when calibration lifted it above 1.0 -- and skipped only when that sample is not positive.
+// HISTORY then reads "linear". Throws std::invalid_argument for a target at or above 1 or not finite.
 struct DisplayCurve {
     double white = 1, balance = 0.5;  // y = MTF(clamp(v / white, 0, 1), balance)
 };
 StepRecord DisplayTransfer(ser::FloatImage& rgb, const LunarMasks& m, const std::vector<uint8_t>& stackClipped,
-                           DisplayCurve* curve = nullptr);
+                           DisplayCurve* curve = nullptr, double medianTarget = 0.35);
 
 // Progress phase of PrepareMineral, FinishMineral and MakeMineralMoon: report(kPhaseMineral, step, 7) before each
 // of PrepareMineral's steps 0-4 and at its end (5), then FinishMineral's (6, 7) after the sharpening and (7, 7) at
@@ -213,9 +239,11 @@ MineralCache PrepareMineral(const ser::FloatImage& stack, int threads, const Pro
                             const StackNoise* noise = nullptr);
 // Step 4c on the cache: cache.lumBase sharpened by `amount` (SharpenLuminanceImage with the cache's noise and layer
 // shape); record (if given) receives the Sharpen HISTORY line (the noise's source appended). With no disc in the
-// cache it skips (record says why) and returns lumBase as it is. Throws std::invalid_argument for a negative or
-// non-finite amount.
-ser::FloatImage SharpenedLuminance(const MineralCache& cache, double amount, int threads, StepRecord* record = nullptr);
+// cache it skips (record says why: cache.notice) and returns lumBase as it is. profile: the layers' gains and fade
+// (kMoonSharpen; the planet path passes kPlanetSharpen). Throws std::invalid_argument for a negative or non-finite
+// amount.
+ser::FloatImage SharpenedLuminance(const MineralCache& cache, double amount, int threads, StepRecord* record = nullptr,
+                                   const SharpenProfile& profile = kMoonSharpen);
 // Steps 4c-7 on the cache: SharpenedLuminance at p.sharpen, then the colour on a copy of cache.display; record (if
 // given) receives the colour step's HISTORY line, sharpenRecord the Sharpen line. Cheap: a starlet transform, a
 // chroma blur and a few passes (1910 x 1071, 32 threads: about 0.07 s); it allocates about 50 bytes per pixel while
@@ -231,8 +259,12 @@ struct MineralOutcome {
     std::vector<std::pair<std::string, double>> stepSeconds;
     // Empty, or why the image is not a mineral moon, for the result line (spec anti-goal: a step that cannot run
     // says why in HISTORY and in the result line): "no lunar disk distinguished from the sky", when step 1 finds
-    // none. Every step then skips with that reason and the image is the stack clipped to [0, 1].
+    // none. Every step then skips with that reason and the image is the stack clipped to [0, 1]. The planet path also
+    // gives one on a processed image (ruling Q13: a disc filling the frame; Planet.h, PreparePlanet).
     std::string notice;
+    // The notice is step 1's no-disc reason: the image is the stack clipped to [0, 1]. False with a notice: the image
+    // was processed and the notice is a caution about it.
+    bool clipped = false;
 };
 // ApplyMineralColour as an outcome: the cache's five HISTORY lines and step times plus the Sharpen and Mineral colour
 // lines, each step timed; the notice is the cache's. The window's sliders and MakeMineralMoon both take this path, so
