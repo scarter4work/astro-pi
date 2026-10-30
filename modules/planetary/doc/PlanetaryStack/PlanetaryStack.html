@@ -163,19 +163,21 @@ one <code>HISTORY</code> line beginning <code>PlanetaryStack planet:</code> and 
 large frame of sky. The line gives the disc's size in pixels and its equivalent radius.</li>
 <li><b>Colour calibration</b>: red and blue are scaled about the sky so that the disc's mean colour equals the
 planet's own colour relative to sunlight (green is unchanged; saturated pixels are left out). That colour is the ratio
-of the planet's geometric albedos in the Johnson B, Johnson V and Cousins Rc bands, from Mallama, Krobusek &amp; Pavlov
-2017, &ldquo;Comprehensive wide-band magnitudes and albedos for the planets&rdquo;, <i>Icarus</i> 282, Table 7. The
-camera's B, G and R are taken as B, V and Rc, an approximation the line states along with the source, the target
-ratios and the disc's colour before and after.
+of the planet's geometric albedos in the Johnson B, Johnson V and Sloan r&prime; bands, from Mallama, Krobusek &amp;
+Pavlov 2017, &ldquo;Comprehensive wide-band magnitudes and albedos for the planets&rdquo;, <i>Icarus</i> 282, Table 7.
+The camera's B, G and R are taken as B, V and r&prime;, an approximation the line states along with the source, the
+target ratios and the disc's colour before and after. Red is Sloan r&prime; rather than Cousins Rc because a colour
+camera's red channel ends at its UV/IR-cut filter, near 690 nm, while the Rc band reaches past 800 nm into methane
+absorption bands the camera never sees.
   <table>
   <tr><th>Planet</th><th>B/G</th><th>R/G</th></tr>
-  <tr><td>Mercury</td><td>0.739</td><td>1.113</td></tr>
-  <tr><td>Venus</td><td>0.955</td><td>0.955</td></tr>
-  <tr><td>Mars</td><td>0.518</td><td>1.471</td></tr>
-  <tr><td>Jupiter</td><td>0.823</td><td>0.954</td></tr>
-  <tr><td>Saturn</td><td>0.679</td><td>1.295</td></tr>
-  <tr><td>Uranus</td><td>1.150</td><td>0.541</td></tr>
-  <tr><td>Neptune</td><td>1.271</td><td>0.511</td></tr>
+  <tr><td>Mercury</td><td>0.739</td><td>1.190</td></tr>
+  <tr><td>Venus</td><td>0.955</td><td>1.033</td></tr>
+  <tr><td>Mars</td><td>0.518</td><td>1.441</td></tr>
+  <tr><td>Jupiter</td><td>0.823</td><td>1.069</td></tr>
+  <tr><td>Saturn</td><td>0.679</td><td>1.238</td></tr>
+  <tr><td>Uranus</td><td>1.150</td><td>0.727</td></tr>
+  <tr><td>Neptune</td><td>1.271</td><td>0.695</td></tr>
   </table>
   Saturn's values are the paper's at ring inclination 0, so they are the globe's; with the rings open, the disc's mean
   includes ring light, and its colour is that much off. The step is skipped, and the line says why, when the disc has

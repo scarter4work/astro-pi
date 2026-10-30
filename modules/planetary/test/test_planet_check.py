@@ -29,7 +29,7 @@ CHECK = os.path.join(HERE, "planet_check.py")
 SHARPENS = (0, 1, 1.5, 2, 3, 4)
 BLURS = (0, 0.5, 1, 1.5, 2, 2.5, 3, 4, 6)
 W, H, R = 96, 80, 12.0
-SATURN = (0.679, 1.295)  # B/G, R/G
+SATURN = (0.679, 1.238)  # B/G, R/G
 
 
 def dump(path, obj):
@@ -90,7 +90,7 @@ ALIGN_APPLIED = ("Channel alignment (small disc): R +0.500, +0.000 px (+-0.010),
 
 def history(calib=True, align=ALIGN_NONE):
     return ["Planet disc: 452 px (equivalent radius 12.0 px), 5.89% of the frame, sky 80.00%",
-            ("Colour calibration: Saturn's reflectance B/G 0.679 R/G 1.295 (synthetic)" if calib else
+            ("Colour calibration: Saturn's reflectance B/G 0.679 R/G 1.238 (synthetic)" if calib else
              "Colour calibration skipped: no planet disc distinguished from the sky; nothing done"),
             "Background: sky plane removed per channel (synthetic)",
             "Display transfer: linear (no midtones stretch), white point 1.00000",

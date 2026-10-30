@@ -77,9 +77,9 @@ import sys
 import numpy as np
 
 CLIP = 0.999
-# Planet.cpp PlanetReflectance: (B/G, R/G), Mallama, Krobusek & Pavlov 2017, Table 7.
-REFLECTANCE = {"Mercury": (0.739, 1.113), "Venus": (0.955, 0.955), "Mars": (0.518, 1.471), "Jupiter": (0.823, 0.954),
-               "Saturn": (0.679, 1.295), "Uranus": (1.150, 0.541), "Neptune": (1.271, 0.511)}
+# Planet.cpp PlanetReflectance: (B/G, R/G), Mallama, Krobusek & Pavlov 2017, Table 7 (Johnson B, V; Sloan r').
+REFLECTANCE = {"Mercury": (0.739, 1.190), "Venus": (0.955, 1.033), "Mars": (0.518, 1.441), "Jupiter": (0.823, 1.069),
+               "Saturn": (0.679, 1.238), "Uranus": (1.150, 0.727), "Neptune": (1.271, 0.695)}
 SHARPENS = (0.0, 1.0, 1.5, 2.0, 3.0, 4.0)
 BLURS = (0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0)
 EPS = 0.002  # FinishPlanet's eps (Planet.h)

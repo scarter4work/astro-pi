@@ -63,26 +63,30 @@ Scott approved this plan in chat: "lets go ahead and make that work".
    neutral. Doing that to a planet would turn Mars grey and Saturn white. Instead, the planet path
    scales R and B about the background, as `CalibrateColour` does. The target is that the disc's
    mean B/G and R/G equal the planet's reflectance colour relative to sunlight. That colour is the
-   ratio of its geometric albedos in the Johnson B, Johnson V and Cousins Rc bands.
+   ratio of its geometric albedos in the Johnson B, Johnson V and Sloan r' bands.
 
    The values are from Mallama, Krobusek & Pavlov 2017, "Comprehensive wide-band magnitudes and
-   albedos for the planets", *Icarus* 282 (arXiv:1609.05048), Table 7, and were checked against the
-   paper on 2026-10-29.
+   albedos for the planets", *Icarus* 282 (arXiv:1609.05048), Table 7 (A_B and A_V from its
+   Johnson-Cousins block, A_r' from its Sloan block), and were checked against the paper on 2026-10-29.
 
-   | Planet | A_B | A_V | A_Rc | B/G = A_B/A_V | R/G = A_Rc/A_V |
+   | Planet | A_B | A_V | A_r' | B/G = A_B/A_V | R/G = A_r'/A_V |
    |---|---|---|---|---|---|
-   | Mercury | 0.105 | 0.142 | 0.158 | 0.739 | 1.113 |
-   | Venus | 0.658 | 0.689 | 0.658 | 0.955 | 0.955 |
-   | Mars | 0.088 | 0.170 | 0.250 | 0.518 | 1.471 |
-   | Jupiter | 0.443 | 0.538 | 0.513 | 0.823 | 0.954 |
-   | Saturn | 0.339 | 0.499 | 0.646 | 0.679 | 1.295 |
-   | Uranus | 0.561 | 0.488 | 0.264 | 1.150 | 0.541 |
-   | Neptune | 0.562 | 0.442 | 0.226 | 1.271 | 0.511 |
+   | Mercury | 0.105 | 0.142 | 0.169 | 0.739 | 1.190 |
+   | Venus | 0.658 | 0.689 | 0.712 | 0.955 | 1.033 |
+   | Mars | 0.088 | 0.170 | 0.245 | 0.518 | 1.441 |
+   | Jupiter | 0.443 | 0.538 | 0.575 | 0.823 | 1.069 |
+   | Saturn | 0.339 | 0.499 | 0.618 | 0.679 | 1.238 |
+   | Uranus | 0.561 | 0.488 | 0.355 | 1.150 | 0.727 |
+   | Neptune | 0.562 | 0.442 | 0.307 | 1.271 | 0.695 |
+
+   Ruling Q3c replaced the red band, first Cousins Rc, with Sloan r' from the same table: a colour
+   camera's R channel ends at its UV/IR-cut filter (~690 nm), while Rc reaches to ~800+ nm, into
+   methane absorption the camera never sees, and Rc made Jupiter come out green-cream.
 
    - **Saturn:** the paper's reference magnitudes are at ring inclination 0 (its Eq. A-6.1, C0), so
      they are effectively the globe's. The rings were near edge-on in 2025–26. At wider ring openings
      the disc mask's mean includes ring light, and the error that follows is accepted.
-   - **Approximation:** the camera's B, G and R channels are treated as B, V and Rc. HISTORY's
+   - **Approximation:** the camera's B, G and R channels are treated as B, V and r'. HISTORY's
      calibration line says so, and names the source and the target ratios.
    - **Exclusions:** clipped pixels are left out, as in `CalibrateColour`.
    - **Skips:** the same rules as `CalibrateColour`, with a HISTORY line giving the reason.

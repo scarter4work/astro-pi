@@ -83,9 +83,10 @@ PlanetSceneSpec Realistic(double r, unsigned seed) {
 TEST_CASE("planet reflectance: spec call 3's table, exactly") {
     using ser::Target;
     struct Row { Target t; double bg, rg; };
-    const Row rows[] = {{Target::Mercury, 0.739, 1.113}, {Target::Venus, 0.955, 0.955}, {Target::Mars, 0.518, 1.471},
-                        {Target::Jupiter, 0.823, 0.954}, {Target::Saturn, 0.679, 1.295}, {Target::Uranus, 1.150, 0.541},
-                        {Target::Neptune, 1.271, 0.511}};
+    // R/G = Sloan r' / Johnson V (ruling Q3c), B/G = Johnson B / Johnson V.
+    const Row rows[] = {{Target::Mercury, 0.739, 1.190}, {Target::Venus, 0.955, 1.033}, {Target::Mars, 0.518, 1.441},
+                        {Target::Jupiter, 0.823, 1.069}, {Target::Saturn, 0.679, 1.238}, {Target::Uranus, 1.150, 0.727},
+                        {Target::Neptune, 1.271, 0.695}};
     for (const Row& r : rows) {
         const auto c = stack::PlanetReflectance(r.t);
         REQUIRE(c.has_value());
@@ -120,7 +121,8 @@ TEST_CASE("planet calibration hits the catalogue colour") {
             CHECK(Contains(rec.history, "Table 7"));
             CHECK(Contains(rec.history, ser::TargetName(t)));
             CHECK(Contains(rec.history, "Johnson B"));
-            CHECK(Contains(rec.history, "Cousins Rc"));
+            CHECK(Contains(rec.history, "Sloan r'"));
+            CHECK_FALSE(Contains(rec.history, "Rc"));
             CHECK(Contains(rec.history, "before"));
             CHECK(Contains(rec.history, "after"));
         }

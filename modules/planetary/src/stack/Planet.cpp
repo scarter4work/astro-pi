@@ -356,16 +356,18 @@ LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads) {
 
 std::optional<BodyColour> PlanetReflectance(ser::Target t) {
     // Mallama, Krobusek & Pavlov 2017, "Comprehensive wide-band magnitudes and albedos for the planets", Icarus 282
-    // (arXiv:1609.05048), Table 7: geometric albedos A_B, A_V, A_Rc; B/G = A_B / A_V, R/G = A_Rc / A_V as spec call 3
-    // tabulates them.
+    // (arXiv:1609.05048), Table 7: geometric albedos A_B, A_V (Johnson block) and A_r' (Sloan block);
+    // B/G = A_B / A_V, R/G = A_r' / A_V as spec call 3 tabulates them. Red is Sloan r', not Cousins Rc (ruling Q3c):
+    // the camera's R channel ends at its UV/IR-cut filter (~690 nm), and Rc reaches past that to ~800+ nm, into
+    // methane absorption the camera never sees (Rc made Jupiter green-cream).
     switch (t) {
-        case ser::Target::Mercury: return BodyColour{0.739, 1.113};  // 0.105 0.142 0.158
-        case ser::Target::Venus: return BodyColour{0.955, 0.955};    // 0.658 0.689 0.658
-        case ser::Target::Mars: return BodyColour{0.518, 1.471};     // 0.088 0.170 0.250
-        case ser::Target::Jupiter: return BodyColour{0.823, 0.954};  // 0.443 0.538 0.513
-        case ser::Target::Saturn: return BodyColour{0.679, 1.295};   // 0.339 0.499 0.646 (ring inclination 0)
-        case ser::Target::Uranus: return BodyColour{1.150, 0.541};   // 0.561 0.488 0.264
-        case ser::Target::Neptune: return BodyColour{1.271, 0.511};  // 0.562 0.442 0.226
+        case ser::Target::Mercury: return BodyColour{0.739, 1.190};  // 0.105 0.142 0.169
+        case ser::Target::Venus: return BodyColour{0.955, 1.033};    // 0.658 0.689 0.712
+        case ser::Target::Mars: return BodyColour{0.518, 1.441};     // 0.088 0.170 0.245
+        case ser::Target::Jupiter: return BodyColour{0.823, 1.069};  // 0.443 0.538 0.575
+        case ser::Target::Saturn: return BodyColour{0.679, 1.238};   // 0.339 0.499 0.618 (ring inclination 0)
+        case ser::Target::Uranus: return BodyColour{1.150, 0.727};   // 0.561 0.488 0.355
+        case ser::Target::Neptune: return BodyColour{1.271, 0.695};  // 0.562 0.442 0.307
         case ser::Target::Moon:
         case ser::Target::Other: break;
     }
@@ -460,7 +462,7 @@ StepRecord CalibratePlanetColour(ser::FloatImage& rgb, const LunarMasks& m, ser:
     rec.history = std::string("Colour calibration: ") + ser::TargetName(t) +
                   Fmt("'s reflectance B/G %.3f R/G %.3f", ref->bOverG, ref->rOverG) +
                   " (Mallama, Krobusek & Pavlov 2017, Icarus 282, Table 7; camera B, G, R taken as Johnson B, Johnson V, "
-                  "Cousins Rc); disc " + std::to_string(before.used) + " px (" + std::to_string(before.saturated) +
+                  "Sloan r'); disc " + std::to_string(before.used) + " px (" + std::to_string(before.saturated) +
                   " with a saturated sample left out)" +
                   Fmt(", B/G %.3f R/G %.3f before, ", before.sum[2] / before.sum[1], before.sum[0] / before.sum[1]) +
                   Fmt("%.3f and %.3f after", after.sum[2] / after.sum[1], after.sum[0] / after.sum[1]) +

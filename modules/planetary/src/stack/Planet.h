@@ -79,18 +79,20 @@ extern const SharpenProfile kPlanetSharpen;
 LunarMasks SegmentPlanet(const ser::FloatImage& rgb, int threads);
 
 // ---- Colour calibration (spec call 3) ----
-// A body's colour relative to sunlight: the ratios of its geometric albedos in Johnson B, Johnson V and Cousins Rc.
+// A body's colour relative to sunlight: the ratios of its geometric albedos in Johnson B, Johnson V and Sloan r'.
 struct BodyColour { double bOverG, rOverG; };
 // Mallama, Krobusek & Pavlov 2017, "Comprehensive wide-band magnitudes and albedos for the planets", Icarus 282
-// (arXiv:1609.05048), Table 7: B/G = A_B / A_V and R/G = A_Rc / A_V, as spec call 3 tabulates them (checked against
-// the paper on 2026-10-29). Saturn's are at ring inclination 0 (the paper's Eq. A-6.1, C0): the globe's.
+// (arXiv:1609.05048), Table 7: B/G = A_B / A_V and R/G = A_r' / A_V, as spec call 3 tabulates them (checked against
+// the paper on 2026-10-29). Red is the Sloan r' albedo, not Cousins Rc (ruling Q3c): the camera's R channel stops at
+// its UV/IR-cut filter (~690 nm), while Rc extends to ~800+ nm, into methane absorption the camera never sees.
+// Saturn's are at ring inclination 0 (the paper's Eq. A-6.1, C0): the globe's.
 // nullopt for the Moon and Other.
 std::optional<BodyColour> PlanetReflectance(ser::Target t);
 
 // Scales R and B about the sky plane (CalibrateColour's background model: three rounds of 3-sigma rejection) so
 // that the disc's mean less that plane has B/G and R/G equal to PlanetReflectance(t); G is unchanged. The disc
 // mean leaves out every pixel with a sample at or above kClippedLuma (Measure.h). The camera's B, G and R are taken
-// as Johnson B, V and Cousins Rc (an approximation; HISTORY says so, and names the source, the target, and the
+// as Johnson B, V and Sloan r' (an approximation; HISTORY says so, and names the source, the target, and the
 // disc's B/G and R/G before and after). Skipped (unchanged; HISTORY gives the reason): for a target with no
 // catalogue colour, with no disc, or with under 30 unsaturated disc pixels or a non-positive channel level
 // (Ruling P1's absolute floor in place of the Moon's 1% of the frame). With under 1% of the frame in sky it runs
