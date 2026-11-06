@@ -46,3 +46,19 @@ def test_no_catalog_zero_matches(simple_wcs_header):
     out, stats = cross_match(detected, catalog, w, tolerance_px=3.0)
     assert stats.n_matched == 0
     assert bool(out["matched"][0]) is False
+
+
+def test_match_propagates_optional_bp_rp(simple_wcs_header):
+    w = load_wcs(simple_wcs_header)
+    detected = Table()
+    detected["x"] = [150.0, 50.0]; detected["y"] = [100.0, 60.0]
+    detected["flux"] = [1.0, 0.5]; detected["fwhm"] = [4.0, 4.0]
+    catalog = _catalog_from_wcs(w, [(150.5, 100.2), (10.0, 10.0)], [120.0, 800.0])
+    catalog["bp_rp"] = [1.25, 0.3]
+    out, _ = cross_match(detected, catalog, w, tolerance_px=3.0)
+    assert out["bp_rp"][0] == pytest.approx(1.25)
+    assert np.isnan(out["bp_rp"][1])
+    # catalogue without colour: no bp_rp column invented
+    del catalog["bp_rp"]
+    out2, _ = cross_match(detected, catalog, w, tolerance_px=3.0)
+    assert "bp_rp" not in out2.colnames

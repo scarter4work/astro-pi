@@ -21,6 +21,10 @@ def cross_match(detected: Table, catalog: Table, wcs, tolerance_px: float):
     out["matched"] = np.zeros(n, dtype=bool)
     for col in ("r_med_geo", "r_lo_geo", "r_hi_geo"):
         out[col] = np.full(n, np.nan, dtype=float)
+    # Optional Gaia colour: carried only when the catalogue has it.
+    has_colour = "bp_rp" in catalog.colnames
+    if has_colour:
+        out["bp_rp"] = np.full(n, np.nan, dtype=float)
 
     if n == 0 or len(catalog) == 0:
         return out, MatchStats(n, 0, 0.0, float("nan"))
@@ -44,6 +48,8 @@ def cross_match(detected: Table, catalog: Table, wcs, tolerance_px: float):
         out["r_med_geo"][di] = catalog["r_med_geo"][ci]
         out["r_lo_geo"][di] = catalog["r_lo_geo"][ci]
         out["r_hi_geo"][di] = catalog["r_hi_geo"][ci]
+        if has_colour:
+            out["bp_rp"][di] = catalog["bp_rp"][ci]
         offsets.append(d)
 
     n_matched = len(best)
