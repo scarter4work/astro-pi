@@ -14,7 +14,7 @@ _LANE_MAX_WIDTH_PX = 15      # grey closing fills dark features narrower than th
 _SKY_PERCENTILE = 5.0
 _BRIGHT_PERCENTILE = 99.0
 _MIN_SURROUND_FRAC = 0.05    # surround must exceed sky by this fraction of the bright range
-_BALMER_SATURATION = 3.0     # ha/hb excess (over Case B, as a ratio) at which dust -> ~0.63
+_BALMER_SATURATION = 3.0     # excess = ratio/2.86 - 1; at excess 3 (ratio 4x Case B) dust = 1 - e^-1 ~ 0.63
 
 
 def dust_from_structure(lum: np.ndarray, lane_px: int = _LANE_MAX_WIDTH_PX) -> np.ndarray:
@@ -37,9 +37,30 @@ def dust_from_structure(lum: np.ndarray, lane_px: int = _LANE_MAX_WIDTH_PX) -> n
     return np.clip(opacity * gate, 0.0, 1.0).astype(np.float32)
 
 
+def _signal_gate(a: np.ndarray) -> np.ndarray:
+    """0 where ``a`` is at its own sky floor, ramping to 1 once it is clearly above it.
+
+    Sky = low percentile, scale = bright percentile - sky. A (near) flat field has no
+    distinguishable sky, so it is not gated.
+    """
+    sky = np.percentile(a, _SKY_PERCENTILE)
+    bright = np.percentile(a, _BRIGHT_PERCENTILE)
+    rng = bright - sky
+    if rng < _MIN_SURROUND_FRAC * max(bright, 1e-12):
+        return np.ones_like(a)
+    t = _MIN_SURROUND_FRAC * rng
+    return np.clip((gaussian_filter(a, 1.0) - sky - t) / t, 0.0, 1.0)
+
+
 def dust_from_balmer(ha: np.ndarray, hb: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """Opacity in [0, 1] from the Balmer decrement; ha/hb at or below Case B (2.86) -> 0."""
+    """Opacity in [0, 1] from the Balmer decrement; ha/hb at or below Case B (2.86) -> 0.
+
+    Gated by signal: where Ha or Hb sits at its own sky floor the ratio is noise, so the
+    opacity is suppressed there.
+    """
     ha = np.clip(np.nan_to_num(np.asarray(ha, dtype=np.float64)), 0.0, None)
     hb = np.clip(np.nan_to_num(np.asarray(hb, dtype=np.float64)), 0.0, None)
     excess = np.maximum(ha / (hb + eps) / CASE_B_HA_HB - 1.0, 0.0)
-    return (1.0 - np.exp(-excess / _BALMER_SATURATION)).astype(np.float32)
+    dust = 1.0 - np.exp(-excess / _BALMER_SATURATION)
+    gate = np.minimum(_signal_gate(ha), _signal_gate(hb))
+    return np.clip(dust * gate, 0.0, 1.0).astype(np.float32)

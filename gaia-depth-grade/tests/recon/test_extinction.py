@@ -37,3 +37,24 @@ def test_balmer_decrement_tracks_extinction():
     assert d[:, 16:].mean() > 0.3
     ha2 = ha.copy(); ha2[:, 16:] = 2.0              # below Case B -> ~0
     assert dust_from_balmer(ha2, hb).max() < 0.01
+
+
+def test_dust_from_structure_noisy_sky_stays_clean():
+    rng = np.random.default_rng(0)
+    lum = _lane_field()
+    lum = lum + rng.normal(0, 0.01, lum.shape).astype(np.float32)
+    dust = dust_from_structure(lum)
+    assert dust[:, 0:12].mean() < 0.05 and dust[:, 0:12].max() < 0.2   # noisy sky
+    assert dust[:20, :10].max() < 0.2
+    assert dust[40:56, 51:55].mean() > 0.6                              # lane still high
+
+
+def test_dust_from_balmer_noisy_sky_gated():
+    rng = np.random.default_rng(1)
+    hb = np.full((64, 64), 0.02) + rng.normal(0, 0.01, (64, 64))
+    ha = np.full((64, 64), 0.02) + rng.normal(0, 0.01, (64, 64))
+    hb[:, 32:] += 1.0                      # genuine signal region, reddened
+    ha[:, 32:] += 2.86 * 3.0
+    d = dust_from_balmer(ha, hb)
+    assert d[:, :24].max() < 0.05          # noisy sky: no spurious dust
+    assert d[:, 36:].mean() > 0.3          # real high-ratio signal still reads high
