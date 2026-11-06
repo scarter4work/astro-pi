@@ -12,6 +12,9 @@ from .wcs import FieldFootprint
 log = logging.getLogger(__name__)
 
 _REQUIRED = ("ra", "dec", "r_med_geo", "r_lo_geo", "r_hi_geo", "source_id")
+# Carried through when present, never required: consumers that read _REQUIRED are
+# unaffected. bp_rp (Gaia BP-RP colour) feeds the exciting-star picker.
+_OPTIONAL = ("bp_rp",)
 
 # The ESA Gaia archive (TAP queries and result downloads). Pinned here, HTTPS
 # only, rather than inherited from astroquery's defaults: the only network
@@ -38,7 +41,7 @@ def build_adql(footprint: FieldFootprint, top: int,
         mag_clause += f"AND g.phot_g_mean_mag < {mag_lt} "
     return (
         f"SELECT TOP {top} "
-        "g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag "
+        "g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp "
         "FROM gaiadr3.gaia_source AS g "
         # Bailer-Jones (2021) geometric distances: published as external.gaiaedr3_distance
         # on the ESA Gaia archive (keyed by DR3 source_id). There is no gaiadr3.distances.
@@ -128,6 +131,6 @@ class GaiaStarSource(DistanceSource):
             raise RuntimeError(f"Gaia result missing columns: {sorted(missing)}")
         if len(tbl) == 0:
             raise RuntimeError("Gaia query returned zero rows for this field")
-        tbl = tbl[list(_REQUIRED)]
+        tbl = tbl[list(_REQUIRED) + [c for c in _OPTIONAL if c in tbl.colnames]]
         tbl.write(path, format="ascii.ecsv", overwrite=True)
         return tbl

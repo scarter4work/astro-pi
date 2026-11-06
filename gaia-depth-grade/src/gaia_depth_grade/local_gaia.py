@@ -19,7 +19,7 @@ import logging
 import numpy as np
 from astropy.table import Table
 
-from .distances import DistanceSource, _REQUIRED
+from .distances import DistanceSource, _OPTIONAL, _REQUIRED
 from .wcs import FieldFootprint
 
 log = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def sigma_parallax_from_g(g_mag: np.ndarray) -> np.ndarray:
     return np.interp(g, _G_KNOTS, _SIGMA_PI_KNOTS)
 
 
-def parallax_to_distance_table(ra, dec, parallax_mas, g_mag, snr_min=5.0):
+def parallax_to_distance_table(ra, dec, parallax_mas, g_mag, snr_min=5.0, bp_rp=None):
     """Build the distance table the pipeline expects from raw local-Gaia columns.
 
     distance = 1000/parallax (pc); r_lo/r_hi propagate a synthesized sigma so
@@ -48,6 +48,9 @@ def parallax_to_distance_table(ra, dec, parallax_mas, g_mag, snr_min=5.0):
     dec = np.asarray(dec, dtype=float)
     plx = np.asarray(parallax_mas, dtype=float)
     g = np.asarray(g_mag, dtype=float)
+    # Optional BP-RP colour; NaN when the export carries none.
+    colour = (np.full(len(ra), np.nan) if bp_rp is None
+              else np.asarray(bp_rp, dtype=float))
 
     sigma = sigma_parallax_from_g(g)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -60,6 +63,7 @@ def parallax_to_distance_table(ra, dec, parallax_mas, g_mag, snr_min=5.0):
                     "unreliable). Kept %d.", n_drop, len(plx), snr_min, int(keep.sum()))
 
     ra, dec, plx, sigma = ra[keep], dec[keep], plx[keep], sigma[keep]
+    colour = colour[keep]
     r_med = 1000.0 / plx
     # Distance bounds from the parallax +/- sigma interval (pc). A near-zero
     # lower-parallax bound -> very large r_hi -> low confidence, as intended.
@@ -77,6 +81,7 @@ def parallax_to_distance_table(ra, dec, parallax_mas, g_mag, snr_min=5.0):
     # No source_id in the local record; synthesize a stable index so the table
     # satisfies the same schema as the online source (used only for dedup/joins).
     t["source_id"] = np.arange(len(ra), dtype=np.int64)
+    t["bp_rp"] = colour
     return t
 
 
@@ -89,20 +94,21 @@ class LocalGaiaSource(DistanceSource):
         self.snr_min = snr_min
 
     def distances_for(self, footprint: FieldFootprint) -> Table:
-        ra, dec, plx, g = _read_pi_gaia_tsv(self.tsv_path)
+        ra, dec, plx, g, *rest = _read_pi_gaia_tsv(self.tsv_path)
+        bp = rest[0] if rest else np.full(len(ra), np.nan)
         if self.mag_limit is not None:
             keep = g < self.mag_limit
             n = int((~keep).sum())
             if n:
                 log.warning("local Gaia: magnitude cut G<%.1f excludes %d source(s).",
                             self.mag_limit, n)
-            ra, dec, plx, g = ra[keep], dec[keep], plx[keep], g[keep]
-        tbl = parallax_to_distance_table(ra, dec, plx, g, self.snr_min)
+            ra, dec, plx, g, bp = ra[keep], dec[keep], plx[keep], g[keep], bp[keep]
+        tbl = parallax_to_distance_table(ra, dec, plx, g, self.snr_min, bp_rp=bp)
         if len(tbl) == 0:
             raise RuntimeError("local Gaia produced zero usable sources after the "
                                "parallax/magnitude cuts for this field")
         log.info("local Gaia: %d usable sources (parallax distances)", len(tbl))
-        return tbl[list(_REQUIRED)]
+        return tbl[list(_REQUIRED) + [c for c in _OPTIONAL if c in tbl.colnames]]
 
 
 def _read_pi_gaia_tsv(path: str):
@@ -118,7 +124,7 @@ def _read_pi_gaia_tsv(path: str):
 
 
 def _parse_lines(lines):
-    ra, dec, plx, g = [], [], [], []
+    ra, dec, plx, g, bp = [], [], [], [], []
     for ln in lines:
         ln = ln.strip()
         if not ln or ln.startswith("#"):
@@ -131,8 +137,14 @@ def _parse_lines(lines):
                            float(parts[2]), float(parts[3]))
         except ValueError:
             continue  # header row ("ra\tdec\t...") or stray text
-        ra.append(r); dec.append(d); plx.append(p); g.append(gg)
+        c = float("nan")  # optional 5th column: BP-RP colour
+        if len(parts) >= 5 and parts[4].strip():
+            try:
+                c = float(parts[4])
+            except ValueError:
+                pass
+        ra.append(r); dec.append(d); plx.append(p); g.append(gg); bp.append(c)
     if not ra:
         raise RuntimeError("no usable rows parsed from the local Gaia export "
-                           "(expected tab/comma-separated: ra dec parallax G)")
-    return np.array(ra), np.array(dec), np.array(plx), np.array(g)
+                           "(expected tab/comma-separated: ra dec parallax G [bp_rp])")
+    return np.array(ra), np.array(dec), np.array(plx), np.array(g), np.array(bp)

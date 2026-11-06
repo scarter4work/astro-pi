@@ -41,7 +41,7 @@ def test_parse_lines_skips_header_and_comments(tmp_path):
     p = tmp_path / "gaia.tsv"
     p.write_text("# field export\nra\tdec\tparallax\tphot_g_mean_mag\n"
                  "323.7\t57.5\t2.5\t11.3\n323.8\t57.6\t1.0\t14.0\n")
-    ra, dec, plx, g = _read_pi_gaia_tsv(str(p))
+    ra, dec, plx, g, _bp = _read_pi_gaia_tsv(str(p))
     assert len(ra) == 2
     assert ra[0] == pytest.approx(323.7) and plx[1] == pytest.approx(1.0)
 
@@ -54,4 +54,21 @@ def test_local_source_applies_mag_cut_and_schema(monkeypatch):
     # G=19 is < 18? no -> excluded by mag cut; only the G=12 star remains.
     t = src.distances_for(FieldFootprint(10.0, 20.0, 0.05))
     assert len(t) == 1
-    assert set(t.colnames) == {"ra", "dec", "r_med_geo", "r_lo_geo", "r_hi_geo", "source_id"}
+    assert set(t.colnames) == {"ra", "dec", "r_med_geo", "r_lo_geo", "r_hi_geo", "source_id", "bp_rp"}
+
+
+def test_offline_tsv_optional_bp_rp(tmp_path):
+    from gaia_depth_grade.local_gaia import _read_pi_gaia_tsv, parallax_to_distance_table
+    p5 = tmp_path / "five.tsv"
+    p5.write_text("323.7\t57.5\t2.5\t11.3\t0.9\n323.8\t57.6\t1.0\t14.0\t1.7\n")
+    ra, dec, plx, g, bp = _read_pi_gaia_tsv(str(p5))
+    t = parallax_to_distance_table(ra, dec, plx, g, snr_min=1.0, bp_rp=bp)
+    assert list(t["bp_rp"]) == pytest.approx([0.9, 1.7])
+    p4 = tmp_path / "four.tsv"
+    p4.write_text("323.7\t57.5\t2.5\t11.3\n323.8\t57.6\t1.0\t14.0\n")
+    ra, dec, plx, g, bp = _read_pi_gaia_tsv(str(p4))
+    assert np.all(np.isnan(bp))
+    t = parallax_to_distance_table(ra, dec, plx, g, snr_min=1.0, bp_rp=bp)
+    assert len(t) == 2 and np.all(np.isnan(t["bp_rp"]))
+    t = parallax_to_distance_table(ra, dec, plx, g, snr_min=1.0)  # no colour at all
+    assert np.all(np.isnan(t["bp_rp"]))

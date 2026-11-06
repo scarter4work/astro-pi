@@ -166,3 +166,28 @@ def test_fetch_uses_pinned_https_archive(tmp_path, monkeypatch):
     assert seen["gaia_data_server"] == distances.GAIA_ARCHIVE_URL
     assert seen["show_server_messages"] is False
     assert seen["adql"] == "SELECT 1"
+
+
+def test_online_select_includes_bp_rp():
+    q = build_adql(FieldFootprint(10.0, 20.0, 0.05), 1900).lower()
+    assert "g.bp_rp" in q
+
+
+def test_required_consumers_unaffected(tmp_path, monkeypatch):
+    # Regression guard: a catalogue WITHOUT bp_rp still yields the required schema,
+    # and one WITH bp_rp keeps the colour alongside it.
+    from gaia_depth_grade.distances import _REQUIRED, _OPTIONAL
+    assert _OPTIONAL == ("bp_rp",)
+    assert _REQUIRED == ("ra", "dec", "r_med_geo", "r_lo_geo", "r_hi_geo", "source_id")
+    fp = FieldFootprint(10.0, 20.0, 0.05)
+    plain = GaiaStarSource(cache_dir=str(tmp_path / "a"))
+    monkeypatch.setattr(plain, "_run_query", lambda f: _fake_catalog())
+    t = plain.distances_for(fp)
+    assert list(t.colnames) == list(_REQUIRED)
+    coloured = GaiaStarSource(cache_dir=str(tmp_path / "b"))
+    cat = _fake_catalog()
+    cat["bp_rp"] = [0.8, 1.9]
+    monkeypatch.setattr(coloured, "_run_query", lambda f: cat)
+    t2 = coloured.distances_for(fp)
+    assert list(t2.colnames) == list(_REQUIRED) + ["bp_rp"]
+    assert t2["bp_rp"][1] == pytest.approx(1.9)
