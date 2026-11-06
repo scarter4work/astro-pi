@@ -26,7 +26,15 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
-from .model import IonizationMap
+from .channels import CONF_DUOBAND, CONF_OSC, CONF_SHO
+from .model import (
+    CavityModel,
+    ChannelSet,
+    Ionizer,
+    IonizationMap,
+    ReconConfig,
+    validate_shapes,
+)
 
 # --- geometry_prior ---------------------------------------------------------
 _GEOMETRY_POWER = 2.0  # paraboloid bowl; >1 steepens the well toward the apex
@@ -131,3 +139,153 @@ def emission_measure_relief(
     z = -gain * (band / scale)
     z = np.clip(z, -gain, gain)
     return z.astype(np.float32)
+
+
+# --- reconstruct_cavity (Task 8) --------------------------------------------
+_FOOTPRINT_SKY_PCT = 10.0    # robust sky floor percentile of lum
+_FOOTPRINT_PEAK_PCT = 99.5   # robust bright percentile of lum
+_EMISSIVITY_PEAK_PCT = 99.9  # robust scale for the linear colour image
+_RECON_EPS = 1e-12
+
+
+def _footprint_from_lum(lum: np.ndarray, frac: float) -> np.ndarray:
+    """Nebula footprint: pixels brighter than ``sky_floor + frac*(peak-floor)``.
+
+    ``sky_floor`` and ``peak`` are the 10th / 99.5th percentiles of ``lum`` (robust
+    to a few hot pixels and to the right-skewed emission tail). ``frac`` (default
+    0.05) keeps everything within 5% of the sky floor out of the footprint, so the
+    geometry bowl is fit over nebular gas rather than sky.
+    """
+    floor = float(np.percentile(lum, _FOOTPRINT_SKY_PCT))
+    peak = float(np.percentile(lum, _FOOTPRINT_PEAK_PCT))
+    rng = max(peak - floor, _RECON_EPS)
+    mask = lum > (floor + float(frac) * rng)
+    if not mask.any():
+        mask = np.ones(lum.shape, dtype=bool)
+    return mask
+
+
+def _linear_emissivity(channels: ChannelSet) -> np.ndarray:
+    """Linear (ny, nx, 3) colour image: [O III] -> teal, Halpha/[S II] -> red.
+
+    SHO/HOO-like linear mapping, scaled by a single robust percentile (so the
+    mapping stays linear). ``sii`` may be ``None`` (duoband / OSC); it is treated
+    as zero and simply contributes nothing extra to the red channel.
+    """
+    ha = np.clip(np.nan_to_num(channels.ha.astype(np.float64)), 0.0, None)
+    oiii = np.clip(np.nan_to_num(channels.oiii.astype(np.float64)), 0.0, None)
+    if channels.sii is not None:
+        sii = np.clip(np.nan_to_num(channels.sii.astype(np.float64)), 0.0, None)
+    else:
+        sii = np.zeros_like(ha)
+
+    peak = float(np.percentile(np.stack([ha, oiii, sii]), _EMISSIVITY_PEAK_PCT))
+    if peak <= _RECON_EPS:
+        peak = 1.0
+
+    r = (ha + sii) / peak          # Halpha + [S II]
+    g = 0.5 * oiii / peak          # half-weight green -> teal, not pure green
+    b = oiii / peak                # [O III]
+    em = np.stack([r, g, b], axis=-1)
+    return np.clip(em, 0.0, None).astype(np.float32)
+
+
+def _capture_mode(channels: ChannelSet) -> str:
+    c = channels.ratio_confidence
+    if channels.sii is not None and abs(c - CONF_SHO) < 1e-6:
+        return "sho"
+    if abs(c - CONF_DUOBAND) < 1e-6:
+        return "duoband"
+    if abs(c - CONF_OSC) < 1e-6 or channels.sii is None:
+        return "osc"
+    if c == 0.0:
+        return "nonlinear"
+    return "unknown"
+
+
+def reconstruct_cavity(
+    channels: ChannelSet,
+    ionization: IonizationMap,
+    ionizer: Ionizer,
+    lum: np.ndarray,
+    dust: np.ndarray,
+    pc_per_px: float | None,
+    config: ReconConfig,
+) -> CavityModel:
+    """Assemble the three Task-7 depth terms into one blister ``CavityModel``.
+
+    Blend (all terms share the convention 0 = nearest observer, 1 = farthest):
+
+        c      = clip(ionization.confidence, 0, 1)
+        w_geo  = w_geometry
+        w_ion  = w_ionization * c                 # CONFIDENCE-WEIGHTED
+        z_base = (w_geo*z_geo + w_ion*z_ion) / (w_geo + w_ion)
+        z      = z_base + emission_sign * w_emission * relief   # signed limb bulge
+        z      = z * (1 - w_dust*dust)            # near-side dust -> foreground
+        z      = clip(z, 0, 1), sky (outside footprint) forced to 0
+
+    Because the weight on ``ionization_depth`` scales with confidence, low-confidence
+    OSC data collapses toward ``geometry_prior`` and still yields a concave bowl
+    (apex deepest) rather than a flat or convex core. The emission relief is already
+    signed and zero-mean; ``emission_sign=+1`` keeps the Task-7 convention that a
+    bright limb ridge bulges toward the observer (smaller z).
+
+    ``apex_xy`` is the ionizer's projected position. ``emissivity`` is a linear
+    colour image ([O III]->teal, Halpha/[S II]->red); ``sii=None`` is supported.
+    The footprint handed to ``geometry_prior`` is derived here from ``lum`` (Note 5).
+    """
+    validate_shapes(channels.ha, channels.oiii, channels.sii,
+                    ionization.oiii_fraction, lum, dust)
+
+    L = np.clip(np.nan_to_num(np.asarray(lum, dtype=np.float64)), 0.0, None)
+    ny, nx = L.shape[:2]
+
+    foot = _footprint_from_lum(L, config.footprint_frac)
+    apex = (float(ionizer.x), float(ionizer.y))
+
+    z_geo = geometry_prior((ny, nx), apex, foot, power=config.geometry_power).astype(np.float64)
+    z_ion = ionization_depth(ionization, gamma=config.ionization_gamma).astype(np.float64)
+
+    c = float(np.clip(ionization.confidence, 0.0, 1.0))
+    w_geo = max(float(config.w_geometry), 0.0)
+    w_ion = max(float(config.w_ionization), 0.0) * c
+    denom = w_geo + w_ion
+    if denom <= _RECON_EPS:
+        z = z_geo.copy()  # degenerate config: fall back to the geometric bowl
+    else:
+        z = (w_geo * z_geo + w_ion * z_ion) / denom
+
+    relief = emission_measure_relief(L, gain=1.0).astype(np.float64)
+    z = z + float(config.emission_sign) * float(config.w_emission) * relief
+
+    d = np.clip(np.nan_to_num(np.asarray(dust, dtype=np.float64)), 0.0, 1.0)
+    z = z * (1.0 - float(np.clip(config.w_dust, 0.0, 1.0)) * d)
+
+    z = np.where(foot, z, 0.0)
+    z = np.clip(z, 0.0, 1.0).astype(np.float32)
+
+    meta = {
+        "w_geometry": w_geo,
+        "w_ionization_max": float(config.w_ionization),
+        "w_ionization_effective": w_ion,
+        "w_emission": float(config.w_emission),
+        "emission_sign": float(config.emission_sign),
+        "w_dust": float(config.w_dust),
+        "ionization_confidence": c,
+        "ratio_confidence": float(channels.ratio_confidence),
+        "is_linear": bool(channels.is_linear),
+        "sii_present": channels.sii is not None,
+        "capture_mode": _capture_mode(channels),
+        "ionizer_source": ionizer.source,
+        "footprint_frac": float(config.footprint_frac),
+        "footprint_px": int(foot.sum()),
+    }
+
+    return CavityModel(
+        z=z,
+        emissivity=_linear_emissivity(channels),
+        dust=d.astype(np.float32),
+        pc_per_px=pc_per_px,
+        apex_xy=apex,
+        meta=meta,
+    )
