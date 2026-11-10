@@ -27,3 +27,19 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----------------------------------------------------------------------------
+Exceptions: files in this repository that are NOT licensed under the terms above
+
+scripts/ez-stretch/src/scripts/EZ Stretch BSC/EZDonutRepair.js (EZ Donut Repair)
+  is a derivative of DonutRepair by Chick Dee (https://github.com/chickadeebird),
+  Copyright (c) 2024 Chick Dee, and is licensed under the Creative Commons
+  Attribution-NonCommercial 4.0 International license (CC BY-NC 4.0,
+  http://creativecommons.org/licenses/by-nc/4.0/). The modifications are
+  Copyright (c) 2026 EZ Stretch BSC and carry the same license.
+
+scripts/ez-stretch/src/scripts/EZ Stretch BSC/EZHazeKill.js (EZ Haze Kill)
+  is Copyright (c) 2026 EZ Stretch BSC and is licensed under CC BY-NC 4.0.
+
+Neither file is covered by the BSD 3-Clause License above. Everything else in
+this repository is, unless a file or directory states its own license.

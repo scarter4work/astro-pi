@@ -34,7 +34,7 @@ Then Resources → Updates → Check for Updates. Installs:
 
 ## License
 
-astro-pi is released under the BSD 3-Clause License (see `LICENSE`), copyright (c) 2025-2026 Brian Scott Carter. `archive/` holds historical snapshots, each of which keeps the third-party licenses it ships with.
+astro-pi is released under the BSD 3-Clause License (see `LICENSE`), copyright (c) 2025-2026 Brian Scott Carter, **with two exceptions**: `scripts/ez-stretch/src/scripts/EZ Stretch BSC/EZDonutRepair.js` (a derivative of DonutRepair by Chick Dee, (c) 2024, CC BY-NC 4.0) and `.../EZHazeKill.js` (CC BY-NC 4.0) are licensed under the Creative Commons Attribution-NonCommercial 4.0 license, not BSD-3. Their file headers, update-repository descriptions and the carve-out at the end of `LICENSE` say so. `archive/` holds historical snapshots, each of which keeps the third-party licenses it ships with.
 
 The modules link the PixInsight Class Library (PCL), which is licensed by Pleiades Astrophoto under the PCL license and is not covered by this repository's `LICENSE`. PCL is not included in this repository.
 
@@ -44,6 +44,10 @@ Each component keeps its own license; none of it is relicensed here.
 
 | Component | Where | License |
 |---|---|---|
+| DonutRepair by Chick Dee (EZDonutRepair is derived from it) | `scripts/ez-stretch/src/scripts/EZ Stretch BSC/EZDonutRepair.js` | CC BY-NC 4.0 (c) 2024 Chick Dee |
+| Ceres Solver 2.2.0 (with miniglog) | NukeX | BSD 3-Clause |
+| Eigen 5.0.1 | NukeX | Mozilla Public License 2.0 |
+| Khronos OpenCL ICD Loader and Headers | NukeX | Apache License 2.0 |
 | SQLite 3 amalgamation | `third_party/sqlite/` (PI Copilot) | Public domain (`third_party/sqlite/LICENSE.md`) |
 | Catch2 (tests) | `modules/nukex/third_party/catch2/` | Boost Software License 1.0 (`LICENSE.txt`) |
 | TweetNaCl (Ed25519 verification) | `modules/nukex/third_party/tweetnacl/` | Public domain (`LICENSE`) |

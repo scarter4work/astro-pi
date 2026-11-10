@@ -61,4 +61,9 @@ Implementation of Roger N. Clark's rnc-color-stretch algorithm for advanced imag
 
 ## License
 
-MIT License - See individual script headers for details.
+EZ Stretch (and the Lupton RGB, RNC-ColorStretch and PhotometricStretch sources) are under the BSD 3-Clause License of the astro-pi repository (`LICENSE`). Two scripts are not:
+
+- **EZ Donut Repair** is a derivative of DonutRepair by Chick Dee, (c) 2024 Chick Dee, and is licensed under CC BY-NC 4.0 (http://creativecommons.org/licenses/by-nc/4.0/).
+- **EZ Haze Kill** is licensed under CC BY-NC 4.0.
+
+Each script's header states its own license.

@@ -13,7 +13,10 @@
 // the frame (median ~ sky); a frame-filling nebula biases the median high.
 //
 // Copyright (c) 2026 EZ Stretch BSC
+// SPDX-License-Identifier: CC-BY-NC-4.0
 // Licensed under CC BY-NC 4.0  -  http://creativecommons.org/licenses/by-nc/4.0/
+// NonCommercial use only. This file is NOT covered by the BSD 3-Clause
+// license of the rest of the astro-pi repository.
 //
 // ============================================================================
 
