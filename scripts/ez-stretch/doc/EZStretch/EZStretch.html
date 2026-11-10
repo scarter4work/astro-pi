@@ -33,7 +33,7 @@ By Scott Carter. Copyright &copy; 2025-2026 Brian Scott Carter.</p>
 <a href="#needs">What it needs</a> &middot;
 <a href="#use">Using it</a> &middot;
 <a href="#lupton">Lupton RGB</a> &middot;
-<a href="#rnc">RNC-ColorStretch</a> &middot;
+<a href="#rootpower">Root-power stretch</a> &middot;
 <a href="#photo">PhotometricStretch</a> &middot;
 <a href="#network">Network connections</a> &middot;
 <a href="#programs">External programs</a> &middot;
@@ -44,11 +44,11 @@ By Scott Carter. Copyright &copy; 2025-2026 Brian Scott Carter.</p>
 
 <h2 id="what">What it does</h2>
 <p>EZ Stretch turns a linear (unstretched) colour image into a stretched one with one of three algorithms, chosen in
-the dialog: <b>Lupton RGB</b>, <b>RNC-ColorStretch</b> and <b>PhotometricStretch</b>. While you adjust the parameters,
+the dialog: <b>Lupton RGB</b>, <b>Root-power stretch</b> and <b>PhotometricStretch</b>. While you adjust the parameters,
 a preview shows the result. <b>Execute</b> creates a new image window with the stretched result; the image you started
 from is never changed.</p>
 <p>The new window is a 32-bit floating-point RGB image named after the source view, with a suffix for the algorithm:
-<code>&lt;id&gt;_lupton</code>, <code>&lt;id&gt;_rnc</code> or <code>&lt;id&gt;_photo</code>. EZ Stretch does not save it;
+<code>&lt;id&gt;_lupton</code>, <code>&lt;id&gt;_rootpower</code> or <code>&lt;id&gt;_photo</code>. EZ Stretch does not save it;
 you save it through PixInsight as usual.</p>
 
 <h2 id="needs">What it needs</h2>
@@ -98,10 +98,13 @@ channels of a pixel by its largest value (hue kept); <b>Hard Clip</b> cuts each 
 rescales the whole result to the range 0&ndash;1.</td></tr>
 </table>
 
-<h2 id="rnc">RNC-ColorStretch</h2>
-<p>A root-power stretch after the method of Roger N. Clark's rnc-color-stretch: each channel is raised to the power
-1 / <i>Root Power</i>. This is an implementation of the root-power stretch only; it does not include the colour-recovery
-step of Clark's method.</p>
+<h2 id="rootpower">Root-power stretch</h2>
+<p>Each channel is raised to the power 1 / <i>Root Power</i>, optionally followed by a second root-power pass, a fixed
+tone curve and a saturation change (below). It does not recover or restore colour: the channels are stretched
+independently, so colour ratios are not preserved.</p>
+<p><i>Provenance.</i> This is an independent implementation, written from the author's own requirements and inspired by the
+published idea of power/root stretching of astronomical images. Power stretching in general is described publicly by
+Roger N. Clark (clarkvision.com); this is not his software, uses none of his code, and no endorsement by him is implied.</p>
 <table>
 <tr><th>Parameter</th><th>Range</th><th>Default</th><th>Effect</th></tr>
 <tr><td>Root Power</td><td>1 &ndash; 200</td><td>6</td><td>Each channel becomes <i>x</i><sup>1/Root Power</sup>.</td></tr>
@@ -188,8 +191,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.</pre>
    <li>R. Lupton, M. R. Blanton, G. Fekete, D. W. Hogg, W. O'Mullane, A. Szalay and N. Wherry, &ldquo;Preparing
        Red-Green-Blue Images from CCD Data&rdquo;, <i>Publications of the Astronomical Society of the Pacific</i> 116
        (2004) 133&ndash;137.</li>
-   <li>R. N. Clark, &ldquo;rnc-color-stretch&rdquo;, clarkvision.com. EZ Stretch's RNC-ColorStretch is an independent
-       implementation of the root-power stretch described there, not Clark's software.</li>
+   <li>Power/root stretching of astronomical images is described publicly by R. N. Clark, clarkvision.com. EZ Stretch's
+       root-power stretch is an independent implementation, not Clark's software.</li>
 </ul>
 <p>Neither author is associated with EZ Stretch or endorses it.</p>
 

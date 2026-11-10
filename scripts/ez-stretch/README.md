@@ -4,12 +4,12 @@ A collection of PixInsight tools for astrophotography - stretching scripts and B
 
 ## Scripts (PJSR)
 
-The update repository ships **EZ Stretch** (`EZStretch.js`: Lupton RGB, a root-power RNC-ColorStretch and a
+The update repository ships **EZ Stretch** (`EZStretch.js`: Lupton RGB, a root-power stretch and a
 luminance-weighted PhotometricStretch in one dialog; documentation in `doc/EZStretch/EZStretch.html`, installed as
 `doc/scripts/EZStretch/`) and EZ Haze Kill. The standalone scripts below are in this folder but are not distributed.
 
 ### PhotometricStretch
-Physics-based RGB asinh stretch with automatic sensor/filter detection from FITS metadata. Combines Lupton RGB mathematics, RNC-Color-Stretch workflow, and Veralux sensor-aware QE weighting.
+Physics-based RGB asinh stretch with automatic sensor/filter detection from FITS metadata. Combines Lupton RGB mathematics and Veralux sensor-aware QE weighting.
 
 **Features:**
 - Automatic hardware detection from FITS headers
@@ -27,7 +27,7 @@ Implementation of the Lupton et al. (2004) RGB stretch algorithm for creating co
 - Per-channel or linked black point support
 
 ### RNC-ColorStretch
-Implementation of Roger N. Clark's rnc-color-stretch algorithm for advanced image stretching.
+Independent implementation (written from this repository's own requirements spec, not Clark's software) of a power/root stretch with colour recovery. Not distributed.
 
 **Features:**
 - Power stretch with x^(1/rootpower) transformation
@@ -60,12 +60,12 @@ Implementation of Roger N. Clark's rnc-color-stretch algorithm for advanced imag
 ## References
 
 - [Lupton et al. (2004)](https://www.astro.princeton.edu/~rhl/PrettyPictures/) - "Preparing Red-Green-Blue Images from CCD Data"
-- [RNC-Color-Stretch](http://www.clarkvision.com/articles/astrophotography.software/) - Roger Clark
+- Power/root stretching is described publicly by Roger N. Clark at [clarkvision.com](http://www.clarkvision.com/articles/astrophotography.software/); no affiliation or endorsement implied
 - [Veralux](https://gitlab.com/RikyPate/vera-lux-siril-scripts) - Riccardo Paterniti
 
 ## License
 
-EZ Stretch (and the Lupton RGB, RNC-ColorStretch and PhotometricStretch sources) are under the BSD 3-Clause License of the astro-pi repository (`LICENSE`). One script is not:
+EZ Stretch (and the Lupton RGB, RNC-ColorStretch and PhotometricStretch sources; RNC-ColorStretch is an independent implementation, not distributed) are under the BSD 3-Clause License of the astro-pi repository (`LICENSE`). One script is not:
 
 - **EZ Haze Kill** is licensed under CC BY-NC 4.0.
 

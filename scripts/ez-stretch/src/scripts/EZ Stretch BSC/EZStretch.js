@@ -4,10 +4,17 @@
 //
 // Combines three stretch algorithms into a single interface:
 // - Lupton RGB: Color-preserving asinh stretch (Lupton et al. 2004)
-// - RNC-ColorStretch: root-power stretch after Roger N. Clark's rnc-color-stretch
+// - Root-power stretch: each channel raised to the power 1/rootpower (optional second pass, S-curve, saturation)
 // - PhotometricStretch: luminance-weighted asinh stretch (Rec. 709 weights)
 //
 // SPDX-License-Identifier: BSD-3-Clause (see LICENSE in the astro-pi repository)
+//
+// Provenance: the root-power stretch is an independent implementation, written
+// from the author's own requirements, inspired by the published idea of
+// power/root stretching of astronomical images. Power stretching in general is
+// described publicly by Roger N. Clark (clarkvision.com). This is not Clark's
+// software, contains none of its code, and is not affiliated with or endorsed
+// by him. It does no colour recovery.
 //
 // ============================================================================
 
@@ -15,7 +22,7 @@
 // its documentation at doc/scripts/EZStretch/EZStretch.html) and replaces
 // #script-id: code signing allows only one identification directive.
 #feature-id    EZStretch : scarter4work > EZ Stretch
-#feature-info  Unified stretch suite combining Lupton RGB, RNC-ColorStretch, \
+#feature-info  Unified stretch suite combining Lupton RGB, a root-power stretch, \
                and PhotometricStretch into a single interface. Select your \
                algorithm and adjust parameters with real-time preview.
 
@@ -54,11 +61,11 @@ if (typeof Math.asinh === 'undefined') {
 
 var Algorithm = {
    LUPTON: 0,
-   RNC: 1,
+   ROOTPOWER: 1,
    PHOTOMETRIC: 2
 };
 
-var AlgorithmNames = ["Lupton RGB", "RNC-ColorStretch", "PhotometricStretch"];
+var AlgorithmNames = ["Lupton RGB", "Root-power stretch", "PhotometricStretch"];
 
 // ============================================================================
 // Lupton Engine (from LuptonRGB.js)
@@ -213,10 +220,10 @@ function LuptonEngine() {
 }
 
 // ============================================================================
-// RNC Engine (from RNC-ColorStretch.js)
+// Root-power Engine
 // ============================================================================
 
-function RNCEngine() {
+function RootPowerEngine() {
    this.rootpower = 6.0;
    this.rootpower2 = 3.0;
    this.twoPass = false;
@@ -287,7 +294,7 @@ function RNCEngine() {
 
       var width = sourceImage.width;
       var height = sourceImage.height;
-      var outputId = targetWindow.mainView.id + "_rnc";
+      var outputId = targetWindow.mainView.id + "_rootpower";
 
       var outputWindow = new ImageWindow(width, height, 3, 32, true, true, outputId);
       var newView = outputWindow.mainView;
@@ -485,7 +492,7 @@ function UnifiedPreviewControl(parent) {
 
    this.algorithm = Algorithm.LUPTON;
    this.luptonEngine = new LuptonEngine();
-   this.rncEngine = new RNCEngine();
+   this.rpEngine = new RootPowerEngine();
    this.photoEngine = new PhotometricEngine();
 
    this.scaledImage = null;
@@ -707,8 +714,8 @@ function UnifiedPreviewControl(parent) {
          case Algorithm.LUPTON:
             engine = this.luptonEngine;
             break;
-         case Algorithm.RNC:
-            engine = this.rncEngine;
+         case Algorithm.ROOTPOWER:
+            engine = this.rpEngine;
             break;
          case Algorithm.PHOTOMETRIC:
             engine = this.photoEngine;
@@ -767,7 +774,7 @@ function EZStretchDialog() {
    this.targetWindow = null;
 
    this.luptonEngine = new LuptonEngine();
-   this.rncEngine = new RNCEngine();
+   this.rpEngine = new RootPowerEngine();
    this.photoEngine = new PhotometricEngine();
 
    this.windowTitle = TITLE + " v" + VERSION;
@@ -835,7 +842,7 @@ function EZStretchDialog() {
 
    this.algorithmCombo = new ComboBox(this);
    this.algorithmCombo.addItem("Lupton RGB - Color-preserving asinh stretch");
-   this.algorithmCombo.addItem("RNC-ColorStretch - Root-power stretch");
+   this.algorithmCombo.addItem("Root-power stretch");
    this.algorithmCombo.addItem("PhotometricStretch - Luminance-weighted asinh stretch");
    this.algorithmCombo.currentItem = 0;
    this.algorithmCombo.toolTip = "Select stretch algorithm";
@@ -953,139 +960,139 @@ function EZStretchDialog() {
    this.luptonPanel.sizer.add(luptonClipSizer);
 
    // =========================================================================
-   // RNC Parameters Panel
+   // Root-power Parameters Panel
    // =========================================================================
 
-   this.rncRootpowerControl = new NumericControl(this);
-   this.rncRootpowerControl.label.text = "Root Power:";
-   this.rncRootpowerControl.label.setFixedWidth(80);
-   this.rncRootpowerControl.setRange(1.0, 200.0);
-   this.rncRootpowerControl.slider.setRange(0, 1000);
-   this.rncRootpowerControl.setPrecision(1);
-   this.rncRootpowerControl.setValue(this.rncEngine.rootpower);
-   this.rncRootpowerControl.toolTip = "Primary power stretch factor";
-   this.rncRootpowerControl.onValueUpdated = function(value) {
-      dialog.rncEngine.rootpower = value;
-      dialog.previewControl.rncEngine.rootpower = value;
+   this.rpRootpowerControl = new NumericControl(this);
+   this.rpRootpowerControl.label.text = "Root Power:";
+   this.rpRootpowerControl.label.setFixedWidth(80);
+   this.rpRootpowerControl.setRange(1.0, 200.0);
+   this.rpRootpowerControl.slider.setRange(0, 1000);
+   this.rpRootpowerControl.setPrecision(1);
+   this.rpRootpowerControl.setValue(this.rpEngine.rootpower);
+   this.rpRootpowerControl.toolTip = "Primary power stretch factor";
+   this.rpRootpowerControl.onValueUpdated = function(value) {
+      dialog.rpEngine.rootpower = value;
+      dialog.previewControl.rpEngine.rootpower = value;
       dialog.schedulePreviewUpdate();
    };
 
-   this.rncTwoPassCheck = new CheckBox(this);
-   this.rncTwoPassCheck.text = "Two-Pass Stretch";
-   this.rncTwoPassCheck.checked = this.rncEngine.twoPass;
-   this.rncTwoPassCheck.onCheck = function(checked) {
-      dialog.rncEngine.twoPass = checked;
-      dialog.previewControl.rncEngine.twoPass = checked;
-      dialog.rncRootpower2Control.enabled = checked;
+   this.rpTwoPassCheck = new CheckBox(this);
+   this.rpTwoPassCheck.text = "Two-Pass Stretch";
+   this.rpTwoPassCheck.checked = this.rpEngine.twoPass;
+   this.rpTwoPassCheck.onCheck = function(checked) {
+      dialog.rpEngine.twoPass = checked;
+      dialog.previewControl.rpEngine.twoPass = checked;
+      dialog.rpRootpower2Control.enabled = checked;
       dialog.schedulePreviewUpdate();
    };
 
-   this.rncRootpower2Control = new NumericControl(this);
-   this.rncRootpower2Control.label.text = "Root Power 2:";
-   this.rncRootpower2Control.label.setFixedWidth(80);
-   this.rncRootpower2Control.setRange(1.0, 20.0);
-   this.rncRootpower2Control.slider.setRange(0, 200);
-   this.rncRootpower2Control.setPrecision(1);
-   this.rncRootpower2Control.setValue(this.rncEngine.rootpower2);
-   this.rncRootpower2Control.enabled = this.rncEngine.twoPass;
-   this.rncRootpower2Control.toolTip = "Secondary power factor";
-   this.rncRootpower2Control.onValueUpdated = function(value) {
-      dialog.rncEngine.rootpower2 = value;
-      dialog.previewControl.rncEngine.rootpower2 = value;
+   this.rpRootpower2Control = new NumericControl(this);
+   this.rpRootpower2Control.label.text = "Root Power 2:";
+   this.rpRootpower2Control.label.setFixedWidth(80);
+   this.rpRootpower2Control.setRange(1.0, 20.0);
+   this.rpRootpower2Control.slider.setRange(0, 200);
+   this.rpRootpower2Control.setPrecision(1);
+   this.rpRootpower2Control.setValue(this.rpEngine.rootpower2);
+   this.rpRootpower2Control.enabled = this.rpEngine.twoPass;
+   this.rpRootpower2Control.toolTip = "Secondary power factor";
+   this.rpRootpower2Control.onValueUpdated = function(value) {
+      dialog.rpEngine.rootpower2 = value;
+      dialog.previewControl.rpEngine.rootpower2 = value;
       dialog.schedulePreviewUpdate();
    };
 
-   this.rncScurveLabel = new Label(this);
-   this.rncScurveLabel.text = "S-Curve:";
-   this.rncScurveLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
-   this.rncScurveLabel.setFixedWidth(80);
+   this.rpScurveLabel = new Label(this);
+   this.rpScurveLabel.text = "S-Curve:";
+   this.rpScurveLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+   this.rpScurveLabel.setFixedWidth(80);
 
-   this.rncScurveNone = new RadioButton(this);
-   this.rncScurveNone.text = "None";
-   this.rncScurveNone.checked = true;
-   this.rncScurveNone.onCheck = function(checked) {
+   this.rpScurveNone = new RadioButton(this);
+   this.rpScurveNone.text = "None";
+   this.rpScurveNone.checked = true;
+   this.rpScurveNone.onCheck = function(checked) {
       if (checked) {
-         dialog.rncEngine.scurve = 0;
-         dialog.previewControl.rncEngine.scurve = 0;
+         dialog.rpEngine.scurve = 0;
+         dialog.previewControl.rpEngine.scurve = 0;
          dialog.schedulePreviewUpdate();
       }
    };
 
-   this.rncScurve1 = new RadioButton(this);
-   this.rncScurve1.text = "SC1";
-   this.rncScurve1.onCheck = function(checked) {
+   this.rpScurve1 = new RadioButton(this);
+   this.rpScurve1.text = "SC1";
+   this.rpScurve1.onCheck = function(checked) {
       if (checked) {
-         dialog.rncEngine.scurve = 1;
-         dialog.previewControl.rncEngine.scurve = 1;
+         dialog.rpEngine.scurve = 1;
+         dialog.previewControl.rpEngine.scurve = 1;
          dialog.schedulePreviewUpdate();
       }
    };
 
-   this.rncScurve2 = new RadioButton(this);
-   this.rncScurve2.text = "SC2";
-   this.rncScurve2.onCheck = function(checked) {
+   this.rpScurve2 = new RadioButton(this);
+   this.rpScurve2.text = "SC2";
+   this.rpScurve2.onCheck = function(checked) {
       if (checked) {
-         dialog.rncEngine.scurve = 2;
-         dialog.previewControl.rncEngine.scurve = 2;
+         dialog.rpEngine.scurve = 2;
+         dialog.previewControl.rpEngine.scurve = 2;
          dialog.schedulePreviewUpdate();
       }
    };
 
-   this.rncScurve3 = new RadioButton(this);
-   this.rncScurve3.text = "SC3";
-   this.rncScurve3.onCheck = function(checked) {
+   this.rpScurve3 = new RadioButton(this);
+   this.rpScurve3.text = "SC3";
+   this.rpScurve3.onCheck = function(checked) {
       if (checked) {
-         dialog.rncEngine.scurve = 3;
-         dialog.previewControl.rncEngine.scurve = 3;
+         dialog.rpEngine.scurve = 3;
+         dialog.previewControl.rpEngine.scurve = 3;
          dialog.schedulePreviewUpdate();
       }
    };
 
-   this.rncScurve4 = new RadioButton(this);
-   this.rncScurve4.text = "SC4";
-   this.rncScurve4.onCheck = function(checked) {
+   this.rpScurve4 = new RadioButton(this);
+   this.rpScurve4.text = "SC4";
+   this.rpScurve4.onCheck = function(checked) {
       if (checked) {
-         dialog.rncEngine.scurve = 4;
-         dialog.previewControl.rncEngine.scurve = 4;
+         dialog.rpEngine.scurve = 4;
+         dialog.previewControl.rpEngine.scurve = 4;
          dialog.schedulePreviewUpdate();
       }
    };
 
-   var rncScurveSizer = new HorizontalSizer;
-   rncScurveSizer.spacing = 8;
-   rncScurveSizer.add(this.rncScurveLabel);
-   rncScurveSizer.add(this.rncScurveNone);
-   rncScurveSizer.add(this.rncScurve1);
-   rncScurveSizer.add(this.rncScurve2);
-   rncScurveSizer.add(this.rncScurve3);
-   rncScurveSizer.add(this.rncScurve4);
-   rncScurveSizer.addStretch();
+   var rpScurveSizer = new HorizontalSizer;
+   rpScurveSizer.spacing = 8;
+   rpScurveSizer.add(this.rpScurveLabel);
+   rpScurveSizer.add(this.rpScurveNone);
+   rpScurveSizer.add(this.rpScurve1);
+   rpScurveSizer.add(this.rpScurve2);
+   rpScurveSizer.add(this.rpScurve3);
+   rpScurveSizer.add(this.rpScurve4);
+   rpScurveSizer.addStretch();
 
-   this.rncEnhanceControl = new NumericControl(this);
-   this.rncEnhanceControl.label.text = "Saturation:";
-   this.rncEnhanceControl.label.setFixedWidth(80);
-   this.rncEnhanceControl.setRange(0.5, 2.0);
-   this.rncEnhanceControl.slider.setRange(0, 150);
-   this.rncEnhanceControl.setPrecision(2);
-   this.rncEnhanceControl.setValue(this.rncEngine.enhance);
-   this.rncEnhanceControl.toolTip = "Post-stretch saturation enhancement";
-   this.rncEnhanceControl.onValueUpdated = function(value) {
-      dialog.rncEngine.enhance = value;
-      dialog.previewControl.rncEngine.enhance = value;
+   this.rpEnhanceControl = new NumericControl(this);
+   this.rpEnhanceControl.label.text = "Saturation:";
+   this.rpEnhanceControl.label.setFixedWidth(80);
+   this.rpEnhanceControl.setRange(0.5, 2.0);
+   this.rpEnhanceControl.slider.setRange(0, 150);
+   this.rpEnhanceControl.setPrecision(2);
+   this.rpEnhanceControl.setValue(this.rpEngine.enhance);
+   this.rpEnhanceControl.toolTip = "Post-stretch saturation enhancement";
+   this.rpEnhanceControl.onValueUpdated = function(value) {
+      dialog.rpEngine.enhance = value;
+      dialog.previewControl.rpEngine.enhance = value;
       dialog.schedulePreviewUpdate();
    };
 
-   this.rncPanel = new GroupBox(this);
-   this.rncPanel.title = "RNC-ColorStretch Parameters";
-   this.rncPanel.sizer = new VerticalSizer;
-   this.rncPanel.sizer.margin = 6;
-   this.rncPanel.sizer.spacing = 4;
-   this.rncPanel.sizer.add(this.rncRootpowerControl);
-   this.rncPanel.sizer.add(this.rncTwoPassCheck);
-   this.rncPanel.sizer.add(this.rncRootpower2Control);
-   this.rncPanel.sizer.add(rncScurveSizer);
-   this.rncPanel.sizer.add(this.rncEnhanceControl);
-   this.rncPanel.visible = false;
+   this.rpPanel = new GroupBox(this);
+   this.rpPanel.title = "Root-power Stretch Parameters";
+   this.rpPanel.sizer = new VerticalSizer;
+   this.rpPanel.sizer.margin = 6;
+   this.rpPanel.sizer.spacing = 4;
+   this.rpPanel.sizer.add(this.rpRootpowerControl);
+   this.rpPanel.sizer.add(this.rpTwoPassCheck);
+   this.rpPanel.sizer.add(this.rpRootpower2Control);
+   this.rpPanel.sizer.add(rpScurveSizer);
+   this.rpPanel.sizer.add(this.rpEnhanceControl);
+   this.rpPanel.visible = false;
 
    // =========================================================================
    // Photometric Parameters Panel
@@ -1289,7 +1296,7 @@ function EZStretchDialog() {
    leftPanel.sizer.spacing = 8;
    leftPanel.sizer.add(this.inputGroup);
    leftPanel.sizer.add(this.luptonPanel);
-   leftPanel.sizer.add(this.rncPanel);
+   leftPanel.sizer.add(this.rpPanel);
    leftPanel.sizer.add(this.photoPanel);
    leftPanel.sizer.addStretch();
    leftPanel.sizer.add(buttonSizer);
@@ -1312,7 +1319,7 @@ function EZStretchDialog() {
 
    this.updateParameterPanels = function() {
       this.luptonPanel.visible = (this.algorithm === Algorithm.LUPTON);
-      this.rncPanel.visible = (this.algorithm === Algorithm.RNC);
+      this.rpPanel.visible = (this.algorithm === Algorithm.ROOTPOWER);
       this.photoPanel.visible = (this.algorithm === Algorithm.PHOTOMETRIC);
       // Don't call adjustToContents() - keep dialog size stable when switching algorithms
    };
@@ -1357,15 +1364,15 @@ function EZStretchDialog() {
             this.luptonClipCombo.currentItem = this.luptonEngine.clippingMode;
             this.previewControl.luptonEngine = this.luptonEngine;
             break;
-         case Algorithm.RNC:
-            this.rncEngine.reset();
-            this.rncRootpowerControl.setValue(this.rncEngine.rootpower);
-            this.rncRootpower2Control.setValue(this.rncEngine.rootpower2);
-            this.rncTwoPassCheck.checked = this.rncEngine.twoPass;
-            this.rncRootpower2Control.enabled = this.rncEngine.twoPass;
-            this.rncScurveNone.checked = true;
-            this.rncEnhanceControl.setValue(this.rncEngine.enhance);
-            this.previewControl.rncEngine = this.rncEngine;
+         case Algorithm.ROOTPOWER:
+            this.rpEngine.reset();
+            this.rpRootpowerControl.setValue(this.rpEngine.rootpower);
+            this.rpRootpower2Control.setValue(this.rpEngine.rootpower2);
+            this.rpTwoPassCheck.checked = this.rpEngine.twoPass;
+            this.rpRootpower2Control.enabled = this.rpEngine.twoPass;
+            this.rpScurveNone.checked = true;
+            this.rpEnhanceControl.setValue(this.rpEngine.enhance);
+            this.previewControl.rpEngine = this.rpEngine;
             break;
          case Algorithm.PHOTOMETRIC:
             this.photoEngine.reset();
@@ -1397,8 +1404,8 @@ function EZStretchDialog() {
          case Algorithm.LUPTON:
             result = this.luptonEngine.execute(this.targetWindow);
             break;
-         case Algorithm.RNC:
-            result = this.rncEngine.execute(this.targetWindow);
+         case Algorithm.ROOTPOWER:
+            result = this.rpEngine.execute(this.targetWindow);
             break;
          case Algorithm.PHOTOMETRIC:
             result = this.photoEngine.execute(this.targetWindow);

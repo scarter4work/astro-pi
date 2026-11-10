@@ -17,7 +17,7 @@
                <b>Features:</b>
             </p>
             <p>- Lupton RGB: Color-preserving asinh stretch (Lupton et al. 2004)</p>
-            <p>- RNC-ColorStretch: Power stretch with color recovery (Roger Clark)</p>
+            <p>- Root-power stretch: each channel raised to the power 1/rootpower</p>
             <p>- PhotometricStretch: Physics-based stretch with QE weighting</p>
             <p>- Real-time preview with Before/Split/After modes</p>
             <p>- Mouse wheel zoom in preview</p>

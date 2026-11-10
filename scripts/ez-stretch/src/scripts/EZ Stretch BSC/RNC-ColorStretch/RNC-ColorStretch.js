@@ -2,11 +2,15 @@
 // RNC-ColorStretch.js
 // PixInsight JavaScript script for RNC Color Stretch
 //
-// Based on Roger N. Clark's rnc-color-stretch algorithm
+// NOT SHIPPED: this script is not distributed in any update repository.
+// Independent implementation written from the author's own requirements
+// (docs/RNC-ColorStretch-Requirements.md); not a translation of Roger N.
+// Clark's rnc-color-stretch and not affiliated with or endorsed by him.
+// The general approach of power/root stretching is described publicly at
 // https://clarkvision.com/articles/astrophotography-rnc-color-stretch/
 //
-// Copyright (c) 2025. All rights reserved.
-// Released under GPL License (same as original algorithm)
+// Copyright (c) 2025 Scott Carter (scarter4work).
+// SPDX-License-Identifier: BSD-3-Clause (see LICENSE in the astro-pi repository)
 // ============================================================================
 
 #feature-id    EZ Stretch BSC > RNC-ColorStretch
@@ -19,9 +23,9 @@
    <b>Important:</b> This algorithm is designed for LINEAR (unstretched) images. \
    Using it on already-stretched data will produce over-exposed results.<br/>\
    <br/>\
-   Based on Roger N. Clark's rnc-color-stretch algorithm.<br/>\
+   Independent implementation; not affiliated with or endorsed by Roger N. Clark.<br/>\
    <br/>\
-   Copyright &copy; 2025. Released under GPL License.
+   Copyright &copy; 2025 Scott Carter. BSD 3-Clause License.
 
 #define VERSION "1.0.11"
 #define TITLE "RNC-ColorStretch"

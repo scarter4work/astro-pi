@@ -1,4 +1,4 @@
 <p>
    <b>EZ Stretch v1.0.12</b>
 </p>
-<p>Stretches a linear colour image with Lupton RGB, RNC-ColorStretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the withdrawn EZ Donut Repair script (src/scripts/scarter4work/EZDonutRepair.js and .xsgn). Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
+<p>Stretches a linear colour image with Lupton RGB, a root-power stretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the withdrawn EZ Donut Repair script (src/scripts/scarter4work/EZDonutRepair.js and .xsgn). Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
