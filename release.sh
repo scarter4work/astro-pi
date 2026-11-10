@@ -239,6 +239,7 @@ for fn,src in pairs:
     t=body(src); v=version(fn); srcs[fn]=t
     for m in re.finditer(r'(?<![A-Za-z0-9.])(v?)(\d+(?:\.\d+)+)',t):
         num=m.group(2)
+        if t[:m.start()].endswith(("PixInsight ","PCL ")): continue  # a PixInsight/PCL platform version, not the package's
         if (num.count(".")>=2 or m.group(1)) and num!=v:
             errs.append("%s names version %s%s, but the package (%s) is %s"%(src,m.group(1),num,fn,v))
 if errs: [print("  "+e) for e in errs]; sys.exit(1)

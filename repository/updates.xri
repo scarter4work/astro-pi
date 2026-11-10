@@ -6,26 +6,6 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20261110-linux-x64-NukeX-5.2.0.2.tar.gz" sha1="658b44df46c0b57cd8d746c6a3e7a35075b92aa0" type="module" releaseDate="20261110">
-         <title>NukeX</title>
-         <description>
-            <p>
-               <b>NukeX 5.2.0.2</b>
-            </p>
-            <p>Distribution-fitted stacking and auto-stretch for PixInsight. NukeX stacks the FITS light frames you add (with optional flats): it fits a statistical distribution to every pixel&apos;s samples across the stack, estimates the signal from the fitted model, and applies one of its stretches (Auto is recommended). A camera quantum-efficiency (QE) database built into the module routes each frame and decomposes dual-narrowband colour data (HaO3 / S2O3) into emission lines. Frames open only as local files, and the FITS library has no network drivers. It loads on any Linux with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
-            <p>Network: one kind of connection only, the camera-database update check. It makes HTTPS requests to raw.githubusercontent.com (this repository), automatically at most once every 7 days when you open the NukeX window, and whenever you press Check now; it sends no identifier, usage data or image data. A newer database is downloaded and installed only if you agree, after its Ed25519 signatures are verified. Automatic checks can be turned off in the NukeX window. NukeX launches no external program. Files outside the PixInsight installation: ~/.config/nukex4/ (update-check state, a downloaded database, filter names you teach it, your stretch ratings), a frame cache in ~/.cache/nukex4/cache/ while a run lasts, and progress files in /tmp. Documentation, including every network connection, external program and file location: doc/tools/NukeX/NukeX.html.</p>
-         </description>
-      </package>
-      <package fileName="20261024-linux-x64-PICopilot-0.2.2.1.tar.gz" sha1="a527699a9aa009f6e9d53adf777c3f9f4c874624" type="module" releaseDate="20261110">
-         <title>PI Copilot</title>
-         <description>
-            <p>
-               <b>PI Copilot 0.2.2.1</b>
-            </p>
-            <p>A chat panel for PixInsight: you talk to Claude, an AI model made by Anthropic, with your own Anthropic API key. It can see the active image (a small preview, its statistics and keywords) and, depending on the mode (Copilot, Guided, or the read-only Advisor), run PixInsight processes on your images, start installed and signed PixInsight scripts that you confirm, and record how each image was processed. It never runs a script written by the model; it can only start installed, signed scripts you confirm.</p>
-            <p>Network: HTTPS to api.anthropic.com only, and nothing is sent until you agree in its consent dialog. External programs: secret-tool, run through /bin/sh and /usr/bin/env, keeps the API key in the system keyring; PixInsight&apos;s GraXpert process, when the model runs it, starts the GraXpert program you chose in GraXpert&apos;s own settings. Files outside the PixInsight installation: the journey library in ~/.local/share/PICopilot/journeys/, short-lived files in the system temporary directory, and an export folder only if you choose one. Documentation, including every network connection, external program and file location: doc/tools/PICopilot/PICopilot.html.</p>
-         </description>
-      </package>
       <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="9bb92ab3b6c336ccd7158ab3c2eb77df8ca697cf" type="generic" releaseDate="20261110">
          <title>Gaia Depth Grade sidecar</title>
          <description>
@@ -36,43 +16,62 @@
             <p>Delivered by PixInsight&apos;s update system (earlier versions were downloaded by the script). It runs on any Linux that runs PixInsight with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
          </description>
       </package>
-      <package fileName="20261029-linux-x64-Planetary-0.5.0.0.tar.gz" sha1="59b54482a35f31a9d448a6d35af010727131895c" type="module" releaseDate="20261110">
+   </platform>
+   <platform os="linux" arch="x64" version="1.9.6:2.0.0">
+      <package fileName="20261110-linux-x64-NukeX-5.2.0.3.tar.gz" sha1="1a84c771640cc231e25accb3fa9f738c5e64ca3b" type="module" releaseDate="20261110">
+         <title>NukeX</title>
+         <description>
+            <p>
+               <b>NukeX 5.2.0.3</b>
+            </p>
+            <p>Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight. NukeX works on the FITS light frames you add (with optional flats): for every pixel it fits a statistical distribution to every pixel&apos;s samples across the stack, estimates the signal from the fitted model, and applies one of its stretches (Auto is recommended). A camera quantum-efficiency (QE) database built into the module routes each frame and decomposes dual-narrowband colour data (HaO3 / S2O3) into emission lines. Frames open only as local files, and the FITS library has no network or shared-memory drivers. New in 5.2.0.3: rebuilt for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later. CFITSIO&apos;s shared-memory driver is removed, progress files go to a private per-run directory, and NUKEX_PHASE8_NO_POPUP (no dialogs during scripted or headless runs) is documented. It loads on any Linux with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
+            <p>Network: one kind of connection only, the camera-database update check. It makes HTTPS requests to raw.githubusercontent.com (this repository), automatically at most once every 7 days when you open the NukeX window, and whenever you press Check now; it sends no identifier, usage data or image data. A newer database is downloaded and installed only if you agree, after its Ed25519 signatures are verified. Automatic checks can be turned off in the NukeX window. NukeX launches no external program. Files outside the PixInsight installation: ~/.config/nukex4/ (update-check state, a downloaded database, filter names you teach it, your stretch ratings), a frame cache in ~/.cache/nukex4/cache/ while a run lasts, and, while a run lasts, its progress files in a private directory (mode 0700) under $TMPDIR or /tmp, deleted when the run ends. Documentation, including every network connection, external program and file location: doc/tools/NukeX/NukeX.html.</p>
+         </description>
+      </package>
+      <package fileName="20261110-linux-x64-PICopilot-0.2.2.2.tar.gz" sha1="9b1aef0a46b5adb6fa1b44a7b48e6b11a37319be" type="module" releaseDate="20261110">
+         <title>PI Copilot</title>
+         <description>
+            <p>
+               <b>PI Copilot 0.2.2.2</b>
+            </p>
+            <p>Rebuilt for PixInsight 1.9.6 / PCL 2.13 (requires PixInsight 1.9.6 or later). Process-safety policy updated for PixInsight 1.9.6&apos;s process set (SpectrophotometricFluxCalibration global runs and ImageAnalysis now ask first). Keyring access starts secret-tool directly instead of through a shell.</p>
+            <p>A chat panel for PixInsight: you talk to Claude, an AI model made by Anthropic, with your own Anthropic API key. It can see the active image (a small preview, its statistics and keywords) and, depending on the mode (Copilot, Guided, or the read-only Advisor), run PixInsight processes on your images, start installed and signed PixInsight scripts that you confirm, and record how each image was processed. It never runs a script written by the model; it can only start installed, signed scripts you confirm.</p>
+            <p>Network: HTTPS to api.anthropic.com only, and nothing is sent until you agree in its consent dialog. External programs: secret-tool, started directly (no shell), keeps the API key in the system keyring; PixInsight&apos;s GraXpert process, when the model runs it, starts the GraXpert program you chose in GraXpert&apos;s own settings. Files outside the PixInsight installation: the journey library in ~/.local/share/PICopilot/journeys/, short-lived files in the system temporary directory, and an export folder only if you choose one. Documentation, including every network connection, external program and file location: doc/tools/PICopilot/PICopilot.html.</p>
+         </description>
+      </package>
+      <package fileName="20261110-linux-x64-Planetary-0.5.0.1.tar.gz" sha1="ddebc4a1500496e48421f0aae1918248bc7bce88" type="module" releaseDate="20261110">
          <title>Planetary</title>
          <description>
             <p>
-               <b>Planetary 0.5.0.0</b>
+               <b>Planetary 0.5.0.1</b>
             </p>
-            <p>Planetary imaging for PixInsight, with two processes. SERViewer opens SER video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview, opens it as a PixInsight image, and can save an AVI as a SER file. PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest frames and aligns them, region by region, with nothing to set, previews the stack with zoom, and opens it as a new image, or says why a capture gives none. The target is read from the ASIAIR file name, and for a colour capture of the Moon not taken through a narrowband or IR-pass filter PlanetaryStack can also make a mineral moon (calibrated, sharpened, with the Moon&apos;s true colour differences amplified), tuned live with Strength, Chroma blur and Sharpen sliders. New in 0.5: for a colour capture of Mercury to Neptune not taken through a narrowband or IR-pass filter, Planet processing makes a finished image in the planet&apos;s natural colour (calibrated to its catalogue reflectance, red and blue aligned against atmospheric dispersion, shown linear and sharpened), tuned live with Saturation, Chroma blur and Sharpen sliders.</p>
+            <p>Planetary imaging for PixInsight, with two processes. SERViewer opens SER video files and uncompressed 8-bit greyscale or raw Bayer AVI files (such as ASIAIR captures): it shows any frame in a preview, opens it as a PixInsight image, and can save an AVI as a SER file. PlanetaryStack stacks such a video into one image (lucky imaging): it measures every frame, chooses the sharpest frames and aligns them, region by region, with nothing to set, previews the stack with zoom, and opens it as a new image, or says why a capture gives none. The target is read from the ASIAIR file name, and for a colour capture of the Moon not taken through a narrowband or IR-pass filter PlanetaryStack can also make a mineral moon (calibrated, sharpened, with the Moon&apos;s true colour differences amplified), tuned live with Strength, Chroma blur and Sharpen sliders. New in 0.5: for a colour capture of Mercury to Neptune not taken through a narrowband or IR-pass filter, Planet processing makes a finished image in the planet&apos;s natural colour (calibrated to its catalogue reflectance, red and blue aligned against atmospheric dispersion, shown linear and sharpened), tuned live with Saturation, Chroma blur and Sharpen sliders. 0.5.0.1: rebuilt for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later.</p>
             <p>Both read only the video file you choose and an AVI&apos;s .txt sidecar. SERViewer writes only the SER file you choose; either process writes, if you click Save pattern..., the .txt sidecar next to the AVI. Neither uses the network or runs external programs. Documentation: doc/tools/SERViewer/SERViewer.html and doc/tools/PlanetaryStack/PlanetaryStack.html.</p>
          </description>
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.11.zip" sha1="2e9b1ae6f14fb3b0980f78caca35741facdf1779" type="script" releaseDate="20261110">
+      <package fileName="EZStretch_v1.0.12.zip" sha1="3999ccced0bf7ee4654b2beb1cb44a27bf6c59f5" type="script" releaseDate="20261110">
          <title>EZ Stretch</title>
+         <remove>
+            src/scripts/scarter4work/EZDonutRepair.js
+            src/scripts/scarter4work/EZDonutRepair.xsgn
+         </remove>
          <description>
             <p>
-               <b>EZ Stretch v1.0.11</b>
+               <b>EZ Stretch v1.0.12</b>
             </p>
-            <p>Unified stretch suite combining three algorithms in a single interface.</p>
+            <p>Stretches a linear colour image with Lupton RGB, a root-power stretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the withdrawn EZ Donut Repair script (src/scripts/scarter4work/EZDonutRepair.js and .xsgn). Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
          </description>
       </package>
-      <package fileName="EZDonutRepair_v1.0.4.zip" sha1="55f2bb63a65f3c57493b55f5afc4ebb27e086fc3" type="script" releaseDate="20261110">
-         <title>EZ Donut Repair</title>
-         <description>
-            <p>
-               <b>EZ Donut Repair v1.0.4</b>
-            </p>
-            <p>Removes donut/dust artifacts from astrophotography frames.</p>
-         </description>
-      </package>
-      <package fileName="EZHazeKill_v1.0.2.zip" sha1="49699f7494e06db18e54d6f88245db41288f782c" type="script" releaseDate="20261110">
+      <package fileName="EZHazeKill_v1.1.0.zip" sha1="53f8e036866145199f1723f3307e522218220686" type="script" releaseDate="20261110">
          <title>EZ Haze Kill</title>
          <description>
             <p>
-               <b>EZ Haze Kill v1.0.2</b>
+               <b>EZ Haze Kill v1.1.0</b>
             </p>
-            <p>Gradient and haze reduction.</p>
+            <p>Removes the flat sky pedestal and colour cast that remain after gradient extraction, on linear or stretched images. The sky is measured on the darkest tiles of the image, the background is never raised, and dark pixels roll off smoothly instead of being clipped to zero. Includes its documentation.</p>
+            <p>Licence: CC BY-NC 4.0 (non-commercial use only). Not covered by the BSD 3-Clause license of the rest of the astro-pi repository.</p>
          </description>
       </package>
       <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261110">
@@ -88,4 +87,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-11-10T20:20:12.382Z" encoding="Base64">eaKvIbKV472COX8K0c+fX/nk9idVGCNhORtH3EzjhPiWWM5p1Om45eRh8t/IuT+lLdp/9k1ghJ5+SYnb/NJiBA==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-11-10T21:58:42.873Z" encoding="Base64">XhP76b+jjf0AGST2wBnJPNlAUPTfOYdnW+T1gB/6CU1wmne5qLDUH+cBkm6rLqh9Fho87IW9TE8Fro58Hrq7AA==</Signature>
