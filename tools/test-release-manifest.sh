@@ -26,7 +26,7 @@ sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MF"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 DATE=20991231
-for f in write_pkg manifest_rename manifest_names_check install_manifest; do
+for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest; do
   body="$(sed -n "/^$f(){/,/^}/p" "$SCRIPT")"
   if [ -n "$body" ]; then eval "$body"; else echo "  (release.sh has no $f)"; fi
 done
@@ -176,6 +176,20 @@ PY
 )"
 if [[ "$writes_report" == OK* ]]; then ok "steps 3-6 edit only the work copy ($writes_report)"
 else while IFS= read -r l; do bad "$l"; done <<< "$writes_report"; fi
+
+# 8. retire_manifest: a withdrawn package (RETIRED_PKG_RE in release.sh) is dropped from a work copy,
+#    exactly once, and the remaining packages are exactly the release's.
+RET_RE="$(sed -nE "s/^RETIRED_PKG_RE=\('(.*)'\)\s*$/\1/p" "$SCRIPT")"
+if [ -n "$RET_RE" ] && have retire_manifest; then
+  RM="$WORK/retire.xri"; cp "$MF" "$RM"
+  before="$(grep -c '<package fileName=' "$RM")"
+  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 1 ] && ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 \
+     && [ "$(grep -c '<package fileName=' "$RM")" -eq $((before - 1)) ] && ! grep -qE "fileName=\"$RET_RE\"" "$RM" \
+     && python3 -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1])' "$RM"; then
+    ok "retire_manifest drops the withdrawn package ($RET_RE) once; the manifest stays well-formed"
+  else bad "retire_manifest did not drop exactly one entry for $RET_RE"; fi
+  if ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1; then ok "retire_manifest is idempotent once the entry is gone"; else bad "retire_manifest failed on an already-retired manifest"; fi
+else echo "  (no RETIRED_PKG_RE / retire_manifest in release.sh)"; fi
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1

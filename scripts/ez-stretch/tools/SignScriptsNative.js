@@ -32,7 +32,7 @@ var TOOLS_DIR   = File.extractDirectory(#__FILE__);
 var PROJECT_DIR = parentDir(TOOLS_DIR);   // scripts/ez-stretch
 var SCRIPTS_DIR = PROJECT_DIR + "/src/scripts/EZ Stretch BSC";
 
-var SCRIPTS = [ "EZStretch", "EZDonutRepair", "EZHazeKill" ];
+var SCRIPTS = [ "EZStretch", "EZHazeKill" ];
 
 function writeResult(obj) {
    try {

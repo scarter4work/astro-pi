@@ -3,10 +3,12 @@
 # Usage: tools/pcl-query.sh <tool> '<json-args>'
 #   tools/pcl-query.sh pcl_class_info '{"className":"ProcessInstance"}'
 #   tools/pcl-query.sh pjsr_class_info '{"className":"ImageWindow"}'
-# Tools starting with "pjsr_" go to tools/pjsr_parser, everything else to tools/pcl_parser.
+# Tools starting with "pjsr_" go to pjsr_parser, everything else to pcl_parser, both in the PRIVATE
+# repo scarter4work/pi-parsers (clone: $PI_PARSERS_DIR, default ~/projects/pi-parsers).
 set -euo pipefail
 tool="${1:?tool name}"; args="${2:-{\}}"
-here="$(cd "$(dirname "$0")" && pwd)"
+here="${PI_PARSERS_DIR:-$HOME/projects/pi-parsers}"
+[ -d "$here" ] || { echo "pi-parsers clone not found at $here (git clone git@github.com:scarter4work/pi-parsers.git)" >&2; exit 1; }
 case "$tool" in pjsr_*) dir="$here/pjsr_parser" ;; *) dir="$here/pcl_parser" ;; esac
 req=$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":sys.argv[1],"arguments":json.loads(sys.argv[2])}}))' "$tool" "$args")
 { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"pcl-query","version":"1"}}}' "$req"; sleep 1; } \
