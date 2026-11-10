@@ -12,6 +12,8 @@
 #  - manifest_rename fails when no entry matches;
 #  - manifest_names_check passes for exactly the manifest's names and fails for a missing or extra one;
 #  - steps 0b and 3f and the name-set checks take the package names from one list, RELEASE_PKGS;
+#  - (section 12) the EZTools cut-over: EZTOOLS_RETIRES + EZTOOLS_REMOVE give the EZTools entry exactly the
+#    EZHazeKill <remove>, refused while the script zip is still published;
 #  - (final review, module m5) every manifest edit of steps 3-6 is made on a work copy, and
 #    repository/updates.xri is written once, by install_manifest, after the copy is signed and
 #    verified: install_manifest replaces the destination with a signed, verifying copy (keeping its
@@ -183,7 +185,14 @@ RET_RE="$(sed -nE "s/^RETIRED_PKG_RE=\('(.*)'\)\s*$/\1/p" "$SCRIPT")"
 if [ -n "$RET_RE" ] && have retire_manifest; then
   RM="$WORK/retire.xri"; cp "$MF" "$RM"
   before="$(grep -c '<package fileName=' "$RM")"
-  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 1 ] && ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 \
+  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 0 ]; then
+    # The release that withdrew it already published a manifest without it (EZDonutRepair: release
+    # f466df1f): nothing left to drop, and the run below must leave the manifest as it is.
+    b="$(sha1sum < "$RM")"
+    ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 && [ "$(sha1sum < "$RM")" = "$b" ] \
+      && ok "retire_manifest: $RET_RE is already out of the published manifest; the manifest is unchanged" \
+      || bad "retire_manifest changed a manifest that no longer holds $RET_RE"
+  elif [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 1 ] && ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 \
      && [ "$(grep -c '<package fileName=' "$RM")" -eq $((before - 1)) ] && ! grep -qE "fileName=\"$RET_RE\"" "$RM" \
      && python3 -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1])' "$RM"; then
     ok "retire_manifest drops the withdrawn package ($RET_RE) once; the manifest stays well-formed"
@@ -343,6 +352,63 @@ if have ez_pkg_check && [ -f "$EZSRC/EZStretch.js" ] && [ -f "$EZDOC/EZStretch/E
       || bad "ez_pkg_check accepted a zip with $m"
   done
 else bad "release.sh has no ez_pkg_check, or EZStretch has no source/documentation"; fi
+
+# 12. The EZTools cut-over (EZTOOLS_MODULE_SHIPS=1 in release.sh), on a scratch manifest whatever the flag
+#     says: with the EZHazeKill script zip retired (EZTOOLS_RETIRES) and an EZTools module entry in the
+#     1.9.6:2.0.0 block, EZTOOLS_REMOVE lands as exactly one <remove> on the EZTools entry, no
+#     EZHazeKill_v*.zip entry remains, and a second run changes nothing. While the script zip is still in
+#     the manifest (the flag at 0), manifest_removes refuses that <remove>: it would delete what the zip
+#     installs -- so the two can only ship together.
+EZT_RET="$(sed -nE "s/^EZTOOLS_RETIRES='(.*)'\s*$/\1/p" "$SCRIPT")"
+EZT_REM="$(sed -nE "s/^EZTOOLS_REMOVE='(.*)'\s*$/\1/p" "$SCRIPT")"
+EZT_WANT='[0-9]{8}-linux-x64-EZTools-[0-9.]+\.tar\.gz=src/scripts/scarter4work/EZHazeKill.js,src/scripts/scarter4work/EZHazeKill.xsgn,doc/scripts/EZHazeKill'
+if [ -z "$EZT_RET" ] || [ -z "$EZT_REM" ]; then
+  bad "release.sh has no EZTOOLS_RETIRES / EZTOOLS_REMOVE (the EZTools cut-over is not wired)"
+elif ! have manifest_removes || ! have retire_manifest || ! declare -F stand_in >/dev/null; then
+  bad "release.sh has no manifest_removes / retire_manifest (or section 10 did not run)"
+else
+  [ "$EZT_REM" = "$EZT_WANT" ] && ok "EZTOOLS_REMOVE is the script's three installed items on the EZTools package" \
+    || bad "EZTOOLS_REMOVE is '$EZT_REM', expected '$EZT_WANT'"
+  EZT_FN=20991231-linux-x64-EZTools-1.0.0.0.tar.gz
+  stand_in "$EZT_FN" bin/EZTools-pxm.so bin/EZTools-pxm.xsgn doc/tools/EZHazeKill/EZHazeKill.html
+  ezt_add(){ python3 - "$1" "$EZT_FN" <<'PY'
+import re,sys
+mf,fn=sys.argv[1:3]; s=open(mf).read()
+entry=('\n      <package fileName="'+fn+'" sha1="0000000000000000000000000000000000000000" type="module" '
+       'releaseDate="00000000">\n         <title>EZTools</title>\n         <description></description>\n      </package>\n')
+s,n=re.subn(r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
+            lambda m: m.group(1)+entry+m.group(2), s, count=1, flags=re.DOTALL)
+if n!=1: sys.exit("no 1.9.6:2.0.0 block")
+open(mf,'w').write(s)
+PY
+  }
+  # Flag at 0: the script zip is still published, so the <remove> is refused and the manifest unchanged.
+  EZ0="$WORK/eztools-flag0.xri"; cp "$RMF" "$WORK/eztools-base.xri"; cp "$RMF" "$EZ0"
+  ezt_add "$EZ0" || bad "could not add an EZTools entry to the scratch manifest"
+  b0="$(sha1sum < "$EZ0")"
+  if grep -qE "fileName=\"$EZT_RET\"" "$EZ0" && ! ( manifest_removes "$EZ0" "$PK" "${REMOVE_SPECS[@]}" "$EZT_REM" ) >/dev/null 2>&1 \
+     && [ "$(sha1sum < "$EZ0")" = "$b0" ]; then
+    ok "with the EZHazeKill zip still in the manifest, the EZTools <remove> is refused (it would delete the zip's files)"
+  else bad "the EZTools <remove> was accepted while the EZHazeKill zip is still published (or the manifest has no such zip)"; fi
+  # Flag at 1: retire, add, remove.
+  EZ1="$WORK/eztools-flag1.xri"; cp "$WORK/eztools-base.xri" "$EZ1"
+  if ( retire_manifest "$EZ1" "$RET_RE" "$EZT_RET" ) >/dev/null 2>&1 && ezt_add "$EZ1" \
+     && ( manifest_removes "$EZ1" "$PK" "${REMOVE_SPECS[@]}" "$EZT_REM" ) >/dev/null 2>&1 \
+     && r="$(RMF="$EZ1"; removes_report "${REMOVE_SPECS[@]}" "$EZT_REM")" && [ "$r" = OK ]; then
+    ok "the EZTools entry carries exactly the EZHazeKill <remove> (and EZStretch keeps its own)"
+  else bad "the EZTools <remove> did not land as exactly one element on the EZTools entry: ${r:-a step failed}"; fi
+  ! grep -qE 'fileName="EZHazeKill_v[0-9.]+\.zip"' "$EZ1" && ok "no EZHazeKill_v*.zip entry remains" \
+    || bad "an EZHazeKill_v*.zip entry survived the cut-over"
+  once="$(sha1sum < "$EZ1")"
+  ( retire_manifest "$EZ1" "$RET_RE" "$EZT_RET" ) >/dev/null 2>&1 && ( manifest_removes "$EZ1" "$PK" "${REMOVE_SPECS[@]}" "$EZT_REM" ) >/dev/null 2>&1 \
+    && [ "$(sha1sum < "$EZ1")" = "$once" ] && ok "the cut-over's retire + <remove> are idempotent on a re-run" \
+    || bad "a second retire + manifest_removes run changed the cut-over manifest"
+  # And today's flag: unshipped, the script stays in the release.
+  if grep -qE '^EZTOOLS_MODULE_SHIPS=0$' "$SCRIPT"; then
+    grep -qE '^EZ_NAMES=\(EZStretch EZHazeKill\)' "$SCRIPT" && ok "EZTOOLS_MODULE_SHIPS=0: the EZHazeKill script still ships (EZ_NAMES)" \
+      || bad "EZTOOLS_MODULE_SHIPS=0 but EZHazeKill is not in EZ_NAMES: nothing would deliver EZHazeKill"
+  fi
+fi
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1

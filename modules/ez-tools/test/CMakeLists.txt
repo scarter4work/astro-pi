@@ -18,3 +18,6 @@ endfunction()
 
 eztools_add_test(test_hazekill unit/test_hazekill.cpp eztools_hazekill)
 eztools_add_test(test_sky_cache unit/test_sky_cache.cpp eztools_hazekill)
+
+# The licence is stated once (src/EZToolsLicense.h); docs, package description, LICENSE and README agree.
+add_test(NAME check_licence COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/check-licence.sh")

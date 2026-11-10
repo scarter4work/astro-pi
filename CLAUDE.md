@@ -15,6 +15,14 @@ by subproject) -- never a new per-folder memory directory. No CLAUDE.md below th
   `doc/tools/SERViewer/` and `doc/tools/PlanetaryStack/`).
   0.5.0.1 (rebuilt for PixInsight 1.9.6 / PCL 2.13); 0.5.0.0 (released 2026-10-29: Planet processing (Saturation / Chroma blur / Sharpen sliders, catalogue-colour calibration, small-disc dispersion alignment)); 0.4.0.1 (released 2026-10-28: frame-filling Moon sharpening noise from the disc, IR-pass filters refused, NaN/Inf refused; 0.4.0.0 released 2026-10-28: Target from the ASIAIR name + mineral moon with Strength/Chroma blur/Sharpen sliders; 0.3.0.2 released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
+- `modules/ez-tools/` → `EZTools-pxm` module, process `EZHazeKill` (doc deploys as `doc/tools/EZHazeKill/`).
+  1.0.0.0, the EZHazeKill.js 1.1.0 sky model with a native Real-Time Preview. Built, tested and
+  portability-checked by every release but NOT shipped until Scott approves the switch from the script:
+  `EZTOOLS_MODULE_SHIPS=0` in release.sh; setting it to 1 also retires the EZHazeKill zip and makes the EZTools
+  package `<remove>` the script's files. Module id `EZTools`, process id `EZHazeKill` and parameter ids
+  `amount`/`neutralize`/`targetLevel` are STABLE — never rename. Licence: stated once in
+  `modules/ez-tools/src/EZToolsLicense.h` (CC BY-NC 4.0 until Scott decides); `test/check-licence.sh` (ctest) keeps
+  the doc, package description, LICENSE and README in step.
 - `scripts/ez-stretch/` → EZStretch / EZHazeKill (`.js` + `.xsgn` + docs under `scripts/ez-stretch/doc/<Name>/`). EZDonutRepair was withdrawn 2026-11-10 (private repo `scarter4work/ez-donut-repair`; the EZStretch package carries a `<remove>` for it).
 Everything in `tools/` and `archive/` is NOT shipped.
 
@@ -36,6 +44,7 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
 2. Bump the relevant version before building (NukeX: `modules/nukex/src/module/NukeXVersion.h`;
    PI Copilot: `modules/pi-copilot/src/module/PICopilotVersion.h`;
    Planetary: `modules/planetary/src/module/PlanetaryVersion.h`;
+   EZTools: `modules/ez-tools/src/module/EZToolsVersion.h`;
    EZ scripts: the `#define VERSION` in each `.js`).
 2a. Update the bumped product's update-repository description (`<product>/package-description.xml`; EZ:
    `scripts/ez-stretch/package-description/<Name>.xml`; Gaia sidecar: `gaia-depth-grade/sidecar-package-description.xml`).
@@ -114,6 +123,17 @@ cd modules/gaia-depth-grade && cmake -B build -DPCLDIR=$HOME/PCL -DGDG_BUILD_MOD
 bash test/run-probe-ids.sh                      # container build: module id via module-ident.c, loaded by PI (slot 95), process ids
 bash test/run-probe-xri-platforms.sh <out-dir>  # PI 1.9.6 updater vs two linux/x64 platform blocks (slot 95, local signed scratch repo)
 ```
+
+## Build / test EZTools (native module; not shipped until `EZTOOLS_MODULE_SHIPS=1` in release.sh)
+```bash
+cd modules/ez-tools && cmake -B build -DPCLDIR=$HOME/PCL -DEZTOOLS_BUILD_MODULE=ON && cmake --build build -j$(nproc)
+(cd build && ctest --output-on-failure)          # engine vs hk_lib goldens (python3 test/make_golden.py), sky cache, licence
+bash test/run-probe-parity.sh                    # headless EZHazeKill vs hk_lib.hk_v11 + the 1.1.0 script harness (slots 99, 98); NAS read-only
+bash test/gui-smoke.sh <out-dir>                 # interface + Real-Time Preview on a private Xvfb, slot 92
+```
+Both scripts sign the module (`/tmp/.pi_codesign_pass`) and test the host build; `EZTOOLS_SO=build-portable/src/module/EZTools-pxm.so`
+tests the container build. Never let a test reach PixInsight's updater install step: run from a copy of
+/opt/PixInsight it installed into the real /opt/PixInsight (2026-11-10).
 
 ## Distribution URL
 `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`

@@ -39,6 +39,14 @@ GDG_DOC_IDS=(GaiaDepthGrade)
 # release, but is NOT packaged until it replaces the Gaia Depth Grade scripts and sidecar: the cut-over
 # (plan 2026-11-10-gaia-depth-grade-pcl-port, Task 20) sets this to 1 together with the module's docs.
 GDG_MODULE_SHIPS=0
+EZTOOLS_DOC="$ROOT/modules/ez-tools/doc"
+EZTOOLS_DOC_IDS=(EZHazeKill)
+# EZTools-pxm.so (modules/ez-tools, process EZHazeKill) is built, unit-tested and portability-checked by every
+# release, but is NOT packaged until Scott approves replacing the EZHazeKill script with it. Setting this to 1
+# ships the module AND retires the script: the EZHazeKill zip leaves the manifest and the EZTools package
+# removes the script's installed files (EZTOOLS_RETIRES / EZTOOLS_REMOVE, applied after PKG_REMOVE below).
+# The cut-over commit also deletes the script's sources, doc and package description, and drops EZVER's entry.
+EZTOOLS_MODULE_SHIPS=0
 PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
 
 modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
@@ -182,6 +190,17 @@ RETIRED_PKG_RE=('EZDonutRepair_v[0-9.]+\.zip')
 PKG_REMOVE=(
   'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/EZDonutRepair.js,src/scripts/scarter4work/EZDonutRepair.xsgn'
 )
+# The EZTools cut-over (EZTOOLS_MODULE_SHIPS=1): the EZHazeKill script zip is withdrawn, and the EZTools package
+# deletes what the script's packages installed (src/scripts/scarter4work/EZHazeKill.{js,xsgn} and
+# doc/scripts/EZHazeKill/), so only the process remains. tools/test-release-manifest.sh tests both on a scratch
+# manifest whatever the flag says.
+EZTOOLS_RETIRES='EZHazeKill_v[0-9.]+\.zip'
+EZTOOLS_REMOVE='[0-9]{8}-linux-x64-EZTools-[0-9.]+\.tar\.gz=src/scripts/scarter4work/EZHazeKill.js,src/scripts/scarter4work/EZHazeKill.xsgn,doc/scripts/EZHazeKill'
+if [ "$EZTOOLS_MODULE_SHIPS" = 1 ]; then
+  EZ_NAMES=(EZStretch)
+  RETIRED_PKG_RE+=("$EZTOOLS_RETIRES")
+  PKG_REMOVE+=("$EZTOOLS_REMOVE")
+fi
 GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
 REPO_DESC="$ROOT/tools/repository-description.xml"
 declare -A PKG_DESC=(
@@ -193,6 +212,7 @@ declare -A PKG_DESC=(
   [GaiaDepthGrade]="$ROOT/gaia-depth-grade/package-description.xml"
   [GaiaDepthGradeSidecar]="$ROOT/gaia-depth-grade/sidecar-package-description.xml"
   [GaiaDepthGradeModule]="$ROOT/modules/gaia-depth-grade/package-description.xml"
+  [EZTools]="$ROOT/modules/ez-tools/package-description.xml"
 )
 # The packages' fileNames in a manifest, in order.
 manifest_files(){ sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$1"; }
@@ -630,6 +650,10 @@ PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
 PLANETARY_TGZ="$(module_tgz Planetary "$PLANETARY_VER")"
 GDG_TGZ="$(module_tgz GaiaDepthGrade "$GDG_VER")"
 GDG_PKGS=(); [ "$GDG_MODULE_SHIPS" = 1 ] && GDG_PKGS=("$GDG_TGZ")
+EZTOOLS_VER="$(modver "$ROOT/modules/ez-tools/src/module/EZToolsVersion.h" EZTOOLS)"
+[[ "$EZTOOLS_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read EZTools version (got '$EZTOOLS_VER')"
+EZTOOLS_TGZ="$(module_tgz EZTools "$EZTOOLS_VER")"
+EZTOOLS_PKGS=(); [ "$EZTOOLS_MODULE_SHIPS" = 1 ] && EZTOOLS_PKGS=("$EZTOOLS_TGZ")
 # A versioned module tarball that is already committed is PUBLISHED: never
 # rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
 # would serve the old bytes against the new manifest sha1). Bump the module
@@ -671,6 +695,15 @@ if [ "$GDG_MODULE_SHIPS" = 1 ]; then
 else
   echo "   GaiaDepthGrade module $GDG_VER: built and checked, not packaged (GDG_MODULE_SHIPS=0 until the Task 20 cut-over)"
 fi
+# EZTools: its docs are checked on every release (they are complete before the cut-over), the package only
+# when it ships.
+module_doc_check "$EZTOOLS_DOC" "${EZTOOLS_DOC_IDS[@]}"
+if [ "$EZTOOLS_MODULE_SHIPS" = 1 ]; then
+  published_pkg_reusable "$EZTOOLS_TGZ" EZTools "$EZTOOLS_DOC" "${EZTOOLS_DOC_IDS[@]}" \
+    || die "EZTools $EZTOOLS_VER is already published as $EZTOOLS_TGZ without the current doc/tools/EZHazeKill/ -- bump its version"
+else
+  echo "   EZTools module $EZTOOLS_VER: built and checked, not packaged (EZTOOLS_MODULE_SHIPS=0: the EZHazeKill script ships)"
+fi
 # The descriptions this release will write (step 3f) must already name only
 # these versions: a bumped version with last release's text stops here.
 SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
@@ -697,13 +730,13 @@ SIDECAR_PUBLISHED=0; [ -n "$SIDECAR_TGZ" ] && SIDECAR_PUBLISHED=1
 [ -n "$SIDECAR_TGZ" ] || SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
 # This release's packages, ONE list: step 0b's description check, 3f's description write and the
 # manifest name-set checks (after 3f and after step 4) all take their names from it.
-RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${GDG_PKGS[@]}" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${GDG_PKGS[@]}" "${EZTOOLS_PKGS[@]}" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions check "$REPO/updates.xri" "${DESC_ARGS[@]}" \
   || die "a package description names a version other than its package's -- bring it up to date for this release"
 
-echo "== 1/6 build NukeX + PICopilot + Planetary + GaiaDepthGrade modules (portable Rocky 9 container, PCL 2.13.0) =="
+echo "== 1/6 build NukeX + PICopilot + Planetary + GaiaDepthGrade + EZTools modules (portable Rocky 9 container, PCL 2.13.0) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
 # then loads on this machine and nowhere else. See tools/build-env/Containerfile.
@@ -717,9 +750,11 @@ PLANETARY_SO="$(find "$ROOT/modules/planetary/build-portable" -name 'Planetary-p
 [ -n "$PLANETARY_SO" ] || die "Planetary-pxm.so not found after build"
 GDG_SO="$(find "$ROOT/modules/gaia-depth-grade/build-portable" -name 'GaiaDepthGrade-pxm.so' -print -quit)"
 [ -n "$GDG_SO" ] || die "GaiaDepthGrade-pxm.so not found after build"
+EZTOOLS_SO="$(find "$ROOT/modules/ez-tools/build-portable" -name 'EZTools-pxm.so' -print -quit)"
+[ -n "$EZTOOLS_SO" ] || die "EZTools-pxm.so not found after build"
 
-echo "== 1b/6 prove all four modules load on stock older distros =="
-"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" "$GDG_SO" || die "a module would not load on a stock distro"
+echo "== 1b/6 prove all five modules load on stock older distros =="
+"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" "$GDG_SO" "$EZTOOLS_SO" || die "a module would not load on a stock distro"
 
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
@@ -745,6 +780,14 @@ if [ "$GDG_MODULE_SHIPS" = 1 ]; then
   rm -f "$GDG_XSGN"   # same guard as NukeX above
   pi_headless "$PI" --sign-module-file="$GDG_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
   [ -f "$GDG_XSGN" ] || die "module signature $GDG_XSGN not produced"
+fi
+
+if [ "$EZTOOLS_MODULE_SHIPS" = 1 ]; then
+  echo "== 2a4/6 sign EZTools module =="
+  EZTOOLS_XSGN="${EZTOOLS_SO%-pxm.so}-pxm.xsgn"
+  rm -f "$EZTOOLS_XSGN"   # same guard as NukeX above
+  pi_headless "$PI" --sign-module-file="$EZTOOLS_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+  [ -f "$EZTOOLS_XSGN" ] || die "module signature $EZTOOLS_XSGN not produced"
 fi
 
 echo "== 2b/6 native-sign EZ scripts =="
@@ -779,7 +822,8 @@ retire_manifest "$WORK_MF" "${RETIRED_PKG_RE[@]}"
 # A module package NEW in this release is a PCL 2.13 build: it goes to the 1.9.6:2.0.0 block. A published
 # package reused byte for byte (an unbumped module) keeps its block: older builds still load on 1.9.5.
 NEW_MODULES=()
-for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}"; do
+for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}" \
+            "EZTools ${EZTOOLS_PKGS[*]}"; do
   read -r m t <<< "$pair"
   [ -n "${t:-}" ] || continue
   git -C "$ROOT" ls-files --error-unmatch "repository/$t" >/dev/null 2>&1 || NEW_MODULES+=("$m")
@@ -895,6 +939,34 @@ PY
   [ -f "$REPO/$GDG_TGZ" ] || die "tarball $GDG_TGZ not produced"
 fi
 
+if [ "$EZTOOLS_MODULE_SHIPS" = 1 ]; then
+  echo "== 3a4/6 package EZTools module tarball (docs deploy as doc/tools/EZHazeKill/) =="
+  package_module "$EZTOOLS_TGZ" EZTools "$EZTOOLS_SO" "$EZTOOLS_XSGN" "$EZTOOLS_DOC" "${EZTOOLS_DOC_IDS[@]}"
+  python3 - "$WORK_MF" "$EZTOOLS_TGZ" <<'PY'
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+pat=r'fileName="[^"]*-linux-x64-EZTools(-[0-9.]+)?\.tar\.gz"'
+if re.search(pat, s):
+    s,n=re.subn(pat, 'fileName="'+fn+'"', s)
+    if n!=1: sys.exit("updates.xri has %d EZTools module entries, expected 1"%n)
+else:
+    # First release: a new <package> in the 1.9.6:2.0.0 module block; step 4 writes sha1/releaseDate,
+    # step 3f the description and step 3g its <remove> (EZTOOLS_REMOVE).
+    entry = ('\n      <package fileName="' + fn + '" '
+             'sha1="0000000000000000000000000000000000000000" '
+             'type="module" releaseDate="00000000">\n'
+             '         <title>EZTools</title>\n'
+             '         <description></description>\n'
+             '      </package>\n')
+    s,n=re.subn(r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
+                lambda m: m.group(1)+entry+m.group(2), s, count=1, flags=re.DOTALL)
+    if n!=1: sys.exit("could not locate the linux/x64 1.9.6:2.0.0 block to insert the EZTools entry")
+open(mf,'w').write(s)
+PY
+  [ -f "$REPO/$EZTOOLS_TGZ" ] || die "tarball $EZTOOLS_TGZ not produced"
+fi
+
 echo "== 3b/6 package EZ script zips (src/scripts/scarter4work + doc/scripts/<Name>) =="
 for name in "${EZ_NAMES[@]}"; do
   ver="${EZVER[$name]}"
@@ -987,6 +1059,7 @@ write_pkg "$WORK_MF" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$WORK_MF" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
 write_pkg "$WORK_MF" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
 [ "$GDG_MODULE_SHIPS" = 1 ] && write_pkg "$WORK_MF" "$GDG_TGZ" "$(sha1 "$REPO/$GDG_TGZ")"
+[ "$EZTOOLS_MODULE_SHIPS" = 1 ] && write_pkg "$WORK_MF" "$EZTOOLS_TGZ" "$(sha1 "$REPO/$EZTOOLS_TGZ")"
 for name in "${EZ_NAMES[@]}"; do
   zipname="${name}_v${EZVER[$name]}.zip"
   write_pkg "$WORK_MF" "$zipname" "$(sha1 "$REPO/$zipname")"

@@ -1,0 +1,5 @@
+<p>
+   <b>EZTools 1.0.0.0</b>
+</p>
+<p>EZTools as a native PixInsight module. Its process EZHazeKill removes the flat sky pedestal and colour cast that remain after gradient extraction, on linear or stretched images, with a Real-Time Preview that shows exactly what Execute writes. The sky is measured on the darkest tiles of the full image, the background is never raised, and dark pixels roll off smoothly instead of being clipped to zero. It replaces the EZ Haze Kill script, whose files this package removes. Requires PixInsight 1.9.6 or later. Includes its documentation.</p>
+<p>Licence: <span id="licence">CC BY-NC 4.0</span> (non-commercial use only). Not covered by the BSD 3-Clause license of the rest of the astro-pi repository.</p>
