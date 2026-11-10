@@ -40,7 +40,6 @@ xri_path = "$XRI"
 install_base = "src/scripts/EZ Stretch BSC"
 packages = {
     "EZStretch":     {"version": "1.0.9"},
-    "EZDonutRepair": {"version": "1.0.2"},
     "EZHazeKill":    {"version": "1.0.0"},
 }
 
