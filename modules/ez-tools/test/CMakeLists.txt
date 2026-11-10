@@ -17,3 +17,4 @@ function(eztools_add_test test_name test_source)
 endfunction()
 
 eztools_add_test(test_hazekill unit/test_hazekill.cpp eztools_hazekill)
+eztools_add_test(test_sky_cache unit/test_sky_cache.cpp eztools_hazekill)
