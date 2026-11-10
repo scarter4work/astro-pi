@@ -25,6 +25,8 @@ gdg_add_test(test_daofind unit/test_daofind.cpp gdg_core)
 gdg_add_test(test_transform unit/test_transform.cpp gdg_core)
 gdg_add_test(test_halo unit/test_halo.cpp gdg_core)
 gdg_add_test(test_render unit/test_render.cpp gdg_core)
+gdg_add_test(test_nebula unit/test_nebula.cpp gdg_core)
+gdg_add_test(test_display unit/test_display.cpp gdg_core)
 
 # GaiaDepthGradeVersion.h is PCL-free (header only): the version release.sh reads.
 gdg_add_test(test_version unit/test_version.cpp)
