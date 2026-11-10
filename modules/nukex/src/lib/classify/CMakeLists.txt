@@ -12,4 +12,4 @@ target_link_libraries(nukex4_classify
     PUBLIC nukex4_core
 )
 
-target_compile_features(nukex4_classify PUBLIC cxx_std_17)
+target_compile_features(nukex4_classify PUBLIC cxx_std_20)

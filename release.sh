@@ -33,6 +33,12 @@ PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc"
 PICOPILOT_DOC_IDS=(PICopilot)
 PLANETARY_DOC="$ROOT/modules/planetary/doc"
 PLANETARY_DOC_IDS=(SERViewer PlanetaryStack)
+GDG_DOC="$ROOT/modules/gaia-depth-grade/doc"
+GDG_DOC_IDS=(GaiaDepthGrade)
+# GaiaDepthGrade-pxm.so (modules/gaia-depth-grade) is built, unit-tested and portability-checked by every
+# release, but is NOT packaged until it replaces the Gaia Depth Grade scripts and sidecar: the cut-over
+# (plan 2026-11-10-gaia-depth-grade-pcl-port, Task 20) sets this to 1 together with the module's docs.
+GDG_MODULE_SHIPS=0
 PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
 
 modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
@@ -166,6 +172,7 @@ declare -A PKG_DESC=(
   [EZHazeKill]="$ROOT/scripts/ez-stretch/package-description/EZHazeKill.xml"
   [GaiaDepthGrade]="$ROOT/gaia-depth-grade/package-description.xml"
   [GaiaDepthGradeSidecar]="$ROOT/gaia-depth-grade/sidecar-package-description.xml"
+  [GaiaDepthGradeModule]="$ROOT/modules/gaia-depth-grade/package-description.xml"
 )
 # The packages' fileNames in a manifest, in order.
 manifest_files(){ sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$1"; }
@@ -175,6 +182,7 @@ desc_args(){
   for fn in "$@"; do
     case "$fn" in
       *-linux-x64-GaiaDepthGradeSidecar-*) key=GaiaDepthGradeSidecar ;;
+      *-linux-x64-GaiaDepthGrade-*) key=GaiaDepthGradeModule ;;   # the module, not the script package
       gaia-depth-grade_v*) key=GaiaDepthGrade ;;
       *-linux-x64-*.tar.gz) key="${fn#*-linux-x64-}"; key="${key%%-*}" ;;
       *_v*.zip) key="${fn%%_v*}" ;;
@@ -342,6 +350,47 @@ open(mf,'w').write(s)
 PY
 }
 
+# module_platform_block <manifest> <Module>... : every module package lives in its own linux/x64
+# <platform> block, version 1.9.6:2.0.0, created after the last linux/x64 block when missing.
+# WHY: every module is built against PCL 2.13.0 (tools/build-env/Containerfile). A PCL module resolves
+# the core's whole API table when it initialises and refuses to load if one entry is missing
+# (src/pcl/APIInterface.cpp, Resolve), and PCL 2.13 adds five TreeBox functions the 1.9.5 core lacks;
+# measured: PixInsight 1.9.5 build 1706 rejects a 2.13 module with "Unable to resolve PCL API interface".
+# PixInsight 1.9.6's updater accepts two linux/x64 blocks and offers each block's packages by its own
+# range (measured: modules/gaia-depth-grade/test/run-probe-xri-platforms.sh). Each <Module>'s entry
+# (fileName *-linux-x64-<Module>[-<ver>].tar.gz) is moved into that block; none is fine (a first release
+# inserts it there), more than one is an error. Everything else (the sidecar, the scripts) keeps its block.
+module_platform_block(){
+  python3 - "$@" <<'PY' || die "module_platform_block: could not place the module packages in the 1.9.6:2.0.0 block of $1"
+import re,sys
+mf=sys.argv[1]; mods=sys.argv[2:]
+HEAD='<platform os="linux" arch="x64" version="1.9.6:2.0.0">'
+s=open(mf).read()
+if s.count(HEAD)>1: sys.exit("%d module platform blocks"%s.count(HEAD))
+if HEAD not in s:
+    last=None
+    for m in re.finditer(r'<platform os="linux" arch="x64"[^>]*>.*?</platform>',s,re.S): last=m
+    if last is None: sys.exit("no linux/x64 <platform> block")
+    s=s[:last.end()]+"\n   "+HEAD+"\n   </platform>"+s[last.end():]
+moved=0
+for mod in mods:
+    pat=r'\n[ \t]*<package fileName="[^"]*-linux-x64-'+re.escape(mod)+r'(?:-[0-9.]+)?\.tar\.gz"[^>]*>.*?</package>'
+    hits=list(re.finditer(pat,s,re.S))
+    if len(hits)>1: sys.exit("%d package entries for module %s"%(len(hits),mod))
+    if not hits: continue
+    b=s.index(HEAD); e=s.index("</platform>",b)
+    if b<hits[0].start()<e: continue
+    entry=hits[0].group(0)
+    s=s[:hits[0].start()]+s[hits[0].end():]
+    b=s.index(HEAD); e=s.index("</platform>",b)
+    close=s.rindex("\n",b,e)
+    s=s[:close]+entry+s[close:]
+    moved+=1
+open(mf,"w").write(s)
+print("  OK  module packages in the linux/x64 1.9.6:2.0.0 block (%d moved there)"%moved)
+PY
+}
+
 # install_manifest <signed work copy> <repository manifest> : the one write to repository/updates.xri.
 # Refuses a copy that is not signed or does not verify (every declared sha1 against the file beside the
 # destination); otherwise replaces the destination atomically (a temporary file in its directory, then
@@ -472,9 +521,13 @@ PLANETARY_VER="$(modver "$ROOT/modules/planetary/src/module/PlanetaryVersion.h" 
 [[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
 [[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
 [[ "$PLANETARY_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read Planetary version (got '$PLANETARY_VER')"
+GDG_VER="$(modver "$ROOT/modules/gaia-depth-grade/src/module/GaiaDepthGradeVersion.h" GDG)"
+[[ "$GDG_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read GaiaDepthGrade version (got '$GDG_VER')"
 MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
 PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
 PLANETARY_TGZ="$(module_tgz Planetary "$PLANETARY_VER")"
+GDG_TGZ="$(module_tgz GaiaDepthGrade "$GDG_VER")"
+GDG_PKGS=(); [ "$GDG_MODULE_SHIPS" = 1 ] && GDG_PKGS=("$GDG_TGZ")
 # A versioned module tarball that is already committed is PUBLISHED: never
 # rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
 # would serve the old bytes against the new manifest sha1). Bump the module
@@ -509,6 +562,13 @@ published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_
   || die "PICopilot $PICOPILOT_VER is published as $PICOPILOT_TGZ with self-test hooks -- bump PICopilot's version so a clean package is built"
 published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
   || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/{${PLANETARY_DOC_IDS[*]}}/ -- bump Planetary's version so a new package is built"
+if [ "$GDG_MODULE_SHIPS" = 1 ]; then
+  module_doc_check "$GDG_DOC" "${GDG_DOC_IDS[@]}"
+  published_pkg_reusable "$GDG_TGZ" GaiaDepthGrade "$GDG_DOC" "${GDG_DOC_IDS[@]}" \
+    || die "GaiaDepthGrade $GDG_VER is already published as $GDG_TGZ without the current doc/tools/GaiaDepthGrade/ -- bump its version"
+else
+  echo "   GaiaDepthGrade module $GDG_VER: built and checked, not packaged (GDG_MODULE_SHIPS=0 until the Task 20 cut-over)"
+fi
 # The descriptions this release will write (step 3f) must already name only
 # these versions: a bumped version with last release's text stops here.
 SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
@@ -523,13 +583,13 @@ SIDECAR_PUBLISHED=0; [ -n "$SIDECAR_TGZ" ] && SIDECAR_PUBLISHED=1
 [ -n "$SIDECAR_TGZ" ] || SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
 # This release's packages, ONE list: step 0b's description check, 3f's description write and the
 # manifest name-set checks (after 3f and after step 4) all take their names from it.
-RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${GDG_PKGS[@]}" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions check "$REPO/updates.xri" "${DESC_ARGS[@]}" \
   || die "a package description names a version other than its package's -- bring it up to date for this release"
 
-echo "== 1/6 build NukeX + PICopilot + Planetary modules (portable Rocky 9 container) =="
+echo "== 1/6 build NukeX + PICopilot + Planetary + GaiaDepthGrade modules (portable Rocky 9 container, PCL 2.13.0) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
 # then loads on this machine and nowhere else. See tools/build-env/Containerfile.
@@ -541,9 +601,11 @@ PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build-portable" -name 'PICopilot-
 "$ROOT/modules/pi-copilot/test/check-no-selftest-hooks.sh" "$PICOPILOT_SO" || die "PICopilot-pxm.so carries self-test hooks"
 PLANETARY_SO="$(find "$ROOT/modules/planetary/build-portable" -name 'Planetary-pxm.so' -print -quit)"
 [ -n "$PLANETARY_SO" ] || die "Planetary-pxm.so not found after build"
+GDG_SO="$(find "$ROOT/modules/gaia-depth-grade/build-portable" -name 'GaiaDepthGrade-pxm.so' -print -quit)"
+[ -n "$GDG_SO" ] || die "GaiaDepthGrade-pxm.so not found after build"
 
-echo "== 1b/6 prove all three modules load on stock older distros =="
-"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" || die "a module would not load on a stock distro"
+echo "== 1b/6 prove all four modules load on stock older distros =="
+"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" "$GDG_SO" || die "a module would not load on a stock distro"
 
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
@@ -562,6 +624,14 @@ PLANETARY_XSGN="${PLANETARY_SO%-pxm.so}-pxm.xsgn"
 rm -f "$PLANETARY_XSGN"   # same guard as NukeX above
 pi_headless "$PI" --sign-module-file="$PLANETARY_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$PLANETARY_XSGN" ] || die "module signature $PLANETARY_XSGN not produced"
+
+if [ "$GDG_MODULE_SHIPS" = 1 ]; then
+  echo "== 2a3/6 sign GaiaDepthGrade module =="
+  GDG_XSGN="${GDG_SO%-pxm.so}-pxm.xsgn"
+  rm -f "$GDG_XSGN"   # same guard as NukeX above
+  pi_headless "$PI" --sign-module-file="$GDG_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+  [ -f "$GDG_XSGN" ] || die "module signature $GDG_XSGN not produced"
+fi
 
 echo "== 2b/6 native-sign EZ scripts =="
 ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts )
@@ -592,6 +662,15 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 WORK_MF="$WORK_DIR/updates.xri"
 cp "$REPO/updates.xri" "$WORK_MF"
 retire_manifest "$WORK_MF" "${RETIRED_PKG_RE[@]}"
+# A module package NEW in this release is a PCL 2.13 build: it goes to the 1.9.6:2.0.0 block. A published
+# package reused byte for byte (an unbumped module) keeps its block: older builds still load on 1.9.5.
+NEW_MODULES=()
+for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}"; do
+  read -r m t <<< "$pair"
+  [ -n "${t:-}" ] || continue
+  git -C "$ROOT" ls-files --error-unmatch "repository/$t" >/dev/null 2>&1 || NEW_MODULES+=("$m")
+done
+if [ ${#NEW_MODULES[@]} -gt 0 ]; then module_platform_block "$WORK_MF" "${NEW_MODULES[@]}"; fi
 
 echo "== 3/6 package NukeX module tarball =="
 package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
@@ -622,7 +701,7 @@ if re.search(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', s):
     if n!=1: sys.exit("updates.xri has %d PICopilot package entries, expected 1"%n)
 else:
     # First release: insert a new <package> entry into the linux/x64
-    # platform block (the same block NukeX lives in). sha1/releaseDate
+    # 1.9.6:2.0.0 module block (module_platform_block, the block NukeX lives in). sha1/releaseDate
     # are placeholders -- step 4 (write_pkg) fills in the real values --
     # and step 3f writes the description from its source.
     entry = ('\n      <package fileName="' + fn + '" '
@@ -632,7 +711,7 @@ else:
              '         <description></description>\n'
              '      </package>\n')
     new_s,n=re.subn(
-        r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
+        r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
         lambda m: m.group(1)+entry+m.group(2),
         s, count=1, flags=re.DOTALL)
     if n!=1:
@@ -654,7 +733,7 @@ if re.search(pat, s):
     s,n=re.subn(pat, 'fileName="'+fn+'"', s)
     if n!=1: sys.exit("updates.xri has %d Planetary package entries, expected 1"%n)
 else:
-    # First release: a new <package> in the linux/x64 platform block, with
+    # First release: a new <package> in the linux/x64 1.9.6:2.0.0 module block, with
     # placeholder sha1/releaseDate that step 4 (write_pkg) fills in, and an
     # empty description that step 3f writes from its source.
     entry = ('\n      <package fileName="' + fn + '" '
@@ -664,7 +743,7 @@ else:
              '         <description></description>\n'
              '      </package>\n')
     new_s,n=re.subn(
-        r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
+        r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
         lambda m: m.group(1)+entry+m.group(2),
         s, count=1, flags=re.DOTALL)
     if n!=1:
@@ -673,6 +752,34 @@ else:
 open(mf,'w').write(s)
 PY
 [ -f "$REPO/$PLANETARY_TGZ" ] || die "tarball $PLANETARY_TGZ not produced"
+
+if [ "$GDG_MODULE_SHIPS" = 1 ]; then
+  echo "== 3a3/6 package GaiaDepthGrade module tarball (docs deploy as doc/tools/GaiaDepthGrade/) =="
+  package_module "$GDG_TGZ" GaiaDepthGrade "$GDG_SO" "$GDG_XSGN" "$GDG_DOC" "${GDG_DOC_IDS[@]}"
+  python3 - "$WORK_MF" "$GDG_TGZ" <<'PY'
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+pat=r'fileName="[^"]*-linux-x64-GaiaDepthGrade(-[0-9.]+)?\.tar\.gz"'
+if re.search(pat, s):
+    s,n=re.subn(pat, 'fileName="'+fn+'"', s)
+    if n!=1: sys.exit("updates.xri has %d GaiaDepthGrade module entries, expected 1"%n)
+else:
+    # First release: a new <package> in the 1.9.6:2.0.0 module block; step 4 writes sha1/releaseDate
+    # and step 3f the description.
+    entry = ('\n      <package fileName="' + fn + '" '
+             'sha1="0000000000000000000000000000000000000000" '
+             'type="module" releaseDate="00000000">\n'
+             '         <title>Gaia Depth Grade</title>\n'
+             '         <description></description>\n'
+             '      </package>\n')
+    s,n=re.subn(r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
+                lambda m: m.group(1)+entry+m.group(2), s, count=1, flags=re.DOTALL)
+    if n!=1: sys.exit("could not locate the linux/x64 1.9.6:2.0.0 block to insert the GaiaDepthGrade entry")
+open(mf,'w').write(s)
+PY
+  [ -f "$REPO/$GDG_TGZ" ] || die "tarball $GDG_TGZ not produced"
+fi
 
 echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
@@ -759,6 +866,7 @@ echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$WORK_MF" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$WORK_MF" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
 write_pkg "$WORK_MF" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
+[ "$GDG_MODULE_SHIPS" = 1 ] && write_pkg "$WORK_MF" "$GDG_TGZ" "$(sha1 "$REPO/$GDG_TGZ")"
 for name in "${EZ_NAMES[@]}"; do
   zipname="${name}_v${EZVER[$name]}.zip"
   write_pkg "$WORK_MF" "$zipname" "$(sha1 "$REPO/$zipname")"

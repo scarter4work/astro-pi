@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.24)
 # unaffected either way.
 project(NukeX VERSION 5.2.0 LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
