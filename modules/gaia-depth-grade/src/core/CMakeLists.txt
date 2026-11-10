@@ -21,3 +21,9 @@ target_link_libraries(gdg_core PUBLIC Threads::Threads)
 # (x86-64 baseline has none, but aarch64 and -march builds would). PUBLIC so header-inline
 # numerics in consumers follow the same rule.
 target_compile_options(gdg_core PUBLIC -ffp-contract=off)
+
+# Recon core (Task 18): nebula 3D depth reconstruction, plan tasks 1-8. Its own block so the
+# parallel phases append without touching each other's lines.
+target_sources(gdg_core PRIVATE
+    recon/Channels.cpp
+)
