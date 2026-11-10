@@ -34,3 +34,12 @@ gdg_add_test(test_tap unit/test_tap.cpp gdg_core)
 
 # GaiaDepthGradeVersion.h is PCL-free (header only): the version release.sh reads.
 gdg_add_test(test_version unit/test_version.cpp)
+
+# Recon core (Task 18)
+gdg_add_test(test_recon_model unit/test_recon_model.cpp gdg_core)
+gdg_add_test(test_recon_channels unit/test_recon_channels.cpp gdg_core)
+gdg_add_test(test_recon_ionization unit/test_recon_ionization.cpp gdg_core)
+gdg_add_test(test_recon_ionizer unit/test_recon_ionizer.cpp gdg_core)
+gdg_add_test(test_recon_extinction unit/test_recon_extinction.cpp gdg_core)
+gdg_add_test(test_recon_cavity_terms unit/test_recon_cavity_terms.cpp gdg_core)
+gdg_add_test(test_recon_cavity unit/test_recon_cavity.cpp gdg_core)
