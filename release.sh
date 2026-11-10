@@ -149,8 +149,13 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # three or more parts, or v<n>.<n>..., must be that version (two-part numbers --
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
-EZ_NAMES=(EZStretch EZDonutRepair EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.11 [EZDonutRepair]=1.0.4 [EZHazeKill]=1.0.2 )
+EZ_NAMES=(EZStretch EZHazeKill)
+declare -A EZVER=( [EZStretch]=1.0.11 [EZHazeKill]=1.0.2 )
+# Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
+# first release after a withdrawal drops the entry from the work copy and, once the new manifest is
+# installed (step 6c), deletes the package file(s) from repository/. EZDonutRepair: withdrawn 2026-11-10
+# (source: private repo scarter4work/ez-donut-repair).
+RETIRED_PKG_RE=('EZDonutRepair_v[0-9.]+\.zip')
 GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
 REPO_DESC="$ROOT/tools/repository-description.xml"
 declare -A PKG_DESC=(
@@ -158,7 +163,6 @@ declare -A PKG_DESC=(
   [PICopilot]="$ROOT/modules/pi-copilot/package-description.xml"
   [Planetary]="$ROOT/modules/planetary/package-description.xml"
   [EZStretch]="$ROOT/scripts/ez-stretch/package-description/EZStretch.xml"
-  [EZDonutRepair]="$ROOT/scripts/ez-stretch/package-description/EZDonutRepair.xml"
   [EZHazeKill]="$ROOT/scripts/ez-stretch/package-description/EZHazeKill.xml"
   [GaiaDepthGrade]="$ROOT/gaia-depth-grade/package-description.xml"
   [GaiaDepthGradeSidecar]="$ROOT/gaia-depth-grade/sidecar-package-description.xml"
@@ -360,6 +364,20 @@ PY
   if ! cp "$work" "$tmp" || ! { if [ -e "$dest" ]; then chmod --reference="$dest" "$tmp"; else chmod 0644 "$tmp"; fi; } \
      || ! mv -f "$tmp" "$dest"; then rm -f "$tmp"; die "install_manifest: could not replace $dest"; fi
   cmp -s "$work" "$dest" || die "install_manifest: $dest is not the signed manifest"
+}
+
+# retire_manifest <manifest> <fileName-regex>... : drop the package entry matching each regex (at most one each).
+retire_manifest(){
+  python3 - "$@" <<'PY' || die "retire_manifest failed"
+import re,sys
+mf=sys.argv[1]; s=open(mf).read()
+for pat in sys.argv[2:]:
+    rx=re.compile(r'[ \t]*<package fileName="'+pat+r'"[^>]*>.*?</package>[ \t]*\n',re.S)
+    s,n=rx.subn('',s)
+    if n>1: sys.exit("%s matches %d manifest entries"%(pat,n))
+    print("  retired %s: %d manifest entr%s removed"%(pat,n,"y" if n==1 else "ies"))
+open(mf,'w').write(s)
+PY
 }
 
 # manifest_names_check <manifest> <fileName>... : the manifest's packages are exactly these, each once.
@@ -573,6 +591,7 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 WORK_MF="$WORK_DIR/updates.xri"
 cp "$REPO/updates.xri" "$WORK_MF"
+retire_manifest "$WORK_MF" "${RETIRED_PKG_RE[@]}"
 
 echo "== 3/6 package NukeX module tarball =="
 package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
@@ -781,5 +800,11 @@ NUKEX_QE_PUBLISHED_DIR="$REPO" "$ROOT/modules/nukex/build-portable/test/test_qe_
 
 echo "== 6c/6 install the signed, verified manifest as repository/updates.xri =="
 install_manifest "$WORK_MF" "$REPO/updates.xri"
+# Withdrawn packages leave repository/ only now that the manifest that no longer names them is installed.
+for rx in "${RETIRED_PKG_RE[@]}"; do
+  for f in "$REPO"/*; do
+    b="$(basename "$f")"; [[ "$b" =~ ^${rx}$ ]] && { echo "  removing withdrawn package $b"; git -C "$ROOT" rm -q --ignore-unmatch -f -- "repository/$b" 2>/dev/null || rm -f "$f"; }
+  done
+done
 
 echo "RELEASE OK — repository/ ready to commit & push"

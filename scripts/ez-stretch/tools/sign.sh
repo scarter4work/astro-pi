@@ -49,7 +49,7 @@ SCRIPTS_DIR="$PROJECT_DIR/src/scripts/EZ Stretch BSC"
 XRI="$PROJECT_DIR/repository/updates.xri"
 
 # Scripts to sign (.js -> .xsgn)
-SCRIPTS=( EZStretch EZDonutRepair EZHazeKill )
+SCRIPTS=( EZStretch EZHazeKill )
 
 if [ ! -f "$PASS_FILE" ]; then
     echo "ERROR: signing password not found at $PASS_FILE" >&2
