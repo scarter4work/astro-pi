@@ -5,7 +5,9 @@
 #
 # Cases:
 #   sky_adapter_convention   Task 11: PclSky vs the product's exported linear FITS WCS (TanSky) on a
-#                            master plate-solved by ImageSolver; ImageBridge flip. Needs the NAS.
+#                            master plate-solved by ImageSolver; ImageBridge row order. Needs the NAS.
+#   local_gaia_equals_gaia_process  Task 12: LocalGaiaSource rows == the Gaia process search on the
+#                            same cone and files; BP-RP reaches the catalogue. Needs a configured DR3.
 #
 # Exit: 0 PASS, 1 FAIL, 2 BLOCKED (no signing pass file), 77 every requested case skipped.
 #
@@ -18,7 +20,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 . "$HERE/harness.sh"
 
-ALL_CASES=( sky_adapter_convention )
+ALL_CASES=( sky_adapter_convention local_gaia_equals_gaia_process )
 CASES=( "$@" )
 [ ${#CASES[@]} -eq 0 ] && CASES=( "${ALL_CASES[@]}" )
 for c in "${CASES[@]}"; do
@@ -101,6 +103,32 @@ case_sky_adapter_convention()
       || bad "ImageBridge::ToCore flip: $(num .bridgeMismatches "$c") mismatching samples"
    [ "$(num .bridgeRoundTripMismatches "$c")" = 0 ] && ok "ImageBridge::ToPcl(ToCore(image)) == image" \
       || bad "ImageBridge round trip: $(num .bridgeRoundTripMismatches "$c") mismatching samples"
+}
+
+case_local_gaia_equals_gaia_process()
+{
+   ran=$((ran + 1))
+   # The NGC 7635 field of the HaO3 master (78' x 44' at 1.22"/px: half-diagonal 0.75 deg), G < 18.
+   run_pi local_gaia_equals_gaia_process "$HERE/probe-local-gaia.js" GDG_CONE="${GDG_CONE:-350.1672 61.2201 0.75 18}" || return 0
+   local c="$OUT"
+   echo "  info  database files: $(jq -r '.cpp.paths | length' "$c") ($(jq -r '.cpp.paths[0]' "$c") ...), Gaia process data release $(jq -r .release "$c")"
+   echo "  info  search: C++ $(num .cpp.searchSeconds "$c") s, Gaia process $(num .gaiaSeconds "$c") s"
+   [ "$(num .nCpp "$c")" -gt 1000 ] && ok "LocalGaiaSource: $(num .nCpp "$c") rows" || bad "LocalGaiaSource: only $(num .nCpp "$c") rows"
+   # Row multiset equality: parallax, G, BP, RP and flags exact; ra/dec to 1e-12 deg (the core's
+   # and our builds of XPSD Unproject may differ in the last bit).
+   if [ "$(num .nCpp "$c")" = "$(num .nGaia "$c")" ] && [ "$(num .unmatched "$c")" = 0 ] && [ "$(num .extraInCpp "$c")" = 0 ] \
+      && le "$(num .maxPosDeltaDeg "$c")" 1e-12; then
+      ok "row multiset equals the Gaia process search: $(num .nGaia "$c") rows, catalogue values exact, $(num .exact "$c") positions bit-identical, max |d| $(num .maxPosDeltaDeg "$c") deg"
+   else
+      bad "rows differ: C++ $(num .nCpp "$c"), Gaia $(num .nGaia "$c"), unmatched $(num .unmatched "$c"), extra in C++ $(num .extraInCpp "$c"), max position |d| $(num .maxPosDeltaDeg "$c") deg; e.g. $(jq -c .sampleUnmatched "$c")"
+   fi
+   # BP-RP reaches the catalogue (the shipped TSV dropped it).
+   local nc bf
+   nc="$(num .cpp.nCatalog "$c")"; bf="$(num .cpp.catalogBpFinite "$c")"
+   if [ "$(num .cpp.catalogBpMismatch "$c")" = 0 ] && awk -v a="$bf" -v b="$nc" 'BEGIN { exit !(b > 0 && a >= 0.9*b) }'; then
+      ok "distances_for: $nc usable rows, $bf with BP-RP = BP - RP (none mismatched)"
+   else bad "BP-RP pass-through: $bf of $nc finite, $(num .cpp.catalogBpMismatch "$c") mismatched"; fi
+   echo "  info  log: $(jq -r '(.cpp.warnings + .cpp.infos) | join(" | ")' "$c")"
 }
 
 for c in "${CASES[@]}"; do

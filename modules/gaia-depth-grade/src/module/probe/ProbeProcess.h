@@ -65,6 +65,7 @@ private:
 // Probe cases (probe/Probe*.cpp). Each returns a JSON object (without the outer "ok"/"case"
 // fields, which the instance adds) or throws.
 IsoString ProbeSkyAdapterConvention( View& view, const String& args );
+IsoString ProbeLocalGaia( const String& args );
 
 extern GDGProbeProcess* TheGDGProbeProcess;
 

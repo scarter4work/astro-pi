@@ -6,6 +6,7 @@ set(MODULE_SOURCES
     PclProbe.cpp
     ImageBridge.cpp
     PclSky.cpp
+    LocalGaia.cpp
 )
 
 # GDG_BUILD_PROBES (OFF; host test builds only, never the container/release build) adds the
@@ -15,6 +16,7 @@ if(GDG_BUILD_PROBES)
     list(APPEND MODULE_SOURCES
         probe/ProbeProcess.cpp
         probe/ProbeSky.cpp
+        probe/ProbeLocalGaia.cpp
     )
 endif()
 

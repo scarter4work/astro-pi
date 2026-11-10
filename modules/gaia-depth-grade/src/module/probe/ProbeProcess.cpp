@@ -94,7 +94,10 @@ bool GDGProbeInstance::ExecuteGlobal()
    IsoString body;
    try
    {
-      throw Error( "GaiaDepthGradeProbe: unknown global case '" + p_case + "'" );
+      if ( p_case == "local_gaia" )
+         body = ProbeLocalGaia( p_args );
+      else
+         throw Error( "GaiaDepthGradeProbe: unknown global case '" + p_case + "'" );
       return Finish( "{\"ok\":true,\"case\":" + gdgprobe::Str( p_case ) + "," + body + "}\n" );
    }
    catch ( const Exception& e )
