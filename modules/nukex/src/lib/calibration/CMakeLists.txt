@@ -65,4 +65,4 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 
-target_compile_features(nukex4_calibration PUBLIC cxx_std_17)
+target_compile_features(nukex4_calibration PUBLIC cxx_std_20)

@@ -2,13 +2,15 @@
   "mcpServers": {
     "pjsr": {
       "command": "node",
-      "args": ["src/mcp-server.js"],
-      "cwd": "/home/scarter4work/projects/EZ-suite-bsc/pjsr_parser"
+      "args": [
+        "/home/scarter4work/projects/pi-parsers/pjsr_parser/src/mcp-server.js"
+      ]
     },
     "pcl": {
       "command": "node",
-      "args": ["src/mcp-server.js"],
-      "cwd": "/home/scarter4work/projects/EZ-suite-bsc/pcl_parser"
+      "args": [
+        "/home/scarter4work/projects/pi-parsers/pcl_parser/src/mcp-server.js"
+      ]
     }
   }
 }

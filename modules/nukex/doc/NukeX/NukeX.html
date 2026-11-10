@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="author" content="Scott Carter" />
-<meta name="description" content="NukeX: distribution-fitted stacking and auto-stretch for PixInsight. What it does, its network connections, external programs, the files it writes outside the PixInsight installation, and acknowledgments." />
+<meta name="description" content="NukeX: a distribution-fitted pixel-signal estimator and auto-stretch for PixInsight. What it does, its network connections, external programs, the files it writes outside the PixInsight installation, and acknowledgments." />
 <title>NukeX</title>
 <style>
    body { font-family: "DejaVu Sans", "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px;
@@ -24,8 +24,8 @@
 <body>
 
 <h1>NukeX</h1>
-<p class="subtitle">Distribution-fitted stacking and auto-stretch for PixInsight &mdash; module version 5.2.0.1 (Linux x64).<br />
-By Scott Carter. Copyright &copy; 2026 Scott Carter. MIT License.</p>
+<p class="subtitle">Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight &mdash; module version 5.2.0.2 (Linux x64).<br />
+By Scott Carter. Copyright &copy; 2026 Scott Carter. BSD 3-Clause License.</p>
 
 <div class="toc">
 <p><b>Contents:</b>
@@ -39,8 +39,8 @@ By Scott Carter. Copyright &copy; 2026 Scott Carter. MIT License.</p>
 </div>
 
 <h2 id="what">What NukeX does</h2>
-<p>NukeX (Process &rarr; NukeX) stacks the FITS light frames you add to it, with optional flats. Instead of averaging or
-sigma-clipping, it fits a statistical distribution to every pixel's samples across the stack and estimates the signal from
+<p>NukeX (Process &rarr; NukeX) is an additional tool that works on the FITS light frames you add to it, with optional
+flats. For every pixel it fits a statistical distribution to the samples across those frames and estimates the signal from
 the fitted model; it then applies one of its stretches (Auto is recommended). It reads <code>FILTER</code>,
 <code>BAYERPAT</code> and <code>INSTRUME</code> from the FITS headers and uses a camera quantum-efficiency (QE) database,
 built into the module, to route each frame and to decompose dual-narrowband colour data into emission lines.</p>
@@ -50,8 +50,11 @@ as usual.</p>
 
 <h2 id="network">Network connections</h2>
 <p>NukeX makes exactly one kind of network connection: the <b>camera-database update check</b>. Nothing else in the module
-uses the network. Reading your frames is local only (the FITS library inside NukeX is built without network support, and
-NukeX opens only the files you select).</p>
+uses the network. Frames are read from local files only: NukeX opens each frame path as a file path (CFITSIO's fits_open_diskfile(), which
+does no URL parsing), and the FITS library inside NukeX is built without its http://, ftp:// and root:// drivers. A frame
+path that is a URL is reported as a file that cannot be opened. Earlier releases (up to 5.2.0.1) contained those drivers and
+opened frames with fits_open_file(), so a frame path given as a URL could connect to that host; no NukeX screen or
+documented workflow produces one.</p>
 
 <h3>What is contacted</h3>
 <p>HTTPS requests to GitHub, at</p>

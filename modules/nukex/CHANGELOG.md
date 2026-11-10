@@ -1,5 +1,12 @@
 # NukeX — Changelog
 
+## v5.2.0.2 — 2026-11-10
+
+Frames open only as local files, and the FITS library has no network drivers.
+
+- Frames are opened with CFITSIO's `fits_open_diskfile()`, which does no URL parsing.
+- CFITSIO is built without its http, ftp and root network drivers; a frame path that is a URL is reported as a file that cannot be opened.
+
 ## v5.2.0.1 — 2026-10-13
 
 Documentation and licence notices only; stacking and stretching are unchanged.

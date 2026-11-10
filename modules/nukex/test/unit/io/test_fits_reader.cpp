@@ -1,6 +1,13 @@
 #include "catch_amalgamated.hpp"
 #include "nukex/io/fits_reader.hpp"
 #include <filesystem>
+#include <arpa/inet.h>
+#include <atomic>
+#include <thread>
+#include <poll.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 using namespace nukex;
 
@@ -156,4 +163,83 @@ TEST_CASE("FITSReader: a plausible GAIN is still accepted as electronic gain",
     REQUIRE(meta.gain == Catch::Approx(1.9f));
     REQUIRE(meta.has_noise_keywords == true);
     std::filesystem::remove(p);
+}
+
+// A frame path is a file path, never a URL. CFITSIO's fits_open_file() accepts
+// http://, ftp:// and root:// names and its network drivers are linked into the
+// module, so the reader must open frames with fits_open_diskfile(). A listener
+// on 127.0.0.1 stands in for the remote host: it counts every connection and
+// hangs up at once, so a regression fails fast instead of waiting on a reply.
+namespace {
+struct LoopbackListener {
+    int fd = -1;
+    int port = 0;
+    std::atomic<int> count{0};
+    std::atomic<bool> stop{false};
+    std::thread worker;
+    LoopbackListener() {
+        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = 0;
+        if (fd < 0 || ::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+            ::listen(fd, 8) != 0)
+            return;
+        socklen_t len = sizeof a;
+        ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
+        port = ntohs(a.sin_port);
+        worker = std::thread([this] {
+            while (!stop) {
+                pollfd p{fd, POLLIN, 0};
+                if (::poll(&p, 1, 50) > 0) {
+                    int c = ::accept(fd, nullptr, nullptr);
+                    if (c >= 0) { ++count; ::close(c); }
+                }
+            }
+        });
+    }
+    ~LoopbackListener() {
+        stop = true;
+        if (worker.joinable()) worker.join();
+        if (fd >= 0) ::close(fd);
+    }
+};
+}  // namespace
+
+TEST_CASE("FITSReader: a URL is a missing file, not a network request", "[fits][network]") {
+    LoopbackListener server;
+    REQUIRE(server.port != 0);
+    const std::string base = "127.0.0.1:" + std::to_string(server.port) + "/frame.fits";
+
+    for (const char* scheme : {"http://", "ftp://", "root://"}) {
+        const std::string url = scheme + base;
+        auto r = FITSReader::read(url);
+        REQUIRE(r.success == false);
+        REQUIRE_FALSE(r.error.empty());
+        auto m = FITSReader::read_headers(url);
+        REQUIRE(m.width == 0);
+        REQUIRE(m.height == 0);
+    }
+    REQUIRE(server.count == 0);
+}
+
+// Second layer: the vendored CFITSIO is built without its network drivers, so
+// even fits_open_file() (which does parse URLs) cannot reach the network.
+TEST_CASE("CFITSIO: vendored build has no network drivers", "[fits][network]") {
+#ifdef NUKEX_SYSTEM_CFITSIO
+    SKIP("system CFITSIO (dev build) keeps its network drivers");
+#else
+    LoopbackListener server;
+    REQUIRE(server.port != 0);
+    const std::string base = "127.0.0.1:" + std::to_string(server.port) + "/frame.fits";
+    for (const char* scheme : {"http://", "ftp://", "root://"}) {
+        fitsfile* f = nullptr;
+        int status = 0;
+        const std::string url = scheme + base;
+        fits_open_file(&f, url.c_str(), READONLY, &status);
+        REQUIRE(status != 0);
+    }
+    REQUIRE(server.count == 0);
+#endif
 }

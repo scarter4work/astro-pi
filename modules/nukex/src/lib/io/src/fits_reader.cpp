@@ -142,8 +142,10 @@ FITSReadResult FITSReader::read(const std::string& filepath) {
     fitsfile* fptr = nullptr;
     int status = 0;
 
-    // Open FITS file
-    fits_open_file(&fptr, filepath.c_str(), READONLY, &status);
+    // Open FITS file. A frame path is a local file path: fits_open_diskfile()
+    // does no filename parsing, so http://, ftp:// and root:// names are never
+    // handed to CFITSIO's network drivers (fits_open_file() would connect).
+    fits_open_diskfile(&fptr, filepath.c_str(), READONLY, &status);
     if (status != 0) {
         char err[FLEN_ERRMSG];
         fits_get_errstatus(status, err);
@@ -233,7 +235,7 @@ FrameMetadata FITSReader::read_headers(const std::string& filepath) {
     fitsfile* fptr = nullptr;
     int status = 0;
 
-    fits_open_file(&fptr, filepath.c_str(), READONLY, &status);
+    fits_open_diskfile(&fptr, filepath.c_str(), READONLY, &status);
     if (status != 0) return m;
 
     m = extract_metadata(fptr);

@@ -9,7 +9,7 @@ set(GDG_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 function(gdg_add_test test_name test_source)
     add_executable(${test_name} ${test_source})
     target_link_libraries(${test_name} PRIVATE catch2_main ${ARGN})
-    target_include_directories(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/util" "${CMAKE_CURRENT_SOURCE_DIR}/unit")
+    target_include_directories(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/util" "${CMAKE_CURRENT_SOURCE_DIR}/unit" "${CMAKE_CURRENT_SOURCE_DIR}/../src")
     target_compile_definitions(${test_name} PRIVATE GDG_GOLDEN_DIR="${GDG_GOLDEN_DIR}")
     add_test(NAME ${test_name}
              COMMAND ${test_name} --allow-running-no-tests
@@ -24,3 +24,6 @@ gdg_add_test(test_morphology unit/test_morphology.cpp gdg_core)
 gdg_add_test(test_daofind unit/test_daofind.cpp gdg_core)
 gdg_add_test(test_transform unit/test_transform.cpp gdg_core)
 gdg_add_test(test_halo unit/test_halo.cpp gdg_core)
+
+# GaiaDepthGradeVersion.h is PCL-free (header only): the version release.sh reads.
+gdg_add_test(test_version unit/test_version.cpp)

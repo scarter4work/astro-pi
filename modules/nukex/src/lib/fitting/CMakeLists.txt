@@ -22,4 +22,4 @@ target_link_libraries(nukex4_fitting
     PRIVATE Ceres::ceres Eigen3::Eigen
 )
 
-target_compile_features(nukex4_fitting PUBLIC cxx_std_17)
+target_compile_features(nukex4_fitting PUBLIC cxx_std_20)

@@ -75,17 +75,25 @@ RUN curl -fsSL -o ceres.tgz https://github.com/ceres-solver/ceres-solver/archive
  && cmake --build ceres-build -j"$(nproc)" && cmake --install ceres-build \
  && rm -rf /tmp/src/*
 
-# PCL static libraries, rebuilt here from the pinned PCL commit. The dev box's
-# ~/PCL/lib/x64 archives were compiled against glibc 2.43 headers and reference
-# glibc-2.38+ C23 entry points (__isoc23_strtol & co.), which glibc 2.34 does
-# not have -- so they cannot be linked into a portable module. Same commit as
-# ~/PCL, so headers and archives stay in lockstep with what modules compile
-# against.
-ARG PCL_COMMIT=3a4af80082cfe07dcc11099e8d93ea9cb72101b1
+# PCL static libraries, rebuilt here. The dev box's ~/PCL/lib/x64 archives
+# were compiled against glibc 2.43 headers and reference glibc-2.38+ C23 entry
+# points (__isoc23_strtol & co.), which glibc 2.34 does not have -- so they
+# cannot be linked into a portable module.
+#
+# Source: PCL 2.13.0 build 1072, the tree bundled with PixInsight 1.9.6
+# (/opt/PixInsight/include/pcl + src/{pcl,3rdparty}), packed reproducibly by
+# pcl-2.13/make-tarball.sh and pinned by pcl-2.13/SHA256SUMS. Upstream gitlab
+# has not published 2.13 (its master is 2.11.0); 2.13 is the first PCL with
+# BlindAstrometricSolver. Its makefiles compile with -std=c++20, so every
+# module including these headers builds as C++20. image-tag.sh hashes
+# SHA256SUMS, so a re-pin builds a NEW image.
 ENV PCLDIR=/opt/pcl
-RUN git clone -q https://gitlab.com/pixinsight/PCL.git $PCLDIR \
- && git -C $PCLDIR checkout -q ${PCL_COMMIT} \
- && rm -rf $PCLDIR/.git \
+COPY pcl-2.13/SHA256SUMS pcl-2.13/PCL-2.13.0-1072.tar.gz /tmp/pcl/
+RUN cd /tmp/pcl && sha256sum -c SHA256SUMS \
+ && mkdir -p $PCLDIR && tar -C $PCLDIR -xzf PCL-2.13.0-1072.tar.gz \
+ && rm -rf /tmp/pcl \
+ && grep -q 'Released 2026-10-28' $PCLDIR/src/pcl/Version.cpp \
+ && test -f $PCLDIR/include/pcl/BlindAstrometricSolver.h \
  && mkdir -p $PCLDIR/lib/x64 \
  && for d in 3rdparty/cminpack 3rdparty/lcms 3rdparty/lz4 3rdparty/RFC6234 3rdparty/zlib 3rdparty/zstd pcl; do \
       mkdir -p $PCLDIR/src/$d/linux/g++/x64/Release && \

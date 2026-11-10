@@ -1,13 +1,12 @@
 # NukeX
 
-Distribution-fitted image stacking and auto-stretch for PixInsight, with
+Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight, with
 filter-aware colour science: dual-narrowband OSC data is decomposed into
 emission lines through the camera's measured quantum efficiency and composed
 with a calibrated palette.
 
-Rather than averaging or sigma-clipping, NukeX fits a distribution to every
-pixel's samples across the stack and estimates the true signal from the fitted
-model. Each pixel carries its own record — Welford accumulators, a histogram,
+NukeX fits a distribution to every pixel's samples across the frames you add
+and estimates the signal from the fitted model. Each pixel carries its own record — Welford accumulators, a histogram,
 the fitted distribution and its robust statistics, per channel — and the
 selection is made from that record.
 
@@ -46,8 +45,9 @@ stacks as luminance. To teach it a camera or filter it does not know, see
 
 NukeX makes one kind of network connection: the **camera-database update
 check**. Nothing else in the module uses the network; frames are read locally
-(the FITS library is built without network support, and NukeX opens only the
-files you select).
+(frame paths are opened as file paths with `fits_open_diskfile()`, and the FITS
+library is built without its http/ftp/root network drivers; a URL given as a
+frame path is reported as a file that cannot be opened).
 
 - **What:** HTTPS GET requests to
   `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`.
