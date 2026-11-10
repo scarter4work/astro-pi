@@ -27,7 +27,7 @@ Then Resources → Updates → Check for Updates. Installs:
 | `modules/planetary/` | Planetary C++ module (CMake): SER/AVI reader library, the stack engine, and the SERViewer and PlanetaryStack processes. Builds `Planetary-pxm.so`. |
 | `gaia-depth-grade/` | Gaia Depth Grade PJSR scripts + the Python sidecar they run. |
 | `scripts/ez-stretch/` | EZ PJSR scripts + native signing tooling. |
-| `tools/` | Dev tooling (PCL/PJSR MCP parsers, astro-stretch-studio). Not shipped. |
+| `tools/` | Dev tooling (astro-stretch-studio, build environment, release checks). Not shipped. |
 | `archive/` | Frozen prior NukeX versions (v1–v4). Never built or shipped. |
 | `repository/` | Signed `updates.xri` + published packages. |
 | `release.sh` | Build → sign → package → manifest → verify. |
