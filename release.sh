@@ -156,9 +156,11 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
 EZ_NAMES=(EZStretch EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.0.2 )
+declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.1.0 )
 # EZ script documentation (CPD rule 6.1; Repository Reference 4.2): scripts/ez-stretch/doc/<Name>/ holds
-# <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it.
+# <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it, and
+# <Name>.js must declare "#feature-id <Name> : ...": PixInsight finds a script's documentation by that id
+# (doc/scripts/<id>/<id>.html, as for its own scripts, e.g. ImageSolver, and for GaiaDepthGrade).
 EZDOC="$ROOT/scripts/ez-stretch/doc"
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
 # Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
@@ -679,6 +681,8 @@ for name in "${EZ_NAMES[@]}"; do
   grep -qE "^#define VERSION +\"${EZVER[$name]}\"" "$EZSRC/$name.js" \
     || die "$name.js's #define VERSION is not ${EZVER[$name]} (EZVER in release.sh)"
   [ -f "$EZDOC/$name/$name.html" ] || die "$name has no documentation: $EZDOC/$name/$name.html (CPD rule 6.1)"
+  grep -qE "^#feature-id +$name +:" "$EZSRC/$name.js" \
+    || die "$name.js has no '#feature-id $name : ...' directive: PixInsight would not find doc/scripts/$name/$name.html"
   ! git -C "$ROOT" ls-files --error-unmatch "repository/${name}_v${EZVER[$name]}.zip" >/dev/null 2>&1 \
     || ez_pkg_check "$REPO/${name}_v${EZVER[$name]}.zip" "$name" \
     || die "$name ${EZVER[$name]} is already published without the current $name.js and doc/scripts/$name/ -- bump $name's version so a new package is built"
@@ -899,7 +903,8 @@ for name in "${EZ_NAMES[@]}"; do
   # documentation goes to doc/scripts/<Name>/ (Repository Reference 4.2).
   stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work" "$stage/doc/scripts"
   cp "$EZSRC/$name.js" "$EZSRC/$name.xsgn" "$stage/src/scripts/scarter4work/"
-  cp -r "$EZDOC/$name" "$stage/doc/scripts/$name"
+  mkdir -p "$stage/doc/scripts/$name"
+  cp -R "$EZDOC/$name/." "$stage/doc/scripts/$name/"
   # World-readable whatever the build's umask (mktemp -d is 0700): the updater
   # keeps archive modes and installs as root, so 0600/0700 entries would leave
   # the scripts unreadable to the user. (EZ <= 1.0.10/1.0.3/1.0.1 shipped 0600.)

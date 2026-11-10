@@ -11,8 +11,10 @@
 //
 // ============================================================================
 
-#feature-id    scarter4work > EZ Stretch
-#script-id     EZStretch
+// The "Id : menu path" form names the script EZStretch (so PixInsight finds
+// its documentation at doc/scripts/EZStretch/EZStretch.html) and replaces
+// #script-id: code signing allows only one identification directive.
+#feature-id    EZStretch : scarter4work > EZ Stretch
 #feature-info  Unified stretch suite combining Lupton RGB, RNC-ColorStretch, \
                and PhotometricStretch into a single interface. Select your \
                algorithm and adjust parameters with real-time preview.
