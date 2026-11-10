@@ -6,6 +6,8 @@ add_library(gdg_core STATIC
     Numerics.cpp
     SigmaClip.cpp
     Morphology.cpp
+    DaoFind.cpp
+    Detect.cpp
 )
 # Consumers include "core/<Header>.h".
 target_include_directories(gdg_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")

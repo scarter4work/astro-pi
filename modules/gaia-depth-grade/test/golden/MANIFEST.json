@@ -212,6 +212,221 @@
     37
    ]
   },
+  "dao_corner_pair": {
+   "dtype": "<f8",
+   "sha256": "42812524e3344e9e7aaf15daf26860782f868e80b46dcb417cff09104f87ef88",
+   "shape": [
+    2,
+    7
+   ]
+  },
+  "dao_corner_pair_input": {
+   "dtype": "<f4",
+   "sha256": "16c860318c594e8fbddea081da039ded286063b4de27cfb72dfa502e10c4e574",
+   "shape": [
+    40,
+    40
+   ]
+  },
+  "dao_edge_bowl": {
+   "dtype": "<f8",
+   "sha256": "9836197b602d1954e39e9da5b973f0aed1869b721a7e24d25fe4e44e641ab99f",
+   "shape": [
+    4,
+    7
+   ]
+  },
+  "dao_edge_bowl_input": {
+   "dtype": "<f4",
+   "sha256": "d9636b247bf4a82876dc191054d5b7dec3a61e6b290c1f1399d94625a0ad3baa",
+   "shape": [
+    24,
+    24
+   ]
+  },
+  "dao_general": {
+   "dtype": "<f8",
+   "sha256": "f83799b33652abb5e684166e294d1f13e30376a20773bc775bf08df8eba67151",
+   "shape": [
+    41,
+    7
+   ]
+  },
+  "dao_general_conv_pair": {
+   "dtype": "<f8",
+   "sha256": "ec1157b6693733bcfb61e6a2684cb7ef6107ddd7950b474d9afbfb387e1fdb2b",
+   "shape": [
+    40,
+    48
+   ]
+  },
+  "dao_kernel_fwhm3_data": {
+   "dtype": "<f8",
+   "sha256": "c169884cf3c7fd6e1d5e72d3b4fd3d0b82d12fd55c2362b96abc6161b1bf8199",
+   "shape": [
+    5,
+    5
+   ]
+  },
+  "dao_kernel_fwhm3_mask": {
+   "dtype": "|b1",
+   "sha256": "69e3d2e311d8d42b8c7cc92191d69225ac0a726912a784c1879a04da11a830bc",
+   "shape": [
+    5,
+    5
+   ]
+  },
+  "dao_kernel_fwhm3_unmasked": {
+   "dtype": "<f8",
+   "sha256": "d43283bda6d16900959c4d1fbdca4dba053eceefc1be307e0c2a5c586cc4541d",
+   "shape": [
+    5,
+    5
+   ]
+  },
+  "dao_kernel_general_data": {
+   "dtype": "<f8",
+   "sha256": "7670c899c517bbe00b065d774f6c7e03a0d0e02dd106c4482e21da23266655b0",
+   "shape": [
+    7,
+    7
+   ]
+  },
+  "dao_nan": {
+   "dtype": "<f8",
+   "sha256": "aa22c14f2c1e1c19a1afeb5b1c6cd3bb1ee1c74991b64b4c0c9bf05199069af1",
+   "shape": [
+    2,
+    7
+   ]
+  },
+  "dao_nan_input": {
+   "dtype": "<f4",
+   "sha256": "ee1179abdf494335018781b475b591b41f65a14b9fcdf268316692c89461c813",
+   "shape": [
+    40,
+    48
+   ]
+  },
+  "dao_noise_default": {
+   "dtype": "<f8",
+   "sha256": "7d0c2acd2090f849b43b8f88104d6507582b51702b8ad5b4822bd254b08d93aa",
+   "shape": [
+    7,
+    7
+   ]
+  },
+  "dao_noise_input": {
+   "dtype": "<f4",
+   "sha256": "d4e77e02f31d1fbc912e2a919fab876c590ad2aeb1cea1214f8e3a04842f59b1",
+   "shape": [
+    32,
+    40
+   ]
+  },
+  "dao_noise_minsep0": {
+   "dtype": "<f8",
+   "sha256": "be69334ed4a1920a65043537b73d0a19e4b8392945e58e078af967ae13d783f4",
+   "shape": [
+    65,
+    7
+   ]
+  },
+  "dao_noise_minsep3": {
+   "dtype": "<f8",
+   "sha256": "fa072927fdc3c9f73aca0fc6796ecf3a50674301fd7a46fa1d57e049de0b0ee8",
+   "shape": [
+    37,
+    7
+   ]
+  },
+  "dao_pair_conv": {
+   "dtype": "<f8",
+   "sha256": "81d0f018d1bd1c85858d7e9e5d061949bbb46867006ccad401da0e614687c544",
+   "shape": [
+    40,
+    48
+   ]
+  },
+  "dao_pair_default": {
+   "dtype": "<f8",
+   "sha256": "eeffc6aab85f5f3208ac8fc14e60feaef57399fee4198461d9661b40b1fc4a9b",
+   "shape": [
+    3,
+    7
+   ]
+  },
+  "dao_pair_input": {
+   "dtype": "<f4",
+   "sha256": "4292e852742067d1a9c3fcdc960b2f23943253ec5ad72fab88d054e37b48a99c",
+   "shape": [
+    40,
+    48
+   ]
+  },
+  "dao_pair_minsep0": {
+   "dtype": "<f8",
+   "sha256": "c7f30956b37ceba540b7897c3c64a09e21fdcdc9c8e7759338c1cff9c85181e2",
+   "shape": [
+    4,
+    7
+   ]
+  },
+  "dao_pair_minsep3": {
+   "dtype": "<f8",
+   "sha256": "c7f30956b37ceba540b7897c3c64a09e21fdcdc9c8e7759338c1cff9c85181e2",
+   "shape": [
+    4,
+    7
+   ]
+  },
+  "dao_pair_strict": {
+   "dtype": "<f8",
+   "sha256": "8916923db99e6b19133d4cf98c9813f54ddc866c69933c3854b3214808bb93dd",
+   "shape": [
+    2,
+    7
+   ]
+  },
+  "dao_pair_strict_threshold": {
+   "dtype": "<f8",
+   "sha256": "5668e4a917f711f3aa3a356248996059a5bddeb2b5c52e06c1c43c33e285f1a6",
+   "shape": [
+    1
+   ]
+  },
+  "dao_reject_default": {
+   "dtype": "<f8",
+   "sha256": "aa5541fa2be123a15f91507cf7674a40323304c9511fed84c288aa49c8c9208f",
+   "shape": [
+    1,
+    7
+   ]
+  },
+  "dao_reject_input": {
+   "dtype": "<f8",
+   "sha256": "874013fa2f0f550a0d291d6d1853dca7bb406a4e70df06f0ed4496abbf6fbc93",
+   "shape": [
+    32,
+    40
+   ]
+  },
+  "dao_reject_nofilter": {
+   "dtype": "<f8",
+   "sha256": "c4b645e53e481d5a841489172b80ef9df9bba4ff784fb89c954c59a88716399b",
+   "shape": [
+    3,
+    7
+   ]
+  },
+  "dao_reject_sharp_only": {
+   "dtype": "<f8",
+   "sha256": "aad22ac98d2ee7b056ae88f91a28d6c43733d2ce2f2584e607278b61865955e3",
+   "shape": [
+    2,
+    7
+   ]
+  },
   "dao_table_flux": {
    "dtype": "<f8",
    "sha256": "7a6669970c06263375e6f149174b89ca4f4005750da34f213e02968391c6a46a",
@@ -259,6 +474,14 @@
    "sha256": "7d163a20924d4cc89fe9055ba6bb7be6b116b947f1d14471565b13c6d75dce9d",
    "shape": [
     37
+   ]
+  },
+  "detect_empty_input": {
+   "dtype": "<f4",
+   "sha256": "0b730d7a7989eae27980c4beb6cb1eb5d5fe7c139bf98e71d4db09406cffde20",
+   "shape": [
+    24,
+    32
    ]
   },
   "detect_table_flux": {
@@ -1029,6 +1252,62 @@
     3
    ]
   },
+  "overlap_modulation": {
+   "dtype": "<f8",
+   "sha256": "9c05712755205e65ea058a4a64ddcdd80f6b7a4f5cd923361385e87df82be1be",
+   "shape": [
+    4,
+    2
+   ]
+  },
+  "overlap_rendered": {
+   "dtype": "<f4",
+   "sha256": "ae7d429cb8844c4038fe00fb809af1da60751131dbbb4a8cb16fcec9fd983808",
+   "shape": [
+    32,
+    40,
+    3
+   ]
+  },
+  "overlap_rendered_reversed": {
+   "dtype": "<f4",
+   "sha256": "aef2ef8ce30f1a3aa7ebade00b309b13c32c1ce3fe4a34a82d36973896e396d5",
+   "shape": [
+    32,
+    40,
+    3
+   ]
+  },
+  "overlap_stars": {
+   "dtype": "<f4",
+   "sha256": "77d7254558da8b119f57d053e8adacdcd46239927eb3994200ad06c5a7ba57b4",
+   "shape": [
+    32,
+    40,
+    3
+   ]
+  },
+  "overlap_table_flux": {
+   "dtype": "<f8",
+   "sha256": "5028ae22d592580b0eba967698b51a0b27d4d3271b9a9b096c69c318bd33fdd5",
+   "shape": [
+    2
+   ]
+  },
+  "overlap_table_x": {
+   "dtype": "<f8",
+   "sha256": "585fdec0406618c3fc8ffbc30cee355b847352e503478a7ae6ffd3ba8ab86489",
+   "shape": [
+    2
+   ]
+  },
+  "overlap_table_y": {
+   "dtype": "<f8",
+   "sha256": "5eb944f12b82e13dba2eecc770aef0393a7f5412f8e79de1cf977ad27ff7c69b",
+   "shape": [
+    2
+   ]
+  },
   "pct_input": {
    "dtype": "<f8",
    "sha256": "ec2da7798e7f8d1168167c8b88c08d3f741deafa4ba3a20bbcb48735bdbaba4a",
@@ -1401,7 +1680,7 @@
  "python_core": {
   "core_last_change_commit": "d46f6995376c2a95f9d05ea1b52537dee8714318",
   "core_tree_dirty": false,
-  "repo_head": "d1cc395781bc18a267d547918b30d100afd4a787"
+  "repo_head": "f27aabec6b4129f9d8692037306ee103184ed2e6"
  },
  "seed": 20261110,
  "selftest_files": [
@@ -1421,6 +1700,23 @@
   "chan_out_duoband",
   "chan_out_osc",
   "chan_out_sho",
+  "dao_constant",
+  "dao_corner_pair",
+  "dao_edge_bowl",
+  "dao_general",
+  "dao_kernel_fwhm3",
+  "dao_kernel_general",
+  "dao_nan",
+  "dao_noise_default",
+  "dao_noise_minsep0",
+  "dao_noise_minsep3",
+  "dao_pair_default",
+  "dao_pair_minsep0",
+  "dao_pair_minsep3",
+  "dao_pair_strict",
+  "dao_reject_default",
+  "dao_reject_nofilter",
+  "dao_reject_sharp_only",
   "dao_table",
   "effective",
   "fixture_footprint",
@@ -1431,6 +1727,7 @@
   "gauss_2p5",
   "gauss_4p0",
   "gauss_65p0",
+  "halo_fallback",
   "halo_profile",
   "inputs",
   "looks_linear",
@@ -1451,6 +1748,7 @@
   "nebula_out_s2_a0p5_t1p5",
   "odd",
   "order_stats",
+  "overlap",
   "recon",
   "recon_cavity",
   "recon_cavity_cfg2",

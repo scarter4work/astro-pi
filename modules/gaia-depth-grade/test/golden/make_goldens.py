@@ -425,6 +425,179 @@ def edge_case(o: Out, rng):
     o.params("moffat", base_sigma_px=2.0, beta=2.5, radius_px=16.0)
 
 
+def phase_c_cases(o: Out):
+    """Extra cases for the Phase C ports (plan Tasks 6-9), drawn from their own seeded generator
+    so every other golden stays byte-identical: DAOFIND peak separation (default 2.5*fwhm, 0 =
+    kernel footprint, an odd circular footprint), the sharpness/roundness filters, a general
+    elliptical kernel with border exclusion and an unscaled threshold, NaN input, an empty
+    field; the render's window order on two overlapping stars; the halo's Moffat fallback."""
+    from photutils.utils._convolution import _filter_data
+
+    rng = np.random.default_rng(SEED + 2)
+    dao_cols = ("x_centroid", "y_centroid", "flux", "peak", "sharpness", "roundness1", "roundness2")
+
+    def field(w, h, stars, noise=0.002):
+        yy, xx = np.mgrid[0:h, 0:w].astype(float)
+        img = rng.normal(0.0, noise, (h, w))
+        for x, y, amp, sx, sy in stars:
+            img += amp * np.exp(-((xx - x) ** 2 / (2 * sx * sx) + (yy - y) ** 2 / (2 * sy * sy)))
+        return img.astype(np.float32).astype(np.float64)
+
+    def dao(name, data, **kw):
+        found = DAOStarFinder(**kw)(data)
+        rows = (np.zeros((0, 7)) if found is None
+                else np.column_stack([np.asarray(found[c], float) for c in dao_cols]))
+        o.save(name, rows)
+        o.params(name, columns=list(dao_cols), n=len(rows),
+                 **{k: (list(v) if isinstance(v, tuple) else v) for k, v in kw.items()})
+        return len(rows)
+
+    # 1. Peak separation. Two stars 4.9 px apart (inside 2.5*fwhm = 7.5), one isolated, one in a
+    #    corner (cutouts and the circular footprint clipped by the frame).
+    pair = field(48, 40, [(14.3, 20.6, 0.5, 1.3, 1.3), (19.1, 21.4, 0.3, 1.3, 1.3),
+                          (34.7, 12.2, 0.4, 1.3, 1.3), (2.2, 37.4, 0.35, 1.3, 1.3)])
+    o.save("dao_pair_input", pair, "f4")
+    n_default = dao("dao_pair_default", pair, threshold=0.02, fwhm=3.0)
+    n_zero = dao("dao_pair_minsep0", pair, threshold=0.02, fwhm=3.0, min_separation=0)
+    dao("dao_pair_minsep3", pair, threshold=0.02, fwhm=3.0, min_separation=3.0)
+    if not n_zero > n_default:
+        raise RuntimeError("dao_pair: min_separation=0 must find more peaks than the 2.5*fwhm default")
+    k3 = DAOStarFinder(threshold=0.02, fwhm=3.0).kernel
+    o.save("dao_kernel_fwhm3_data", k3.data)
+    o.save("dao_kernel_fwhm3_unmasked", k3.gaussian_kernel_unmasked)
+    o.save("dao_kernel_fwhm3_mask", k3.mask.astype(bool), "?")
+    o.params("dao_kernel_fwhm3", fwhm=3.0, rel_err=float(k3.rel_err), n_pixels=int(k3.n_pixels),
+             x_sigma=float(k3.x_sigma), shape=list(k3.shape))
+    o.save("dao_pair_conv", _filter_data(pair, k3.data, mode="constant", fill_value=0.0))
+
+    # 2. Filters: a star, a hot pixel (sharpness > 1) and an elongated streak (roundness).
+    rej = field(40, 32, [(12.4, 15.3, 0.4, 1.3, 1.3), (25.5, 24.2, 0.3, 3.5, 0.8)])
+    rej[8, 28] += 0.5
+    o.save("dao_reject_input", rej)
+    n_def = dao("dao_reject_default", rej, threshold=0.02, fwhm=3.0)
+    n_sharp = dao("dao_reject_sharp_only", rej, threshold=0.02, fwhm=3.0, roundness_range=None)
+    n_none = dao("dao_reject_nofilter", rej, threshold=0.02, fwhm=3.0, sharpness_range=None, roundness_range=None)
+    if not (n_def < n_sharp < n_none):
+        raise RuntimeError(f"dao_reject: expected default < sharp-only < no-filter rows, got {n_def}, {n_sharp}, {n_none}")
+
+    # 3. General kernel: elliptical, rotated, wider, border exclusion, unscaled threshold, an
+    #    explicit separation; on the colour field's luminance minus its sigma-clipped median.
+    stars_rgb = np.load(o.dir / "stars_rgb.npy").astype(np.float64)
+    lum = stars_rgb.mean(axis=2)
+    _, med, _ = sigma_clipped_stats(lum, sigma=3.0)
+    gen = dict(fwhm=5.0, ratio=0.6, theta=35.0, sigma_radius=2.0, exclude_border=True,
+               scale_threshold=False, min_separation=4.0)
+    dao("dao_general", lum - med, threshold=0.05, **gen)
+    kg = DAOStarFinder(threshold=0.05, **gen).kernel
+    o.save("dao_kernel_general_data", kg.data)
+    o.params("dao_kernel_general", rel_err=float(kg.rel_err), n_pixels=int(kg.n_pixels), shape=list(kg.shape),
+             x_sigma=float(kg.x_sigma), y_sigma=float(kg.y_sigma), **gen)
+    o.save("dao_general_conv_pair", _filter_data(pair, kg.data, mode="constant", fill_value=0.0))
+
+    # 4. NaN input (a background pixel and one beside the isolated star).
+    nan_in = pair.copy()
+    nan_in[5, 40] = np.nan
+    nan_in[12, 37] = np.nan
+    o.save("dao_nan_input", nan_in, "f4")
+    dao("dao_nan", nan_in, threshold=0.02, fwhm=3.0)
+
+    # 4b. Unit noise with a NaN block, a hugely negative threshold and no shape filters: every
+    #     local maximum is a candidate, so the peak finder's ring verification, its cval-0 rule
+    #     at the frame edge, both footprint parities, the NaN replacement, the finite filter and
+    #     the marginal fit's non-positive-amplitude and |dx| > size/2 fallbacks are all taken.
+    noise = rng.normal(0.0, 1.0, (32, 40)).astype(np.float32).astype(np.float64)
+    noise[20:26, 4:10] = np.nan
+    o.save("dao_noise_input", noise, "f4")
+    loose = dict(threshold=-100.0, fwhm=3.0, sharpness_range=None, roundness_range=None)
+    dao("dao_noise_default", noise, **loose)
+    dao("dao_noise_minsep3", noise, min_separation=3.0, **loose)
+    dao("dao_noise_minsep0", noise, min_separation=0, **loose)
+
+    # 4b'. Two hand-built peak-finder edge cases (no shape filters):
+    #   - a quartic bowl centred 6 px from the left edge: its convolved image has a NEGATIVE local
+    #     maximum whose 7.5 px circle is clipped by the frame, so photutils' cval-0 rule rejects it;
+    #   - two point sources 5 px apart on both axes: the brighter sits in the 16x16 box but outside
+    #     the 7.5 px circle of the fainter, which is a peak only if the inscribed box (9x9 for an
+    #     even footprint) stays inside the circle.
+    yy, xx = np.mgrid[0:24, 0:24].astype(float)
+    bowl = ((xx - 6.0) ** 2 + (yy - 12.0) ** 2) ** 2 / 256.0
+    o.save("dao_edge_bowl_input", bowl, "f4")
+    dao("dao_edge_bowl", bowl.astype(np.float32).astype(np.float64), threshold=-1e9, fwhm=3.0,
+        sharpness_range=None, roundness_range=None)
+    corner = np.zeros((40, 40))
+    corner[15, 15], corner[20, 20] = 1.0, 2.0
+    o.save("dao_corner_pair_input", corner, "f4")
+    if dao("dao_corner_pair", corner, threshold=0.1, fwhm=3.0, sharpness_range=None, roundness_range=None) != 2:
+        raise RuntimeError("dao_corner_pair: both point sources must be peaks")
+
+    # 4c. The threshold is strict (data > threshold): set it to the faintest default peak's
+    #     convolved value, unscaled, and that peak drops out.
+    conv3 = _filter_data(pair, k3.data, mode="constant", fill_value=0.0)
+    xy = DAOStarFinder._find_stars(conv3, k3, 0.02 * k3.rel_err, min_separation=7.5)
+    faintest = float(min(conv3[int(y), int(x)] for x, y in xy))
+    o.save("dao_pair_strict_threshold", [faintest])
+    n_strict = dao("dao_pair_strict", pair, threshold=faintest, fwhm=3.0, scale_threshold=False)
+    if n_strict != n_default - 1:
+        raise RuntimeError("dao_pair_strict: the faintest peak must be the only one dropped")
+
+    # 4d. Constant input: photutils returns None even when the threshold would pass every pixel.
+    if DAOStarFinder(threshold=-1.0, fwhm=3.0)(np.full((20, 24), 0.3)) is not None:
+        raise RuntimeError("constant input must give no detections")
+    o.params("dao_constant", note="DAOStarFinder(threshold=-1, fwhm=3)(np.full((20, 24), 0.3)) is None")
+
+    # 5. An empty field: sky noise only, nothing reaches 6 sigma.
+    empty = field(32, 24, [])
+    o.save("detect_empty_input", empty, "f4")
+    if len(detect_stars(empty, 3.0, 6.0)) != 0:
+        raise RuntimeError("detect_empty_input: detect_stars found a star in pure noise")
+
+    # 6. Render order: two overlapping enlarged stars, rendered in table order and reversed.
+    ov = np.full((32, 40, 3), 0.01)
+    _add_star(ov, 17.6, 15.3, 0.5, np.array([1.0, 0.85, 0.6]))
+    _add_star(ov, 21.2, 16.9, 0.35, np.array([0.55, 0.8, 1.0]))
+    ov = np.clip(ov + rng.normal(0, 0.002, ov.shape), 0, 1).astype(np.float32).astype(np.float64)
+    t = Table()
+    t["x"], t["y"], t["flux"] = [17.6, 21.2], [15.3, 16.9], [3.1, 2.2]
+    mod = compute_modulation(np.array([0.85, 0.55]), DIALOG_GAINS)
+    fwd = render_stars(ov, t, mod, 2.0)
+    t_rev = t[::-1]
+    mod_rev = compute_modulation(np.array([0.55, 0.85]), DIALOG_GAINS)
+    rev = render_stars(ov, t_rev, mod_rev, 2.0)
+    if not np.abs(fwd - rev).max() > 1e-4:
+        raise RuntimeError("overlap: render order made no difference; move the stars closer")
+    o.save("overlap_stars", ov, "f4")
+    o.save_table("overlap_table", t, ["x", "y", "flux"])
+    o.save("overlap_modulation", np.stack([mod.brightness, mod.size, mod.contrast, mod.saturation]))
+    o.save("overlap_rendered", fwd, "f4")
+    o.save("overlap_rendered_reversed", rev, "f4")
+    o.params("overlap", gains=dict(brightness=0.65, size=0.85, contrast=0.12, saturation=0.4, halo_gain=1.0),
+             strength=[0.85, 0.55], halo="default Moffat (halo_profile=None)",
+             max_abs_order_effect=float(np.abs(fwd - rev).max()))
+
+    # 7. The halo's Moffat fallback on the edge-case frame (too few clean reference stars).
+    odd = np.load(o.dir / "odd_stars.npy").astype(np.float64)
+    ot = Table()
+    for c in ("x", "y", "flux"):
+        ot[c] = np.load(o.dir / f"odd_table_{c}.npy")
+    msgs = []
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            msgs.append(record.getMessage())
+
+    psf_log = logging.getLogger("gaia_depth_grade.psf")
+    grab = _Grab(level=logging.WARNING)
+    psf_log.addHandler(grab)
+    try:
+        hp = build_halo_profile(odd, ot, 2.0, GradeConfig())
+    finally:
+        psf_log.removeHandler(grab)
+    m = moffat_profile(2.0, 2.5, 16.0)
+    if hp.is_empirical or not np.array_equal(hp.values, m.values) or len(msgs) != 1:
+        raise RuntimeError("halo fallback: expected exactly one warning and the Moffat profile")
+    o.params("halo_fallback", warning=msgs[0], stars="odd_stars", table="odd_table x/y/flux")
+
+
 def primitives(o: Out, rng):
     """The numeric primitives the C++ core re-implements."""
     # A 48x64 field with a hot pixel, an edge ramp and noise: reflect-boundary behaviour matters.
@@ -751,6 +924,7 @@ def synthetic(outdir: Path, argv) -> None:
     edge_case(o, rng)
     primitives(o, rng)
     recon(o, rng)
+    phase_c_cases(o)
     selftest_npy(o)
     write_manifest(o, "synthetic", argv)
 

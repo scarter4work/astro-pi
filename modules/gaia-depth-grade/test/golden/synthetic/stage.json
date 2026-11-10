@@ -40,6 +40,256 @@
   "ratio_confidence": 1.0,
   "sii_present": true
  },
+ "dao_constant": {
+  "note": "DAOStarFinder(threshold=-1, fwhm=3)(np.full((20, 24), 0.3)) is None"
+ },
+ "dao_corner_pair": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 2,
+  "roundness_range": null,
+  "sharpness_range": null,
+  "threshold": 0.1
+ },
+ "dao_edge_bowl": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 4,
+  "roundness_range": null,
+  "sharpness_range": null,
+  "threshold": -1000000000.0
+ },
+ "dao_general": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "exclude_border": true,
+  "fwhm": 5.0,
+  "min_separation": 4.0,
+  "n": 41,
+  "ratio": 0.6,
+  "scale_threshold": false,
+  "sigma_radius": 2.0,
+  "theta": 35.0,
+  "threshold": 0.05
+ },
+ "dao_kernel_fwhm3": {
+  "fwhm": 3.0,
+  "n_pixels": 13,
+  "rel_err": 1.2850333090795458,
+  "shape": [
+   5,
+   5
+  ],
+  "x_sigma": 1.2739827004320285
+ },
+ "dao_kernel_general": {
+  "exclude_border": true,
+  "fwhm": 5.0,
+  "min_separation": 4.0,
+  "n_pixels": 33,
+  "ratio": 0.6,
+  "rel_err": 0.7278703781836119,
+  "scale_threshold": false,
+  "shape": [
+   7,
+   7
+  ],
+  "sigma_radius": 2.0,
+  "theta": 35.0,
+  "x_sigma": 2.1233045007200477,
+  "y_sigma": 1.2739827004320285
+ },
+ "dao_nan": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 2,
+  "threshold": 0.02
+ },
+ "dao_noise_default": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 7,
+  "roundness_range": null,
+  "sharpness_range": null,
+  "threshold": -100.0
+ },
+ "dao_noise_minsep0": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "min_separation": 0,
+  "n": 65,
+  "roundness_range": null,
+  "sharpness_range": null,
+  "threshold": -100.0
+ },
+ "dao_noise_minsep3": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "min_separation": 3.0,
+  "n": 37,
+  "roundness_range": null,
+  "sharpness_range": null,
+  "threshold": -100.0
+ },
+ "dao_pair_default": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 3,
+  "threshold": 0.02
+ },
+ "dao_pair_minsep0": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "min_separation": 0,
+  "n": 4,
+  "threshold": 0.02
+ },
+ "dao_pair_minsep3": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "min_separation": 3.0,
+  "n": 4,
+  "threshold": 0.02
+ },
+ "dao_pair_strict": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 2,
+  "scale_threshold": false,
+  "threshold": 0.3155290286878437
+ },
+ "dao_reject_default": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 1,
+  "threshold": 0.02
+ },
+ "dao_reject_nofilter": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 3,
+  "roundness_range": null,
+  "sharpness_range": null,
+  "threshold": 0.02
+ },
+ "dao_reject_sharp_only": {
+  "columns": [
+   "x_centroid",
+   "y_centroid",
+   "flux",
+   "peak",
+   "sharpness",
+   "roundness1",
+   "roundness2"
+  ],
+  "fwhm": 3.0,
+  "n": 2,
+  "roundness_range": null,
+  "threshold": 0.02
+ },
  "dao_table": {
   "fwhm": 3.0,
   "n": 37,
@@ -122,6 +372,11 @@
   "mode": "reflect",
   "sigma": 65.0,
   "truncate": 4.0
+ },
+ "halo_fallback": {
+  "stars": "odd_stars",
+  "table": "odd_table x/y/flux",
+  "warning": "star-shine: only 1 clean reference star(s) (need 8) \u2014 using a Moffat halo this run, not the image's own PSF"
  },
  "halo_profile": {
   "base_sigma_px": 2.0,
@@ -299,6 +554,21 @@
    "median",
    "mad",
    "1.4826*mad"
+  ]
+ },
+ "overlap": {
+  "gains": {
+   "brightness": 0.65,
+   "contrast": 0.12,
+   "halo_gain": 1.0,
+   "saturation": 0.4,
+   "size": 0.85
+  },
+  "halo": "default Moffat (halo_profile=None)",
+  "max_abs_order_effect": 0.19921298885175942,
+  "strength": [
+   0.85,
+   0.55
   ]
  },
  "recon": {
