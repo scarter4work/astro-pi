@@ -215,6 +215,19 @@ mods = [m for m in mods if m != "PICopilot-pxm.so"]
 vals = "".join('<v k="%08d" t="s">%s</v>' % (i + 1, escape("@pxi_bin_dir/" + m)) for i, m in enumerate(mods))
 end = s.rindex("</xsdt>")
 s = s[:end] + '<i k="Modules">' + vals + "</i>" + s[end:]
+# PixInsight 1.9.6 opens a modal "Risky Temporary Folders" warning at GUI start-up when image swap files go to a
+# system temporary folder -- here the run's private, throwaway TMPDIR, by design -- and the GUI harnesses never get
+# past it (measured 2026-11-10: gui-smoke.sh "never became ready", the dialog on screen). Answer it the way its own
+# "Don't show again" box does (DontShowAgain/WarningOnSystemTempFolderBeingUsedForSwapFiles_Value = false).
+# Headless --automation-mode runs never show it; older builds ignore the key.
+warn = '<v k="WarningOnSystemTempFolderBeingUsedForSwapFiles_Value" t="b" v="false"/>'
+if "WarningOnSystemTempFolderBeingUsedForSwapFiles_Value" in s:
+    sys.exit("the bootstrapped settings already carry the swap-folder warning answer; review this seeding")
+if '<i k="DontShowAgain">' in s:
+    s = s.replace('<i k="DontShowAgain">', '<i k="DontShowAgain">' + warn, 1)
+else:
+    end = s.rindex("</xsdt>")
+    s = s[:end] + '<i k="DontShowAgain">' + warn + "</i>" + s[end:]
 tmp = path + ".seed-tmp"
 open(tmp, "w", encoding="utf-8").write(s)
 os.replace(tmp, path)

@@ -33,6 +33,12 @@ PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc"
 PICOPILOT_DOC_IDS=(PICopilot)
 PLANETARY_DOC="$ROOT/modules/planetary/doc"
 PLANETARY_DOC_IDS=(SERViewer PlanetaryStack)
+GDG_DOC="$ROOT/modules/gaia-depth-grade/doc"
+GDG_DOC_IDS=(GaiaDepthGrade)
+# GaiaDepthGrade-pxm.so (modules/gaia-depth-grade) is built, unit-tested and portability-checked by every
+# release, but is NOT packaged until it replaces the Gaia Depth Grade scripts and sidecar: the cut-over
+# (plan 2026-11-10-gaia-depth-grade-pcl-port, Task 20) sets this to 1 together with the module's docs.
+GDG_MODULE_SHIPS=0
 PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
 
 modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
@@ -149,8 +155,33 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # three or more parts, or v<n>.<n>..., must be that version (two-part numbers --
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
-EZ_NAMES=(EZStretch EZDonutRepair EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.11 [EZDonutRepair]=1.0.4 [EZHazeKill]=1.0.2 )
+EZ_NAMES=(EZStretch EZHazeKill)
+declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.1.0 )
+# EZ script documentation (CPD rule 6.1; Repository Reference 4.2): scripts/ez-stretch/doc/<Name>/ holds
+# <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it, and
+# <Name>.js must declare "#feature-id <Name> : ...": PixInsight finds a script's documentation by that id
+# (doc/scripts/<id>/<id>.html, as for its own scripts, e.g. ImageSolver, and for GaiaDepthGrade).
+EZDOC="$ROOT/scripts/ez-stretch/doc"
+EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
+# Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
+# first release after a withdrawal drops the entry from the work copy and, once the new manifest is
+# installed (step 6c), deletes the package file(s) from repository/. EZDonutRepair: withdrawn 2026-11-10
+# (source: private repo scarter4work/ez-donut-repair).
+RETIRED_PKG_RE=('EZDonutRepair_v[0-9.]+\.zip')
+# Installed files a package deletes when the updater installs it (Repository Reference 3, <remove>: paths
+# relative to the PixInsight installation, removed before the package is installed; missing ones are
+# ignored, with a warning in the updater's log). A package leaving the manifest uninstalls nothing, so a
+# withdrawn or reorganised product's leftovers are removed through a package that stays: one entry per
+# carrying package, '<fileName regex>=<item>[,<item>...]'. Step 3g writes exactly these <remove>
+# elements into the manifest, and no others (manifest_removes). Each regex must match exactly one package
+# of this release, each item must lie under bin/, src/scripts/, doc/scripts/ or doc/tools/, and no item may
+# be or contain a file that another package of this release installs. The carrying package must be
+# bumped in the same release (a reused package is not reinstalled), and its documentation must say what
+# it removes.
+#   EZStretch 1.0.12: EZDonutRepair (withdrawn 2026-11-10; 1.0.3 and 1.0.4 installed exactly these two).
+PKG_REMOVE=(
+  'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/EZDonutRepair.js,src/scripts/scarter4work/EZDonutRepair.xsgn'
+)
 GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
 REPO_DESC="$ROOT/tools/repository-description.xml"
 declare -A PKG_DESC=(
@@ -158,10 +189,10 @@ declare -A PKG_DESC=(
   [PICopilot]="$ROOT/modules/pi-copilot/package-description.xml"
   [Planetary]="$ROOT/modules/planetary/package-description.xml"
   [EZStretch]="$ROOT/scripts/ez-stretch/package-description/EZStretch.xml"
-  [EZDonutRepair]="$ROOT/scripts/ez-stretch/package-description/EZDonutRepair.xml"
   [EZHazeKill]="$ROOT/scripts/ez-stretch/package-description/EZHazeKill.xml"
   [GaiaDepthGrade]="$ROOT/gaia-depth-grade/package-description.xml"
   [GaiaDepthGradeSidecar]="$ROOT/gaia-depth-grade/sidecar-package-description.xml"
+  [GaiaDepthGradeModule]="$ROOT/modules/gaia-depth-grade/package-description.xml"
 )
 # The packages' fileNames in a manifest, in order.
 manifest_files(){ sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$1"; }
@@ -171,6 +202,7 @@ desc_args(){
   for fn in "$@"; do
     case "$fn" in
       *-linux-x64-GaiaDepthGradeSidecar-*) key=GaiaDepthGradeSidecar ;;
+      *-linux-x64-GaiaDepthGrade-*) key=GaiaDepthGradeModule ;;   # the module, not the script package
       gaia-depth-grade_v*) key=GaiaDepthGrade ;;
       *-linux-x64-*.tar.gz) key="${fn#*-linux-x64-}"; key="${key%%-*}" ;;
       *_v*.zip) key="${fn%%_v*}" ;;
@@ -207,6 +239,7 @@ for fn,src in pairs:
     t=body(src); v=version(fn); srcs[fn]=t
     for m in re.finditer(r'(?<![A-Za-z0-9.])(v?)(\d+(?:\.\d+)+)',t):
         num=m.group(2)
+        if t[:m.start()].endswith(("PixInsight ","PCL ")): continue  # a PixInsight/PCL platform version, not the package's
         if (num.count(".")>=2 or m.group(1)) and num!=v:
             errs.append("%s names version %s%s, but the package (%s) is %s"%(src,m.group(1),num,fn,v))
 if errs: [print("  "+e) for e in errs]; sys.exit(1)
@@ -338,6 +371,47 @@ open(mf,'w').write(s)
 PY
 }
 
+# module_platform_block <manifest> <Module>... : every module package lives in its own linux/x64
+# <platform> block, version 1.9.6:2.0.0, created after the last linux/x64 block when missing.
+# WHY: every module is built against PCL 2.13.0 (tools/build-env/Containerfile). A PCL module resolves
+# the core's whole API table when it initialises and refuses to load if one entry is missing
+# (src/pcl/APIInterface.cpp, Resolve), and PCL 2.13 adds five TreeBox functions the 1.9.5 core lacks;
+# measured: PixInsight 1.9.5 build 1706 rejects a 2.13 module with "Unable to resolve PCL API interface".
+# PixInsight 1.9.6's updater accepts two linux/x64 blocks and offers each block's packages by its own
+# range (measured: modules/gaia-depth-grade/test/run-probe-xri-platforms.sh). Each <Module>'s entry
+# (fileName *-linux-x64-<Module>[-<ver>].tar.gz) is moved into that block; none is fine (a first release
+# inserts it there), more than one is an error. Everything else (the sidecar, the scripts) keeps its block.
+module_platform_block(){
+  python3 - "$@" <<'PY' || die "module_platform_block: could not place the module packages in the 1.9.6:2.0.0 block of $1"
+import re,sys
+mf=sys.argv[1]; mods=sys.argv[2:]
+HEAD='<platform os="linux" arch="x64" version="1.9.6:2.0.0">'
+s=open(mf).read()
+if s.count(HEAD)>1: sys.exit("%d module platform blocks"%s.count(HEAD))
+if HEAD not in s:
+    last=None
+    for m in re.finditer(r'<platform os="linux" arch="x64"[^>]*>.*?</platform>',s,re.S): last=m
+    if last is None: sys.exit("no linux/x64 <platform> block")
+    s=s[:last.end()]+"\n   "+HEAD+"\n   </platform>"+s[last.end():]
+moved=0
+for mod in mods:
+    pat=r'\n[ \t]*<package fileName="[^"]*-linux-x64-'+re.escape(mod)+r'(?:-[0-9.]+)?\.tar\.gz"[^>]*>.*?</package>'
+    hits=list(re.finditer(pat,s,re.S))
+    if len(hits)>1: sys.exit("%d package entries for module %s"%(len(hits),mod))
+    if not hits: continue
+    b=s.index(HEAD); e=s.index("</platform>",b)
+    if b<hits[0].start()<e: continue
+    entry=hits[0].group(0)
+    s=s[:hits[0].start()]+s[hits[0].end():]
+    b=s.index(HEAD); e=s.index("</platform>",b)
+    close=s.rindex("\n",b,e)
+    s=s[:close]+entry+s[close:]
+    moved+=1
+open(mf,"w").write(s)
+print("  OK  module packages in the linux/x64 1.9.6:2.0.0 block (%d moved there)"%moved)
+PY
+}
+
 # install_manifest <signed work copy> <repository manifest> : the one write to repository/updates.xri.
 # Refuses a copy that is not signed or does not verify (every declared sha1 against the file beside the
 # destination); otherwise replaces the destination atomically (a temporary file in its directory, then
@@ -360,6 +434,101 @@ PY
   if ! cp "$work" "$tmp" || ! { if [ -e "$dest" ]; then chmod --reference="$dest" "$tmp"; else chmod 0644 "$tmp"; fi; } \
      || ! mv -f "$tmp" "$dest"; then rm -f "$tmp"; die "install_manifest: could not replace $dest"; fi
   cmp -s "$work" "$dest" || die "install_manifest: $dest is not the signed manifest"
+}
+
+# retire_manifest <manifest> <fileName-regex>... : drop the package entry matching each regex (at most one each).
+retire_manifest(){
+  python3 - "$@" <<'PY' || die "retire_manifest failed"
+import re,sys
+mf=sys.argv[1]; s=open(mf).read()
+for pat in sys.argv[2:]:
+    rx=re.compile(r'[ \t]*<package fileName="'+pat+r'"[^>]*>.*?</package>[ \t]*\n',re.S)
+    s,n=rx.subn('',s)
+    if n>1: sys.exit("%s matches %d manifest entries"%(pat,n))
+    print("  retired %s: %d manifest entr%s removed"%(pat,n,"y" if n==1 else "ies"))
+open(mf,'w').write(s)
+PY
+}
+
+# manifest_removes <manifest> <package dir> [<fileName-regex>=<item>[,<item>...]]... : make the manifest's
+# <remove> elements exactly these (PKG_REMOVE): every existing <remove> is dropped, then each spec's items
+# go into the one package whose fileName matches its regex, after its <title>, one item per line. Refuses
+# (manifest unchanged) a regex matching no package or several, an item that is empty, absolute, contains
+# "..", a comma, a glob or a backslash, is not under bin/, src/scripts/, doc/scripts/ or doc/tools/ (or is
+# one of those roots), or is (or is a directory containing) a file that another package in <package dir>
+# installs -- the contents of every manifest package are read from <package dir> (.zip or .tar.gz).
+manifest_removes(){
+  python3 - "$@" <<'PY' || die "manifest_removes: refused (see above); $1 is unchanged"
+import re,sys,os,zipfile,tarfile
+mf,pkgdir=sys.argv[1:3]; specs=sys.argv[3:]
+s=open(mf,encoding="utf-8").read()
+roots=("bin/","src/scripts/","doc/scripts/","doc/tools/")
+def contents(fn):
+    p=os.path.join(pkgdir,fn)
+    if not os.path.isfile(p): sys.exit("  package file %s is not in %s"%(fn,pkgdir))
+    if fn.endswith(".zip"):
+        with zipfile.ZipFile(p) as z: names=z.namelist()
+    elif fn.endswith(".tar.gz"):
+        with tarfile.open(p,"r:gz") as t: names=[m.name for m in t.getmembers() if not m.isdir()]
+    else: sys.exit("  %s: not a .zip or .tar.gz"%fn)
+    return [n[2:] if n.startswith("./") else n for n in names if not n.endswith("/")]
+pkgs=re.findall(r'<package fileName="([^"]+)"',s)
+errs=[]; plan={}
+for spec in specs:
+    if "=" not in spec: errs.append("%s: not <regex>=<items>"%spec); continue
+    rx,items=spec.split("=",1)
+    hit=[fn for fn in pkgs if re.fullmatch(rx,fn)]
+    if len(hit)!=1: errs.append("%s matches %d manifest packages, expected 1"%(rx,len(hit))); continue
+    fn=hit[0]; its=[i.strip() for i in items.split(",")]
+    for it in its:
+        if (not it or it.startswith("/") or ".." in it or re.search(r'[*?\[\]\\,]',it)
+            or not it.startswith(roots) or it.rstrip("/")+"/" in roots):
+            errs.append("%s: item %r is not a file or directory below bin/, src/scripts/, doc/scripts/ or doc/tools/"%(fn,it)); continue
+        for other in pkgs:
+            if other==fn: continue
+            for n in contents(other):
+                if n==it.rstrip("/") or n.startswith(it.rstrip("/")+"/"):
+                    errs.append("%s: item %s would delete %s, which %s installs"%(fn,it,n,other))
+    if fn in plan: errs.append("%s is named by two specs"%fn)
+    plan[fn]=its
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+s,_=re.subn(r'\n[ \t]*<remove>.*?</remove>[ \t]*(?=\n)','',s,flags=re.S)
+for fn,its in plan.items():
+    m=re.search(r'(<package fileName="'+re.escape(fn)+r'"[^>]*>)(.*?)(</package>)',s,re.S)
+    body=m.group(2); t=re.search(r'</title>',body)
+    ind=re.search(r'\n([ \t]*)<',body); ind=ind.group(1) if ind else "         "
+    el="\n"+ind+"<remove>\n"+"".join(ind+"   "+i+"\n" for i in its)+ind+"</remove>"
+    at=t.end() if t else 0
+    body=body[:at]+el+body[at:]
+    s=s[:m.start(2)]+body+s[m.end(2):]
+    print("  %s removes %s"%(fn,", ".join(its)))
+open(mf,"w",encoding="utf-8").write(s)
+PY
+}
+
+# ez_pkg_check <zip> <Name> : the EZ script package deploys exactly src/scripts/scarter4work/<Name>.{js,xsgn}
+# and the current doc/scripts/<Name>/ (each doc file and the .js byte for byte as in the source tree).
+# Run on an already-published zip before it is reused, and on every zip this release packages.
+ez_pkg_check(){
+  python3 - "$1" "$2" "$EZSRC" "$EZDOC" <<'PY'
+import sys,os,zipfile
+zp,name,src,doc=sys.argv[1:5]
+want={"src/scripts/scarter4work/%s.js"%name: os.path.join(src,name+".js"),
+      "src/scripts/scarter4work/%s.xsgn"%name: None}
+d=os.path.join(doc,name)
+if not os.path.isfile(os.path.join(d,name+".html")): sys.exit("  %s: no documentation %s/%s.html"%(name,d,name))
+for root,_,files in os.walk(d):
+    for f in files:
+        p=os.path.join(root,f); want["doc/scripts/%s/%s"%(name,os.path.relpath(p,d))]=p
+with zipfile.ZipFile(zp) as z:
+    have={n for n in z.namelist() if not n.endswith("/")}
+    errs=["%s: %s"%(os.path.basename(zp),e) for e in
+          ["missing "+n for n in sorted(set(want)-have)]+["unexpected "+n for n in sorted(have-set(want))]]
+    for n,p in want.items():
+        if p and n in have and z.read(n)!=open(p,"rb").read(): errs.append("%s: %s differs from %s"%(os.path.basename(zp),n,p))
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+print("  OK  %s deploys %s.js/.xsgn and doc/scripts/%s/ (%d doc files)"%(os.path.basename(zp),name,name,len(want)-2))
+PY
 }
 
 # manifest_names_check <manifest> <fileName>... : the manifest's packages are exactly these, each once.
@@ -454,9 +623,13 @@ PLANETARY_VER="$(modver "$ROOT/modules/planetary/src/module/PlanetaryVersion.h" 
 [[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
 [[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
 [[ "$PLANETARY_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read Planetary version (got '$PLANETARY_VER')"
+GDG_VER="$(modver "$ROOT/modules/gaia-depth-grade/src/module/GaiaDepthGradeVersion.h" GDG)"
+[[ "$GDG_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read GaiaDepthGrade version (got '$GDG_VER')"
 MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
 PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
 PLANETARY_TGZ="$(module_tgz Planetary "$PLANETARY_VER")"
+GDG_TGZ="$(module_tgz GaiaDepthGrade "$GDG_VER")"
+GDG_PKGS=(); [ "$GDG_MODULE_SHIPS" = 1 ] && GDG_PKGS=("$GDG_TGZ")
 # A versioned module tarball that is already committed is PUBLISHED: never
 # rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
 # would serve the old bytes against the new manifest sha1). Bump the module
@@ -491,11 +664,30 @@ published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_
   || die "PICopilot $PICOPILOT_VER is published as $PICOPILOT_TGZ with self-test hooks -- bump PICopilot's version so a clean package is built"
 published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
   || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/{${PLANETARY_DOC_IDS[*]}}/ -- bump Planetary's version so a new package is built"
+if [ "$GDG_MODULE_SHIPS" = 1 ]; then
+  module_doc_check "$GDG_DOC" "${GDG_DOC_IDS[@]}"
+  published_pkg_reusable "$GDG_TGZ" GaiaDepthGrade "$GDG_DOC" "${GDG_DOC_IDS[@]}" \
+    || die "GaiaDepthGrade $GDG_VER is already published as $GDG_TGZ without the current doc/tools/GaiaDepthGrade/ -- bump its version"
+else
+  echo "   GaiaDepthGrade module $GDG_VER: built and checked, not packaged (GDG_MODULE_SHIPS=0 until the Task 20 cut-over)"
+fi
 # The descriptions this release will write (step 3f) must already name only
 # these versions: a bumped version with last release's text stops here.
 SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
 [[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
 EZ_ZIPS=(); for name in "${EZ_NAMES[@]}"; do EZ_ZIPS+=("${name}_v${EZVER[$name]}.zip"); done
+# EZ scripts: the version in each .js is EZVER's, the documentation exists, and an already-published zip
+# of that version carries exactly the current .js and documentation (else: bump the version).
+for name in "${EZ_NAMES[@]}"; do
+  grep -qE "^#define VERSION +\"${EZVER[$name]}\"" "$EZSRC/$name.js" \
+    || die "$name.js's #define VERSION is not ${EZVER[$name]} (EZVER in release.sh)"
+  [ -f "$EZDOC/$name/$name.html" ] || die "$name has no documentation: $EZDOC/$name/$name.html (CPD rule 6.1)"
+  grep -qE "^#feature-id +$name +:" "$EZSRC/$name.js" \
+    || die "$name.js has no '#feature-id $name : ...' directive: PixInsight would not find doc/scripts/$name/$name.html"
+  ! git -C "$ROOT" ls-files --error-unmatch "repository/${name}_v${EZVER[$name]}.zip" >/dev/null 2>&1 \
+    || ez_pkg_check "$REPO/${name}_v${EZVER[$name]}.zip" "$name" \
+    || die "$name ${EZVER[$name]} is already published without the current $name.js and doc/scripts/$name/ -- bump $name's version so a new package is built"
+done
 GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
 # The sidecar package of SIDECAR_VER: its published (committed) tarball whatever date it was cut on,
 # else a new dated name (step 3d builds it).
@@ -505,13 +697,13 @@ SIDECAR_PUBLISHED=0; [ -n "$SIDECAR_TGZ" ] && SIDECAR_PUBLISHED=1
 [ -n "$SIDECAR_TGZ" ] || SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
 # This release's packages, ONE list: step 0b's description check, 3f's description write and the
 # manifest name-set checks (after 3f and after step 4) all take their names from it.
-RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${GDG_PKGS[@]}" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions check "$REPO/updates.xri" "${DESC_ARGS[@]}" \
   || die "a package description names a version other than its package's -- bring it up to date for this release"
 
-echo "== 1/6 build NukeX + PICopilot + Planetary modules (portable Rocky 9 container) =="
+echo "== 1/6 build NukeX + PICopilot + Planetary + GaiaDepthGrade modules (portable Rocky 9 container, PCL 2.13.0) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
 # then loads on this machine and nowhere else. See tools/build-env/Containerfile.
@@ -523,9 +715,11 @@ PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build-portable" -name 'PICopilot-
 "$ROOT/modules/pi-copilot/test/check-no-selftest-hooks.sh" "$PICOPILOT_SO" || die "PICopilot-pxm.so carries self-test hooks"
 PLANETARY_SO="$(find "$ROOT/modules/planetary/build-portable" -name 'Planetary-pxm.so' -print -quit)"
 [ -n "$PLANETARY_SO" ] || die "Planetary-pxm.so not found after build"
+GDG_SO="$(find "$ROOT/modules/gaia-depth-grade/build-portable" -name 'GaiaDepthGrade-pxm.so' -print -quit)"
+[ -n "$GDG_SO" ] || die "GaiaDepthGrade-pxm.so not found after build"
 
-echo "== 1b/6 prove all three modules load on stock older distros =="
-"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" || die "a module would not load on a stock distro"
+echo "== 1b/6 prove all four modules load on stock older distros =="
+"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" "$GDG_SO" || die "a module would not load on a stock distro"
 
 echo "== 2/6 sign NukeX module =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
@@ -544,6 +738,14 @@ PLANETARY_XSGN="${PLANETARY_SO%-pxm.so}-pxm.xsgn"
 rm -f "$PLANETARY_XSGN"   # same guard as NukeX above
 pi_headless "$PI" --sign-module-file="$PLANETARY_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
 [ -f "$PLANETARY_XSGN" ] || die "module signature $PLANETARY_XSGN not produced"
+
+if [ "$GDG_MODULE_SHIPS" = 1 ]; then
+  echo "== 2a3/6 sign GaiaDepthGrade module =="
+  GDG_XSGN="${GDG_SO%-pxm.so}-pxm.xsgn"
+  rm -f "$GDG_XSGN"   # same guard as NukeX above
+  pi_headless "$PI" --sign-module-file="$GDG_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
+  [ -f "$GDG_XSGN" ] || die "module signature $GDG_XSGN not produced"
+fi
 
 echo "== 2b/6 native-sign EZ scripts =="
 ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts )
@@ -573,6 +775,16 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 WORK_MF="$WORK_DIR/updates.xri"
 cp "$REPO/updates.xri" "$WORK_MF"
+retire_manifest "$WORK_MF" "${RETIRED_PKG_RE[@]}"
+# A module package NEW in this release is a PCL 2.13 build: it goes to the 1.9.6:2.0.0 block. A published
+# package reused byte for byte (an unbumped module) keeps its block: older builds still load on 1.9.5.
+NEW_MODULES=()
+for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}"; do
+  read -r m t <<< "$pair"
+  [ -n "${t:-}" ] || continue
+  git -C "$ROOT" ls-files --error-unmatch "repository/$t" >/dev/null 2>&1 || NEW_MODULES+=("$m")
+done
+if [ ${#NEW_MODULES[@]} -gt 0 ]; then module_platform_block "$WORK_MF" "${NEW_MODULES[@]}"; fi
 
 echo "== 3/6 package NukeX module tarball =="
 package_module "$MOD_TGZ" NukeX "$SO" "$XSGN" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
@@ -603,7 +815,7 @@ if re.search(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', s):
     if n!=1: sys.exit("updates.xri has %d PICopilot package entries, expected 1"%n)
 else:
     # First release: insert a new <package> entry into the linux/x64
-    # platform block (the same block NukeX lives in). sha1/releaseDate
+    # 1.9.6:2.0.0 module block (module_platform_block, the block NukeX lives in). sha1/releaseDate
     # are placeholders -- step 4 (write_pkg) fills in the real values --
     # and step 3f writes the description from its source.
     entry = ('\n      <package fileName="' + fn + '" '
@@ -613,7 +825,7 @@ else:
              '         <description></description>\n'
              '      </package>\n')
     new_s,n=re.subn(
-        r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
+        r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
         lambda m: m.group(1)+entry+m.group(2),
         s, count=1, flags=re.DOTALL)
     if n!=1:
@@ -635,7 +847,7 @@ if re.search(pat, s):
     s,n=re.subn(pat, 'fileName="'+fn+'"', s)
     if n!=1: sys.exit("updates.xri has %d Planetary package entries, expected 1"%n)
 else:
-    # First release: a new <package> in the linux/x64 platform block, with
+    # First release: a new <package> in the linux/x64 1.9.6:2.0.0 module block, with
     # placeholder sha1/releaseDate that step 4 (write_pkg) fills in, and an
     # empty description that step 3f writes from its source.
     entry = ('\n      <package fileName="' + fn + '" '
@@ -645,7 +857,7 @@ else:
              '         <description></description>\n'
              '      </package>\n')
     new_s,n=re.subn(
-        r'(<platform os="linux" arch="x64"[^>]*>.*?)(\s*</platform>)',
+        r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
         lambda m: m.group(1)+entry+m.group(2),
         s, count=1, flags=re.DOTALL)
     if n!=1:
@@ -655,24 +867,55 @@ open(mf,'w').write(s)
 PY
 [ -f "$REPO/$PLANETARY_TGZ" ] || die "tarball $PLANETARY_TGZ not produced"
 
-echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
-EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
+if [ "$GDG_MODULE_SHIPS" = 1 ]; then
+  echo "== 3a3/6 package GaiaDepthGrade module tarball (docs deploy as doc/tools/GaiaDepthGrade/) =="
+  package_module "$GDG_TGZ" GaiaDepthGrade "$GDG_SO" "$GDG_XSGN" "$GDG_DOC" "${GDG_DOC_IDS[@]}"
+  python3 - "$WORK_MF" "$GDG_TGZ" <<'PY'
+import re,sys
+mf,fn=sys.argv[1:3]
+s=open(mf).read()
+pat=r'fileName="[^"]*-linux-x64-GaiaDepthGrade(-[0-9.]+)?\.tar\.gz"'
+if re.search(pat, s):
+    s,n=re.subn(pat, 'fileName="'+fn+'"', s)
+    if n!=1: sys.exit("updates.xri has %d GaiaDepthGrade module entries, expected 1"%n)
+else:
+    # First release: a new <package> in the 1.9.6:2.0.0 module block; step 4 writes sha1/releaseDate
+    # and step 3f the description.
+    entry = ('\n      <package fileName="' + fn + '" '
+             'sha1="0000000000000000000000000000000000000000" '
+             'type="module" releaseDate="00000000">\n'
+             '         <title>Gaia Depth Grade</title>\n'
+             '         <description></description>\n'
+             '      </package>\n')
+    s,n=re.subn(r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
+                lambda m: m.group(1)+entry+m.group(2), s, count=1, flags=re.DOTALL)
+    if n!=1: sys.exit("could not locate the linux/x64 1.9.6:2.0.0 block to insert the GaiaDepthGrade entry")
+open(mf,'w').write(s)
+PY
+  [ -f "$REPO/$GDG_TGZ" ] || die "tarball $GDG_TGZ not produced"
+fi
+
+echo "== 3b/6 package EZ script zips (src/scripts/scarter4work + doc/scripts/<Name>) =="
 for name in "${EZ_NAMES[@]}"; do
   ver="${EZVER[$name]}"
   zipname="${name}_v${ver}.zip"
   # Stage into src/scripts/scarter4work/ so the menu and the on-disk folder both
-  # read scarter4work (the #feature-id in each .js already points there).
-  stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work"
+  # read scarter4work (the #feature-id in each .js already points there); the
+  # documentation goes to doc/scripts/<Name>/ (Repository Reference 4.2).
+  stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work" "$stage/doc/scripts"
   cp "$EZSRC/$name.js" "$EZSRC/$name.xsgn" "$stage/src/scripts/scarter4work/"
+  mkdir -p "$stage/doc/scripts/$name"
+  cp -R "$EZDOC/$name/." "$stage/doc/scripts/$name/"
   # World-readable whatever the build's umask (mktemp -d is 0700): the updater
   # keeps archive modes and installs as root, so 0600/0700 entries would leave
   # the scripts unreadable to the user. (EZ <= 1.0.10/1.0.3/1.0.1 shipped 0600.)
   chmod -R u=rwX,go=rX "$stage"
   rm -f "$REPO/$zipname"
-  ( cd "$stage" && zip -qrX "$REPO/$zipname" src )
+  ( cd "$stage" && zip -qrX "$REPO/$zipname" src doc )
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
   reuse_if_published "$zipname"
+  ez_pkg_check "$REPO/$zipname" "$name" || die "$zipname does not deploy exactly $name.js/.xsgn and the current doc/scripts/$name/"
   manifest_rename "$WORK_MF" "${name}_v[0-9.]+\.zip" "$zipname"
 done
 
@@ -736,10 +979,14 @@ DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no descripti
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions apply "$WORK_MF" "${DESC_ARGS[@]}" || die "could not write the package descriptions"
 
+echo "== 3g/6 write the <remove> elements (PKG_REMOVE), and no others =="
+manifest_removes "$WORK_MF" "$REPO" "${PKG_REMOVE[@]}"
+
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$WORK_MF" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
 write_pkg "$WORK_MF" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
 write_pkg "$WORK_MF" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
+[ "$GDG_MODULE_SHIPS" = 1 ] && write_pkg "$WORK_MF" "$GDG_TGZ" "$(sha1 "$REPO/$GDG_TGZ")"
 for name in "${EZ_NAMES[@]}"; do
   zipname="${name}_v${EZVER[$name]}.zip"
   write_pkg "$WORK_MF" "$zipname" "$(sha1 "$REPO/$zipname")"
@@ -781,5 +1028,11 @@ NUKEX_QE_PUBLISHED_DIR="$REPO" "$ROOT/modules/nukex/build-portable/test/test_qe_
 
 echo "== 6c/6 install the signed, verified manifest as repository/updates.xri =="
 install_manifest "$WORK_MF" "$REPO/updates.xri"
+# Withdrawn packages leave repository/ only now that the manifest that no longer names them is installed.
+for rx in "${RETIRED_PKG_RE[@]}"; do
+  for f in "$REPO"/*; do
+    b="$(basename "$f")"; [[ "$b" =~ ^${rx}$ ]] && { echo "  removing withdrawn package $b"; git -C "$ROOT" rm -q --ignore-unmatch -f -- "repository/$b" 2>/dev/null || rm -f "$f"; }
+  done
+done
 
 echo "RELEASE OK — repository/ ready to commit & push"

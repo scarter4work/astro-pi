@@ -26,7 +26,7 @@ sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MF"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 DATE=20991231
-for f in write_pkg manifest_rename manifest_names_check install_manifest; do
+for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest module_platform_block manifest_removes ez_pkg_check; do
   body="$(sed -n "/^$f(){/,/^}/p" "$SCRIPT")"
   if [ -n "$body" ]; then eval "$body"; else echo "  (release.sh has no $f)"; fi
 done
@@ -176,6 +176,173 @@ PY
 )"
 if [[ "$writes_report" == OK* ]]; then ok "steps 3-6 edit only the work copy ($writes_report)"
 else while IFS= read -r l; do bad "$l"; done <<< "$writes_report"; fi
+
+# 8. retire_manifest: a withdrawn package (RETIRED_PKG_RE in release.sh) is dropped from a work copy,
+#    exactly once, and the remaining packages are exactly the release's.
+RET_RE="$(sed -nE "s/^RETIRED_PKG_RE=\('(.*)'\)\s*$/\1/p" "$SCRIPT")"
+if [ -n "$RET_RE" ] && have retire_manifest; then
+  RM="$WORK/retire.xri"; cp "$MF" "$RM"
+  before="$(grep -c '<package fileName=' "$RM")"
+  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 1 ] && ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 \
+     && [ "$(grep -c '<package fileName=' "$RM")" -eq $((before - 1)) ] && ! grep -qE "fileName=\"$RET_RE\"" "$RM" \
+     && python3 -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1])' "$RM"; then
+    ok "retire_manifest drops the withdrawn package ($RET_RE) once; the manifest stays well-formed"
+  else bad "retire_manifest did not drop exactly one entry for $RET_RE"; fi
+  if ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1; then ok "retire_manifest is idempotent once the entry is gone"; else bad "retire_manifest failed on an already-retired manifest"; fi
+else echo "  (no RETIRED_PKG_RE / retire_manifest in release.sh)"; fi
+# 10. module_platform_block (PCL 2.13: modules need PixInsight >= 1.9.6): on a fresh copy of the manifest,
+#     the module packages move into ONE linux/x64 1.9.6:2.0.0 block placed after the 1.8.0 one, the
+#     sidecar stays in the 1.8.0 block, the noarch block is untouched, a second run changes nothing,
+#     and two entries for one module fail.
+MB="$WORK/module-block.xri"
+sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MB"
+mb_report(){ python3 - "$MB" <<'PY'
+import re,sys
+s=open(sys.argv[1]).read()
+blocks=[(m.group(1),m.group(2)) for m in re.finditer(r'<platform ([^>]*)>(.*?)</platform>',s,re.S)]
+heads=[h for h,_ in blocks]
+names=lambda b: re.findall(r'<package fileName="([^"]+)"',b)
+out=[]
+for h,b in blocks: out.append("%s: %s"%(h," ".join(sorted(names(b)))))
+print("\n".join(out))
+PY
+}
+noarch_before="$(mb_report | grep 'os="all"')"
+if have module_platform_block && ( module_platform_block "$MB" NukeX PICopilot Planetary GaiaDepthGrade ) >/dev/null 2>&1; then
+  rep="$(mb_report)"
+  heads="$(grep -c 'os="linux" arch="x64"' <<< "$rep")"
+  mods="$(grep 'version="1.9.6:2.0.0"' <<< "$rep")"
+  old="$(grep 'os="linux" arch="x64" version="1.8.0:2.0.0"' <<< "$rep")"
+  if [ "$heads" = 2 ] && grep -q 'NukeX' <<< "$mods" && grep -q 'PICopilot' <<< "$mods" && grep -q 'Planetary' <<< "$mods" \
+     && ! grep -q 'NukeX\|PICopilot\|Planetary' <<< "$old" && grep -q 'GaiaDepthGradeSidecar' <<< "$old" \
+     && ! grep -q 'GaiaDepthGradeSidecar' <<< "$mods" && [ "$(grep 'os="all"' <<< "$rep")" = "$noarch_before" ] \
+     && [ "$(grep -n 'version=' <<< "$rep" | head -2 | tail -1 | grep -c '1.9.6:2.0.0')" = 1 ]; then
+    ok "module_platform_block: NukeX, PICopilot, Planetary in the linux/x64 1.9.6:2.0.0 block; sidecar and scripts keep theirs"
+  else bad "module_platform_block placed the packages wrongly:"; sed 's/^/        /' <<< "$rep"; fi
+  before="$(sha1sum < "$MB")"
+  ( module_platform_block "$MB" NukeX PICopilot Planetary GaiaDepthGrade ) >/dev/null 2>&1 && [ "$(sha1sum < "$MB")" = "$before" ] \
+    && ok "module_platform_block is idempotent" || bad "a second module_platform_block run changed the manifest"
+  python3 -c "import re,sys;p=sys.argv[1];s=open(p).read();m=re.search(r'\n[ \t]*<package fileName=\"[^\"]*-linux-x64-NukeX[^\"]*\".*?</package>',s,re.S);open(p,'w').write(s[:m.end()]+m.group(0)+s[m.end():])" "$MB"
+  ( module_platform_block "$MB" NukeX ) >/dev/null 2>&1 && bad "module_platform_block accepted two NukeX entries" \
+    || ok "module_platform_block fails on two entries for one module"
+else bad "module_platform_block failed on the repository manifest"; fi
+
+# 10. manifest_removes: release.sh's PKG_REMOVE specs land as <remove> elements, each on exactly one
+#     package, and the manifest carries no other <remove>. Refused (manifest unchanged): a regex matching
+#     no package or several, an item outside bin/ src/scripts/ doc/scripts/ doc/tools/ (or one of those
+#     roots, or with ".." or a glob), and an item that would delete a file another package installs.
+#     Package contents come from stand-in archives built here, one per manifest package.
+mapfile -t REMOVE_SPECS < <(sed -n '/^PKG_REMOVE=(/,/^)/p' "$SCRIPT" | sed -nE "s/^[[:space:]]*'([^']+)'[[:space:]]*$/\1/p")
+if have manifest_removes && [ "${#REMOVE_SPECS[@]}" -gt 0 ]; then
+  RMF="$WORK/removes.xri"; sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$RMF"
+  # As in a release: withdrawn packages leave the work copy before step 3g (a <remove> may not delete
+  # what a package still in the manifest installs, and EZDonutRepair is still in repository/updates.xri).
+  [ -z "$RET_RE" ] || ( retire_manifest "$RMF" "$RET_RE" ) >/dev/null 2>&1 || bad "retire_manifest failed on the removes copy"
+  PK="$WORK/pkgs"; mkdir -p "$PK"
+  stand_in(){ # <fileName> <path inside the package>...
+    local fn="$1" d; shift; d="$(mktemp -d "$WORK/si.XXXXXX")"
+    for p in "$@"; do mkdir -p "$d/$(dirname "$p")"; printf 'x\n' > "$d/$p"; done
+    case "$fn" in
+      *.zip) ( cd "$d" && zip -qr "$PK/$fn" . ) ;;
+      *.tar.gz) tar -C "$d" -czf "$PK/$fn" . ;;
+    esac
+  }
+  while IFS= read -r fn; do
+    case "$fn" in
+      EZ*_v*.zip) n="${fn%%_v*}"; stand_in "$fn" "src/scripts/scarter4work/$n.js" "src/scripts/scarter4work/$n.xsgn" "doc/scripts/$n/$n.html" ;;
+      gaia-depth-grade_v*.zip) stand_in "$fn" src/scripts/GaiaDepthGrade/GaiaDepthGrade.js doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html ;;
+      *-GaiaDepthGradeSidecar-*.tar.gz) stand_in "$fn" bin/gaia-depth-grade-sidecar ;;
+      *-linux-x64-*.tar.gz) n="${fn#*-linux-x64-}"; n="${n%%-*}"; stand_in "$fn" "bin/$n-pxm.so" "bin/$n-pxm.xsgn" ;;
+      *) stand_in "$fn" "doc/scripts/unknown/$fn.html" ;;
+    esac
+  done < <(sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$RMF")
+
+  removes_report(){ python3 - "$RMF" "$@" <<'PY'
+import re,sys
+s=open(sys.argv[1]).read(); specs=sys.argv[2:]
+errs=[]
+els=re.findall(r'<remove>(.*?)</remove>',s,re.S)
+if len(els)!=len(specs): errs.append("%d <remove> elements, expected %d (one per PKG_REMOVE spec)"%(len(els),len(specs)))
+for sp in specs:
+    rx,items=sp.split("=",1); want=[i.strip() for i in items.split(",")]
+    pk=[m for m in re.finditer(r'<package fileName="([^"]+)"[^>]*>(.*?)</package>',s,re.S) if re.fullmatch(rx,m.group(1))]
+    if len(pk)!=1: errs.append("%s matches %d packages"%(rx,len(pk))); continue
+    r=re.findall(r'<remove>(.*?)</remove>',pk[0].group(2),re.S)
+    if len(r)!=1: errs.append("%s carries %d <remove> elements"%(pk[0].group(1),len(r))); continue
+    got=[l.strip() for l in r[0].split("\n") if l.strip()]
+    if got!=want: errs.append("%s removes %s, expected %s"%(pk[0].group(1),got,want))
+import xml.dom.minidom as m
+try: m.parseString(s)
+except Exception as e: errs.append("not well-formed: %s"%e)
+print("\n".join(errs) if errs else "OK")
+PY
+  }
+  if ( manifest_removes "$RMF" "$PK" "${REMOVE_SPECS[@]}" ) >/dev/null 2>&1 && r="$(removes_report "${REMOVE_SPECS[@]}")" && [ "$r" = OK ]; then
+    ok "PKG_REMOVE lands: ${#REMOVE_SPECS[@]} <remove> element(s), each on exactly one package (${REMOVE_SPECS[*]%%=*})"
+  else bad "PKG_REMOVE did not land as one <remove> per spec on exactly one package: ${r:-manifest_removes failed}"; fi
+  once="$(sha1sum < "$RMF")"
+  ( manifest_removes "$RMF" "$PK" "${REMOVE_SPECS[@]}" ) >/dev/null 2>&1 && [ "$(sha1sum < "$RMF")" = "$once" ] \
+    && ok "manifest_removes is idempotent" || bad "a second manifest_removes run changed the manifest"
+
+  # The mechanism is reusable: a second carrying package (the Gaia cut-over shape) gets its own element.
+  GAIA_SPEC='gaia-depth-grade_v[0-9.]+\.zip=src/scripts/GaiaDepthGrade/old_helper.js,doc/scripts/GaiaDepthGrade/old.html'
+  cp "$RMF" "$WORK/two.xri"
+  if ( manifest_removes "$WORK/two.xri" "$PK" "${REMOVE_SPECS[@]}" "$GAIA_SPEC" ) >/dev/null 2>&1 \
+     && r="$(RMF="$WORK/two.xri"; removes_report "${REMOVE_SPECS[@]}" "$GAIA_SPEC")" && [ "$r" = OK ]; then
+    ok "two carrying packages: each gets exactly its own <remove>"
+  else bad "a second carrying package did not get its own <remove>: ${r:-manifest_removes failed}"; fi
+  # Dropping a spec drops its element: no stale <remove> outlives PKG_REMOVE.
+  cp "$RMF" "$WORK/none.xri"
+  if ( manifest_removes "$WORK/none.xri" "$PK" ) >/dev/null 2>&1 && ! grep -q '<remove>' "$WORK/none.xri"; then
+    ok "with no specs, every <remove> is dropped"
+  else bad "a <remove> survived an empty PKG_REMOVE"; fi
+
+  before="$(sha1sum < "$RMF")"
+  for c in \
+    'NoSuchPkg_v[0-9.]+\.zip=src/scripts/x.js|a regex matching no package' \
+    'EZ[A-Za-z]+_v[0-9.]+\.zip=src/scripts/scarter4work/Old.js|a regex matching several packages' \
+    'EZStretch_v[0-9.]+\.zip=src/scripts/../../bin/PixInsight|an item with ..' \
+    'EZStretch_v[0-9.]+\.zip=/opt/PixInsight/bin/x|an absolute item' \
+    'EZStretch_v[0-9.]+\.zip=src/scripts|a deployment root itself' \
+    'EZStretch_v[0-9.]+\.zip=etc/x.conf|an item outside bin/ src/scripts/ doc/scripts/ doc/tools/' \
+    'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/*.js|a glob' \
+    'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work|a directory holding another package'"'"'s files' \
+    'gaia-depth-grade_v[0-9.]+\.zip=bin/gaia-depth-grade-sidecar|a file another package of the release installs'; do
+    spec="${c%%|*}"; what="${c#*|}"
+    if ! ( manifest_removes "$RMF" "$PK" "$spec" ) >/dev/null 2>&1 && [ "$(sha1sum < "$RMF")" = "$before" ]; then
+      ok "manifest_removes refuses $what; the manifest is unchanged"
+    else bad "manifest_removes accepted $what, or changed the manifest"; fi
+  done
+else bad "release.sh has no manifest_removes or no PKG_REMOVE specs"; fi
+
+# 11. ez_pkg_check: an EZ zip deploys exactly <Name>.js/.xsgn and the current doc/scripts/<Name>/, with the
+#     .js and every doc file byte for byte as in the source tree (so a reused published zip with stale
+#     docs fails and forces a version bump).
+EZSRC="$(sed -nE 's/^EZSRC="\$ROOT\/(.*)"$/\1/p' "$SCRIPT")"; EZSRC="$ROOT/$EZSRC"
+EZDOC="$(sed -nE 's/^EZDOC="\$ROOT\/(.*)"$/\1/p' "$SCRIPT")"; EZDOC="$ROOT/$EZDOC"
+if have ez_pkg_check && [ -f "$EZSRC/EZStretch.js" ] && [ -f "$EZDOC/EZStretch/EZStretch.html" ]; then
+  ez_zip(){ # <out.zip> <mode: good|nodoc|staledoc|extra|stalejs>
+    local d; d="$(mktemp -d "$WORK/ez.XXXXXX")"
+    mkdir -p "$d/src/scripts/scarter4work" "$d/doc/scripts"
+    cp "$EZSRC/EZStretch.js" "$d/src/scripts/scarter4work/"; printf 'sig\n' > "$d/src/scripts/scarter4work/EZStretch.xsgn"
+    cp -r "$EZDOC/EZStretch" "$d/doc/scripts/EZStretch"
+    case "$2" in
+      nodoc) rm -rf "$d/doc/scripts/EZStretch" ;;
+      staledoc) printf '<p>old</p>\n' > "$d/doc/scripts/EZStretch/EZStretch.html" ;;
+      extra) printf 'x\n' > "$d/src/scripts/scarter4work/EZDonutRepair.js" ;;
+      stalejs) printf '// old\n' >> "$d/src/scripts/scarter4work/EZStretch.js" ;;
+    esac
+    ( cd "$d" && zip -qr "$1" . )
+  }
+  ez_zip "$WORK/ez-good.zip" good
+  ( ez_pkg_check "$WORK/ez-good.zip" EZStretch ) >/dev/null 2>&1 && ok "ez_pkg_check accepts a zip with the current .js and docs" \
+    || bad "ez_pkg_check rejected a correct EZStretch zip"
+  for m in nodoc staledoc extra stalejs; do
+    ez_zip "$WORK/ez-$m.zip" "$m"
+    ! ( ez_pkg_check "$WORK/ez-$m.zip" EZStretch ) >/dev/null 2>&1 && ok "ez_pkg_check rejects a zip with $m" \
+      || bad "ez_pkg_check accepted a zip with $m"
+  done
+else bad "release.sh has no ez_pkg_check, or EZStretch has no source/documentation"; fi
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1

@@ -22,7 +22,7 @@ struct KeyringId
 
 // ok: secret-tool ran and answered (found says whether an item exists).
 // error: why it could not be used -- never contains the secret.
-// notInstalled: the program could not be found (env exit 127), so no keyring
+// notInstalled: the program could not be found (exit 127), so no keyring
 // item can have been written through it either.
 //
 // A lookup whose unlock prompt was dismissed is expected to end like "no such
@@ -79,16 +79,12 @@ constexpr int PICopilotKeyringTimeoutMs = 60000;
 // the actual bound).
 constexpr int PICopilotKeyringMaxAttempts = 3;
 
-// Root thread only (pcl::ExternalProcess). Each call runs
-// /bin/sh -c '...' sh <errfile> <program> <args...>, which sets `program`'s
-// real stderr (fd 2) to a private, per-call file before exec'ing
-// /usr/bin/env -u LD_LIBRARY_PATH <program> ... (PixInsight's own library
-// path would otherwise be inherited and can break system binaries) --
-// pcl::ExternalProcess reports the child's real stderr through
-// StandardOutput() in this PixInsight build/version (measured, GUI and
-// automation mode both; RedirectStandardError() is a silent no-op), so this
-// is the only way to keep stdout and stderr genuinely separate. Pumps events
-// (user input excluded) while waiting, and never throws.
+// Root thread only. Each call runs `program` directly (posix_spawnp with an
+// argv array: no shell, no interpreter; ChildProcess.h), with the caller's
+// environment minus LD_LIBRARY_PATH (PixInsight's own library path would
+// otherwise be inherited and can break system binaries). The secret is passed
+// only on the child's stdin; stdout and stderr are read on separate pipes.
+// Pumps events (user input excluded) while waiting, and never throws.
 KeyringResult KeyringLookup( const KeyringId& id );
 KeyringResult KeyringStore( const KeyringId& id, const String& label, const IsoString& secret );
 KeyringResult KeyringClear( const KeyringId& id );

@@ -1,13 +1,12 @@
 # NukeX
 
-Distribution-fitted image stacking and auto-stretch for PixInsight, with
+Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight, with
 filter-aware colour science: dual-narrowband OSC data is decomposed into
 emission lines through the camera's measured quantum efficiency and composed
 with a calibrated palette.
 
-Rather than averaging or sigma-clipping, NukeX fits a distribution to every
-pixel's samples across the stack and estimates the true signal from the fitted
-model. Each pixel carries its own record — Welford accumulators, a histogram,
+NukeX fits a distribution to every pixel's samples across the frames you add
+and estimates the signal from the fitted model. Each pixel carries its own record — Welford accumulators, a histogram,
 the fitted distribution and its robust statistics, per channel — and the
 selection is made from that record.
 
@@ -46,8 +45,12 @@ stacks as luminance. To teach it a camera or filter it does not know, see
 
 NukeX makes one kind of network connection: the **camera-database update
 check**. Nothing else in the module uses the network; frames are read locally
-(the FITS library is built without network support, and NukeX opens only the
-files you select).
+(frame paths are opened as file paths with `fits_open_diskfile()`, and the FITS
+library is built without its http/ftp/root network drivers; a URL given as a
+frame path is reported as a file that cannot be opened). The FITS library is
+also built without its shared-memory (`shmem://`) driver; its `stdin://` and
+`stream://` drivers have no build switch and are never reached, because frames
+are opened only as files.
 
 - **What:** HTTPS GET requests to
   `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`.
@@ -85,12 +88,15 @@ files you select).
 | | `phase8_user.sqlite.corrupt.<time>` | a damaged rating database set aside (only on corruption) |
 | frame cache: the `cacheDirectory` parameter, default `$XDG_CACHE_HOME/nukex4/cache`, else `~/.cache/nukex4/cache`, else `/var/tmp` | `nukex_cache_XXXXXX` | aligned frame data for the running stack (about 13 GB for 33 frames of a 24 MP colour camera); deleted when the run ends, but left behind if PixInsight crashes mid-run -- safe to delete while PixInsight is not running |
 | | `nukex_cube_XXXXXX` | only when the working data does not fit in memory; unlinked as soon as it is created, so it never outlives the run |
-| `/tmp` | `nukex_progress.log` | progress log of the most recent run (restarted each run) |
-| | `nukex_heartbeat.txt` | current phase and elapsed time, rewritten every 10 s during a run |
+| `nukex-run-XXXXXX/` (mode 0700, new per run) in `$TMPDIR`, else `/tmp`; path printed at run start | `nukex_progress.log` | progress log of the run; the directory is deleted when the run ends (left behind only if PixInsight crashes mid-run) |
+| | `nukex_heartbeat.txt` | current phase and elapsed time, rewritten every 10 s during the run |
 
 Short-lived `.tmp`/`.stage` files appear beside the `~/.config/nukex4/` files
 while they are replaced. NukeX also stores one PixInsight setting,
 `NukeX/Phase8/RatingPopupSuppressed`, through PixInsight's settings interface.
+Setting the environment variable `NUKEX_PHASE8_NO_POPUP` (any value) makes a
+run open no dialog (no rating dialog, no unknown-filter dialog), for scripted
+and headless runs such as `tools/run_e2e.sh`.
 None of this data is transmitted. NukeX saves no images: results open as
 image windows for you to save.
 

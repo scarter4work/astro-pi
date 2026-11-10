@@ -13,7 +13,7 @@ by subproject) -- never a new per-folder memory directory. No CLAUDE.md below th
 - `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
 - `modules/planetary/` → `Planetary-pxm` module, processes `SERViewer` and `PlanetaryStack` (docs deploy as
   `doc/tools/SERViewer/` and `doc/tools/PlanetaryStack/`).
-  0.5.0.0 (released 2026-10-29: Planet processing (Saturation / Chroma blur / Sharpen sliders, catalogue-colour calibration, small-disc dispersion alignment)); 0.4.0.1 (released 2026-10-28: frame-filling Moon sharpening noise from the disc, IR-pass filters refused, NaN/Inf refused; 0.4.0.0 released 2026-10-28: Target from the ASIAIR name + mineral moon with Strength/Chroma blur/Sharpen sliders; 0.3.0.2 released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
+  0.5.0.1 (rebuilt for PixInsight 1.9.6 / PCL 2.13); 0.5.0.0 (released 2026-10-29: Planet processing (Saturation / Chroma blur / Sharpen sliders, catalogue-colour calibration, small-disc dispersion alignment)); 0.4.0.1 (released 2026-10-28: frame-filling Moon sharpening noise from the disc, IR-pass filters refused, NaN/Inf refused; 0.4.0.0 released 2026-10-28: Target from the ASIAIR name + mineral moon with Strength/Chroma blur/Sharpen sliders; 0.3.0.2 released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
 - `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
 Everything in `tools/` and `archive/` is NOT shipped.
@@ -50,7 +50,17 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
    `tools/build-env/verify-portable.sh` gates the release: ≤GLIBC_2.34/GLIBCXX_3.4.30 (the PI core's
    own floor), no RPATH, and a real `dlopen` on stock Ubuntu 22.04 / Debian 12 / Rocky 9. New third-party
    C++ deps go into the image as static `-fPIC` archives; no OpenMP (libgomp is not on stock distros —
-   use `nukex::parallel_for_dynamic`). PCL is rebuilt in the image from the pinned commit, not `~/PCL`.
+   use `nukex::parallel_for_dynamic`). PCL is rebuilt in the image, not taken from `~/PCL`.
+4c. PCL is 2.13.0 (build 1072) for EVERY module, C++20: the source bundled with PixInsight 1.9.6
+   (`/opt/PixInsight/{include/pcl,src/pcl,src/3rdparty}`), packed reproducibly by
+   `tools/build-env/pcl-2.13/make-tarball.sh` and pinned by its committed `SHA256SUMS` (the tarball itself
+   is not committed; the image build makes it and fails if the installed PixInsight's bytes differ).
+   Upstream gitlab has no 2.13. A 2.13 module needs PixInsight >= 1.9.6: PCL resolves the core's whole API
+   table at module init and 2.13 adds five TreeBox functions (1.9.5 build 1706 refuses it: "Unable to
+   resolve PCL API interface."). So release.sh puts every NEW module package in a linux/x64
+   `1.9.6:2.0.0` platform block (`module_platform_block`); PI 1.9.6's updater accepts two linux/x64 blocks
+   (`modules/gaia-depth-grade/test/run-probe-xri-platforms.sh`). Host `~/PCL` is the same 2.13 tree
+   (2.9.4 kept at `/mnt/samsung_1.8/astro/PCL-2.9.4-3a4af80` and `~/projects/backups/pcl-2.9.4/`).
 4b. NukeX's camera (QE) database is compiled into the module AND published for the in-module
    updater as `repository/qe_{manifest,database}.json{,.sig}` (fetched from `nukex::kQEUpdateBaseURL`).
    The signed source is `modules/nukex/repository/`; release.sh step 0 refuses to build unless it names
@@ -94,6 +104,14 @@ Stack engine benchmark and focus survey (host-only, read the NAS, never launch P
 (see `test/bench/README.md`), `bash test/run-focus-survey.sh`.
 run-avi-real.sh neither signs nor launches PixInsight: it runs the PCL-free reader (`build/test/avi-probe`, host build)
 against ffmpeg/ffprobe and needs `/mnt/qnap`, ffmpeg, ffprobe and numpy; the NAS is only read.
+
+## Build / test GaiaDepthGrade (native module; not shipped until its Task 20 cut-over, `GDG_MODULE_SHIPS` in release.sh)
+```bash
+cd modules/gaia-depth-grade && cmake -B build -DPCLDIR=$HOME/PCL -DGDG_BUILD_MODULE=ON && cmake --build build -j$(nproc)
+(cd build && ctest --output-on-failure)
+bash test/run-probe-ids.sh                      # container build: module id via module-ident.c, loaded by PI (slot 95), process ids
+bash test/run-probe-xri-platforms.sh <out-dir>  # PI 1.9.6 updater vs two linux/x64 platform blocks (slot 95, local signed scratch repo)
+```
 
 ## Distribution URL
 `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`

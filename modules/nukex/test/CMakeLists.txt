@@ -44,6 +44,7 @@ nukex_add_test(test_filter_alias      unit/io/test_filter_alias.cpp      nukex4_
 nukex_add_test(test_welford       unit/core/test_welford.cpp       nukex4_core)
 nukex_add_test(test_histogram     unit/core/test_histogram.cpp     nukex4_core)
 nukex_add_test(test_reservoir     unit/core/test_reservoir.cpp     nukex4_core)
+nukex_add_test(test_run_temp_dir  unit/core/test_run_temp_dir.cpp  nukex4_core)
 nukex_add_test(test_distribution  unit/core/test_distribution.cpp  nukex4_core)
 nukex_add_test(test_channel       unit/core/test_channel_config.cpp nukex4_core)
 nukex_add_test(test_channel_config_from_filter unit/core/test_channel_config_from_filter.cpp nukex4_core nukex4_io)

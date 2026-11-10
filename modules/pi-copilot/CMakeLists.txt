@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(PICopilot VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -90,5 +90,10 @@ target_compile_options(picopilot_sqlite3 PRIVATE -w)   # third-party code: its w
 target_include_directories(picopilot_sqlite3 PUBLIC "${PICOPILOT_SQLITE_DIR}")
 find_package(Threads REQUIRED)
 target_link_libraries(picopilot_sqlite3 PUBLIC Threads::Threads m)
+
+# PCL-free unit tests (no PixInsight needed): `ctest` in the build directory.
+enable_testing()
+add_executable(test_child_process test/unit/test_child_process.cpp src/module/ChildProcess.cpp)
+add_test(NAME test_child_process COMMAND test_child_process)
 
 add_subdirectory(src/module)
