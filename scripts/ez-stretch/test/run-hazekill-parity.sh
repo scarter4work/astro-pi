@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # EZHazeKill parity: runs the shipped EZHazeKill.js headless in PixInsight on the
 # design study's test images and compares every output sample with the offline
-# reference (hk_lib.py), then recomputes the design's metrics on PixInsight's output.
+# reference (modules/ez-tools/test/hk_lib.py), then recomputes the design's metrics on PixInsight's output.
 #
 #   bash scripts/ez-stretch/test/run-hazekill-parity.sh [case ...]   -> PASS (exit 0) / FAIL (exit 1)
 #
@@ -41,7 +41,7 @@ trap cleanup EXIT
 rm -f -- "$SETTINGS"
 
 echo "== prepare inputs ($RUN) =="
-python3 "$HERE/hazekill_parity.py" prep "$RUN" "$@"
+python3 "$HERE/../../../modules/ez-tools/test/hazekill_parity.py" prep "$RUN" "$@"
 
 echo "== EZHazeKill.js in PixInsight (slot $slot) =="
 rm -f "$RUN/probe-out.json"
@@ -54,4 +54,4 @@ fi
 [ -s "$RUN/probe-out.json" ] || { echo "FAIL: PixInsight never wrote the probe result (script parse failure?)"; tail -20 "$RUN/pi.log"; exit 1; }
 
 echo "== compare with hk_lib.py =="
-python3 "$HERE/hazekill_parity.py" check "$RUN"
+python3 "$HERE/../../../modules/ez-tools/test/hazekill_parity.py" check "$RUN"

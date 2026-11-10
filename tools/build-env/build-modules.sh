@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Build the PixInsight modules (NukeX, PICopilot, Planetary, GaiaDepthGrade)
+# Build the PixInsight modules (NukeX, PICopilot, Planetary, GaiaDepthGrade, EZTools)
 # inside the portable Rocky 9 image (see Containerfile for why), run the NukeX,
-# Planetary and GaiaDepthGrade unit tests there, and leave the .so files at:
+# Planetary, GaiaDepthGrade and EZTools unit tests there, and leave the .so files at:
 #   modules/nukex/build-portable/.../NukeX-pxm.so
 #   modules/pi-copilot/build-portable/.../PICopilot-pxm.so
 #   modules/planetary/build-portable/.../Planetary-pxm.so
 #   modules/gaia-depth-grade/build-portable/.../GaiaDepthGrade-pxm.so
+#   modules/ez-tools/build-portable/.../EZTools-pxm.so
 # PCL comes from the image (PCL 2.13.0, built there from the pinned tarball of
 # PixInsight 1.9.6's bundled source), never from the host ~/PCL, whose
 # archives carry the dev box's glibc.
@@ -60,12 +61,16 @@ podman run --rm --security-opt label=disable --userns=keep-id \
    nm -C "$(find /src/modules/gaia-depth-grade/build-portable -name GaiaDepthGrade-pxm.so -print -quit)" \
       | grep -c " pcl::BlindAstrometricSolver::Solve(" >/dev/null \
       || { echo "FAIL: GaiaDepthGrade-pxm.so does not contain pcl::BlindAstrometricSolver::Solve" >&2; exit 1; }
+   cmake -S /src/modules/ez-tools -B /src/modules/ez-tools/build-portable "${COMMON[@]}" \
+         -DEZTOOLS_BUILD_MODULE=ON >/dev/null
+   cmake --build /src/modules/ez-tools/build-portable -j"$(nproc)" >/dev/null
    if [ "$RUN_TESTS" = 1 ]; then
       # test_gpu_context needs a GPU; the container has none. It runs on the
       # host below, against this same container-built binary.
       (cd /src/modules/nukex/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)" -E "^test_gpu_context$")
       (cd /src/modules/planetary/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)")
       (cd /src/modules/gaia-depth-grade/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)")
+      (cd /src/modules/ez-tools/build-portable && ctest --output-on-failure --no-tests=error -j"$(nproc)")
    fi'
 
 if [ "$RUN_TESTS" = 1 ]; then
@@ -77,7 +82,7 @@ if [ "$RUN_TESTS" = 1 ]; then
 fi
 
 for so in "$ROOT/modules/nukex/build-portable" "$ROOT/modules/pi-copilot/build-portable" "$ROOT/modules/planetary/build-portable" \
-          "$ROOT/modules/gaia-depth-grade/build-portable"; do
+          "$ROOT/modules/gaia-depth-grade/build-portable" "$ROOT/modules/ez-tools/build-portable"; do
    f="$(find "$so" -name '*-pxm.so' -print -quit)"
    [ -n "$f" ] || die "no *-pxm.so under $so"
    echo "built: $f"
