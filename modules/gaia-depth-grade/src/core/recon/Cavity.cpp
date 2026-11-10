@@ -4,6 +4,8 @@
 #include "core/Numerics.h"
 #include "core/Parallel.h"
 
+#include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <stdexcept>
 
@@ -104,12 +106,161 @@ Mask footprint_from_lum(const Image& lum, double frac) {
     return m;
 }
 
-Image linear_emissivity(const ChannelSet&) { throw std::logic_error("not implemented"); }
-std::string capture_mode(const ChannelSet&) { throw std::logic_error("not implemented"); }
-CavityModel reconstruct_cavity(const ChannelSet&, const IonizationMap&, const Ionizer&, const Image&, const Image&,
-                               std::optional<double>, const ReconConfig&) {
-    throw std::logic_error("not implemented");
+Image linear_emissivity(const ChannelSet& channels) {
+    const size_t n = channels.ha.data.size();
+    // clip(nan_to_num(float64(.)), 0, None); sii None -> zeros. np.stack([ha, oiii, sii]) pooled.
+    std::vector<double> stacked(3 * n);
+    for (size_t i = 0; i < n; ++i) {
+        stacked[i] = std::max(nan_to_num(channels.ha.data[i]), 0.0);
+        stacked[n + i] = std::max(nan_to_num(channels.oiii.data[i]), 0.0);
+        stacked[2 * n + i] = channels.sii ? std::max(nan_to_num(channels.sii->data[i]), 0.0) : 0.0;
+    }
+    double peak = stacked.empty() ? 0.0 : percentile(stacked, EMISSIVITY_PEAK_PCT);
+    if (peak <= RECON_EPS) peak = 1.0;
+    Image em(channels.ha.width, channels.ha.height, 3);
+    for (size_t i = 0; i < n; ++i) {
+        const double ha = stacked[i], oiii = stacked[n + i], sii = stacked[2 * n + i];
+        em.data[3 * i] = f32(std::max((ha + sii) / peak, 0.0));     // Halpha + [S II]
+        em.data[3 * i + 1] = f32(std::max(0.5 * oiii / peak, 0.0));  // half-weight green -> teal
+        em.data[3 * i + 2] = f32(std::max(oiii / peak, 0.0));        // [O III]
+    }
+    return em;
 }
-std::string cavity_meta_json(const CavityMeta&) { throw std::logic_error("not implemented"); }
+
+std::string capture_mode(const ChannelSet& channels) {
+    const double c = channels.ratio_confidence;
+    if (channels.sii && std::fabs(c - CONF_SHO) < 1e-6) return "sho";
+    if (std::fabs(c - CONF_DUOBAND) < 1e-6) return "duoband";
+    if (std::fabs(c - CONF_OSC) < 1e-6 || !channels.sii) return "osc";
+    if (c == 0.0) return "nonlinear";
+    return "unknown";
+}
+
+CavityModel reconstruct_cavity(const ChannelSet& channels, const IonizationMap& ionization, const Ionizer& ionizer,
+                               const Image& lum, const Image& dust, std::optional<double> pc_per_px,
+                               const ReconConfig& config) {
+    validate_shapes({&channels.ha, &channels.oiii, channels.sii ? &*channels.sii : nullptr, &ionization.oiii_fraction,
+                     &lum, &dust});
+    require_mono(lum, "reconstruct_cavity lum");
+    require_mono(dust, "reconstruct_cavity dust");
+
+    Image L = lum;
+    for (double& v : L.data) v = std::max(nan_to_num(v), 0.0);
+    const int ny = L.height, nx = L.width;
+
+    const Mask foot = footprint_from_lum(L, config.footprint_frac);
+    const std::pair<double, double> apex{ionizer.x, ionizer.y};
+
+    const Image z_geo = geometry_prior(ny, nx, apex, &foot, config.geometry_power);
+    const Image z_ion = ionization_depth(ionization, config.ionization_gamma);
+
+    const double c = clip(ionization.confidence, 0.0, 1.0);
+    const double w_geo = std::max(config.w_geometry, 0.0);
+    const double w_ion = std::max(config.w_ionization, 0.0) * c;
+    const double denom = w_geo + w_ion;
+    const bool degenerate = denom <= RECON_EPS;  // fall back to the geometric bowl
+
+    const Image relief = emission_measure_relief(L, EM_SIGMA_SMALL_PX, EM_SIGMA_LARGE_PX, 1.0);
+    const double em_w = config.emission_sign * config.w_emission;
+    const double wd = clip(config.w_dust, 0.0, 1.0);
+
+    Image z(nx, ny), d_out(nx, ny);
+    parallel_for_if(static_cast<long long>(nx) * ny * 8, ny, [&](int y) {
+        for (int x = 0; x < nx; ++x) {
+            const size_t i = z.index(x, y);
+            double v = degenerate ? z_geo.data[i] : (w_geo * z_geo.data[i] + w_ion * z_ion.data[i]) / denom;
+            v = v + em_w * relief.data[i];
+            const double d = clip(nan_to_num(dust.data[i]), 0.0, 1.0);
+            v = v * (1.0 - wd * d);
+            v = foot.data[i] ? v : 0.0;
+            z.data[i] = f32(clip(v, 0.0, 1.0));
+            d_out.data[i] = f32(d);
+        }
+    });
+
+    CavityMeta meta;
+    meta.w_geometry = w_geo;
+    meta.w_ionization_max = config.w_ionization;
+    meta.w_ionization_effective = w_ion;
+    meta.w_emission = config.w_emission;
+    meta.emission_sign = config.emission_sign;
+    meta.w_dust = config.w_dust;
+    meta.ionization_confidence = c;
+    meta.ratio_confidence = channels.ratio_confidence;
+    meta.is_linear = channels.is_linear;
+    meta.sii_present = channels.sii.has_value();
+    meta.capture_mode = capture_mode(channels);
+    meta.ionizer_source = ionizer.source;
+    meta.footprint_frac = config.footprint_frac;
+    meta.footprint_px = static_cast<long long>(foot.count());
+
+    return CavityModel(std::move(z), linear_emissivity(channels), std::move(d_out), pc_per_px, apex, std::move(meta));
+}
+
+namespace {
+
+/// Python's repr(float) (json.dumps writes floats with it): the shortest round-trip digits, in
+/// exponent form when the decimal exponent is < -4 or >= 16, else fixed with at least one
+/// fractional digit. json.dumps writes NaN / Infinity / -Infinity for the non-finite.
+std::string py_float_repr(double v) {
+    if (std::isnan(v)) return "NaN";
+    if (std::isinf(v)) return v > 0 ? "Infinity" : "-Infinity";
+    char buf[64];
+    const auto res = std::to_chars(buf, buf + sizeof buf, v, std::chars_format::scientific);
+    std::string s(buf, res.ptr);  // [-]d[.ddd]e[+-]XX
+    std::string sign;
+    if (s[0] == '-') {
+        sign = "-";
+        s.erase(0, 1);
+    }
+    const size_t epos = s.find('e');
+    const int exp10 = std::stoi(s.substr(epos + 1));
+    std::string digits = s.substr(0, epos);
+    digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
+    if (exp10 < -4 || exp10 >= 16) {
+        std::string mant = digits.substr(0, 1);
+        if (digits.size() > 1) mant += "." + digits.substr(1);
+        const int a = std::abs(exp10);
+        return sign + mant + "e" + (exp10 < 0 ? "-" : "+") + (a < 10 ? "0" : "") + std::to_string(a);
+    }
+    std::string out;
+    if (exp10 < 0) {
+        out = "0." + std::string(static_cast<size_t>(-exp10 - 1), '0') + digits;
+    } else {
+        const size_t int_len = static_cast<size_t>(exp10) + 1;
+        if (digits.size() <= int_len) {
+            out = digits + std::string(int_len - digits.size(), '0') + ".0";
+        } else {
+            out = digits.substr(0, int_len) + "." + digits.substr(int_len);
+        }
+    }
+    return sign + out;
+}
+
+std::string json_string(const std::string& s) {
+    std::string out = "\"";
+    for (char ch : s) {
+        if (ch == '"' || ch == '\\') out += '\\';
+        out += ch;
+    }
+    return out + "\"";
+}
+
+}  // namespace
+
+std::string cavity_meta_json(const CavityMeta& m) {
+    auto b = [](bool v) { return std::string(v ? "true" : "false"); };
+    return "{\"w_geometry\": " + py_float_repr(m.w_geometry) +
+           ", \"w_ionization_max\": " + py_float_repr(m.w_ionization_max) +
+           ", \"w_ionization_effective\": " + py_float_repr(m.w_ionization_effective) +
+           ", \"w_emission\": " + py_float_repr(m.w_emission) +
+           ", \"emission_sign\": " + py_float_repr(m.emission_sign) + ", \"w_dust\": " + py_float_repr(m.w_dust) +
+           ", \"ionization_confidence\": " + py_float_repr(m.ionization_confidence) +
+           ", \"ratio_confidence\": " + py_float_repr(m.ratio_confidence) + ", \"is_linear\": " + b(m.is_linear) +
+           ", \"sii_present\": " + b(m.sii_present) + ", \"capture_mode\": " + json_string(m.capture_mode) +
+           ", \"ionizer_source\": " + json_string(m.ionizer_source) +
+           ", \"footprint_frac\": " + py_float_repr(m.footprint_frac) +
+           ", \"footprint_px\": " + std::to_string(m.footprint_px) + "}";
+}
 
 }  // namespace gdg::recon
