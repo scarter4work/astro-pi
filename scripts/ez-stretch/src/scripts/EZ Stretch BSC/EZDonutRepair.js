@@ -9,8 +9,12 @@
 // Original Copyright (c) 2024 Chick Dee
 // Modifications Copyright (c) 2026 EZ Stretch BSC
 //
+// SPDX-License-Identifier: CC-BY-NC-4.0
 // This work is licensed under CC BY-NC 4.0
 // http://creativecommons.org/licenses/by-nc/4.0/
+// Attribution: derived from DonutRepair by Chick Dee; changes: RGB support
+// by per-channel processing. NonCommercial use only. This file is NOT covered
+// by the BSD 3-Clause license of the rest of the astro-pi repository.
 //
 // ============================================================================
 

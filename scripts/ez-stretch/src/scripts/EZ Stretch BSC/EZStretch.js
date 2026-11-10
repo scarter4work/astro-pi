@@ -7,6 +7,8 @@
 // - RNC-ColorStretch: Power stretch with color recovery (Roger Clark)
 // - PhotometricStretch: Physics-based stretch with sensor QE weighting
 //
+// SPDX-License-Identifier: BSD-3-Clause (see LICENSE in the astro-pi repository)
+//
 // ============================================================================
 
 #feature-id    scarter4work > EZ Stretch
