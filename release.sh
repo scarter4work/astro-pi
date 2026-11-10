@@ -150,7 +150,7 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
 EZ_NAMES=(EZStretch EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.11 [EZHazeKill]=1.0.2 )
+declare -A EZVER=( [EZStretch]=1.0.11 [EZHazeKill]=1.1.0 )
 # Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
 # first release after a withdrawal drops the entry from the work copy and, once the new manifest is
 # installed (step 6c), deletes the package file(s) from repository/. EZDonutRepair: withdrawn 2026-11-10
@@ -683,12 +683,23 @@ for name in "${EZ_NAMES[@]}"; do
   # read scarter4work (the #feature-id in each .js already points there).
   stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work"
   cp "$EZSRC/$name.js" "$EZSRC/$name.xsgn" "$stage/src/scripts/scarter4work/"
+  # User documentation (CPD rule 6.1), when the script has one: scripts/ez-stretch/doc/<Name>/
+  # deploys as doc/scripts/<Name>/ (Repository Reference 4.2), the folder and page named by the
+  # id in the script's "#feature-id <Name> : ..." directive, as for GaiaDepthGrade.
+  docsrc="$ROOT/scripts/ez-stretch/doc/$name"
+  if [ -d "$docsrc" ]; then
+    [ -f "$docsrc/$name.html" ] || die "$docsrc has no $name.html"
+    grep -qE "^#feature-id +$name +:" "$EZSRC/$name.js" \
+      || die "$name.js has no '#feature-id $name : ...' directive: PixInsight would not find doc/scripts/$name/"
+    mkdir -p "$stage/doc/scripts/$name"
+    cp -R "$docsrc/." "$stage/doc/scripts/$name/"
+  fi
   # World-readable whatever the build's umask (mktemp -d is 0700): the updater
   # keeps archive modes and installs as root, so 0600/0700 entries would leave
   # the scripts unreadable to the user. (EZ <= 1.0.10/1.0.3/1.0.1 shipped 0600.)
   chmod -R u=rwX,go=rX "$stage"
   rm -f "$REPO/$zipname"
-  ( cd "$stage" && zip -qrX "$REPO/$zipname" src )
+  ( cd "$stage" && if [ -d doc ]; then zip -qrX "$REPO/$zipname" src doc; else zip -qrX "$REPO/$zipname" src; fi )
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
   reuse_if_published "$zipname"
