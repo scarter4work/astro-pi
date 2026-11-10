@@ -20,6 +20,7 @@
 #define EZTOOLS_HAZEKILL_H
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,10 @@ struct Model
 // ok = false, with an error naming the problem, for no channels, an empty image, or any NaN/Inf.
 SkyEstimate MeasureSky( const std::vector<const double*>& channels, int width, int height );
 SkyEstimate MeasureSky( const std::vector<const float*>& channels, int width, int height );
+// Integer images: each sample read as x * (1/max) (PixInsight's sample conversion), tile by tile.
+SkyEstimate MeasureSky( const std::vector<const uint8_t*>& channels, int width, int height );
+SkyEstimate MeasureSky( const std::vector<const uint16_t*>& channels, int width, int height );
+SkyEstimate MeasureSky( const std::vector<const uint32_t*>& channels, int width, int height );
 
 // The correction for a (successful) estimate and the given settings.
 Model BuildModel( const SkyEstimate&, const Settings& );

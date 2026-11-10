@@ -79,27 +79,12 @@ hazekill::SkyEstimate MeasureT( const GenericImage<P>& img )
 {
    const int nc = img.NumberOfNominalChannels();
    const int w = img.Width(), h = img.Height();
-   if constexpr ( std::is_same_v<typename P::sample, float> || std::is_same_v<typename P::sample, double> )
-   {
-      std::vector<const typename P::sample*> ch;
-      for ( int c = 0; c < nc; ++c )
-         ch.push_back( img.PixelData( c ) );
-      return hazekill::MeasureSky( ch, w, h );
-   }
-   else
-   {
-      const size_t n = size_t( w ) * size_t( h );
-      std::vector<std::vector<double>> buf( nc, std::vector<double>( n ) );
-      std::vector<const double*> ch;
-      for ( int c = 0; c < nc; ++c )
-      {
-         const typename P::sample* s = img.PixelData( c );
-         for ( size_t i = 0; i < n; ++i )
-            P::FromSample( buf[c][i], s[i] );
-         ch.push_back( buf[c].data() );
-      }
-      return hazekill::MeasureSky( ch, w, h );
-   }
+   // Every sample type has its engine overload; integers are converted tile by tile (x * 1/max, as
+   // P::FromSample), so no whole-image double copy is made.
+   std::vector<const typename P::sample*> ch;
+   for ( int c = 0; c < nc; ++c )
+      ch.push_back( img.PixelData( c ) );
+   return hazekill::MeasureSky( ch, w, h );
 }
 
 template <class P>
@@ -211,7 +196,6 @@ bool EZHazeKillInstance::ExecuteOn( View& view )
       return false;
 
    Console console;
-   console.EnableAbort();
 
    hazekill::Model m;
    String error;

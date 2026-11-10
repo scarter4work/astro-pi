@@ -13,6 +13,8 @@
 #include "EZHazeKillInstance.h"
 #include "hazekill/SkyCache.h"
 
+#include <mutex>
+
 namespace pcl
 {
 
@@ -38,6 +40,8 @@ public:
 
    bool WantsImageNotifications() const override;
    void ImageUpdated( const View& ) override;
+   void ImageCreated( const View& ) override;
+   void ImageRenamed( const View& ) override;
    void ImageDeleted( const View& ) override;
    void ImageSTFEnabled( const View& ) override;
    void ImageSTFDisabled( const View& ) override;
@@ -48,6 +52,8 @@ private:
    // The sky of each view's FULL image, measured once (on the RTP thread) and reused by every
    // rendition until PixInsight reports that the image changed.
    mutable eztools::hazekill::SkyCache m_cache;
+   // Guards m_instance's parameters: written on the GUI thread, read by renditions on the RTP thread.
+   mutable std::mutex m_settingsMutex;
 
    struct GUIData
    {

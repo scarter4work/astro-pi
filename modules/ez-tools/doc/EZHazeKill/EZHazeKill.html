@@ -59,8 +59,9 @@ is treated.</p>
 <p>Open the process: <i>Process &gt; BackgroundModelization &gt; EZHazeKill</i>.</p>
 <ul>
    <li><b>Real-Time Preview</b> (the open circle at the bottom left of the process window) shows the result on the image
-   while you move the sliders, through the image's own screen stretch, at any zoom and on previews. It shows exactly
-   what Execute writes: the sky is measured once on the full image, not on the reduced preview, and measured again
+   while you move the sliders, through the image's own screen stretch, at any zoom and on previews. It applies the same
+   correction Execute does (pixel for pixel at 1:1 on a floating-point image; at a reduced zoom it corrects the
+   reduced pixels): the sky is measured once on the full image, not on the reduced preview, and measured again
    only when the image changes.</li>
    <li><b>Apply</b> (the square at the bottom left), or dragging the triangle onto an image, corrects that image. The
    correction is one step in the image's history and is undone with <i>Ctrl+Z</i>.</li>
@@ -139,7 +140,8 @@ removed.</p>
 
 <h2 id="earlier">Changes from earlier versions</h2>
 <p>EZHazeKill was first a script (<i>Script &gt; scarter4work &gt; EZ Haze Kill</i>). This process computes the same
-correction as script version 1.1.0, sample for sample, and adds the Real-Time Preview, process icons that work in a
+correction as script version 1.1.0 (on images without an alpha channel; an alpha channel is left untouched, where
+the script treated it as a fourth channel), and adds the Real-Time Preview, process icons that work in a
 ProcessContainer and in an image's history, and support for previews. When the EZTools package is installed, the
 updater removes the script's files (<code>src/scripts/scarter4work/EZHazeKill.js</code>, its <code>.xsgn</code> and
 <code>doc/scripts/EZHazeKill/</code>), so only the process remains.</p>

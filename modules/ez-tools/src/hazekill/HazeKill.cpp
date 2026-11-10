@@ -43,8 +43,10 @@ double Percentile( std::vector<double> a, double q )
    return ( i0 + 1 < a.size() ) ? a[i0] + f * ( a[i0 + 1] - a[i0] ) : a[i0];
 }
 
+// Samples are read as double(x) * scale: 1 for floating point, 1/max for integers (PixInsight's
+// FromSample), tile by tile, so no whole-image converted copy is ever made.
 template <typename T>
-SkyEstimate MeasureSkyT( const std::vector<const T*>& channels, int width, int height )
+SkyEstimate MeasureSkyT( const std::vector<const T*>& channels, int width, int height, double scale = 1.0 )
 {
    SkyEstimate e;
    if ( channels.empty() || width <= 0 || height <= 0 )
@@ -54,16 +56,17 @@ SkyEstimate MeasureSkyT( const std::vector<const T*>& channels, int width, int h
    }
    const size_t nc = channels.size();
    const size_t plane = size_t( width ) * size_t( height );
-   for ( size_t c = 0; c < nc; ++c )
-   {
-      const T* p = channels[c];
-      for ( size_t i = 0; i < plane; ++i )
-         if ( !std::isfinite( p[i] ) )
-         {
-            e.error = "the image contains NaN or infinite samples";
-            return e;
-         }
-   }
+   if constexpr ( std::is_floating_point_v<T> )
+      for ( size_t c = 0; c < nc; ++c )
+      {
+         const T* p = channels[c];
+         for ( size_t i = 0; i < plane; ++i )
+            if ( !std::isfinite( p[i] ) )
+            {
+               e.error = "the image contains NaN or infinite samples";
+               return e;
+            }
+      }
 
    // Tiles: partial right/bottom tiles are dropped; an image smaller than one tile in either
    // direction is measured as a single tile.
@@ -88,7 +91,7 @@ SkyEstimate MeasureSkyT( const std::vector<const T*>& channels, int width, int h
             {
                const T* row = p + size_t( y ) * width + size_t( tx ) * tw;
                for ( int x = 0; x < tw; ++x )
-                  buf[k++] = double( row[x] );
+                  buf[k++] = double( row[x] ) * scale;
             }
             double m = MedianInPlace( buf.data(), n );
             for ( size_t i = 0; i < n; ++i )
@@ -162,6 +165,21 @@ SkyEstimate MeasureSky( const std::vector<const double*>& channels, int width, i
 SkyEstimate MeasureSky( const std::vector<const float*>& channels, int width, int height )
 {
    return MeasureSkyT( channels, width, height );
+}
+
+SkyEstimate MeasureSky( const std::vector<const uint8_t*>& channels, int width, int height )
+{
+   return MeasureSkyT( channels, width, height, 1.0/255 );
+}
+
+SkyEstimate MeasureSky( const std::vector<const uint16_t*>& channels, int width, int height )
+{
+   return MeasureSkyT( channels, width, height, 1.0/65535 );
+}
+
+SkyEstimate MeasureSky( const std::vector<const uint32_t*>& channels, int width, int height )
+{
+   return MeasureSkyT( channels, width, height, 1.0/4294967295.0 );
 }
 
 Model BuildModel( const SkyEstimate& e, const Settings& s )

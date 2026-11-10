@@ -236,6 +236,41 @@ TEST_CASE( "NaN refused" )
    CHECK( ef.error.find( "NaN or infinite" ) != std::string::npos );
 }
 
+TEST_CASE( "integer images are measured in place, as their [0,1] doubles" )
+{
+   // 8/16/32-bit samples are read as x * (1/max) (PixInsight's FromSample), tile by tile, with no
+   // whole-image double copy: the estimate equals the one on the converted double image, exactly.
+   SynthImage im = SynthCase( Case( "rgb_sky_object" ) );
+   const size_t n = size_t( im.width ) * im.height;
+   auto check = [&]( auto zero, double maxv )
+   {
+      using T = decltype( zero );
+      std::vector<std::vector<T>> q( 3, std::vector<T>( n ) );
+      SynthImage d = im;
+      for ( size_t c = 0; c < 3; ++c )
+         for ( size_t i = 0; i < n; ++i )
+         {
+            double v = std::min( 1.0, std::max( 0.0, im.data[c][i] ) );
+            q[c][i] = T( std::llround( v * maxv ) );
+            d.data[c][i] = double( q[c][i] ) * ( 1.0 / maxv );
+         }
+      std::vector<const T*> p{ q[0].data(), q[1].data(), q[2].data() };
+      SkyEstimate ei = MeasureSky( p, im.width, im.height );
+      SkyEstimate ed = MeasureSky( CPtrs( d ), d.width, d.height );
+      REQUIRE( ei.ok );
+      REQUIRE( ed.ok );
+      for ( size_t c = 0; c < 3; ++c )
+      {
+         CHECK( ei.sky[c] == ed.sky[c] );
+         CHECK( ei.sigma[c] == ed.sigma[c] );
+      }
+      CHECK( ei.skyTiles == ed.skyTiles );
+   };
+   check( uint8_t( 0 ), 255.0 );
+   check( uint16_t( 0 ), 65535.0 );
+   check( uint32_t( 0 ), 4294967295.0 );
+}
+
 TEST_CASE( "empty input refused" )
 {
    CHECK_FALSE( MeasureSky( std::vector<const double*>{}, 10, 10 ).ok );

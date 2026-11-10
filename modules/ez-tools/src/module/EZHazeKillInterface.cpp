@@ -94,7 +94,10 @@ bool EZHazeKillInterface::RequiresInstanceValidation() const
 
 bool EZHazeKillInterface::ImportProcess( const ProcessImplementation& p )
 {
-   m_instance.Assign( p );
+   {
+      std::lock_guard<std::mutex> lock( m_settingsMutex );
+      m_instance.Assign( p );
+   }
    UpdateControls();
    UpdateRealTimePreview();
    return true;
@@ -124,7 +127,13 @@ bool EZHazeKillInterface::GenerateRealTimePreview( Image& image, const View& vie
       return true;   // the rendition is the unchanged image
    }
 
-   hazekill::Model m = hazekill::BuildModel( sky, m_instance.Settings() );
+   hazekill::Settings settings;
+   {
+      // The sliders write these on the GUI thread while renditions run on the RTP thread.
+      std::lock_guard<std::mutex> lock( m_settingsMutex );
+      settings = m_instance.Settings();
+   }
+   hazekill::Model m = hazekill::BuildModel( sky, settings );
    std::vector<float*> ch;
    for ( int c = 0, n = Min( image.NumberOfNominalChannels(), int( m.offset.size() ) ); c < n; ++c )
       ch.push_back( image.PixelData( c ) );
@@ -156,6 +165,22 @@ void EZHazeKillInterface::ImageUpdated( const View& view )
    if ( view.IsNull() )
       return;
    m_cache.Invalidate( IsoString( view.Window().MainView().FullId() ).c_str() );
+   UpdateRealTimePreview();
+}
+
+// A new view may take the id of one already measured (a window renamed, then another given its old
+// id, as ImageIntegration's "integration" is): a created view drops any sky cached under its id, and a
+// rename drops everything (the old id is not reported).
+void EZHazeKillInterface::ImageCreated( const View& view )
+{
+   if ( view.IsNull() )
+      return;
+   m_cache.Invalidate( IsoString( view.FullId() ).c_str() );
+}
+
+void EZHazeKillInterface::ImageRenamed( const View& )
+{
+   m_cache.Clear();
    UpdateRealTimePreview();
 }
 
@@ -220,12 +245,15 @@ void EZHazeKillInterface::Measure()
 
 void EZHazeKillInterface::e_ValueUpdated( NumericEdit& sender, double value )
 {
-   if ( sender == GUI->Amount_NumericControl )
-      m_instance.p_amount = value;
-   else if ( sender == GUI->Neutralize_NumericControl )
-      m_instance.p_neutralize = value;
-   else if ( sender == GUI->Target_NumericControl )
-      m_instance.p_targetLevel = value;
+   {
+      std::lock_guard<std::mutex> lock( m_settingsMutex );
+      if ( sender == GUI->Amount_NumericControl )
+         m_instance.p_amount = value;
+      else if ( sender == GUI->Neutralize_NumericControl )
+         m_instance.p_neutralize = value;
+      else if ( sender == GUI->Target_NumericControl )
+         m_instance.p_targetLevel = value;
+   }
    UpdateRealTimePreview();
 }
 
