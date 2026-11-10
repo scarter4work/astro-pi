@@ -78,4 +78,4 @@ target_link_libraries(nukex4_learning
     PRIVATE ${_nukex_sqlite_libs}
 )
 
-target_compile_features(nukex4_learning PUBLIC cxx_std_17)
+target_compile_features(nukex4_learning PUBLIC cxx_std_20)

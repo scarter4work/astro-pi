@@ -91,4 +91,4 @@ target_link_libraries(nukex4_io
     PRIVATE ${_nukex_cfitsio_libs} nlohmann_json::nlohmann_json
 )
 
-target_compile_features(nukex4_io PUBLIC cxx_std_17)
+target_compile_features(nukex4_io PUBLIC cxx_std_20)

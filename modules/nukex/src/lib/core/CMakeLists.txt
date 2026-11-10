@@ -13,4 +13,4 @@ target_include_directories(nukex4_core
         $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(nukex4_core PUBLIC cxx_std_17)
+target_compile_features(nukex4_core PUBLIC cxx_std_20)

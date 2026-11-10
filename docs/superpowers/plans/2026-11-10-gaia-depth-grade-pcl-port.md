@@ -67,6 +67,7 @@ The recon core (plan tasks 1–8 of `2026-11-05-nebula-3d-depth-reconstruction.m
   - Its sources need 2.13-only headers (`FileMapping.h`, absent from 2.11) and a changed `StarDatabaseFile.h` [verified include list and diff].
   - Vendoring them beside an older libPCL would put two different `StarDatabaseFile` / `GaiaDatabaseFile` layouts in one binary. That is an ODR violation [inferred, not tried], so it is ruled out.
   - The solver sources make 0 core-API calls (`api->`), and neither does `FileMapping.cpp` [verified]. So nothing ties them to a newer *core* beyond 1.9.6.
+- **Superseded by Scott's ruling (2026-11-10, during Task 2): ONE pin for every module.** The image's only PCL is `/opt/pcl` = 2.13.0 from the pinned tarball, and NukeX, Planetary, PICopilot and GaiaDepthGrade all build as C++20 against it (no `/opt/pcl-2.13`, no `PCL_COMMIT`). Items 1, 5 and 6 below are read with that change: the tarball feeds `/opt/pcl`, nothing stays on 2.9.4, and host `~/PCL` is the same 2.13 tree, so host module builds work again. Measured in Task 2: a 2.13 module refuses to load on PixInsight 1.9.5 ("Unable to resolve PCL API interface."; PCL 2.13 adds five TreeBox API functions), so every module needs 1.9.6 and new module packages go into the `1.9.6:2.0.0` block.
 - **Consequences, carried into Task 2:**
   1. GaiaDepthGrade builds against a second PCL tree, `/opt/pcl-2.13`, built in the image from a sha256-pinned tarball of the 1.9.6 bundle. The tarball is made locally by `tools/build-env/pcl-2.13/make-tarball.sh` and is **not committed**; only its `SHA256SUMS` is.
   2. GaiaDepthGrade and gdg_core build with `CMAKE_CXX_STANDARD 20`.
@@ -193,9 +194,9 @@ modules/gaia-depth-grade/
 **Interfaces:**
 - Produces: a loadable `GaiaDepthGrade-pxm.so` with module id `GaiaDepthGrade` and no processes yet. `gdg_add_test()` for every later task.
 - Produces, from `probe-ids.js`, written to `build/probe-ids.json`:
-  - `Process("StarXTerminator")` existence and its parameter ids (`stars`, `unscreen` expected);
+  - `Process("StarXTerminator")` existence and its parameter ids (`stars`, `unscreen` expected; **measured: there is no `stars`** -- the ids are `ml_version output_stars unscreen remove_stars remove_spikes remove_aureoles remove_reflections overlap`);
   - `Gaia` parameter ids (`command`, `centerRA`, `centerDec`, `radius`, `magnitudeLow`, `magnitudeHigh`, `sourceLimit`, `databaseFilePaths`, `sources`, `dataRelease`);
-  - `StarAlignment` ids used by ImageSolverEngine.js l.378–440 (`referenceImage`, `referenceIsFile`, `mode`, `intersection`, `outputData`, and the `outputData_*` column indices);
+  - `StarAlignment` ids used by ImageSolverEngine.js l.378–440 (`referenceImage`, `referenceIsFile`, `mode`, `intersection`, `outputData`, and the `outputData_*` column indices); **measured (1.9.6 build 1713):** all 78 ids present (`targetCSVFilePath` too), `OutputMatrix` = 8, `NoIntersection` = 0, `Always` = 2, but the `StarAlignment.outputData_*` column constants are **undefined** in a `-r=` script (neither on the constructor nor on an instance), so Task 14 must get the column order elsewhere (from the module's own parameter table through `pcl::Process::Parameters()` / table column ids, or a probe after one OutputMatrix run) before relying on indices. Gaia has 40 ids, `astrometricIndexFilePath` among them (new in 1.9.6);
   - confirmation that no process with id `ImageSolver` or `BlindSolver` exists;
   - whether a scratch `updates.xri` with two linux-x64 `<platform>` blocks (1.8.0:2.0.0 and 1.9.6:2.0.0) is accepted by the 1.9.6 updater's validation.
 
@@ -570,7 +571,7 @@ Rationale and evidence: spec Addendum A2. The algorithm follows ImageSolver 6.6.
   1. Duplicate to `<id>_gdgwork`, copying keywords.
   2. `SolveImage` on the duplicate.
   3. The split:
-     - **StarXTerminator mode:** `ProcessInstance(Process("StarXTerminator"))`, `stars = true`, `unscreen = true`, ExecuteOn the duplicate; the new stars window is captured by diffing `ImageWindow::AllWindows()`.
+     - **StarXTerminator mode:** `ProcessInstance(Process("StarXTerminator"))`, `output_stars = true`, `unscreen = true` (Task 2 probe: the ids are `ml_version output_stars unscreen remove_stars remove_spikes remove_aureoles remove_reflections overlap`, defaults `0 true true true false true false 0.20`; there is no `stars` -- the script's `sxt.stars = true` only works because `output_stars` defaults to true), ExecuteOn the duplicate; the new stars window is captured by diffing `ImageWindow::AllWindows()`.
      - **SuppliedViews mode:** both views must exist and match the target geometry, otherwise an error.
   4. `ImageBridge` to the core, `prepare_grade` (catalogue per `catalog`), `render_from_prep`, `render_nebula` when enabled, `screen_blend`.
   5. Output:
