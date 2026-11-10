@@ -1,5 +1,13 @@
 # NukeX — Changelog
 
+## Unreleased
+
+- CFITSIO is also built without its shared-memory (`shmem://`) driver. Its `stdin://` and `stream://` drivers
+  have no build switch and are never reached, because frames are opened only as files.
+- The progress log and heartbeat file move from fixed paths in `/tmp` to a private per-run directory
+  (`nukex-run-XXXXXX`, mode 0700, under `$TMPDIR` or `/tmp`), deleted when the run ends.
+- `NUKEX_PHASE8_NO_POPUP` (no dialogs during a run, for scripted and headless runs) is now documented.
+
 ## v5.2.0.2 — 2026-11-10
 
 Frames open only as local files, and the FITS library has no network drivers.
