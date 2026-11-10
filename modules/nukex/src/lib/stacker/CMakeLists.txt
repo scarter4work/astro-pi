@@ -18,4 +18,4 @@ target_link_libraries(nukex4_stacker
 
 target_compile_definitions(nukex4_stacker PRIVATE _FILE_OFFSET_BITS=64)
 
-target_compile_features(nukex4_stacker PUBLIC cxx_std_17)
+target_compile_features(nukex4_stacker PUBLIC cxx_std_20)

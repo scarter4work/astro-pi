@@ -153,7 +153,7 @@ set_target_properties(PICopilot PROPERTIES
     LINK_FLAGS "-shared -Wl,-z,defs -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/pixinsight-module.map -L${PCLDIR}/lib/x64"
 )
 
-target_compile_features(PICopilot PRIVATE cxx_std_17)
+target_compile_features(PICopilot PRIVATE cxx_std_20)
 
 # Relink when the export map changes.
 set_property(TARGET PICopilot APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pixinsight-module.map)
