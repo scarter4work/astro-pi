@@ -44,6 +44,7 @@ set(MODULE_SOURCES
     ModelCatalog.cpp
     HistoryBudget.cpp
     Keyring.cpp
+    ChildProcess.cpp
     CopilotSettings.cpp
     ProcessSafety.cpp
     ModuleScript.cpp

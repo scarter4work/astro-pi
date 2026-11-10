@@ -91,4 +91,9 @@ target_include_directories(picopilot_sqlite3 PUBLIC "${PICOPILOT_SQLITE_DIR}")
 find_package(Threads REQUIRED)
 target_link_libraries(picopilot_sqlite3 PUBLIC Threads::Threads m)
 
+# PCL-free unit tests (no PixInsight needed): `ctest` in the build directory.
+enable_testing()
+add_executable(test_child_process test/unit/test_child_process.cpp src/module/ChildProcess.cpp)
+add_test(NAME test_child_process COMMAND test_child_process)
+
 add_subdirectory(src/module)

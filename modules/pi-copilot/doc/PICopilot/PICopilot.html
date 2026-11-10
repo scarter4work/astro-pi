@@ -99,14 +99,14 @@ that is silent for 120 s is stopped.</p>
 <h2>External programs launched</h2>
 <table>
 <tr><th>Program</th><th>When</th><th>Why</th></tr>
-<tr><td><code>/bin/sh</code>, which runs <code>/usr/bin/env -u LD_LIBRARY_PATH secret-tool &hellip;</code></td>
+<tr><td><code>secret-tool</code></td>
 <td>When the API key is read (your first message of a session, opening &#x2699;, a journey write-up), saved, cleared, or
 moved from PixInsight's settings into the keyring.</td>
 <td>To keep your API key in the system keyring (freedesktop Secret Service, for example GNOME Keyring or KWallet).
-<code>secret-tool</code> is the standard command of your Linux desktop and is found on your PATH. The shell
-only redirects <code>secret-tool</code>'s error output into a private file; <code>env -u LD_LIBRARY_PATH</code> keeps
-PixInsight's own libraries out of it. Commands: <code>lookup</code>, <code>store</code> (the key goes through standard
-input, never the command line), <code>search</code>, <code>clear</code>, all for the item
+<code>secret-tool</code> is the standard command of your Linux desktop and is found on your PATH. PI Copilot starts it
+directly, with no shell or other interpreter in between, and removes <code>LD_LIBRARY_PATH</code> from its environment
+so PixInsight's own libraries stay out of it. Commands: <code>lookup</code>, <code>store</code> (the key goes through
+standard input, never the command line), <code>search</code>, <code>clear</code>, all for the item
 <code>service picopilot account anthropic-api-key</code>.</td></tr>
 </table>
 <p>Indirectly: when the model runs PixInsight's own <b>GraXpert</b> process, that process starts the GraXpert program
@@ -130,8 +130,7 @@ never creates the folder itself.</td></tr>
 <code>picopilot-preview-&lt;random&gt;.jpg</code></td>
 <td>The JPEG preview of an image while it is being encoded; deleted immediately after it is read back.</td></tr>
 <tr><td>System temporary directory: <code>picopilot-scratch-&lt;random&gt;/</code></td>
-<td>A private (0700) working folder for one keyring command (its error output) or one thumbnail; removed as soon as
-that operation ends.</td></tr>
+<td>A private (0700) working folder for one thumbnail; removed as soon as that operation ends.</td></tr>
 <tr><td>Next to a journey or export file: <code>.&lt;name&gt;.tmp-&lt;random&gt;</code></td>
 <td>A file being written; renamed onto its final name at once (or removed if the write fails).</td></tr>
 <tr><td>The system keyring</td><td>Your API key (item <code>service picopilot account anthropic-api-key</code>).</td></tr>

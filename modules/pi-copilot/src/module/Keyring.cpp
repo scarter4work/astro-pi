@@ -2,21 +2,17 @@
 // Copyright (c) 2026 Scott Carter. MIT License.
 
 #include "Keyring.h"
+#include "ChildProcess.h"
 #include "PICopilotModule.h"
-#include "SafeFileWrite.h"
 #include "Utf8.h"
 
 #include <pcl/Exception.h>
-#include <pcl/ExternalProcess.h>
 #include <pcl/StringList.h>
 
+#include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <string>
-#include <thread>
-
-#include <fcntl.h>
-#include <unistd.h>
+#include <vector>
 
 namespace pcl
 {
@@ -32,7 +28,7 @@ struct ToolRun
    IsoString out;
    IsoString err;
    String    error;              // set when it did not finish
-   bool      inputError = false; // stdin could not be written/closed (child already gone)
+   bool      inputError = false; // stdin could not be fully written (child already gone)
 };
 
 std::function<void( bool )> g_waitNotifier;
@@ -61,154 +57,67 @@ private:
    bool m_shown = false;
 };
 
-// Removes the private scratch directory a RunSecretTool() call made for the
-// child's stderr file, on every exit path (normal return, an early return, or
-// an exception unwinding through RunSecretTool) -- same discipline as
-// WaitNotice above.
-class ScratchDirGuard
-{
-public:
-   explicit ScratchDirGuard( String dir ) : m_dir( std::move( dir ) ) {}
-   ~ScratchDirGuard() { RemovePrivateScratchDir( m_dir ); }
-   ScratchDirGuard( const ScratchDirGuard& ) = delete;
-   ScratchDirGuard& operator=( const ScratchDirGuard& ) = delete;
-private:
-   String m_dir;
-};
-
-IsoString Bytes( const ByteArray& b )
-{
-   IsoString s;
-   if ( !b.IsEmpty() )
-      AppendBytes( s, b.Begin(), size_t( b.Length() ) );
-   return s;
-}
-
-// review m3: the whole stderr file would otherwise be read into memory
-// unbounded (ReadFileNoFollow's default), although Detail() only ever shows
-// 200 characters of it. secret-tool's own stderr is always tiny in practice;
-// this is a hard ceiling against a pathological program under KeyringId, not
-// something real secret-tool would ever approach.
+// review m3: secret-tool's stderr is kept to this many bytes (Detail() only
+// ever shows 200 characters of it). secret-tool's own stderr is always tiny in
+// practice; this is a hard ceiling against a pathological program under
+// KeyringId, not something real secret-tool would ever approach.
 constexpr size_t kMaxStderrBytes = 64 * 1024;
 
-// Measured (review, confirmed independently: PI core 1.9.5 "Lockhart" build
-// 1702 / PCL headers 2.10.8, PCL source ExternalProcess.cpp:304-336): the
-// child's real stderr bytes come back through what pcl::ExternalProcess
-// reports as StandardOutput(); StandardError() is always empty. This holds
-// in BOTH --automation-mode and a normal interactive GUI session (the
-// original finding here understated it as automation-only). The core reads
-// the child's stderr on its own pipe and interleaves it into the stdout
-// buffer at write granularity -- confirmed from the child side: fd 1 and fd
-// 2 are different pipes, so it is not a spawn-time dup2 merge. Also:
-// ExternalProcess::RedirectStandardError() is a documented but silent no-op
-// (the file is never created, fd 2 stays a pipe) -- so PCL itself offers no
-// way to keep the two channels apart.
-//
-// The fix here does not read either of PCL's channels for diagnostic text:
-// it makes the CHILD redirect its own real fd 2 to a private file before it
-// execs secret-tool, via a `/bin/sh -c` wrapper. Nothing variable is ever
-// interpolated into the wrapper's script text -- it is one fixed literal,
-// and `id.program`, every element of `args`, and the private error-file path
-// travel as ordinary positional shell parameters ($0.."$@"), read back only
-// by the fixed names ERR/PROG the script itself assigns. After the child
-// exits, the file (which only this process's own, freshly mkdtemp()'d,
-// 0700 directory could ever contain) is read back and removed. r.out is then
-// always pure stdout, and r.err is always the real, separate stderr: no
-// caller needs to guess which channel a message landed in any more.
+// secret-tool runs directly: picopilot::RunChild() (ChildProcess.cpp) starts it
+// with posix_spawnp and an argv array -- no shell and no other interpreter in
+// between (CPD rule 5.3) -- with the caller's environment minus LD_LIBRARY_PATH
+// (PixInsight's own library path would otherwise be inherited and can break
+// system binaries). The secret travels only on the child's stdin. stdout and
+// stderr come back on two separate pipes, so r.out is always pure stdout and
+// r.err always the real, separate stderr: no caller needs to guess which
+// channel a message landed in. (pcl::ExternalProcess cannot do that: in
+// PixInsight 1.9.5 it reports the child's stderr through StandardOutput() and
+// RedirectStandardError() is a silent no-op -- which is why this used to go
+// through a /bin/sh wrapper that redirected fd 2 to a private file.)
+// Event pumping (user input excluded) and the wait notice run while it waits.
 ToolRun RunSecretTool( const KeyringId& id, const StringList& args, const IsoString* input )
 {
    ToolRun r;
    WaitNotice notice;
-
-   String scratchDir;
-   String scratchWhy;
-   if ( !CreatePrivateScratchDir( scratchDir, scratchWhy ) )
-   {
-      r.error = "could not create a private directory for secret-tool's stderr: " + scratchWhy;
-      return r;
-   }
-   ScratchDirGuard scratchGuard( scratchDir );   // removed on every path below, including an exception
-   const String errPath = scratchDir + "/stderr";
-
    try
    {
-      // Created here -- not left to the child's "2>" (a plain open() with
-      // O_CREAT|O_TRUNC, no O_EXCL/O_NOFOLLOW) -- so a pre-existing name or
-      // a symbolic link at this exact path is refused even though scratchDir
-      // is freshly made, unguessable (mkdtemp) and 0700. Defence in depth:
-      // the same posture SafeFileWrite.cpp uses for its own temp files.
-      const std::string errNative = U8( errPath );
-      const int errFd = ::open( errNative.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600 );
-      if ( errFd < 0 )
-      {
-         r.error = "could not create a private stderr file for secret-tool: " + String( std::strerror( errno ) );
-         return r;
-      }
-      ::close( errFd );   // the child writes into it by path (via the shell's "2>"), not this fd
-
-      ExternalProcess p;
-      StringList a;
-      // sh -c SCRIPT sh <errPath> <program> <args...>
-      // $0 = "sh" (placeholder; exec never reads it), $1 = errPath, then
-      // (after two `shift`s) PROG = program and "$@" = args, exactly as
-      // received -- so nothing here is ever re-parsed as shell syntax.
-      // `exec PROG "$@" 2>"$ERR"` sets up the redirection on the exec'd
-      // command, before replacing the shell's own process image, so the
-      // final program (via /usr/bin/env, unchanged from before) inherits fd
-      // 2 already pointing at the private file.
-      a << String( "-c" )
-        << String( "ERR=$1; shift; PROG=$1; shift; exec /usr/bin/env -u LD_LIBRARY_PATH \"$PROG\" \"$@\" 2>\"$ERR\"" )
-        << String( "sh" ) << errPath << id.program;
+      std::vector<std::string> argv;
       for ( const String& s : args )
-         a << s;
-      p.Start( "/bin/sh", a );
-      if ( !p.WaitForStarted( 10000 ) )
+         argv.push_back( U8( s ) );
+      std::string in;
+      if ( input != nullptr )
+         in.assign( input->c_str(), input->Length() );
+
+      const picopilot::ChildRun c = picopilot::RunChild(
+         U8( id.program ), argv, input != nullptr ? &in : nullptr, PICopilotKeyringTimeoutMs,
+         [&notice]() {
+            notice.Poll();
+            ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
+         },
+         kMaxStderrBytes );
+      // The secret's only copy outside the caller's buffer: wipe it.
+      if ( !in.empty() )
+         std::fill( in.begin(), in.end(), '\0' );
+
+      if ( c.timedOut )
       {
-         r.error = "could not start /bin/sh to run " + id.program;
+         r.error = id.program + String().Format( " did not finish within %d s (is the keyring locked, with its "
+                                                 "unlock prompt hidden?)", PICopilotKeyringTimeoutMs/1000 );
          return r;
       }
-      if ( input != nullptr )
+      if ( !c.finished )
       {
-         // Only when there is input: CloseStandardInput() throws once the
-         // child has exited (ExternalProcess.h:316-319), and a child that
-         // exits early (bad arguments, keyring error) must still yield its
-         // finished result -- exit code and stderr -- below.
-         try
-         {
-            p.Write( *input );
-            p.CloseStandardInput();
-         }
-         catch ( ... )
-         {
-            r.inputError = true;
-         }
-      }
-      // Not WaitForFinished(): it can return before a slow child exits
-      // (repo memory pi-externalprocess-gotchas). Spin, pumping events.
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( PICopilotKeyringTimeoutMs );
-      while ( p.IsStarting() || p.IsRunning() )
-      {
-         if ( std::chrono::steady_clock::now() >= deadline )
-         {
-            p.Kill();
-            r.error = id.program + String().Format( " did not finish within %d s (is the keyring locked, with its "
-                                                    "unlock prompt hidden?)", PICopilotKeyringTimeoutMs/1000 );
-            return r;
-         }
-         notice.Poll();
-         ThePICopilotModule->ProcessEvents( true/*excludeUserInputEvents*/ );
-         std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+         r.error = "could not run " + id.program + ": " + FromU8( c.error );
+         return r;
       }
       r.finished = true;
-      r.exitCode = p.ExitCode();
-      r.crashed = p.HasCrashed();
-      r.out = Bytes( p.StandardOutput() );   // pure stdout: the child's real stderr never reaches this pipe
-      ByteArray errBytes;
-      String readWhy;
-      if ( ReadFileNoFollow( errPath, errBytes, readWhy, kMaxStderrBytes ) )
-         r.err = Bytes( errBytes );
-      // else: nothing to read (the file was never written to, or the child
-      // was killed before opening it) -- r.err stays empty, which is correct.
+      r.exitCode = c.exitCode;
+      r.crashed = c.crashed;
+      r.inputError = c.inputError;
+      if ( !c.out.empty() )
+         AppendBytes( r.out, c.out.data(), c.out.size() );
+      if ( !c.err.empty() )
+         AppendBytes( r.err, c.err.data(), c.err.size() );
    }
    catch ( const pcl::Exception& x )
    {
@@ -272,7 +181,7 @@ bool IsSilentMiss( const ToolRun& r )
    return r.finished && !r.crashed && r.exitCode == 1 && r.out.IsEmpty() && r.err.Trimmed().IsEmpty();
 }
 
-// env exits 127 when the program cannot be found.
+// Exit 127: the program could not be found (RunChild reports it as /usr/bin/env did).
 String NotInstalled( const KeyringId& id )
 {
    return "'" + id.program + "' is not installed or not on PATH (on Fedora/Nobara: dnf install libsecret; "
@@ -411,19 +320,6 @@ KeyringExistsResult KeyringSearchExists( const KeyringId& id )
    return k;
 }
 
-// review m5 (documented, unreachable in practice, not hardened): if the
-// wrapper's own "2>$ERR" redirect somehow failed (not the exec'd program --
-// the shell setting up the redirect before it), the shell's complaint goes to
-// its OWN stderr, which is still the merged PCL channel at that point (the
-// redirect hasn't happened yet) -- so it would land in r.out, not r.err, and
-// exit 1. For KeyringClear that reads as "nothing to clear" (a masked
-// failure); KeyringLookup/KeyringSearchExists/KeyringStore stay loud (none of
-// their success/no-such-item branches accept a bare exit 1 the way Clear's
-// does). This needs $ERR's own open() to fail after RunSecretTool has just
-// created that exact path 0600 inside a freshly made, private 0700
-// directory -- practically unreachable, so it is documented rather than
-// hardened (a probe like ": 2>\"$ERR\" || exit 125", mapped to a distinct
-// error, would close it if ever needed).
 KeyringResult KeyringClear( const KeyringId& id )
 {
    KeyringResult k;

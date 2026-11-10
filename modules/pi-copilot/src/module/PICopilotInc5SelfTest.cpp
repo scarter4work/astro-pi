@@ -52,6 +52,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -4292,6 +4293,7 @@ bool RunInc5SelfTest( nlohmann::json& out )
            existsUnreadableOk = false,                // (i) M2
            storeVerifyExhaustedOk = false,             // (j) round 2 m4
            searchNoLeakOk = false,                      // (k) round 2 m7b
+           metacharOk = false,                          // (l) CPD 5.3: no shell anywhere
            scratchDirsCleanOk = false;                  // round 2 m7a
       nlohmann::json detail = nlohmann::json::object();
       String error;
@@ -4729,6 +4731,44 @@ bool RunInc5SelfTest( nlohmann::json& out )
             searchNoLeakOk = !r.ok && !r.error.IsEmpty() && !r.error.Contains( "sk-ant-selftest" )
                           && r.error.Contains( "exit 3" );
          }
+
+         // (l) CPD 5.3: secret-tool is started directly, never through a shell.
+         // A key and keyring attributes full of shell syntax must reach the
+         // program byte for byte -- the key on stdin, the attributes as single
+         // argv entries -- and nothing in them may run (the canary must not
+         // appear). The fake keeps what `store` read and echoes it on `lookup`.
+         {
+            const std::string canary = scriptDir + "/canary";
+            const std::string hostile = "'\"; touch " + canary + "; $(touch " + canary + ") `touch " + canary
+                                      + "` | tee " + canary + " && touch " + canary + " > " + canary
+                                      + " & * ? ~ # \\ $HOME ${PATH} !! %s%n";
+            KeyringId id = newId( "kr-l" );
+            id.service = String( ("picopilot-selftest " + hostile).c_str() );
+            id.program = script( "l", std::string(
+               "d=$(dirname \"$0\")\n"
+               "printf '%s\\n' \"$@\" > \"$d/l-args-$1\"\n"
+               "case \"$1\" in\n"
+               "  store) cat > \"$d/l-secret\"; exit 0 ;;\n"
+               "  lookup) cat \"$d/l-secret\"; exit 0 ;;\n"
+               "esac\n"
+               "exit 1\n" ) );
+            const IsoString key = IsoString( ("sk-ant-selftest-" + hostile).c_str() );
+            const KeyringResult st = KeyringStore( id, "PI Copilot self-test", key );
+            const KeyringResult lk = KeyringLookup( id );
+            std::ifstream sf( scriptDir + "/l-secret", std::ios::binary );
+            const std::string stored( (std::istreambuf_iterator<char>( sf )), std::istreambuf_iterator<char>() );
+            std::ifstream af( scriptDir + "/l-args-lookup", std::ios::binary );
+            const std::string lookupArgs( (std::istreambuf_iterator<char>( af )), std::istreambuf_iterator<char>() );
+            const std::string expectArgs = "lookup\nservice\npicopilot-selftest " + hostile + "\naccount\n"
+                                         + U8( id.account ) + "\n";
+            const bool canarySeen = std::filesystem::exists( canary );
+            detail["l"] = { { "storeOk", st.ok }, { "lookupOk", lk.ok }, { "found", lk.found },
+                            { "storedExact", stored == std::string( key.c_str() ) },
+                            { "lookupExact", lk.secret == key }, { "argsExact", lookupArgs == expectArgs },
+                            { "canary", canarySeen } };
+            metacharOk = st.ok && lk.ok && lk.found && stored == std::string( key.c_str() ) && lk.secret == key
+                      && lookupArgs == expectArgs && !canarySeen;
+         }
       }
       catch ( const pcl::Exception& x ) { error = x.Message(); }
       catch ( const std::exception& x ) { error = String( x.what() ); }
@@ -4750,11 +4790,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
                             { "clearMessage", clearMessageOk }, { "clearSilent", clearSilentOk },
                             { "existsUnreadable", existsUnreadableOk },
                             { "storeVerifyExhausted", storeVerifyExhaustedOk },
-                            { "searchNoLeak", searchNoLeakOk },
+                            { "searchNoLeak", searchNoLeakOk }, { "metachar", metacharOk },
                             { "scratchDirsClean", scratchDirsCleanOk } };
       const bool ok = storeRetryOk && storeOtherOk && lookupRetryOk && lookupGenuineMissOk && storeBoundOk
                    && leakSegvOk && leakExit3Ok && cleanLookupOk && clearMessageOk && clearSilentOk
-                   && existsUnreadableOk && storeVerifyExhaustedOk && searchNoLeakOk && scratchDirsCleanOk;
+                   && existsUnreadableOk && storeVerifyExhaustedOk && searchNoLeakOk && metacharOk
+                   && scratchDirsCleanOk;
       out["keyringRetryDetail"] = detail;
       out["keyringRetryError"] = U8( error );
       out["keyringRetryOk"] = ok;
