@@ -35,6 +35,7 @@ if(NUKEX_USE_SYSTEM_CFITSIO)
     add_library(cfitsio INTERFACE IMPORTED GLOBAL)
     target_link_libraries(cfitsio INTERFACE ${CFITSIO_LIBRARIES})
     target_include_directories(cfitsio INTERFACE ${CFITSIO_INCLUDE_DIRS})
+    target_compile_definitions(cfitsio INTERFACE NUKEX_SYSTEM_CFITSIO=1)
 else()
     enable_language(C)
     include(FetchContent)
@@ -44,6 +45,17 @@ else()
     set(UTILS             OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # static into NukeX-pxm.so
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)         # -fPIC so objects can go in a .so
+
+    # No network drivers. USE_CURL=OFF only drops libcurl (https); CFITSIO's own
+    # http://, ftp:// and root:// drivers (drvrnet.c) are compiled whenever its
+    # CMake probe finds gethostbyname() and connect(), and CFITSIO has no option
+    # to turn that off. Its probes skip themselves when their result variable is
+    # already cached, so pre-seeding both as FALSE leaves HAVE_NET_SERVICES
+    # undefined and drvrnet.c compiles to stubs: no network code in NukeX-pxm.so.
+    # (fits_reader.cpp also opens frames with fits_open_diskfile(), which never
+    # parses a name as a URL.)
+    set(CMAKE_HAVE_GETHOSTBYNAME FALSE CACHE INTERNAL "NukeX: no CFITSIO network drivers" FORCE)
+    set(CMAKE_HAVE_CONNECT       FALSE CACHE INTERNAL "NukeX: no CFITSIO network drivers" FORCE)
 
     FetchContent_Declare(
         cfitsio

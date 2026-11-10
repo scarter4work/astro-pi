@@ -46,8 +46,9 @@ stacks as luminance. To teach it a camera or filter it does not know, see
 
 NukeX makes one kind of network connection: the **camera-database update
 check**. Nothing else in the module uses the network; frames are read locally
-(the FITS library is built without network support, and NukeX opens only the
-files you select).
+(frame paths are opened as file paths with `fits_open_diskfile()`, and the FITS
+library is built without its http/ftp/root network drivers; a URL given as a
+frame path is reported as a file that cannot be opened).
 
 - **What:** HTTPS GET requests to
   `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`.

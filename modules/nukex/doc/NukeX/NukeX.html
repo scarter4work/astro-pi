@@ -24,7 +24,7 @@
 <body>
 
 <h1>NukeX</h1>
-<p class="subtitle">Distribution-fitted stacking and auto-stretch for PixInsight &mdash; module version 5.2.0.1 (Linux x64).<br />
+<p class="subtitle">Distribution-fitted stacking and auto-stretch for PixInsight &mdash; module version 5.2.0.2 (Linux x64).<br />
 By Scott Carter. Copyright &copy; 2026 Scott Carter. MIT License.</p>
 
 <div class="toc">
@@ -50,8 +50,11 @@ as usual.</p>
 
 <h2 id="network">Network connections</h2>
 <p>NukeX makes exactly one kind of network connection: the <b>camera-database update check</b>. Nothing else in the module
-uses the network. Reading your frames is local only (the FITS library inside NukeX is built without network support, and
-NukeX opens only the files you select).</p>
+uses the network. Frames are read from local files only: NukeX opens each frame path as a file path (CFITSIO's fits_open_diskfile(), which
+does no URL parsing), and the FITS library inside NukeX is built without its http://, ftp:// and root:// drivers. A frame
+path that is a URL is reported as a file that cannot be opened. Earlier releases (up to 5.2.0.1) contained those drivers and
+opened frames with fits_open_file(), so a frame path given as a URL could connect to that host; no NukeX screen or
+documented workflow produces one.</p>
 
 <h3>What is contacted</h3>
 <p>HTTPS requests to GitHub, at</p>
