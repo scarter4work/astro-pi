@@ -3,11 +3,11 @@
 // The ionizer is the hot blue star that carves the HII cavity: its position anchors the cavity
 // apex and its Gaia distance anchors absolute scale.
 //
-// Integration point (Phase D): the colour comes from the catalogue's Gaia BP-RP, carried by the
-// cross-match into gdg::StarRow::bp_rp (NaN = no colour), and the distance from StarRow::r_med
-// (Python's r_med_geo). ionizer_table(rows) is the bridge from the matched star table. Until the
-// catalogue fills bp_rp, every pick falls back to "gaia-bright", exactly as Python does on an
-// all-NaN or absent bp_rp column.
+// Integration point (Phase D): the colour comes from the catalogue's Gaia BP-RP (local DR3:
+// magBP - magRP; online: the archive's bp_rp), carried by cross_match into gdg::StarRow::bp_rp
+// (NaN = no colour), and the distance from StarRow::r_med (Python's r_med_geo). ionizer_table(rows)
+// is the bridge from the matched star table (test ionizer_colour_from_catalogue_picks_bluest).
+// Rows without colour fall back to "gaia-bright", exactly as Python does on an all-NaN column.
 #pragma once
 
 #include "Model.h"

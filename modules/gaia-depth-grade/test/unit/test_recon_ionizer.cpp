@@ -3,6 +3,9 @@
 #include <catch_amalgamated.hpp>
 
 #include "ReconGolden.h"
+#include "TanSky.h"
+#include "core/Distances.h"
+#include "core/Match.h"
 #include "core/recon/Ionizer.h"
 
 #include <cmath>
@@ -194,4 +197,73 @@ TEST_CASE("ragged_table_throws", "[recon][ionizer]") {
     IonizerTable u = table({{10, 10, 1.0, 0.1, 1.0}});
     u.bp_rp->push_back(0.0);
     CHECK_THROWS_AS(pick_ionizer(&u, NY, NX), std::invalid_argument);
+}
+
+// Phase D -> recon: the catalogue's Gaia BP-RP reaches pick_ionizer through the real chain
+// (local Gaia rows -> distance table -> cross_match -> ionizer_table). Fixture: five stars on a
+// 1"/px TAN field; the bluest (BP-RP -0.25) is neither the brightest nor first, so only colour
+// can pick it (score -0.25 + 0.4 * log10(10) = 0.15 against 1.6 for the brightest).
+namespace {
+
+struct ColourField {
+    static constexpr double RA0 = 83.82, DEC0 = -5.39;
+    gdg::test::TanSky sky{512.5, 512.5, RA0, DEC0, -1.0 / 3600.0, 0.0, 0.0, 1.0 / 3600.0};
+    // ra, dec offsets (arcsec), parallax (mas), G, BP-RP, detected flux
+    struct Star {
+        double dra, ddec, plx, g, bp_rp, flux;
+    };
+    std::vector<Star> stars{{-200, 100, 2.0, 9.0, 1.60, 1000.0},
+                            {150, -250, 1.0, 10.0, 0.90, 400.0},
+                            {-50, -60, 0.5, 11.5, -0.25, 100.0},
+                            {300, 300, 1.5, 10.5, 0.45, 200.0},
+                            {10, 400, 0.8, 12.0, NaN, 50.0}};
+
+    static double ra(const Star& s) { return RA0 + s.dra / 3600.0 / std::cos(DEC0 * M_PI / 180.0); }
+    static double dec(const Star& s) { return DEC0 + s.ddec / 3600.0; }
+
+    std::vector<gdg::StarRow> detections() const {
+        std::vector<gdg::StarRow> out;
+        for (const Star& s : stars) {
+            double x = 0, y = 0;
+            REQUIRE(sky.sky_to_pixel(ra(s), dec(s), x, y));
+            out.push_back(gdg::StarRow{x + 0.3, y - 0.2, s.flux});  // detector offset < tolerance
+        }
+        return out;
+    }
+
+    gdg::Catalog catalogue(bool with_colour) const {
+        std::vector<double> r, d, plx, g, bp;
+        for (const Star& s : stars) {
+            r.push_back(ra(s));
+            d.push_back(dec(s));
+            plx.push_back(s.plx);
+            g.push_back(s.g);
+            bp.push_back(with_colour ? s.bp_rp : NaN);
+        }
+        return gdg::local_gaia_distances(r, d, plx, g, bp, std::nullopt, 5.0, gdg::Log{});
+    }
+};
+
+}  // namespace
+
+TEST_CASE("ionizer_colour_from_catalogue_picks_bluest", "[recon][ionizer][phaseD]") {
+    const ColourField f;
+    const auto det = f.detections();
+    gdg::MatchStats stats;
+    const auto matched = gdg::cross_match(det, f.catalogue(true), f.sky, 4.0, stats);
+    REQUIRE(stats.n_matched == 5);
+    CHECK(matched[2].bp_rp == -0.25);
+    const IonizerTable t = ionizer_table(matched);
+    // The bluest star, at local Gaia's distance 1000 / parallax.
+    check_ionizer(pick_ionizer(&t, 1024, 1024), det[2].x, det[2].y, 1000.0 / 0.5, "gaia-blue");
+}
+
+TEST_CASE("ionizer_without_catalogue_colour_falls_back_to_brightest", "[recon][ionizer][phaseD]") {
+    const ColourField f;
+    const auto det = f.detections();
+    gdg::MatchStats stats;
+    const auto matched = gdg::cross_match(det, f.catalogue(false), f.sky, 4.0, stats);
+    REQUIRE(stats.n_matched == 5);
+    const IonizerTable t = ionizer_table(matched);
+    check_ionizer(pick_ionizer(&t, 1024, 1024), det[0].x, det[0].y, 1000.0 / 2.0, "gaia-bright");
 }
