@@ -3348,6 +3348,12 @@ bool RunInc5SelfTest( nlohmann::json& out )
                { "MultiscaleGradientCorrection", "'command' selects a MARS database operation run inside "
                                                  "PixInsight (policy: confirmWhen command != \"\")" },
                { "Preferences", "'Application_*' are PixInsight's own settings (policy: deny)" },
+               // PixInsight 1.9.6: AstrometricRegistration drives it with command = "get-spectra" / "calibrate"
+               // in global runs. Measured 2026-11-10: a global get-spectra returns 256 spectra; the same
+               // instance run on a view returns none (a view run is an ordinary calibration).
+               { "SpectrophotometricFluxCalibration", "'command' (PixInsight 1.9.6) selects a server-mode operation "
+                                                      "run inside PixInsight in a global run: get-spectra, calibrate "
+                                                      "(policy: globalConfirm)" },
             };
             nlohmann::json hits = nlohmann::json::object();
             std::vector<std::string> unreviewed;
@@ -3669,10 +3675,42 @@ bool RunInc5SelfTest( nlohmann::json& out )
             const SafetyVerdict arV = CheckProcessSafety( "AstroResolver", nlohmann::json::object(), nlohmann::json() );
             detail["globalReviewReal"] = { { "mgcGlobal", U8( mgcG.reason ) }, { "astroResolverGlobal", U8( arG.reason ) },
                                            { "astroResolverViewKind", int( arV.kind ) } };
+            // PixInsight 1.9.6 (measured 2026-11-10, headless canExecuteGlobal/executeGlobal):
+            // SpectrophotometricFluxCalibration now runs globally -- with targetFrames it calibrates
+            // files and writes '_spfc' copies to outputDirectory, and 'command' (get-spectra, calibrate)
+            // runs its server mode -- so a global run asks; on a view it is unchanged. ImageAnalysis
+            // (new) writes approved frames to disk: it always asks, like SubframeSelector.
+            // PlanetaryStack (Planetary module) reads the video at filePath into NEW image windows and
+            // writes nothing; MultiscaleTGVDenoise (new) is refused a global run by the core.
+            const SafetyVerdict spfcG = CheckProcessSafety( "SpectrophotometricFluxCalibration", nlohmann::json::object(),
+                                                            nlohmann::json(), SafetyRunKind::Global );
+            const SafetyVerdict spfcV = CheckProcessSafety( "SpectrophotometricFluxCalibration", nlohmann::json::object(),
+                                                            nlohmann::json() );
+            const SafetyVerdict iaV = CheckProcessSafety( "ImageAnalysis", nlohmann::json::object(), nlohmann::json() );
+            const SafetyVerdict iaG = CheckProcessSafety( "ImageAnalysis", nlohmann::json::object(), nlohmann::json(),
+                                                          SafetyRunKind::Global );
+            const SafetyVerdict psG = CheckProcessSafety( "PlanetaryStack", { { "filePath", "/nonexistent/capture.ser" } },
+                                                          nlohmann::json(), SafetyRunKind::Global );
+            const SafetyVerdict mtgvV = CheckProcessSafety( "MultiscaleTGVDenoise", nlohmann::json::object(), nlohmann::json() );
+            const SafetyVerdict mtgvG = CheckProcessSafety( "MultiscaleTGVDenoise", nlohmann::json::object(), nlohmann::json(),
+                                                            SafetyRunKind::Global );
+            const bool pi196Ok = spfcG.kind == SafetyVerdict::Confirm && spfcG.reason.StartsWith( "a global run: " )
+                              && spfcG.reason.Contains( "target frames" )
+                              && spfcV.kind == SafetyVerdict::Allow
+                              && iaV.kind == SafetyVerdict::Confirm && iaV.reason.Contains( "writes the approved frames" )
+                              && iaG.kind == SafetyVerdict::Confirm && iaG.reason.Contains( "writes the approved frames" )
+                              && psG.kind == SafetyVerdict::Allow
+                              && mtgvV.kind == SafetyVerdict::Allow && mtgvG.kind == SafetyVerdict::Allow;
+            detail["pi196"] = { { "spfcGlobal", U8( spfcG.reason ) }, { "spfcGlobalKind", int( spfcG.kind ) },
+                                { "spfcViewKind", int( spfcV.kind ) }, { "imageAnalysisView", U8( iaV.reason ) },
+                                { "imageAnalysisGlobal", U8( iaG.reason ) }, { "planetaryStackGlobalKind", int( psG.kind ) },
+                                { "planetaryStackGlobal", U8( psG.reason ) }, { "mtgvViewKind", int( mtgvV.kind ) },
+                                { "mtgvGlobalKind", int( mtgvG.kind ) }, { "ok", pi196Ok } };
             const bool realOk = mgcG.kind == SafetyVerdict::Confirm && mgcG.reason.StartsWith( "a global run: " )
                              && mgcG.reason.Contains( "; a command runs a MARS database operation" )
                              && arG.kind == SafetyVerdict::Confirm && arG.reason.StartsWith( "a global run: " )
-                             && arV.kind == SafetyVerdict::Allow;
+                             && arV.kind == SafetyVerdict::Allow
+                             && pi196Ok;
             detail["globalReview"] = { { "pmGlobal", U8( pmG.reason ) }, { "pmViewKind", int( pmV.kind ) },
                                        { "iiGlobal", U8( iiG.reason ) }, { "pmGlobalListedKind", int( pmG2.kind ) },
                                        { "iiGlobalListedKind", int( iiG2.kind ) }, { "iiDrizzle", U8( iiG3.reason ) },

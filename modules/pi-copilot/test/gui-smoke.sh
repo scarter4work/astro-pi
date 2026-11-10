@@ -6,6 +6,7 @@
 # settings wiped before and after, a private TMPDIR).
 #
 #   PICOPILOT_TEST_SLOT=95 bash test/gui-smoke.sh <out-dir>
+#   PICOPILOT_SO=<other build>/PICopilot-pxm.so ... (e.g. build-portable-selftest/)
 #
 # 1. gui-smoke-setup.js (-r): two masters with History steps, the panel shown.
 # 2. gui_drive.py (XTest): clicks the journey strip (steps dialog), the gear
@@ -24,7 +25,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 . "$HERE/harness-lib.sh"   # data isolation + slot module seeding (see its header)
 PI="$PICOPILOT_PI"
 KEYS=/home/scarter4work/projects/keys/scarter4work_keys.xssk
-SO="$(realpath -e "$ROOT/build/src/module/PICopilot-pxm.so")"
+SO="$(realpath -e "${PICOPILOT_SO:-$ROOT/build/src/module/PICopilot-pxm.so}")"
 picopilot_require_selftest_build "$SO" || exit 1
 OUT="${1:?usage: gui-smoke.sh <out-dir>}"
 mkdir -p "$OUT"
