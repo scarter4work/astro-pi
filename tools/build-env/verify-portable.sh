@@ -37,6 +37,25 @@ for so in "$@"; do
    for ep in IdentifyPixInsightModule InitializePixInsightModule InstallPixInsightModule; do
       nm -D --defined-only "$so" | grep -qE " T $ep\$" || { echo "  FAIL: PixInsight entry point $ep is not exported"; fail=1; }
    done
+   # NukeX: the vendored CFITSIO must stay built without its network drivers (http/ftp/root,
+   # drvrnet.c) and its System V shared-memory driver (shmem://, drvrsmem.c) -- see
+   # modules/nukex/src/lib/io/CMakeLists.txt. Each driver's code is checked in the module's
+   # symbol table, so a CFITSIO bump that re-enables one fails here. (The "http://", "ftp://",
+   # "root://" and "shmem://" strings are no evidence either way: cfileio.c's URL parser keeps
+   # them when the drivers are gone.) Needs an unstripped .so -- a stripped one fails, not passes.
+   if [ "$(basename "$so")" = NukeX-pxm.so ]; then
+      cf=0
+      if ! readelf -S "$so" | grep -c '\.symtab' >/dev/null; then
+         echo "  FAIL: no .symtab -- cannot prove the CFITSIO network/shared-memory drivers are absent"; cf=1
+      else
+         drv="$(nm --defined-only "$so" | awk '{print $NF}' | { grep -xE 'NET_TcpConnect|http_open|http_file_open|https_open|ftp_open|ftp_file_open|root_open|smem_init|smem_open|smem_create|shared_init|shared_malloc' || true; } | sort -u | tr '\n' ' ')"
+         [ -z "$drv" ] || { echo "  FAIL: CFITSIO driver code is back in NukeX: $drv"; cf=1; }
+      fi
+      if strings -a "$so" | grep -cF '/tmp/.shmem-lockfile' >/dev/null; then
+         echo "  FAIL: CFITSIO shared-memory driver string /tmp/.shmem-lockfile is back in NukeX"; cf=1
+      fi
+      if [ "$cf" = 0 ]; then echo "  ok   NukeX: no CFITSIO network (http/ftp/root, NET_TcpConnect) or shmem driver code"; else fail=1; fi
+   fi
 done
 
 # 2. dlopen probe, built once in the Rocky 9 image (glibc 2.34) so it runs on
