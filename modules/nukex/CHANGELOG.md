@@ -1,6 +1,8 @@
 # NukeX — Changelog
 
-## Unreleased
+## v5.2.0.3 — 2026-11-10
+
+Rebuilt for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later.
 
 - CFITSIO is also built without its shared-memory (`shmem://`) driver. Its `stdin://` and `stream://` drivers
   have no build switch and are never reached, because frames are opened only as files.
