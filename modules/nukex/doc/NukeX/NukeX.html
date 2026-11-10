@@ -55,6 +55,11 @@ does no URL parsing), and the FITS library inside NukeX is built without its htt
 path that is a URL is reported as a file that cannot be opened. Earlier releases (up to 5.2.0.1) contained those drivers and
 opened frames with fits_open_file(), so a frame path given as a URL could connect to that host; no NukeX screen or
 documented workflow produces one.</p>
+<p>NukeX exchanges images with no other program. The FITS library is built without its shared-memory (shmem://) driver,
+so it uses no System V shared memory or semaphores. Its standard-input and stream drivers (stdin://, stream://) are part of
+CFITSIO in every build, but NukeX never reaches them: because each frame path is opened as a file, a name such as
+<code>-</code> or <code>stdin://</code> is reported as a file that cannot be opened. Releases up to 5.2.0.2 also contained
+the shared-memory driver, which NukeX likewise never reached.</p>
 
 <h3>What is contacted</h3>
 <p>HTTPS requests to GitHub, at</p>

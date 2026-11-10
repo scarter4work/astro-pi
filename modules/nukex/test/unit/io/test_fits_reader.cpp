@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 using namespace nukex;
 
@@ -241,5 +242,66 @@ TEST_CASE("CFITSIO: vendored build has no network drivers", "[fits][network]") {
         REQUIRE(status != 0);
     }
     REQUIRE(server.count == 0);
+#endif
+}
+
+// CFITSIO also reads FITS data from standard input ("-", "stdin", stdin://,
+// stdinfile://), a byte stream (stream://) and System V shared memory
+// (shmem://). A frame path names a file; none of those names may make the
+// reader take data from anywhere but that file. Standard input is pointed at a
+// valid frame here: if any name were routed to stdin the read would succeed
+// and stdin's offset would move.
+TEST_CASE("FITSReader: stdin, stream and shared-memory names are missing files",
+          "[fits][channels]") {
+    const auto frame = write_gain_fits("nukex_stdin_frame.fits", 1.0, -1.0, -1.0);
+    const int saved_stdin = ::dup(STDIN_FILENO);
+    REQUIRE(saved_stdin >= 0);
+    const int fd = ::open(frame.c_str(), O_RDONLY);
+    REQUIRE(fd >= 0);
+    REQUIRE(::dup2(fd, STDIN_FILENO) == STDIN_FILENO);
+    ::close(fd);
+
+    for (const char* name : {"-", "stdin", "stdin://", "stdinfile://", "stream://",
+                             "stream://-", "shmem://h0", "shmem://h1"}) {
+        INFO(name);
+        REQUIRE_FALSE(std::filesystem::exists(name));
+        auto r = FITSReader::read(name);
+        REQUIRE(r.success == false);
+        REQUIRE_FALSE(r.error.empty());
+        auto m = FITSReader::read_headers(name);
+        REQUIRE(m.width == 0);
+        REQUIRE(m.height == 0);
+    }
+    const off_t consumed = ::lseek(STDIN_FILENO, 0, SEEK_CUR);
+
+    REQUIRE(::dup2(saved_stdin, STDIN_FILENO) == STDIN_FILENO);
+    ::close(saved_stdin);
+    std::filesystem::remove(frame);
+    REQUIRE(consumed == 0);
+}
+
+// Second layer: the vendored CFITSIO is built without System V IPC, so its
+// shared-memory driver (drvrsmem.c) is not even registered: fits_open_file()
+// on a shmem:// name finds no driver at all (NO_MATCHING_DRIVER) instead of
+// reaching shmem_open() and its /tmp/.shmem-lockfile.
+TEST_CASE("CFITSIO: vendored build has no shared-memory driver", "[fits][channels]") {
+#ifdef NUKEX_SYSTEM_CFITSIO
+    SKIP("system CFITSIO (dev build) keeps its shared-memory driver");
+#else
+    for (const char* name : {"shmem://h0", "shmem://h1"}) {
+        INFO(name);
+        fitsfile* f = nullptr;
+        int status = 0;
+        fits_open_file(&f, name, READONLY, &status);
+        REQUIRE(status == NO_MATCHING_DRIVER);
+        fits_clear_errmsg();
+    }
+    // The lookup itself works: the file:// driver is registered.
+    fitsfile* f = nullptr;
+    int status = 0;
+    fits_open_file(&f, "file:///nonexistent/nukex_frame.fits", READONLY, &status);
+    REQUIRE(status != 0);
+    REQUIRE(status != NO_MATCHING_DRIVER);
+    fits_clear_errmsg();
 #endif
 }

@@ -57,6 +57,17 @@ else()
     set(CMAKE_HAVE_GETHOSTBYNAME FALSE CACHE INTERNAL "NukeX: no CFITSIO network drivers" FORCE)
     set(CMAKE_HAVE_CONNECT       FALSE CACHE INTERNAL "NukeX: no CFITSIO network drivers" FORCE)
 
+    # No shared-memory driver. CFITSIO compiles drvrsmem.c and registers shmem://
+    # (System V shm + semaphores, /tmp/.shmem-lockfile) whenever its
+    # CHECK_C_SOURCE_COMPILES probe sets HAVE_SHMEM_SERVICES. The probe is skipped
+    # when the variable is already defined, so pre-seeding it FALSE leaves
+    # HAVE_SHMEM_SERVICES undefined: drvrsmem.c compiles empty and shmem:// is
+    # never registered. (CFITSIO's stdin://, stdinfile:// and stream:// drivers
+    # have no configure switch; they are registered unconditionally in
+    # fits_init_cfitsio(). They are unreachable from NukeX, which opens frames
+    # only with fits_open_diskfile().)
+    set(HAVE_SHMEM_SERVICES FALSE CACHE INTERNAL "NukeX: no CFITSIO shared-memory driver" FORCE)
+
     FetchContent_Declare(
         cfitsio
         GIT_REPOSITORY https://github.com/HEASARC/cfitsio.git
