@@ -13,6 +13,10 @@
 
 #include "GaiaDepthGradeModule.h"
 
+#ifdef GDG_PROBES
+#include "probe/ProbeProcess.h"
+#endif
+
 namespace pcl
 {
 
@@ -92,5 +96,10 @@ PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
 {
    new pcl::GaiaDepthGradeModule;
    // No processes yet (plan Task 2): GaiaDepthGrade arrives in Task 16.
+#ifdef GDG_PROBES
+   // Test-only probe process; compiled only into host test builds (GDG_BUILD_PROBES).
+   if ( mode == pcl::InstallMode::FullInstall )
+      new pcl::GDGProbeProcess;
+#endif
    return 0;
 }

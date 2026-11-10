@@ -5,7 +5,7 @@
 **Goal:** Replace Gaia Depth Grade's Python sidecar and PJSR scripts with one native PCL module, `GaiaDepthGrade-pxm.so`, that does everything they do today. That covers plate solving, the star split, the local and online Gaia catalogues, the star depth grade, the nebula grade, preview and execute. It must lose no functionality, match the Python core numerically, and ship by 2026-12-12.
 
 **Architecture:** A PCL-free C++ library, `gdg_core`, ports the Python numerics line for line. It works in the Python core's own pixel frame: rows in FITS bottom-up order, pixel centres on integers. Catch2 tests compare it against goldens dumped from the Python core. A thin PCL layer in `src/module/` adapts PixInsight to that core:
-- image buffers, through a vertical-flip bridge;
+- image buffers, through `ImageBridge` (PixInsight row order, see the frame contract);
 - the astrometric solution, through an `AstrometricMetadata` sky adapter;
 - the local Gaia catalogue (`GaiaDatabaseFile`) and the online Gaia catalogue (`NetworkTransfer` TAP client);
 - StarXTerminator and StarAlignment, through `ProcessInstance`;
@@ -91,6 +91,17 @@ These are Scott's rulings, or my recommendations where he has not ruled. A chang
 | D8 | Python core moves to `archive/gaia-depth-grade-python/` at cut-over; goldens stay committed | rec. | 20 |
 | D9 | Process defaults = dialog defaults; the headless script's engine defaults (0.5/0.4/0.3/0.3, online) are reproducible as parameter values | rec. | 16 |
 
+## Corrections (found during execution)
+
+| # | Task | Plan said | Evidence | Now |
+|---|---|---|---|---|
+| C1 | 11 | Core frame y = 0 is the FITS bottom row; `ImageBridge` flips; `PclSky` uses `y_pi = H − y − 0.5` | PixInsight saves FITS `ROWORDER = 'TOP-DOWN'` (headless save + astropy read, 2026-11-10); `writeWcsKeywords` mirrored the solution's bottom-up WCS (`GetWCSvalues` / PCL `ComputeWCSKeywords` use `F→I = (x−0.5, H+0.5−y)`) to match. Probe: flipped mapping off by up to 1080 px | Core y = PixInsight row; no flip; `y_pi = y + 0.5` |
+| C2 | 11 | `sky_adapter_convention` ≤ 0.3 px in the central 50% | The exported linear WCS differs from the spline solution by up to 0.31 px in the central 50% (0.43 px whole field) on the Full master; the mean offset is 0.011 px | Convention criterion = mean offset ≤ 0.05 px; max ≤ 0.5 px, RMS ≤ 0.2 px (measured 0.31 / 0.14) |
+| C3 | 11 | `PclSky(const AstrometricMetadata&, int height)` | With no flip the height is not needed | `PclSky(const AstrometricMetadata&)` |
+| C4 | 11 | The probe's linear WCS comes from `solver-reference.js` / PJSR `AstrometricMetadata` | The NAS masters already carry ImageSolver 6.4/6.5 solutions; a `-r=` script including `pjsr/astrometry/AstrometricMetadata.js` (ES6 classes) never ran (no result written; the known ES6-class limit) | The C++ probe generates the WCS with `AstrometricMetadata::UpdateWCSKeywords(generate)` + `WCSKeywords::MirrorVertically` (the same formula and flip) |
+| C5 | 11 | Matcher uses `pcl::KDTree` | `gdg_core` is PCL-free | A uniform grid searched within the tolerance (same pairs; tested against brute force) |
+| C6 | 11 | In-PI probes call module adapters | A module with no processes cannot be reached from PJSR | Test-only `GaiaDepthGradeProbe` process, built only with `-DGDG_BUILD_PROBES=ON`; `build-modules.sh` fails if it is in the shipped `.so` |
+
 ## Review Focus
 
 1. **Unsolvable input.** The image has no RA/Dec/focal/pixel-size metadata and no astrometric index is configured. Expect one error that names both remedies (add metadata, or select an index in Gaia preferences); no silent fallback. Test: Task 15 `solve_fails_loudly_without_seed_or_index`.
@@ -131,10 +142,10 @@ modules/gaia-depth-grade/
     run-real-parity.sh  run-probe.sh  gui-smoke.sh  probe-*.js  solver-reference.js
 ```
 
-**Frame contract (load-bearing).**
-- `gdg::Image` stores `data[(y*width + x)*channels + c]`, with **y = 0 the FITS bottom row**. That is exactly the numpy array the Python core sees after `astropy.io.fits` reads a PixInsight-saved FITS.
-- `ImageBridge` flips vertically on the way in and out.
-- `PclSky` converts core pixel coordinates to PixInsight image coordinates as `x_pi = x + 0.5`, `y_pi = H − y − 0.5`. The `+0.5` is inferred from ImageSolverEngine.js l.439 and **proven** in Task 11.
+**Frame contract (load-bearing; corrected in Task 11, see Corrections C1).**
+- `gdg::Image` stores `data[(y*width + x)*channels + c]`, with **y = 0 PixInsight's top row**. That is exactly the numpy array the Python core sees after `astropy.io.fits` reads a PixInsight-saved FITS: PixInsight writes FITS with `ROWORDER = 'TOP-DOWN'` by default, so `data[0]` is the top row (measured 2026-11-10).
+- `ImageBridge` copies rows in PixInsight order (no flip).
+- `PclSky` converts core pixel coordinates to PixInsight image coordinates as `x_pi = x + 0.5`, `y_pi = y + 0.5`. **Proven** in Task 11 (probe `sky_adapter_convention`: mean offset 0.011 px against the exported WCS; the bottom-up mapping `y_pi = H − y − 0.5` is off by up to 1080 px).
 - This keeps star order, and so the overlapping-window render order, identical to Python.
 
 ---
@@ -405,9 +416,9 @@ modules/gaia-depth-grade/
 - Produces: `struct gdg::QA { int n_detected, n_matched; double match_rate, median_offset_px; bool low_match_warning; }`, `struct PrepResult { std::vector<StarRow> table; QA qa; }`, `PrepResult prepare_grade(const gdg::Image& stars, const SkyTransform&, const GradeConfig&, CatalogSource&, const Log&)` and `gdg::Image render_from_prep(const gdg::Image& stars, const PrepResult&, const GradeConfig&, const Log&)`.
   - Warning text: `LOW MATCH RATE %.2f < %.2f — depth grade is unreliable`.
 - Produces (module):
-  - `gdg::Image ImageBridge::ToCore(const pcl::ImageVariant&)` (flip, float to double);
+  - `gdg::Image ImageBridge::ToCore(const pcl::ImageVariant&)` (PixInsight row order, normalised to double; C1);
   - `void ImageBridge::ToPcl(const gdg::Image&, pcl::Image&)`;
-  - `class PclSky : public gdg::SkyTransform { explicit PclSky(const pcl::AstrometricMetadata&, int height); }` with `x_pi = x + 0.5`, `y_pi = H − y − 0.5`.
+  - `class PclSky : public gdg::SkyTransform { explicit PclSky(const pcl::AstrometricMetadata&); }` with `x_pi = x + 0.5`, `y_pi = y + 0.5` (C1, C3).
 
 - [ ] **Step 1: Failing tests:**
   - `footprint_matches_astropy` (TanSky built from the golden header, |Δ| ≤ 1e-10 deg);

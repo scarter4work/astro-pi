@@ -54,8 +54,12 @@ podman run --rm --security-opt label=disable --userns=keep-id \
          -DPLANETARY_BUILD_MODULE=ON >/dev/null
    cmake --build /src/modules/planetary/build-portable -j"$(nproc)" >/dev/null
    cmake -S /src/modules/gaia-depth-grade -B /src/modules/gaia-depth-grade/build-portable "${COMMON[@]}" \
-         -DGDG_BUILD_MODULE=ON >/dev/null
+         -DGDG_BUILD_MODULE=ON -DGDG_BUILD_PROBES=OFF >/dev/null
    cmake --build /src/modules/gaia-depth-grade/build-portable -j"$(nproc)" >/dev/null
+   # The shipped module never carries the test-only GaiaDepthGradeProbe process.
+   if grep -c GaiaDepthGradeProbe "$(find /src/modules/gaia-depth-grade/build-portable -name GaiaDepthGrade-pxm.so -print -quit)" >/dev/null; then
+      echo "FAIL: GaiaDepthGrade-pxm.so contains the test-only GaiaDepthGradeProbe process" >&2; exit 1
+   fi
    # The link probe pulled the solver into the module (PclProbe.cpp, -z defs).
    nm -C "$(find /src/modules/gaia-depth-grade/build-portable -name GaiaDepthGrade-pxm.so -print -quit)" \
       | grep -c " pcl::BlindAstrometricSolver::Solve(" >/dev/null \
