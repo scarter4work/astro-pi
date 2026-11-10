@@ -1,0 +1,1478 @@
+{
+ "arguments": [
+  "synthetic",
+  "modules/gaia-depth-grade/test/golden/synthetic"
+ ],
+ "field": {
+  "height": 144,
+  "n_stars": 80,
+  "odd_height": 48,
+  "odd_width": 64,
+  "width": 192
+ },
+ "files": {
+  "autostretch_u8": {
+   "dtype": "|u1",
+   "sha256": "61d713e0e63965598ee976f69d9cd1583a52faae72ad9ea62c4d69e9d62a0775",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "budget": {
+   "dtype": "<f8",
+   "sha256": "23dd9625d24644656662ca7303243396e67b51e057569add945ffb4505059573",
+   "shape": [
+    1
+   ]
+  },
+  "catalog_bp_rp": {
+   "dtype": "<f8",
+   "sha256": "8619f72984fef9ff73340449dafc7ae7780c34b462637ab4a07c14c0fef4dfba",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_dec": {
+   "dtype": "<f8",
+   "sha256": "897ad2a369b441b4f842c3ac6ee3fe344d7814ca90bdf0df7839bf5cf68b26f1",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_r_hi_geo": {
+   "dtype": "<f8",
+   "sha256": "79aaa6ab2ebc3eb025f97fe99d55c48685e6a9539df91f78d16441605fba310e",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_r_lo_geo": {
+   "dtype": "<f8",
+   "sha256": "6aca883d249e8e7c3d73347d2bb53f351f5fb0caebe62546021da9c091686195",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_r_med_geo": {
+   "dtype": "<f8",
+   "sha256": "eafad77bf7e14ceda8b100f52da63205c422b08fedb535c2782abe58a2124f78",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_ra": {
+   "dtype": "<f8",
+   "sha256": "b5cdf4db0bd7b06496ab77f624653b0fd5bb4e783aa91dc695a2044b0c212b6f",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_raw": {
+   "dtype": "<f8",
+   "sha256": "f2cd4126fd3e854872379cebd6506807236c2889b2f112bf81dfe234f38e6b2a",
+   "shape": [
+    47,
+    5
+   ]
+  },
+  "catalog_source_id": {
+   "dtype": "<f8",
+   "sha256": "b8a238cd146c8aac6e8e58e862647af7871d89d652670f3e3c85136840d039f5",
+   "shape": [
+    41
+   ]
+  },
+  "catalog_xy": {
+   "dtype": "<f8",
+   "sha256": "8907bdd96a6cf6d2baaf01ea2572c8c42d9eeef339723ca226aa6b6bf4ac5742",
+   "shape": [
+    41,
+    2
+   ]
+  },
+  "chan_d1": {
+   "dtype": "<f4",
+   "sha256": "efe0c757d5dbe8246eb7b82168ac8c295ed569056cad749e3a90334c746dcedb",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_d2": {
+   "dtype": "<f4",
+   "sha256": "83e393d4f68b3f088efb76055efac599ac1005d02878010d9fb47215bf8f11a8",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_ha": {
+   "dtype": "<f4",
+   "sha256": "234cffbe9a1ecea05dfd91f70391e8bd5031f27b8ec5e7138844a1a3b8ceedd3",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_oiii": {
+   "dtype": "<f4",
+   "sha256": "f14149d0a43740ba3e4ae9989e3505f2e3827a2fdef3eed8e90d89cc27833d85",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_duoband_ha": {
+   "dtype": "<f4",
+   "sha256": "aa7bb50fe21fc6140a731d7d981fdca31575b9adb1f855eafa5fc4178779564f",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_duoband_oiii": {
+   "dtype": "<f4",
+   "sha256": "71a33989fbea1802636f68b95e1d6fd97823633b15b58cf4814b04b46a290322",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_duoband_sii": {
+   "dtype": "<f4",
+   "sha256": "9c1ae15ba0ec7bacc0885f2413d3712cbb47836be0246ee413157dab5c6cb14f",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_osc_ha": {
+   "dtype": "<f4",
+   "sha256": "234cffbe9a1ecea05dfd91f70391e8bd5031f27b8ec5e7138844a1a3b8ceedd3",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_osc_oiii": {
+   "dtype": "<f4",
+   "sha256": "8a4e9191ebccbcaee86e9085c7d4198f876969e080856ac0b9193bad3a163e7e",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_sho_ha": {
+   "dtype": "<f4",
+   "sha256": "234cffbe9a1ecea05dfd91f70391e8bd5031f27b8ec5e7138844a1a3b8ceedd3",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_sho_oiii": {
+   "dtype": "<f4",
+   "sha256": "f14149d0a43740ba3e4ae9989e3505f2e3827a2fdef3eed8e90d89cc27833d85",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_out_sho_sii": {
+   "dtype": "<f4",
+   "sha256": "5dbb3431dc56d15a1e5d866b6fd372f04ec63616a94ab4cad5afd9c32bf3e514",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "chan_rgb": {
+   "dtype": "<f4",
+   "sha256": "bf49b2ba240e53a597ec1adae3382cb00f1c24a45c1599f849d1805b0f978ba2",
+   "shape": [
+    18,
+    24,
+    3
+   ]
+  },
+  "chan_sii": {
+   "dtype": "<f4",
+   "sha256": "5dbb3431dc56d15a1e5d866b6fd372f04ec63616a94ab4cad5afd9c32bf3e514",
+   "shape": [
+    18,
+    24
+   ]
+  },
+  "confidence": {
+   "dtype": "<f8",
+   "sha256": "383552f232eefc168fbf648ba6cac8221a00979a2bfd2b03694213883e72fb47",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_flux": {
+   "dtype": "<f8",
+   "sha256": "7a6669970c06263375e6f149174b89ca4f4005750da34f213e02968391c6a46a",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_peak": {
+   "dtype": "<f8",
+   "sha256": "bb8677ab515cbf52678e3a740dbfd103df85b86f330fc519056fb3c76ea4be19",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_roundness1": {
+   "dtype": "<f8",
+   "sha256": "60f96f2f1c388b0b809db40c337962987a5e1cbcd77cda6d7c914a801e0577ab",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_roundness2": {
+   "dtype": "<f8",
+   "sha256": "c9e689bf0ce93f6f366f628151095b9f437413e6e13fc3f778d66b0f2baf4ff0",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_sharpness": {
+   "dtype": "<f8",
+   "sha256": "c483d06b114d248ec113e0a3739d775616d832f60101ccd852deacdc84df0802",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_x": {
+   "dtype": "<f8",
+   "sha256": "055a3697ea307c2deb485700ea0d0bd5ed5c1ab0a630c8db47f86472c8d82363",
+   "shape": [
+    37
+   ]
+  },
+  "dao_table_y": {
+   "dtype": "<f8",
+   "sha256": "7d163a20924d4cc89fe9055ba6bb7be6b116b947f1d14471565b13c6d75dce9d",
+   "shape": [
+    37
+   ]
+  },
+  "detect_table_flux": {
+   "dtype": "<f8",
+   "sha256": "7a6669970c06263375e6f149174b89ca4f4005750da34f213e02968391c6a46a",
+   "shape": [
+    37
+   ]
+  },
+  "detect_table_fwhm": {
+   "dtype": "<f8",
+   "sha256": "1edaf847896c0b6ea0b7c4adb1bb2d2e32c4ba98190e0310e78cbc13c3eb564e",
+   "shape": [
+    37
+   ]
+  },
+  "detect_table_x": {
+   "dtype": "<f8",
+   "sha256": "055a3697ea307c2deb485700ea0d0bd5ed5c1ab0a630c8db47f86472c8d82363",
+   "shape": [
+    37
+   ]
+  },
+  "detect_table_y": {
+   "dtype": "<f8",
+   "sha256": "7d163a20924d4cc89fe9055ba6bb7be6b116b947f1d14471565b13c6d75dce9d",
+   "shape": [
+    37
+   ]
+  },
+  "effective": {
+   "dtype": "<f8",
+   "sha256": "bf1ff9a5f760536b35e0bfd04b78869c69b8050ffae3c5fc85160a78b23640ca",
+   "shape": [
+    37
+   ]
+  },
+  "fixture_footprint": {
+   "dtype": "<f8",
+   "sha256": "7be3c0fb60e11b154819e2eef7d29aab166ebfe51a2cd4c51f280cd6030e9ab3",
+   "shape": [
+    3
+   ]
+  },
+  "footprint": {
+   "dtype": "<f8",
+   "sha256": "487bc5fbc5de96f79cf07d6da19fa1e14bada6c6c7bf2a1cfb48e6387ab58228",
+   "shape": [
+    3
+   ]
+  },
+  "gauss_0p8": {
+   "dtype": "<f8",
+   "sha256": "dada40f2f62aa31e9a812e04883d99655c194d50c2694ed14e5b44a996dbcbeb",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "gauss_1p0": {
+   "dtype": "<f8",
+   "sha256": "55e64e05e7176c89504bb148e70821bd01d620dc396fea3319e561691598cdee",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "gauss_2p0": {
+   "dtype": "<f8",
+   "sha256": "63485b00d1161f2566ca4e331149e45bae154ebce986ae42e0351d85a2ac0c9e",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "gauss_2p5": {
+   "dtype": "<f8",
+   "sha256": "d674782fac82cd7e954e6ccd582476ca5c7685580d7481341aeb8fa42d67cfa9",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "gauss_4p0": {
+   "dtype": "<f8",
+   "sha256": "39fb3e7ca5ed2511271be113a6b859e17e22604810edc96393830d8ce8ceaddd",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "gauss_65p0": {
+   "dtype": "<f8",
+   "sha256": "aefc8373eee8bb5d6354871df3a9c97ca505515c0ec37b902cbe9cb37d38b9ac",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "gauss_axes01_2": {
+   "dtype": "<f8",
+   "sha256": "437cbb7ab6d1a3d3840a2d8a7b3c3315efd49c76658cee2b2d2613b443a6823c",
+   "shape": [
+    20,
+    17,
+    3
+   ]
+  },
+  "grey_closing_15": {
+   "dtype": "<f8",
+   "sha256": "a473c2aaabfd74b02d0cfc93d803416d0c33409cb6a69d2755d51e9ed9f95ec7",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "grey_closing_5": {
+   "dtype": "<f8",
+   "sha256": "11ee9be1722004d5e53cfdb4d9c98ff7adbb17b42d673609370fcb21b1ffca6b",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "grey_closing_input": {
+   "dtype": "<f8",
+   "sha256": "229d22c502d7f713a213f91571cd0981ec128fe6a430f780e1f5552f71ab0793",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "halo_r_grid": {
+   "dtype": "<f8",
+   "sha256": "7c0f41a7ad0c488f12157ee8ea7adb23da479a1870d55e85b418d660cddca877",
+   "shape": [
+    17
+   ]
+  },
+  "halo_values": {
+   "dtype": "<f8",
+   "sha256": "c3d70bd39ec93317dba0db9d4e1a08c834b7dd6df46e6b8814bf1b116c86f89e",
+   "shape": [
+    17
+   ]
+  },
+  "interp_clamp": {
+   "dtype": "<f8",
+   "sha256": "f406dc609d890672f92f1e2172a50ddcc48ad47dc3fdc2994b873ff57176b774",
+   "shape": [
+    31
+   ]
+  },
+  "interp_fp": {
+   "dtype": "<f8",
+   "sha256": "18ba23bc09115c07fa246e5f7be512deaf4682e8af175316ecb6ba649cc49bca",
+   "shape": [
+    4
+   ]
+  },
+  "interp_left_fp0_right0": {
+   "dtype": "<f8",
+   "sha256": "f406dc609d890672f92f1e2172a50ddcc48ad47dc3fdc2994b873ff57176b774",
+   "shape": [
+    31
+   ]
+  },
+  "interp_q_left_right": {
+   "dtype": "<f8",
+   "sha256": "26ed60d21fe2f22b88bee5d0eb0ff054290315ae8fab91b334bc7d6b4644724f",
+   "shape": [
+    40
+   ]
+  },
+  "interp_x": {
+   "dtype": "<f8",
+   "sha256": "50712e373ce960bb8071b6816d36461403638117e4d14d71769fd5bc8adaf547",
+   "shape": [
+    31
+   ]
+  },
+  "interp_xp": {
+   "dtype": "<f8",
+   "sha256": "aa0870764069108e9ecbcf09803c49f9134daba8b9ad27c0b2848d7e0d09162f",
+   "shape": [
+    4
+   ]
+  },
+  "interp_xq": {
+   "dtype": "<f8",
+   "sha256": "abf62f12d4b1d291f54b70e819ced93d27d3cca3ad4629f7f9a1d5a7b2c431da",
+   "shape": [
+    40
+   ]
+  },
+  "match_table_bp_rp": {
+   "dtype": "<f8",
+   "sha256": "69d69d1e2f5defa824db35f9b4e33cff5c248ae1a61d71c348189bf052fe3dcf",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_flux": {
+   "dtype": "<f8",
+   "sha256": "7a6669970c06263375e6f149174b89ca4f4005750da34f213e02968391c6a46a",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_fwhm": {
+   "dtype": "<f8",
+   "sha256": "1edaf847896c0b6ea0b7c4adb1bb2d2e32c4ba98190e0310e78cbc13c3eb564e",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_matched": {
+   "dtype": "|b1",
+   "sha256": "51e256f6c7ce7cb70036b6f42da50894cd4081b0f8ef16bb075c8e835cf15279",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_r_hi_geo": {
+   "dtype": "<f8",
+   "sha256": "1743cd0b47ad32e293a71203782b6eb1409b0d21f7541cbc06e708fedae67b3b",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_r_lo_geo": {
+   "dtype": "<f8",
+   "sha256": "9009807baeb3b24a5d927847616fe313f2f7d06adb9820ab96069a0ad4ccb5d1",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_r_med_geo": {
+   "dtype": "<f8",
+   "sha256": "f367182fe9fc527a54c16dded95e04b379e5c89d86509c07ce779278b1ce1d25",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_x": {
+   "dtype": "<f8",
+   "sha256": "055a3697ea307c2deb485700ea0d0bd5ed5c1ab0a630c8db47f86472c8d82363",
+   "shape": [
+    37
+   ]
+  },
+  "match_table_y": {
+   "dtype": "<f8",
+   "sha256": "7d163a20924d4cc89fe9055ba6bb7be6b116b947f1d14471565b13c6d75dce9d",
+   "shape": [
+    37
+   ]
+  },
+  "modulation": {
+   "dtype": "<f8",
+   "sha256": "4fe4e3797f6a9b417dc48feaabfbec8eb141ed2281ba56fdf3c9e2cdca685ab7",
+   "shape": [
+    4,
+    37
+   ]
+  },
+  "moffat_r_grid": {
+   "dtype": "<f8",
+   "sha256": "7c0f41a7ad0c488f12157ee8ea7adb23da479a1870d55e85b418d660cddca877",
+   "shape": [
+    17
+   ]
+  },
+  "moffat_values": {
+   "dtype": "<f8",
+   "sha256": "0acd48a43a9ebbe4c6f6314cf7fdf6470f7d4139adc1f70a2cdca7b7014dc6cc",
+   "shape": [
+    17
+   ]
+  },
+  "mono_autostretch_u8": {
+   "dtype": "|u1",
+   "sha256": "2b3592a4428db323cea02e23eea63956b6ce5957ff0b4c1a23a09a75581759a9",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "mono_budget": {
+   "dtype": "<f8",
+   "sha256": "23dd9625d24644656662ca7303243396e67b51e057569add945ffb4505059573",
+   "shape": [
+    1
+   ]
+  },
+  "mono_catalog_bp_rp": {
+   "dtype": "<f8",
+   "sha256": "8619f72984fef9ff73340449dafc7ae7780c34b462637ab4a07c14c0fef4dfba",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_dec": {
+   "dtype": "<f8",
+   "sha256": "897ad2a369b441b4f842c3ac6ee3fe344d7814ca90bdf0df7839bf5cf68b26f1",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_r_hi_geo": {
+   "dtype": "<f8",
+   "sha256": "79aaa6ab2ebc3eb025f97fe99d55c48685e6a9539df91f78d16441605fba310e",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_r_lo_geo": {
+   "dtype": "<f8",
+   "sha256": "6aca883d249e8e7c3d73347d2bb53f351f5fb0caebe62546021da9c091686195",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_r_med_geo": {
+   "dtype": "<f8",
+   "sha256": "eafad77bf7e14ceda8b100f52da63205c422b08fedb535c2782abe58a2124f78",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_ra": {
+   "dtype": "<f8",
+   "sha256": "b5cdf4db0bd7b06496ab77f624653b0fd5bb4e783aa91dc695a2044b0c212b6f",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_raw": {
+   "dtype": "<f8",
+   "sha256": "f2cd4126fd3e854872379cebd6506807236c2889b2f112bf81dfe234f38e6b2a",
+   "shape": [
+    47,
+    5
+   ]
+  },
+  "mono_catalog_source_id": {
+   "dtype": "<f8",
+   "sha256": "b8a238cd146c8aac6e8e58e862647af7871d89d652670f3e3c85136840d039f5",
+   "shape": [
+    41
+   ]
+  },
+  "mono_catalog_xy": {
+   "dtype": "<f8",
+   "sha256": "8907bdd96a6cf6d2baaf01ea2572c8c42d9eeef339723ca226aa6b6bf4ac5742",
+   "shape": [
+    41,
+    2
+   ]
+  },
+  "mono_confidence": {
+   "dtype": "<f8",
+   "sha256": "383552f232eefc168fbf648ba6cac8221a00979a2bfd2b03694213883e72fb47",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_flux": {
+   "dtype": "<f8",
+   "sha256": "e793bb2ad04ce97b904212a24b7fdaf737d232c52d3e3cb81a6ca14d3efbaa0e",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_peak": {
+   "dtype": "<f8",
+   "sha256": "30fdb4699a36f2a74b91bfbc5070301e34c57657f72f2b2f3d9e0042b8e76f46",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_roundness1": {
+   "dtype": "<f8",
+   "sha256": "7ba278db30590aa6fd825498295f9f843a9d0355edbe648d3e15a59ffbfe2edd",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_roundness2": {
+   "dtype": "<f8",
+   "sha256": "658d56dc02db11db59b7c4c14e4b6cd0caad4da3377c8c41e35a3923c352ff39",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_sharpness": {
+   "dtype": "<f8",
+   "sha256": "000997c9e114b1a2cce63b7ad93ed1fa791c73ad0047ebf6664c18dafc8bfb0a",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_x": {
+   "dtype": "<f8",
+   "sha256": "6317ffdd7b625d7438d32ab7959abb11c702442f9dfcb13cfa2db5424db7fcfa",
+   "shape": [
+    37
+   ]
+  },
+  "mono_dao_table_y": {
+   "dtype": "<f8",
+   "sha256": "89a14d58d0d9d811cc8ced50de695c567a7f92921ea68f72aa2f95760ee807d9",
+   "shape": [
+    37
+   ]
+  },
+  "mono_detect_table_flux": {
+   "dtype": "<f8",
+   "sha256": "e793bb2ad04ce97b904212a24b7fdaf737d232c52d3e3cb81a6ca14d3efbaa0e",
+   "shape": [
+    37
+   ]
+  },
+  "mono_detect_table_fwhm": {
+   "dtype": "<f8",
+   "sha256": "66fa4a6ff0a911e125ea2b4d2631be464b12382d70215b36bfdf4ab5e74fa110",
+   "shape": [
+    37
+   ]
+  },
+  "mono_detect_table_x": {
+   "dtype": "<f8",
+   "sha256": "6317ffdd7b625d7438d32ab7959abb11c702442f9dfcb13cfa2db5424db7fcfa",
+   "shape": [
+    37
+   ]
+  },
+  "mono_detect_table_y": {
+   "dtype": "<f8",
+   "sha256": "89a14d58d0d9d811cc8ced50de695c567a7f92921ea68f72aa2f95760ee807d9",
+   "shape": [
+    37
+   ]
+  },
+  "mono_effective": {
+   "dtype": "<f8",
+   "sha256": "bf1ff9a5f760536b35e0bfd04b78869c69b8050ffae3c5fc85160a78b23640ca",
+   "shape": [
+    37
+   ]
+  },
+  "mono_footprint": {
+   "dtype": "<f8",
+   "sha256": "487bc5fbc5de96f79cf07d6da19fa1e14bada6c6c7bf2a1cfb48e6387ab58228",
+   "shape": [
+    3
+   ]
+  },
+  "mono_halo_r_grid": {
+   "dtype": "<f8",
+   "sha256": "7c0f41a7ad0c488f12157ee8ea7adb23da479a1870d55e85b418d660cddca877",
+   "shape": [
+    17
+   ]
+  },
+  "mono_halo_values": {
+   "dtype": "<f8",
+   "sha256": "62ce97b05458b180a559803e31f9da83c1687c0f8597338d1c3bf6a230e3d596",
+   "shape": [
+    17
+   ]
+  },
+  "mono_match_table_bp_rp": {
+   "dtype": "<f8",
+   "sha256": "69d69d1e2f5defa824db35f9b4e33cff5c248ae1a61d71c348189bf052fe3dcf",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_flux": {
+   "dtype": "<f8",
+   "sha256": "e793bb2ad04ce97b904212a24b7fdaf737d232c52d3e3cb81a6ca14d3efbaa0e",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_fwhm": {
+   "dtype": "<f8",
+   "sha256": "66fa4a6ff0a911e125ea2b4d2631be464b12382d70215b36bfdf4ab5e74fa110",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_matched": {
+   "dtype": "|b1",
+   "sha256": "51e256f6c7ce7cb70036b6f42da50894cd4081b0f8ef16bb075c8e835cf15279",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_r_hi_geo": {
+   "dtype": "<f8",
+   "sha256": "1743cd0b47ad32e293a71203782b6eb1409b0d21f7541cbc06e708fedae67b3b",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_r_lo_geo": {
+   "dtype": "<f8",
+   "sha256": "9009807baeb3b24a5d927847616fe313f2f7d06adb9820ab96069a0ad4ccb5d1",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_r_med_geo": {
+   "dtype": "<f8",
+   "sha256": "f367182fe9fc527a54c16dded95e04b379e5c89d86509c07ce779278b1ce1d25",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_x": {
+   "dtype": "<f8",
+   "sha256": "6317ffdd7b625d7438d32ab7959abb11c702442f9dfcb13cfa2db5424db7fcfa",
+   "shape": [
+    37
+   ]
+  },
+  "mono_match_table_y": {
+   "dtype": "<f8",
+   "sha256": "89a14d58d0d9d811cc8ced50de695c567a7f92921ea68f72aa2f95760ee807d9",
+   "shape": [
+    37
+   ]
+  },
+  "mono_modulation": {
+   "dtype": "<f8",
+   "sha256": "216378a092a04e7fa82a7880bc9a7cac9a606200a342ee4a0d17cdd952f3efe4",
+   "shape": [
+    4,
+    37
+   ]
+  },
+  "mono_nebula_out_s2_a0p5_t1p5": {
+   "dtype": "<f4",
+   "sha256": "eea66a05108279721f47466a0a76fbb6bba1ffaf8bf71104cb9c9e2c288c2c12",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "mono_rendered_stars": {
+   "dtype": "<f4",
+   "sha256": "68e57fb4bb5e19365f3342e70f89fa7623ae80f4e563c071e535b8bbe22529b9",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "mono_screen_blend": {
+   "dtype": "<f4",
+   "sha256": "cdb5aa919b5b4faee65ba49382e5d81f35a05e0547242e45c971db21570d270e",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "mono_sigma_clip": {
+   "dtype": "<f8",
+   "sha256": "2f449f2083aa66166d1460e13237774a242121ecc0f8a1991bc1e0e012f09189",
+   "shape": [
+    3
+   ]
+  },
+  "mono_sigma_parallax": {
+   "dtype": "<f8",
+   "sha256": "fe990b87310c4fe9675d234eb10b29cb447c48c2e68d153d7ce555bf5393effb",
+   "shape": [
+    47
+   ]
+  },
+  "mono_starless": {
+   "dtype": "<f4",
+   "sha256": "9a48d346b5f56456bde07df25b5bd5532800523f4a5616f18be92b8bd0365af3",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "mono_stars": {
+   "dtype": "<f4",
+   "sha256": "ad71bef011a1d26ea4dd1db8e20be1af3d56f1a9dcb435f3984bc4b9e2597166",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "mono_strength": {
+   "dtype": "<f8",
+   "sha256": "0f4150923d6eb9222819ba74d9360b454a10821d40d894b8c7cd5a3a3f9f8b7d",
+   "shape": [
+    37
+   ]
+  },
+  "mono_structural_depth": {
+   "dtype": "<f4",
+   "sha256": "effeabf89625a2b1a780974e65bb7d98f552637046b1cb495344d5da83a6972b",
+   "shape": [
+    144,
+    192
+   ]
+  },
+  "nanmedian": {
+   "dtype": "<f8",
+   "sha256": "52c1bbe2035e8ecbc273998fba65d992431ab31e67f8a0a214b0a8517775522b",
+   "shape": [
+    17
+   ]
+  },
+  "nanmedian_input": {
+   "dtype": "<f8",
+   "sha256": "0dc542eb902bdd60a83599044581185bc946b167f5d444b7df7680f9562de253",
+   "shape": [
+    7,
+    17
+   ]
+  },
+  "nebula_out_s1_a1_t1": {
+   "dtype": "<f4",
+   "sha256": "d1c703ba0465a6538bda80cba4b44b634277efc10018f18ac4d911c103a72ed6",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "nebula_out_s2_a0p5_t1p5": {
+   "dtype": "<f4",
+   "sha256": "1501f23ee828b866eda9a2a6f964fbd8aad3b5b085215447f83274dd310c578f",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "odd_autostretch_u8": {
+   "dtype": "|u1",
+   "sha256": "b31b8eadac89b1164f618c6957951bb46d1694e4f6643c721e64a79ff21c5da2",
+   "shape": [
+    48,
+    64,
+    3
+   ]
+  },
+  "odd_effective": {
+   "dtype": "<f8",
+   "sha256": "148a7f323d2fd9ec7cf0bfebd34f84b947195284d6e990c66638d274b4706b28",
+   "shape": [
+    7
+   ]
+  },
+  "odd_modulation": {
+   "dtype": "<f8",
+   "sha256": "3e4b04f22f22bd6450f455c9e73d75c8328b786db358511f0bf176f48bf6be21",
+   "shape": [
+    4,
+    7
+   ]
+  },
+  "odd_nebula_out_s2_a0p5_t1p5": {
+   "dtype": "<f4",
+   "sha256": "0e5b16fd4e78e0a39af9dd19913fadb65bbd55bc35fc004fcd162053a89bafdb",
+   "shape": [
+    48,
+    64,
+    3
+   ]
+  },
+  "odd_rendered_stars": {
+   "dtype": "<f4",
+   "sha256": "7616af65889ef7f8a4051e7f84493e5e251b821042066499d0338186daf8fffc",
+   "shape": [
+    48,
+    64,
+    3
+   ]
+  },
+  "odd_screen_blend": {
+   "dtype": "<f4",
+   "sha256": "1afbe4443c334be6bf5e877bbb221581d958cadc768218073bc21282ad6ce859",
+   "shape": [
+    48,
+    64,
+    3
+   ]
+  },
+  "odd_starless": {
+   "dtype": "<f4",
+   "sha256": "72c2c352ff8921aebcd81c042910a42c28a988db3418f1eee61e3edf63f15aa0",
+   "shape": [
+    48,
+    64,
+    3
+   ]
+  },
+  "odd_stars": {
+   "dtype": "<f4",
+   "sha256": "56812fd11ec641dd1a95e99cfe01da5d69153b340b4b907c97f965df3453bfa1",
+   "shape": [
+    48,
+    64,
+    3
+   ]
+  },
+  "odd_table_flux": {
+   "dtype": "<f8",
+   "sha256": "0e20b531310e89d6e3d5cd02385004223a1b619d9d1c33e3d2b3a3d5b51e71a3",
+   "shape": [
+    7
+   ]
+  },
+  "odd_table_r_hi_geo": {
+   "dtype": "<f8",
+   "sha256": "21a94afd05fd493d2387c0a7d97e951a1c978c1d9032d8c870d078e4b0bf1c6e",
+   "shape": [
+    7
+   ]
+  },
+  "odd_table_r_lo_geo": {
+   "dtype": "<f8",
+   "sha256": "dae6dacdcfc5e1a3a924d830514ca7ea2b66b006d43704d41f4b9843e64768d6",
+   "shape": [
+    7
+   ]
+  },
+  "odd_table_r_med_geo": {
+   "dtype": "<f8",
+   "sha256": "1ee9a1bb762944c430f71a0508dbd71ea531c58c55e25ed022ad0d6273e186ea",
+   "shape": [
+    7
+   ]
+  },
+  "odd_table_x": {
+   "dtype": "<f8",
+   "sha256": "42ca5faedf720dddcf5e2a6be3245492938a65602343b3182a414f93d1f680ad",
+   "shape": [
+    7
+   ]
+  },
+  "odd_table_y": {
+   "dtype": "<f8",
+   "sha256": "727d7136f68fc61e98b3c26d17098cbaac87d1e99d1850089e18a27518357c4b",
+   "shape": [
+    7
+   ]
+  },
+  "order_input": {
+   "dtype": "<f8",
+   "sha256": "621a97c7a88adb908592bf06cc7ffa6b83545b7ac6d4adad29d8ecdb961efadd",
+   "shape": [
+    503
+   ]
+  },
+  "order_stats": {
+   "dtype": "<f8",
+   "sha256": "faf0e8b498830363a19eb041cd4eceea2d0c8dcec7d98d74698ac4f8208f48b7",
+   "shape": [
+    3
+   ]
+  },
+  "pct_input": {
+   "dtype": "<f8",
+   "sha256": "ec2da7798e7f8d1168167c8b88c08d3f741deafa4ba3a20bbcb48735bdbaba4a",
+   "shape": [
+    1000
+   ]
+  },
+  "pct_q": {
+   "dtype": "<f8",
+   "sha256": "179d42766f89591d3bbb0430af1a5d4e320604b51a3c391d966fe87d14374003",
+   "shape": [
+    11
+   ]
+  },
+  "pct_small1": {
+   "dtype": "<f8",
+   "sha256": "03f780bf5ca0b2967edc7755e337c15c9eb7bd393d06d29e5f383f4108f464d4",
+   "shape": [
+    11
+   ]
+  },
+  "pct_small1_input": {
+   "dtype": "<f8",
+   "sha256": "f85024fbc125b92c4b5037265fd5a40dcc978cd5795d7b416e8930090fdd9b0f",
+   "shape": [
+    1
+   ]
+  },
+  "pct_small2": {
+   "dtype": "<f8",
+   "sha256": "80d0e2c72d96b8495b75ed62344eb4fa6f8fed0624aaeb50cbaa261cf66ba189",
+   "shape": [
+    11
+   ]
+  },
+  "pct_small2_input": {
+   "dtype": "<f8",
+   "sha256": "01df7747a3cb25c4ffaa414836e9333fade8dc990c9e1309e0dc538aec70d3c1",
+   "shape": [
+    2
+   ]
+  },
+  "pct_small5": {
+   "dtype": "<f8",
+   "sha256": "55d4fdcd7f4741e25b2f0e9203234efe173874ed21405b9488fcd0d833677213",
+   "shape": [
+    11
+   ]
+  },
+  "pct_small5_input": {
+   "dtype": "<f8",
+   "sha256": "ac4c6581b956462dc0e3fb06cd2003f1458433c60c36fb86b2e6208c912b90e9",
+   "shape": [
+    5
+   ]
+  },
+  "percentile": {
+   "dtype": "<f8",
+   "sha256": "ba90f81d321b725067bc82ec603e687093839c965697d87bd9d3f6f1c8e8a7f6",
+   "shape": [
+    11
+   ]
+  },
+  "prim_input": {
+   "dtype": "<f8",
+   "sha256": "ebd8cf924134b64fe2e1f905ce8c0771c2ad864cac5bc75106163325cca9a098",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "prim_stack3": {
+   "dtype": "<f8",
+   "sha256": "7468027b19be251e320438707e18950f5b7927dd4618efd1a0f8e86953ed5c9a",
+   "shape": [
+    20,
+    17,
+    3
+   ]
+  },
+  "recon_cavity_emissivity": {
+   "dtype": "<f4",
+   "sha256": "912d205237d777bfcfca6e6560ec2883895651042bebbaed4105392664a427e3",
+   "shape": [
+    140,
+    140,
+    3
+   ]
+  },
+  "recon_cavity_z": {
+   "dtype": "<f4",
+   "sha256": "6ec5458c4a9df46b5b453d5108c40c2194c269c1a5a237989bd5324b6f3cf3f8",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_crop_cavity_z_cfg2": {
+   "dtype": "<f4",
+   "sha256": "5875c5eef107be83b1cae98a2f99e64aac7910539e03c9597990a13b63682c79",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_cavity_z_duoband": {
+   "dtype": "<f4",
+   "sha256": "e7ac46d9367f834b54f3f24c457f3c1169013d12ac2bd61c5388c7a457a7e917",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_cavity_z_osc": {
+   "dtype": "<f4",
+   "sha256": "46f4168fc80de72dfea7edd58e095d0ce5d848efbf2a9584868f8b6849ec973c",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_cavity_z_stretched": {
+   "dtype": "<f4",
+   "sha256": "ce29ebdae3969cccf2ea4318cb886e4aee513f386e88299bebd169e254bfebb3",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_emission_relief_g1": {
+   "dtype": "<f4",
+   "sha256": "339d8275dc84aad66cafd2ef8fc592bbbe3846ea900ccef5b6eb48e773e8f361",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_footprint": {
+   "dtype": "|b1",
+   "sha256": "27752b6d1972a7d02c8c0fe09f2ce572ef5fcaf618f68a22ff82ef9410c00e9c",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_geometry_nomask": {
+   "dtype": "<f4",
+   "sha256": "da2207d99f306fd45556da5d54b4a732dc19914b7cb79161fc208956985daa8d",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_geometry_p3": {
+   "dtype": "<f4",
+   "sha256": "ea385a2ffe2da7c8a8d49455d09982407e16aa3ea95457c29b707aecd40236d0",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_crop_ionization_depth_g1p5": {
+   "dtype": "<f4",
+   "sha256": "64fe148f5bfed0f9405605ff279e9a78ce2b1b1bac3b274ce94fb6710146bad6",
+   "shape": [
+    70,
+    90
+   ]
+  },
+  "recon_dust_balmer": {
+   "dtype": "<f4",
+   "sha256": "f506c62919b37a15c9836aae7bc4b9b04e5681c042fb2a133218cecf1408e762",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_dust_in": {
+   "dtype": "<f4",
+   "sha256": "dc829b2088fe4986aba47bc92a6e23d33321e208128d386eebdc6d33e1dfba53",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_dust_structure": {
+   "dtype": "<f4",
+   "sha256": "0f5672e79ce1b71f450ebfc7e0accbc8c87a287e5ffd69d01585189f22c14152",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_emission_relief": {
+   "dtype": "<f4",
+   "sha256": "27110583a55bdd6d2cdb237c3b76baaeab1a625a9f0a63024255aa9b2617365f",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_footprint": {
+   "dtype": "|b1",
+   "sha256": "69a2d2485cfe384c3f9a77467d04de964264b6b5d77b087e5d29463ccbc0e507",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_geometry_prior": {
+   "dtype": "<f4",
+   "sha256": "899d301deed0f962089dab1a78ee85685c047cde18fcdb268dd1d503f6907480",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_ha": {
+   "dtype": "<f4",
+   "sha256": "77c9a4033f22aa1beefc539dc382c074a353adba82f6985d3a48cfb3aea669c4",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_hb": {
+   "dtype": "<f4",
+   "sha256": "b21af88c79ba28577fc1500fee9e6edd0f5f45da8509ea9590e2ae99bc21cc69",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_ionization_depth": {
+   "dtype": "<f4",
+   "sha256": "1dc99f751bd5d4d3af7b7130e223b615720f2f7c58309796cae37a91b1c77206",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_ionizer_table_bp_rp": {
+   "dtype": "<f8",
+   "sha256": "4b2d15d1982c63f294b46831e206b2cef2a490ff01b2656567e88b07a9a1f8cc",
+   "shape": [
+    14
+   ]
+  },
+  "recon_ionizer_table_flux": {
+   "dtype": "<f8",
+   "sha256": "09e677134f9286db04b028f85bfb11e27eda959ec8f24abdd2e51e6aaec4c4c6",
+   "shape": [
+    14
+   ]
+  },
+  "recon_ionizer_table_r_med_geo": {
+   "dtype": "<f8",
+   "sha256": "0658d4e96cacdea91a67470fd7a048ae70b6a28e2a6d13a1de169d19ea4e9716",
+   "shape": [
+    14
+   ]
+  },
+  "recon_ionizer_table_x": {
+   "dtype": "<f8",
+   "sha256": "0bf775ff5f2927655fd0991b68a0057e0e3cd45b816b7549738ccbbc9ed2e362",
+   "shape": [
+    14
+   ]
+  },
+  "recon_ionizer_table_y": {
+   "dtype": "<f8",
+   "sha256": "5ff6cc398629afd153fd8e950a801884eb8e3575574aa0502f4e67b8a0702e5b",
+   "shape": [
+    14
+   ]
+  },
+  "recon_lum": {
+   "dtype": "<f4",
+   "sha256": "dc2181fb5b7303b8f869b4699d8466796375a1e397dda7033816308325fa4b0a",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_oiii": {
+   "dtype": "<f4",
+   "sha256": "3ba7910cffde1f3185a27c2ea5d9ea1ee12ddb7aad3144042e068d2201c5c743",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "recon_oiii_fraction": {
+   "dtype": "<f4",
+   "sha256": "4249452281412209991d2efb0a29f653ecbc56d04ab4b7f4afa60e67f70a9e43",
+   "shape": [
+    140,
+    140
+   ]
+  },
+  "rendered_stars": {
+   "dtype": "<f4",
+   "sha256": "22da7388e8e60d3639c30156dc9f938d10b75158780ad37529cf4bd36f893692",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "screen_blend": {
+   "dtype": "<f4",
+   "sha256": "4640e36476f1630e3323d40f7b09e30d5b8da4e4ad9e2ed2fbfd59d97ff9912e",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "sigma_clip": {
+   "dtype": "<f8",
+   "sha256": "137ccb957a3b55bc3404dc29aeb8349ed5b1899a4585d869080833e1a69ba925",
+   "shape": [
+    3
+   ]
+  },
+  "sigma_parallax": {
+   "dtype": "<f8",
+   "sha256": "fe990b87310c4fe9675d234eb10b29cb447c48c2e68d153d7ce555bf5393effb",
+   "shape": [
+    47
+   ]
+  },
+  "starless_rgb": {
+   "dtype": "<f4",
+   "sha256": "6e84bc9e2934bf879adea7b2e4a8b0dccd5ccd870c4d1cb951dd67bdfd7bfcd8",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "stars_rgb": {
+   "dtype": "<f4",
+   "sha256": "3f87201f3d2d97c784ee7984da345d2c7507940161a7a2b1f646ee79d9f8c368",
+   "shape": [
+    144,
+    192,
+    3
+   ]
+  },
+  "strength": {
+   "dtype": "<f8",
+   "sha256": "0f4150923d6eb9222819ba74d9360b454a10821d40d894b8c7cd5a3a3f9f8b7d",
+   "shape": [
+    37
+   ]
+  },
+  "structural_depth": {
+   "dtype": "<f4",
+   "sha256": "be7cd3398546226fe5d81bcf1e786fea228331cae01d7517ada14b9ccc204dcd",
+   "shape": [
+    144,
+    192
+   ]
+  }
+ },
+ "generator": "modules/gaia-depth-grade/test/golden/make_goldens.py",
+ "image_storage": "images float32 (inputs are float32-exact); outputs computed in float64 then stored float32",
+ "mode": "synthetic",
+ "python_core": {
+  "core_last_change_commit": "d46f6995376c2a95f9d05ea1b52537dee8714318",
+  "core_tree_dirty": false,
+  "repo_head": "d1cc395781bc18a267d547918b30d100afd4a787"
+ },
+ "seed": 20261110,
+ "selftest_files": [
+  "npy_selftest_b1.npy",
+  "npy_selftest_f4.npy",
+  "npy_selftest_f8.npy",
+  "npy_selftest_fortran.npy",
+  "npy_selftest_i8.npy",
+  "npy_selftest_scalar.npy",
+  "npy_selftest_u1.npy",
+  "npy_selftest_v2.npy"
+ ],
+ "stages": [
+  "catalog",
+  "catalog_raw",
+  "chan_extract_stretched",
+  "chan_out_duoband",
+  "chan_out_osc",
+  "chan_out_sho",
+  "dao_table",
+  "effective",
+  "fixture_footprint",
+  "footprint",
+  "gauss_0p8",
+  "gauss_1p0",
+  "gauss_2p0",
+  "gauss_2p5",
+  "gauss_4p0",
+  "gauss_65p0",
+  "halo_profile",
+  "inputs",
+  "looks_linear",
+  "match_stats",
+  "modulation",
+  "moffat",
+  "mono_catalog",
+  "mono_catalog_raw",
+  "mono_dao_table",
+  "mono_effective",
+  "mono_footprint",
+  "mono_halo_profile",
+  "mono_match_stats",
+  "mono_modulation",
+  "mono_nebula_out_s2_a0p5_t1p5",
+  "mono_sigma_clip",
+  "nebula_out_s1_a1_t1",
+  "nebula_out_s2_a0p5_t1p5",
+  "odd",
+  "order_stats",
+  "recon",
+  "recon_cavity",
+  "recon_cavity_cfg2",
+  "recon_cavity_duoband",
+  "recon_cavity_dust",
+  "recon_cavity_osc",
+  "recon_cavity_stretched",
+  "recon_crop",
+  "recon_dust",
+  "recon_ionization_ratio",
+  "recon_pick_ionizer",
+  "recon_sii",
+  "recon_terms",
+  "sigma_clip",
+  "summary",
+  "wcs"
+ ],
+ "versions": {
+  "astropy": "8.0.0",
+  "numpy": "2.5.0",
+  "photutils": "3.0.0",
+  "python": "3.14.3",
+  "scipy": "1.18.0"
+ }
+}
