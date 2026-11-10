@@ -5,6 +5,7 @@ add_library(nukex4_core STATIC
     src/filter.cpp
     src/noise_model.cpp
     src/fits_time.cpp
+    src/run_temp_dir.cpp
 )
 
 target_include_directories(nukex4_core

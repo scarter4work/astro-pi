@@ -147,18 +147,28 @@ directory if it is missing. The default is <code>$XDG_CACHE_HOME/nukex4/cache</c
        as soon as it is created, so it never remains after a run, but it occupies disk space while the run lasts.</li>
 </ul>
 
-<h3>3. Progress files in <code>/tmp</code></h3>
+<h3>3. Progress files: a private per-run directory</h3>
+<p>For each run NukeX creates a new directory named <code>nukex-run-XXXXXX</code> (random suffix) in the system temporary
+directory: <code>$TMPDIR</code> if it names an existing directory, otherwise <code>/tmp</code>. Only your user can open it
+(mode 0700). Its path is printed to the Process Console and to standard error when the run starts. It holds:</p>
 <ul>
-   <li><code>/tmp/nukex_progress.log</code>: a time-stamped log of the most recent run's phases and progress messages.
-       Started afresh at the beginning of each run.</li>
-   <li><code>/tmp/nukex_heartbeat.txt</code>: the current phase and elapsed time, rewritten every 10 seconds during a run.</li>
+   <li><code>nukex_progress.log</code>: a time-stamped log of the run's phases and progress messages.</li>
+   <li><code>nukex_heartbeat.txt</code>: the current phase and elapsed time, rewritten every 10 seconds during the run.</li>
 </ul>
-<p>These fixed paths are not deleted by NukeX; they stay until <code>/tmp</code> is cleaned. They contain processing
-status only.</p>
+<p>NukeX deletes the directory and both files when the run ends. If PixInsight crashes or is killed during a run, the
+directory can remain; it holds processing status only and is safe to delete. (Releases up to 5.2.0.2 wrote these two files
+at the fixed paths <code>/tmp/nukex_progress.log</code> and <code>/tmp/nukex_heartbeat.txt</code> and left them there.)</p>
 
 <h3>4. PixInsight settings</h3>
 <p>One setting, <code>NukeX/Phase8/RatingPopupSuppressed</code> (the &ldquo;Don't show rating popup after Execute&rdquo;
 choice), is stored through PixInsight's own settings interface.</p>
+
+<h3>Environment variable for unattended runs</h3>
+<p>If the environment variable <code>NUKEX_PHASE8_NO_POPUP</code> is set (to any value) in PixInsight's environment, NukeX
+opens no dialog during a run: neither the stretch-rating dialog after Execute nor the dialog that offers to learn an
+unrecognised <code>FILTER</code> value (the run then stops with the unknown-filter error, as it does when you decline that
+dialog). It is meant for scripted or headless runs, where a dialog would wait for a click that never comes; NukeX's own
+automated end-to-end tests set it. It changes nothing else and is not needed for normal use.</p>
 
 <h2 id="reads">Files NukeX reads</h2>
 <ul>

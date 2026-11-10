@@ -9,6 +9,7 @@
 #include <pcl/StatusMonitor.h>
 
 #include "nukex/core/progress_observer.hpp"
+#include "nukex/core/run_temp_dir.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -28,10 +29,13 @@ namespace pcl
 /// --automation-mode), this class emits real-time progress via three sideband
 /// channels so headless harnesses can observe liveness:
 ///   1. std::cerr line per event (reaches the shell via stderr).
-///   2. Append log at /tmp/nukex_progress.log (shell: `tail -f`).
-///   3. Heartbeat file at /tmp/nukex_heartbeat.txt, overwritten every 10 s by
+///   2. Append log nukex_progress.log (shell: `tail -f`).
+///   3. Heartbeat file nukex_heartbeat.txt, overwritten every 10 s by
 ///      a watchdog thread, even during long silent compute loops (Phase B
 ///      inside a single GPU batch can go 30+ minutes without a callback).
+/// Both files live in a private per-run directory, nukex-run-XXXXXX (mode 0700,
+/// mkdtemp) under $TMPDIR or /tmp, whose path is printed at the start of the
+/// run; the directory and both files are removed when the run ends.
 class NukeXProgress : public nukex::ProgressObserver
 {
 public:
@@ -56,6 +60,12 @@ private:
    StatusMonitor      monitor_;
    std::vector<Phase> stack_;
    int                depth_ = 0;  // nesting depth for indentation
+
+   // Private per-run directory for the two sideband files (removed at the end
+   // of the run). Declared before the watchdog so it outlives it.
+   nukex::RunTempDir                              run_dir_;
+   const std::string                              progress_log_path_;
+   const std::string                              heartbeat_path_;
 
    // Sideband state (accessed by both the caller thread and the watchdog).
    std::mutex                                     state_mtx_;

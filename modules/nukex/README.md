@@ -88,12 +88,15 @@ are opened only as files.
 | | `phase8_user.sqlite.corrupt.<time>` | a damaged rating database set aside (only on corruption) |
 | frame cache: the `cacheDirectory` parameter, default `$XDG_CACHE_HOME/nukex4/cache`, else `~/.cache/nukex4/cache`, else `/var/tmp` | `nukex_cache_XXXXXX` | aligned frame data for the running stack (about 13 GB for 33 frames of a 24 MP colour camera); deleted when the run ends, but left behind if PixInsight crashes mid-run -- safe to delete while PixInsight is not running |
 | | `nukex_cube_XXXXXX` | only when the working data does not fit in memory; unlinked as soon as it is created, so it never outlives the run |
-| `/tmp` | `nukex_progress.log` | progress log of the most recent run (restarted each run) |
-| | `nukex_heartbeat.txt` | current phase and elapsed time, rewritten every 10 s during a run |
+| `nukex-run-XXXXXX/` (mode 0700, new per run) in `$TMPDIR`, else `/tmp`; path printed at run start | `nukex_progress.log` | progress log of the run; the directory is deleted when the run ends (left behind only if PixInsight crashes mid-run) |
+| | `nukex_heartbeat.txt` | current phase and elapsed time, rewritten every 10 s during the run |
 
 Short-lived `.tmp`/`.stage` files appear beside the `~/.config/nukex4/` files
 while they are replaced. NukeX also stores one PixInsight setting,
 `NukeX/Phase8/RatingPopupSuppressed`, through PixInsight's settings interface.
+Setting the environment variable `NUKEX_PHASE8_NO_POPUP` (any value) makes a
+run open no dialog (no rating dialog, no unknown-filter dialog), for scripted
+and headless runs such as `tools/run_e2e.sh`.
 None of this data is transmitted. NukeX saves no images: results open as
 image windows for you to save.
 

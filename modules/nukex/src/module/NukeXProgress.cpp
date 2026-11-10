@@ -3,6 +3,7 @@
 
 #include "NukeXProgress.h"
 #include "NukeXConsoleText.hpp"
+#include <pcl/File.h>
 #include <pcl/String.h>
 #include <cstdio>
 #include <ctime>
@@ -16,8 +17,6 @@ namespace pcl
 
 namespace {
 
-const char* kProgressLogPath  = "/tmp/nukex_progress.log";
-const char* kHeartbeatPath    = "/tmp/nukex_heartbeat.txt";
 constexpr auto kHeartbeatInterval = std::chrono::seconds(10);
 
 std::string iso_timestamp_ms() {
@@ -39,11 +38,23 @@ std::string iso_timestamp_ms() {
 NukeXProgress::NukeXProgress()
    : status_()
    , monitor_()
+   , run_dir_( File::SystemTempDirectory().ToUTF8().c_str() )
+   , progress_log_path_( run_dir_.file( "nukex_progress.log" ) )
+   , heartbeat_path_( run_dir_.file( "nukex_heartbeat.txt" ) )
    , start_time_( std::chrono::steady_clock::now() )
 {
-   // Truncate the progress append-log at the start of each run so shell
-   // operators can `tail -f` it without stale content bleeding through.
-   std::ofstream trunc( kProgressLogPath, std::ios::trunc );
+   // The progress files live in a fresh private directory (mkdtemp, 0700), so
+   // no other local user can pre-create or symlink them, and they go away with
+   // the run. Say where they are so a shell can `tail -f` them meanwhile.
+   if ( run_dir_.ok() )
+   {
+      std::ofstream create( progress_log_path_, std::ios::trunc );
+      std::cerr << "NukeX progress files (removed when the run ends): "
+                << run_dir_.path() << '\n';
+      std::cerr.flush();
+      console_.WriteLn( "NukeX progress files (removed when the run ends): "
+                        + String::UTF8ToUTF16( run_dir_.path().c_str() ) );
+   }
 
    // Launch watchdog thread AFTER all state is initialised. The thread will
    // only read state_mtx_-protected members.
@@ -69,7 +80,8 @@ void NukeXProgress::emit_sideband( const char* event_kind, const std::string& pa
    std::cerr.flush();
 
    // Append log — stable, can be `tail -f`'d from another terminal.
-   std::ofstream ap( kProgressLogPath, std::ios::app );
+   if ( progress_log_path_.empty() ) return;
+   std::ofstream ap( progress_log_path_, std::ios::app );
    if ( ap )
       ap << '[' << iso_timestamp_ms() << "] " << event_kind << ' '
          << payload << '\n';
@@ -80,7 +92,8 @@ void NukeXProgress::write_heartbeat_locked( const char* reason )
    // state_mtx_ must already be held by the caller.
    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
       std::chrono::steady_clock::now() - start_time_ ).count();
-   std::ofstream hb( kHeartbeatPath, std::ios::trunc );
+   if ( heartbeat_path_.empty() ) return;
+   std::ofstream hb( heartbeat_path_, std::ios::trunc );
    if ( hb )
       hb << "ts=" << iso_timestamp_ms() << '\n'
          << "reason=" << reason << '\n'
