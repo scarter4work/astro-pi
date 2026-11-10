@@ -28,4 +28,5 @@ target_sources(gdg_core PRIVATE
     recon/Channels.cpp
     recon/Ionization.cpp
     recon/Ionizer.cpp
+    recon/Extinction.cpp
 )
