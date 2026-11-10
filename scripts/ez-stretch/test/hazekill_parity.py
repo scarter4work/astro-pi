@@ -19,7 +19,7 @@ import sys
 import numpy as np
 import xisf
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../modules/ez-tools/test"))
 from hk_lib import (apply_stf, extract_gradient, hk_v11, masks, metrics, ref_sky,  # noqa: E402
                     stf_params)
 

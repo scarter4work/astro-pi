@@ -12,8 +12,14 @@ def hk_v102(img, target=0.05):
 # ---------------------------------------------------------------- robust sky
 def tile_stats(img, tile=64):
     H, W, C = img.shape
-    ny, nx = H // tile, W // tile
-    t = img[:ny * tile, :nx * tile].reshape(ny, tile, nx, tile, C).transpose(0, 2, 1, 3, 4).reshape(ny * nx, tile * tile, C)
+    if H < tile or W < tile:
+        # As EZHazeKill.js hkTileStats(): an image smaller than one tile in either
+        # direction is measured as a single (W x H) tile. (Before 2026-11-10 this
+        # case produced zero tiles here and crashed; no other input changes.)
+        t = img.reshape(1, H * W, C)
+    else:
+        ny, nx = H // tile, W // tile
+        t = img[:ny * tile, :nx * tile].reshape(ny, tile, nx, tile, C).transpose(0, 2, 1, 3, 4).reshape(ny * nx, tile * tile, C)
     med = np.median(t, axis=1)                                   # (ntiles, C)
     mad = 1.4826 * np.median(np.abs(t - med[:, None, :]), axis=1)
     return med, mad
