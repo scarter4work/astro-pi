@@ -472,8 +472,8 @@ def phase_c_cases(o: Out):
 
     # 2. Filters: a star, a hot pixel (sharpness > 1) and an elongated streak (roundness).
     rej = field(40, 32, [(12.4, 15.3, 0.4, 1.3, 1.3), (25.5, 24.2, 0.3, 3.5, 0.8)])
-    rej[8, 28] += 0.5
-    o.save("dao_reject_input", rej)
+    rej[8, 28] = np.float32(rej[8, 28] + 0.5)
+    o.save("dao_reject_input", rej, "f4")
     n_def = dao("dao_reject_default", rej, threshold=0.02, fwhm=3.0)
     n_sharp = dao("dao_reject_sharp_only", rej, threshold=0.02, fwhm=3.0, roundness_range=None)
     n_none = dao("dao_reject_nofilter", rej, threshold=0.02, fwhm=3.0, sharpness_range=None, roundness_range=None)
@@ -573,6 +573,78 @@ def phase_c_cases(o: Out):
     o.params("overlap", gains=dict(brightness=0.65, size=0.85, contrast=0.12, saturation=0.4, halo_gain=1.0),
              strength=[0.85, 0.55], halo="default Moffat (halo_profile=None)",
              max_abs_order_effect=float(np.abs(fwd - rev).max()))
+
+    # 6b. The halo's reference-star selection, on a small mono field with a non-default config
+    #     (base sigma 1, radius 4 sigma -> 9x9 stamps, halo_min_refs 3 -> stop after 9 stamps).
+    #     Every star has a cored centre (the centre pixel is not the peak, so the normalisation
+    #     acts) and a ring at r = 3 (so the monotone clamp acts), each with its own ring level
+    #     (low on the special stars, high on the clean ones, so which stamps are stacked moves
+    #     the median). The table carries, brightest first: a NaN-flux
+    #     star, a star peaking at 0.925 (just saturated), stamps cut by the right and top edges,
+    #     a dark stamp, a star with a 0.54-peak hot pixel at r = 5 in its stamp (a bright neighbour:
+    #     rejected), a star with a 0.78-peak hot pixel exactly 4 px away (inside the 4-sigma
+    #     core: kept); then more clean stars than the 9-stamp stop.
+    hw, hh = 64, 48
+    yy, xx = np.mgrid[0:hh, 0:hw].astype(float)
+    halo_img = np.full((hh, hw), 0.01) + rng.normal(0.0, 0.002, (hh, hw))
+    halo_img[38:47, 1:10] = -0.02  # the dark stamp's patch
+
+    def cored_profile(r2, ring):
+        return np.exp(-r2 / 2.0) - 0.5 * np.exp(-r2 / 0.5) + ring * np.exp(-(np.sqrt(r2) - 3.0) ** 2 / 0.5)
+
+    def cored(x, y, amp, ring):
+        return amp * cored_profile((xx - x) ** 2 + (yy - y) ** 2, ring)
+
+    f1 = float(cored_profile(np.array(1.0), 0.2))  # an integer-centred star's peak / amp
+    sat_amp = (0.925 - 0.01) / f1
+    rows = []
+    special = [(16.2, 26.3, np.nan, 0.5, 0.02), (36.0, 16.0, 9.0, sat_amp, 0.2),
+               (60.0, 16.0, 8.5, 0.6, 0.2), (26.0, 44.0, 8.0, 0.6, 0.2), (5.0, 42.0, 7.5, None, 0.0),
+               (46.0, 36.0, 7.0, 0.7, 0.02), (16.0, 6.0, 6.5, 0.7, 0.02)]
+    for x, y, f, a, ring in special:
+        if a is not None:
+            halo_img += cored(x, y, a, ring)
+        rows.append((x, y, f))
+    peak_a = 0.7 * f1 + 0.01
+    halo_img[39, 50] = 0.01 + 0.54 * peak_a  # (4, 3) from (46, 36): r = 5, far; 0.5-0.6 of the peak
+    halo_img[6, 20] = 0.01 + 0.78 * peak_a   # 4 px from (16, 6): not "far" (r > 4 sigma), and below the peak
+    clean = [(6.3, 6.2), (26.3, 6.4), (36.2, 6.3), (46.4, 6.2), (56.3, 6.1), (6.2, 16.4), (26.1, 16.3),
+             (46.3, 16.4), (26.4, 26.3), (36.1, 26.4), (46.2, 26.1), (56.1, 26.3), (6.3, 26.2), (36.4, 36.1)]
+    amps = rng.uniform(0.2, 0.65, len(clean))
+    rings = rng.uniform(0.25, 0.4, len(clean))  # the accepted specials ring at 0.02: any swap moves the median
+    for (x, y), a, ring in zip(clean, amps, rings):
+        halo_img += cored(x, y, a, ring)
+        rows.append((x, y, float(a * 10.0)))
+    halo_img = halo_img.astype(np.float32).astype(np.float64)
+    sat_peak = halo_img[12:21, 32:41].max()
+    if not 0.9 <= sat_peak < 0.95:
+        raise RuntimeError(f"halo_select: the saturation-edge star peaks at {sat_peak}, not in [0.9, 0.95)")
+    ht = Table()
+    ht["x"], ht["y"], ht["flux"] = [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
+    hcfg = GradeConfig(halo_min_refs=3, halo_radius_sigma=4.0)
+    hp = build_halo_profile(halo_img, ht, 1.0, hcfg)
+    if not hp.is_empirical:
+        raise RuntimeError("halo_select: expected an empirical profile")
+    o.save("halo_select_stars", halo_img, "f4")
+    o.save_table("halo_select_table", ht, ["x", "y", "flux"])
+    o.save("halo_select_r_grid", hp.r_grid)
+    o.save("halo_select_values", hp.values)
+    # Exactly halo_min_refs clean stamps: still empirical (the fallback needs fewer).
+    three = ht[[len(special) + i for i in (0, 1, 2)]]
+    hp3 = build_halo_profile(halo_img, three, 1.0, hcfg)
+    if not hp3.is_empirical:
+        raise RuntimeError("halo_select_three: three clean stamps must be enough for halo_min_refs=3")
+    o.save("halo_select_three_values", hp3.values)
+    # The same three plus one rejected stamp (the dark one, then the bright-neighbour one): a
+    # fourth stamp would move the median, so these pin each rejection on its own.
+    for name, row in (("dark", 4), ("neighbour", 5)):
+        sub = ht[[row] + [len(special) + i for i in (0, 1, 2)]]
+        hp4 = build_halo_profile(halo_img, sub, 1.0, hcfg)
+        if not np.array_equal(hp4.values, hp3.values):
+            raise RuntimeError(f"halo_select_plus_{name}: the {name} stamp must be rejected")
+    o.params("halo_select", base_sigma_px=1.0, halo_min_refs=3, halo_radius_sigma=4.0,
+             three_rows=[len(special), len(special) + 1, len(special) + 2],
+             rejected_rows={"dark": 4, "neighbour": 5})
 
     # 7. The halo's Moffat fallback on the edge-case frame (too few clean reference stars).
     odd = np.load(o.dir / "odd_stars.npy").astype(np.float64)

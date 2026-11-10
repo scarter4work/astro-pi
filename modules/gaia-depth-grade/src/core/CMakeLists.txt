@@ -9,6 +9,7 @@ add_library(gdg_core STATIC
     DaoFind.cpp
     Detect.cpp
     Transform.cpp
+    HaloProfile.cpp
 )
 # Consumers include "core/<Header>.h".
 target_include_directories(gdg_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")

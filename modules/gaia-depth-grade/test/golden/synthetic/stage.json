@@ -385,6 +385,20 @@
   "halo_radius_sigma": 8.0,
   "is_empirical": true
  },
+ "halo_select": {
+  "base_sigma_px": 1.0,
+  "halo_min_refs": 3,
+  "halo_radius_sigma": 4.0,
+  "rejected_rows": {
+   "dark": 4,
+   "neighbour": 5
+  },
+  "three_rows": [
+   7,
+   8,
+   9
+  ]
+ },
  "inputs": {
   "mono": "mean of the three float32 channels, rounded to float32",
   "n_stars": 80,

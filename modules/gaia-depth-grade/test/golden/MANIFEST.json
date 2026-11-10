@@ -404,8 +404,8 @@
    ]
   },
   "dao_reject_input": {
-   "dtype": "<f8",
-   "sha256": "874013fa2f0f550a0d291d6d1853dca7bb406a4e70df06f0ed4496abbf6fbc93",
+   "dtype": "<f4",
+   "sha256": "2b3d0edfdacbc88a3e275df8c4677ce33c49b126d281656b78ac4b032993e395",
    "shape": [
     32,
     40
@@ -413,7 +413,7 @@
   },
   "dao_reject_nofilter": {
    "dtype": "<f8",
-   "sha256": "c4b645e53e481d5a841489172b80ef9df9bba4ff784fb89c954c59a88716399b",
+   "sha256": "c33cfbf62a7e1c40b0548cf33d10998b01f858935f728c99710f28a48c5735c4",
    "shape": [
     3,
     7
@@ -619,6 +619,56 @@
    "sha256": "7c0f41a7ad0c488f12157ee8ea7adb23da479a1870d55e85b418d660cddca877",
    "shape": [
     17
+   ]
+  },
+  "halo_select_r_grid": {
+   "dtype": "<f8",
+   "sha256": "a5153b5610f0eaf605cc3b7fd88bb4192711754ebb9f5e55f03f8719d5e85fd4",
+   "shape": [
+    5
+   ]
+  },
+  "halo_select_stars": {
+   "dtype": "<f4",
+   "sha256": "2d8ca8b601fc347f925ba6b72d4cd61b63f02cd17a0da8095d896893bf2bd492",
+   "shape": [
+    48,
+    64
+   ]
+  },
+  "halo_select_table_flux": {
+   "dtype": "<f8",
+   "sha256": "0455d51edff275ad8642bdbf6cf2e16bce05971cda8c9c104cb3a3cc382e3d1e",
+   "shape": [
+    21
+   ]
+  },
+  "halo_select_table_x": {
+   "dtype": "<f8",
+   "sha256": "32a179a8f9c9b43a271d1231fb031fcad7a7ab0cae3d40ccd2308af8d44ed743",
+   "shape": [
+    21
+   ]
+  },
+  "halo_select_table_y": {
+   "dtype": "<f8",
+   "sha256": "d6146b42fe002fcc7355581447ab018a32d5958c2e3e60b7bf946e177d02ec81",
+   "shape": [
+    21
+   ]
+  },
+  "halo_select_three_values": {
+   "dtype": "<f8",
+   "sha256": "320e9f2db68915e010ce1ab81ecf448876b08b1e0049c7e1988b602e21f7410d",
+   "shape": [
+    5
+   ]
+  },
+  "halo_select_values": {
+   "dtype": "<f8",
+   "sha256": "66f4f86d1ba129ef381bba7ad45506560fba6e534c1f7121267628f5ba500dbe",
+   "shape": [
+    5
    ]
   },
   "halo_values": {
@@ -1680,7 +1730,7 @@
  "python_core": {
   "core_last_change_commit": "d46f6995376c2a95f9d05ea1b52537dee8714318",
   "core_tree_dirty": false,
-  "repo_head": "f27aabec6b4129f9d8692037306ee103184ed2e6"
+  "repo_head": "7597f08bde490815c018985681073ca89ad1436b"
  },
  "seed": 20261110,
  "selftest_files": [
@@ -1729,6 +1779,7 @@
   "gauss_65p0",
   "halo_fallback",
   "halo_profile",
+  "halo_select",
   "inputs",
   "looks_linear",
   "match_stats",
