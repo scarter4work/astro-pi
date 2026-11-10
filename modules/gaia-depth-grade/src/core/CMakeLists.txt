@@ -29,4 +29,5 @@ target_sources(gdg_core PRIVATE
     recon/Ionization.cpp
     recon/Ionizer.cpp
     recon/Extinction.cpp
+    recon/Cavity.cpp
 )
