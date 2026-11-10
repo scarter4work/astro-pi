@@ -26,4 +26,6 @@ target_compile_options(gdg_core PUBLIC -ffp-contract=off)
 # parallel phases append without touching each other's lines.
 target_sources(gdg_core PRIVATE
     recon/Channels.cpp
+    recon/Ionization.cpp
+    recon/Ionizer.cpp
 )

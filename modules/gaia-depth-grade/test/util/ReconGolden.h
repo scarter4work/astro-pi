@@ -28,6 +28,14 @@ inline gdg::Image crop(const gdg::Image& in, int y0, int y1, int x0, int x1) {
     return out;
 }
 
+/// The synthetic_blister fixture's SHO ChannelSet (confidence 1.0, linear). Its sii is
+/// float32(0.5 * ha) exactly (stage.json "recon_sii"; asserted by the generator).
+inline gdg::recon::ChannelSet blister_channels() {
+    gdg::Image ha = golden_image("recon_ha"), oiii = golden_image("recon_oiii"), sii = ha;
+    for (double& v : sii.data) v = gdg::recon::f32(0.5 * v);
+    return gdg::recon::ChannelSet(std::move(ha), std::move(oiii), std::move(sii), 1.0, true);
+}
+
 /// The C++ output, already float32-valued, against a float32 golden: reports the worst |d| and
 /// the count of elements that are not bit-identical, and checks both against the stated limits.
 inline void check_golden_image(const gdg::Image& got, const std::string& name, double tol, size_t max_unequal) {
