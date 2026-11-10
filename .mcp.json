@@ -2,11 +2,15 @@
   "mcpServers": {
     "pcl": {
       "command": "node",
-      "args": ["/home/scarter4work/projects/astro-pi/tools/pcl_parser/src/mcp-server.js"]
+      "args": [
+        "/home/scarter4work/projects/pi-parsers/pcl_parser/src/mcp-server.js"
+      ]
     },
     "pjsr": {
       "command": "node",
-      "args": ["/home/scarter4work/projects/astro-pi/tools/pjsr_parser/src/mcp-server.js"]
+      "args": [
+        "/home/scarter4work/projects/pi-parsers/pjsr_parser/src/mcp-server.js"
+      ]
     }
   }
 }

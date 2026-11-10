@@ -1,0 +1,3 @@
+# PixInsight's own PCL distribution: made locally by make-tarball.sh, never committed (SHA256SUMS pins it).
+PCL-*.tar.gz
+.PCL-tarball.*
