@@ -1,0 +1,4 @@
+<p>
+   <b>GaiaDepthGrade 1.0.0.0</b>
+</p>
+<p>Gaia Depth Grade as a native PixInsight module: it grades the stars of an image by their measured Gaia distances, and the nebula by a structure-driven, Gaia-calibrated depth. Requires PixInsight 1.9.6 or later.</p>

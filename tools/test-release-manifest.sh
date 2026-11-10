@@ -26,7 +26,7 @@ sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MF"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 DATE=20991231
-for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest; do
+for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest module_platform_block; do
   body="$(sed -n "/^$f(){/,/^}/p" "$SCRIPT")"
   if [ -n "$body" ]; then eval "$body"; else echo "  (release.sh has no $f)"; fi
 done
@@ -190,6 +190,42 @@ if [ -n "$RET_RE" ] && have retire_manifest; then
   else bad "retire_manifest did not drop exactly one entry for $RET_RE"; fi
   if ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1; then ok "retire_manifest is idempotent once the entry is gone"; else bad "retire_manifest failed on an already-retired manifest"; fi
 else echo "  (no RETIRED_PKG_RE / retire_manifest in release.sh)"; fi
+# 10. module_platform_block (PCL 2.13: modules need PixInsight >= 1.9.6): on a fresh copy of the manifest,
+#     the module packages move into ONE linux/x64 1.9.6:2.0.0 block placed after the 1.8.0 one, the
+#     sidecar stays in the 1.8.0 block, the noarch block is untouched, a second run changes nothing,
+#     and two entries for one module fail.
+MB="$WORK/module-block.xri"
+sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MB"
+mb_report(){ python3 - "$MB" <<'PY'
+import re,sys
+s=open(sys.argv[1]).read()
+blocks=[(m.group(1),m.group(2)) for m in re.finditer(r'<platform ([^>]*)>(.*?)</platform>',s,re.S)]
+heads=[h for h,_ in blocks]
+names=lambda b: re.findall(r'<package fileName="([^"]+)"',b)
+out=[]
+for h,b in blocks: out.append("%s: %s"%(h," ".join(sorted(names(b)))))
+print("\n".join(out))
+PY
+}
+noarch_before="$(mb_report | grep 'os="all"')"
+if have module_platform_block && ( module_platform_block "$MB" NukeX PICopilot Planetary GaiaDepthGrade ) >/dev/null 2>&1; then
+  rep="$(mb_report)"
+  heads="$(grep -c 'os="linux" arch="x64"' <<< "$rep")"
+  mods="$(grep 'version="1.9.6:2.0.0"' <<< "$rep")"
+  old="$(grep 'os="linux" arch="x64" version="1.8.0:2.0.0"' <<< "$rep")"
+  if [ "$heads" = 2 ] && grep -q 'NukeX' <<< "$mods" && grep -q 'PICopilot' <<< "$mods" && grep -q 'Planetary' <<< "$mods" \
+     && ! grep -q 'NukeX\|PICopilot\|Planetary' <<< "$old" && grep -q 'GaiaDepthGradeSidecar' <<< "$old" \
+     && ! grep -q 'GaiaDepthGradeSidecar' <<< "$mods" && [ "$(grep 'os="all"' <<< "$rep")" = "$noarch_before" ] \
+     && [ "$(grep -n 'version=' <<< "$rep" | head -2 | tail -1 | grep -c '1.9.6:2.0.0')" = 1 ]; then
+    ok "module_platform_block: NukeX, PICopilot, Planetary in the linux/x64 1.9.6:2.0.0 block; sidecar and scripts keep theirs"
+  else bad "module_platform_block placed the packages wrongly:"; sed 's/^/        /' <<< "$rep"; fi
+  before="$(sha1sum < "$MB")"
+  ( module_platform_block "$MB" NukeX PICopilot Planetary GaiaDepthGrade ) >/dev/null 2>&1 && [ "$(sha1sum < "$MB")" = "$before" ] \
+    && ok "module_platform_block is idempotent" || bad "a second module_platform_block run changed the manifest"
+  python3 -c "import re,sys;p=sys.argv[1];s=open(p).read();m=re.search(r'\n[ \t]*<package fileName=\"[^\"]*-linux-x64-NukeX[^\"]*\".*?</package>',s,re.S);open(p,'w').write(s[:m.end()]+m.group(0)+s[m.end():])" "$MB"
+  ( module_platform_block "$MB" NukeX ) >/dev/null 2>&1 && bad "module_platform_block accepted two NukeX entries" \
+    || ok "module_platform_block fails on two entries for one module"
+else bad "module_platform_block failed on the repository manifest"; fi
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1
