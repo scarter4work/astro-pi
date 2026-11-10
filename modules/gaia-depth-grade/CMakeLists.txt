@@ -22,6 +22,9 @@ endif()
 option(GDG_BUILD_MODULE "Build the PixInsight module (requires PCL SDK)" OFF)
 option(GDG_BUILD_TESTS "Build unit tests" ON)
 
+# gdg_core: PCL-free numerics (always built; the module and the tests link it).
+add_subdirectory(src/core)
+
 if(GDG_BUILD_TESTS)
     enable_testing()
     add_subdirectory(test)

@@ -17,3 +17,4 @@ function(gdg_add_test test_name test_source)
 endfunction()
 
 gdg_add_test(test_npy unit/test_npy.cpp)
+gdg_add_test(test_gaussian unit/test_gaussian.cpp gdg_core)
