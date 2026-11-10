@@ -98,6 +98,10 @@ bool GDGProbeInstance::ExecuteGlobal()
          body = ProbeLocalGaia( p_args );
       else if ( p_case == "online" )
          body = ProbeOnline( p_args );
+      else if ( p_case == "introspect" )
+         body = ProbeIntrospect( p_args );
+      else if ( p_case == "solve" )
+         body = ProbeSolve( p_args );
       else
          throw Error( "GaiaDepthGradeProbe: unknown global case '" + p_case + "'" );
       return Finish( "{\"ok\":true,\"case\":" + gdgprobe::Str( p_case ) + "," + body + "}\n" );

@@ -8,6 +8,10 @@ set(MODULE_SOURCES
     PclSky.cpp
     LocalGaia.cpp
     TapClient.cpp
+    Solver.cpp
+    SolverAlign.cpp
+    SolverBlind.cpp
+    SolverDetect.cpp
 )
 
 # GDG_BUILD_PROBES (OFF; host test builds only, never the container/release build) adds the
@@ -19,6 +23,8 @@ if(GDG_BUILD_PROBES)
         probe/ProbeSky.cpp
         probe/ProbeLocalGaia.cpp
         probe/ProbeOnline.cpp
+        probe/ProbeIntrospect.cpp
+        probe/ProbeSolve.cpp
     )
 endif()
 

@@ -67,6 +67,8 @@ private:
 IsoString ProbeSkyAdapterConvention( View& view, const String& args );
 IsoString ProbeLocalGaia( const String& args );
 IsoString ProbeOnline( const String& args );
+IsoString ProbeIntrospect( const String& args );
+IsoString ProbeSolve( const String& args );
 
 extern GDGProbeProcess* TheGDGProbeProcess;
 
