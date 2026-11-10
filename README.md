@@ -12,7 +12,7 @@ https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/
 
 Then Resources → Updates → Check for Updates. Installs:
 
-- **NukeX** — integration + stretching module (`modules/nukex/`)
+- **NukeX** — per-pixel distribution-fitting signal estimator and stretching module (`modules/nukex/`)
 - **PI Copilot** — AI assistant panel, bring your own Anthropic API key (`modules/pi-copilot/`)
 - **Planetary** — SER and AVI video viewer with Save as SER (process SERViewer), and PlanetaryStack, automatic lucky-imaging stacking of those videos (`modules/planetary/`)
 - **Gaia Depth Grade** — PJSR scripts + their linux-x64 sidecar (`gaia-depth-grade/`)

@@ -1,13 +1,12 @@
 # NukeX
 
-Distribution-fitted image stacking and auto-stretch for PixInsight, with
+Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight, with
 filter-aware colour science: dual-narrowband OSC data is decomposed into
 emission lines through the camera's measured quantum efficiency and composed
 with a calibrated palette.
 
-Rather than averaging or sigma-clipping, NukeX fits a distribution to every
-pixel's samples across the stack and estimates the true signal from the fitted
-model. Each pixel carries its own record — Welford accumulators, a histogram,
+NukeX fits a distribution to every pixel's samples across the frames you add
+and estimates the signal from the fitted model. Each pixel carries its own record — Welford accumulators, a histogram,
 the fitted distribution and its robust statistics, per channel — and the
 selection is made from that record.
 
