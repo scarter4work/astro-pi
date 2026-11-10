@@ -7,6 +7,7 @@ set(MODULE_SOURCES
     ImageBridge.cpp
     PclSky.cpp
     LocalGaia.cpp
+    TapClient.cpp
 )
 
 # GDG_BUILD_PROBES (OFF; host test builds only, never the container/release build) adds the
@@ -17,6 +18,7 @@ if(GDG_BUILD_PROBES)
         probe/ProbeProcess.cpp
         probe/ProbeSky.cpp
         probe/ProbeLocalGaia.cpp
+        probe/ProbeOnline.cpp
     )
 endif()
 

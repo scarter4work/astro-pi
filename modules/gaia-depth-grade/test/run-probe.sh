@@ -8,6 +8,8 @@
 #                            master plate-solved by ImageSolver; ImageBridge row order. Needs the NAS.
 #   local_gaia_equals_gaia_process  Task 12: LocalGaiaSource rows == the Gaia process search on the
 #                            same cone and files; BP-RP reaches the catalogue. Needs a configured DR3.
+#   online_live              Task 13: LIVE ESA Gaia TAP query through TapClient (NetworkTransfer), then
+#                            the cache; skipped unless GDG_LIVE_TAP=1.
 #
 # Exit: 0 PASS, 1 FAIL, 2 BLOCKED (no signing pass file), 77 every requested case skipped.
 #
@@ -20,7 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 . "$HERE/harness.sh"
 
-ALL_CASES=( sky_adapter_convention local_gaia_equals_gaia_process )
+ALL_CASES=( sky_adapter_convention local_gaia_equals_gaia_process online_live )
 CASES=( "$@" )
 [ ${#CASES[@]} -eq 0 ] && CASES=( "${ALL_CASES[@]}" )
 for c in "${CASES[@]}"; do
@@ -129,6 +131,30 @@ case_local_gaia_equals_gaia_process()
       ok "distances_for: $nc usable rows, $bf with BP-RP = BP - RP (none mismatched)"
    else bad "BP-RP pass-through: $bf of $nc finite, $(num .cpp.catalogBpMismatch "$c") mismatched"; fi
    echo "  info  log: $(jq -r '(.cpp.warnings + .cpp.infos) | join(" | ")' "$c")"
+}
+
+case_online_live()
+{
+   if [ "${GDG_LIVE_TAP:-}" != 1 ]; then
+      echo "  skip  online_live: live ESA archive query; run with GDG_LIVE_TAP=1"; skipped=$((skipped + 1)); return 0
+   fi
+   ran=$((ran + 1))
+   # A tiny cone at the NGC 7635 field centre (r = 0.02 deg, G < 18: a handful of rows).
+   run_pi online_live "$HERE/probe-online.js" \
+      GDG_ONLINE_ARGS="${GDG_ONLINE_CONE:-350.1671987228608 61.22006490843979 0.02 18} $GDG_RUN_DIR/tapcache" || return 0
+   local c="$OUT"
+   jq -r '.requests[]' "$c" | sed 's/^/  info  /'
+   [ "$(num .rows "$c")" -ge 1 ] && ok "online source: $(num .rows "$c") rows ($(num .rowsWithColour "$c") with BP-RP) in $(num .seconds "$c") s" \
+      || bad "online source returned $(num .rows "$c") rows"
+   if jq -e '[.requests[] | select(test("^(GET|POST) https://gea\\.esac\\.esa\\.int/") | not)] | length == 0' "$c" >/dev/null; then
+      ok "every request went to https://gea.esac.esa.int/"
+   else bad "a request left https://gea.esac.esa.int/: $(jq -c .requests "$c")"; fi
+   jq -e '.requests | any(test("^POST https://gea\\.esac\\.esa\\.int/tap-server/tap/async -> 303 "))' "$c" >/dev/null \
+      && ok "job submitted (303, job URL read from the body: NetworkTransfer follows no redirect)" || bad "no 303 job submission"
+   [ "$(num .cachedRequests "$c")" = 0 ] && [ "$(jq -r .cachedSame "$c")" = true ] \
+      && ok "second run answered by the cache: 0 requests, same rows ($(jq -r '.cachedWarnings | join(" | ")' "$c"))" \
+      || bad "cache not reused: $(num .cachedRequests "$c") requests, same=$(jq -r .cachedSame "$c")"
+   echo "  info  log: $(jq -r '(.warnings + .infos) | join(" | ")' "$c")"
 }
 
 for c in "${CASES[@]}"; do

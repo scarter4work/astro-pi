@@ -66,6 +66,7 @@ private:
 // fields, which the instance adds) or throws.
 IsoString ProbeSkyAdapterConvention( View& view, const String& args );
 IsoString ProbeLocalGaia( const String& args );
+IsoString ProbeOnline( const String& args );
 
 extern GDGProbeProcess* TheGDGProbeProcess;
 

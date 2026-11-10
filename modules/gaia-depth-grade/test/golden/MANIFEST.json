@@ -1730,7 +1730,7 @@
  "python_core": {
   "core_last_change_commit": "d46f6995376c2a95f9d05ea1b52537dee8714318",
   "core_tree_dirty": false,
-  "repo_head": "e96135045bcec8711a4ecb4130b751658018d27e"
+  "repo_head": "076259f079de06811c4e96ea190463b82ab7647b"
  },
  "seed": 20261110,
  "selftest_files": [
@@ -1815,6 +1815,7 @@
   "recon_terms",
   "sigma_clip",
   "summary",
+  "tap",
   "wcs"
  ],
  "versions": {

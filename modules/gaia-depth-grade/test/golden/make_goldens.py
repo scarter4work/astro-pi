@@ -915,6 +915,33 @@ def selftest_npy(o: Out):
     np.save(o.dir / "npy_selftest_fortran.npy", np.asfortranarray(np.arange(6, dtype="<f8").reshape(3, 2)))
 
 
+def tap_strings(o: Out):
+    """Plan Task 13: the online source's exact strings. build_adql (Python repr floats in an
+    f-string) and the cache file name GaiaStarSource._cache_path derives (%.6f key + mag repr,
+    SHA-1, first 16 hex), for footprints whose floats exercise repr's fixed/exponent switch."""
+    import tempfile
+    from gaia_depth_grade.distances import GaiaStarSource, build_adql
+    footprints = [
+        (10.0, 20.0, 0.033138896900215445),
+        (350.1671987228608, 61.22006490843979, 0.7512345678901234),
+        (0.0, -0.0001, 1e-05),
+        (359.99999999999994, -89.5, 12.5),
+        (123.456, 1e-17, 1e16),
+        (0.1, 2.5e-07, 0.30000000000000004),
+    ]
+    cases = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for ra, dec, r in footprints:
+            fp = FieldFootprint(center_ra=ra, center_dec=dec, radius_deg=r)
+            for top, gt, lt in ((600000, None, None), (600000, None, 18.0), (2000, 12.345, 17.5), (5, 9.0, None)):
+                cases.append({"footprint": [ra, dec, r], "top": top, "mag_gt": gt, "mag_lt": lt,
+                              "adql": build_adql(fp, top, mag_gt=gt, mag_lt=lt)})
+            for mag in (None, 18.0, 17.25):
+                name = Path(GaiaStarSource(tmp, mag_limit=mag)._cache_path(fp)).name
+                cases.append({"footprint": [ra, dec, r], "cache_mag": mag, "cache_file": name})
+    o.params("tap", cases=cases)
+
+
 # --------------------------------------------------------------------------- manifest
 
 def _git(*args) -> str:
@@ -997,6 +1024,7 @@ def synthetic(outdir: Path, argv) -> None:
     primitives(o, rng)
     recon(o, rng)
     phase_c_cases(o)
+    tap_strings(o)
     selftest_npy(o)
     write_manifest(o, "synthetic", argv)
 

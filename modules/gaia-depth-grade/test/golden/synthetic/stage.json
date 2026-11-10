@@ -844,6 +844,436 @@
   "n_detected": 37,
   "n_matched": 26
  },
+ "tap": {
+  "cases": [
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 10.0, 20.0, 0.033138896900215445)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ],
+    "mag_gt": null,
+    "mag_lt": null,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 10.0, 20.0, 0.033138896900215445)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag < 18.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ],
+    "mag_gt": null,
+    "mag_lt": 18.0,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 2000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 10.0, 20.0, 0.033138896900215445)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 12.345 AND g.phot_g_mean_mag < 17.5 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ],
+    "mag_gt": 12.345,
+    "mag_lt": 17.5,
+    "top": 2000
+   },
+   {
+    "adql": "SELECT TOP 5 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 10.0, 20.0, 0.033138896900215445)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 9.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ],
+    "mag_gt": 9.0,
+    "mag_lt": null,
+    "top": 5
+   },
+   {
+    "cache_file": "gaia_26690f983ff95d64.ecsv",
+    "cache_mag": null,
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ]
+   },
+   {
+    "cache_file": "gaia_757269e8d78a2ae1.ecsv",
+    "cache_mag": 18.0,
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ]
+   },
+   {
+    "cache_file": "gaia_3cf2541d88371918.ecsv",
+    "cache_mag": 17.25,
+    "footprint": [
+     10.0,
+     20.0,
+     0.033138896900215445
+    ]
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 350.1671987228608, 61.22006490843979, 0.7512345678901234)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ],
+    "mag_gt": null,
+    "mag_lt": null,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 350.1671987228608, 61.22006490843979, 0.7512345678901234)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag < 18.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ],
+    "mag_gt": null,
+    "mag_lt": 18.0,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 2000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 350.1671987228608, 61.22006490843979, 0.7512345678901234)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 12.345 AND g.phot_g_mean_mag < 17.5 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ],
+    "mag_gt": 12.345,
+    "mag_lt": 17.5,
+    "top": 2000
+   },
+   {
+    "adql": "SELECT TOP 5 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 350.1671987228608, 61.22006490843979, 0.7512345678901234)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 9.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ],
+    "mag_gt": 9.0,
+    "mag_lt": null,
+    "top": 5
+   },
+   {
+    "cache_file": "gaia_853d4b274d58652e.ecsv",
+    "cache_mag": null,
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ]
+   },
+   {
+    "cache_file": "gaia_46498f15e18ccb4c.ecsv",
+    "cache_mag": 18.0,
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ]
+   },
+   {
+    "cache_file": "gaia_27af810372252959.ecsv",
+    "cache_mag": 17.25,
+    "footprint": [
+     350.1671987228608,
+     61.22006490843979,
+     0.7512345678901234
+    ]
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.0, -0.0001, 1e-05)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ],
+    "mag_gt": null,
+    "mag_lt": null,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.0, -0.0001, 1e-05)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag < 18.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ],
+    "mag_gt": null,
+    "mag_lt": 18.0,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 2000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.0, -0.0001, 1e-05)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 12.345 AND g.phot_g_mean_mag < 17.5 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ],
+    "mag_gt": 12.345,
+    "mag_lt": 17.5,
+    "top": 2000
+   },
+   {
+    "adql": "SELECT TOP 5 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.0, -0.0001, 1e-05)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 9.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ],
+    "mag_gt": 9.0,
+    "mag_lt": null,
+    "top": 5
+   },
+   {
+    "cache_file": "gaia_473508bf0a7dc87e.ecsv",
+    "cache_mag": null,
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ]
+   },
+   {
+    "cache_file": "gaia_665781b7af00edce.ecsv",
+    "cache_mag": 18.0,
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ]
+   },
+   {
+    "cache_file": "gaia_c59f38e0d88b06c3.ecsv",
+    "cache_mag": 17.25,
+    "footprint": [
+     0.0,
+     -0.0001,
+     1e-05
+    ]
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 359.99999999999994, -89.5, 12.5)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ],
+    "mag_gt": null,
+    "mag_lt": null,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 359.99999999999994, -89.5, 12.5)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag < 18.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ],
+    "mag_gt": null,
+    "mag_lt": 18.0,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 2000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 359.99999999999994, -89.5, 12.5)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 12.345 AND g.phot_g_mean_mag < 17.5 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ],
+    "mag_gt": 12.345,
+    "mag_lt": 17.5,
+    "top": 2000
+   },
+   {
+    "adql": "SELECT TOP 5 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 359.99999999999994, -89.5, 12.5)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 9.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ],
+    "mag_gt": 9.0,
+    "mag_lt": null,
+    "top": 5
+   },
+   {
+    "cache_file": "gaia_45501e479565030f.ecsv",
+    "cache_mag": null,
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ]
+   },
+   {
+    "cache_file": "gaia_a5a03b1eb5b93376.ecsv",
+    "cache_mag": 18.0,
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ]
+   },
+   {
+    "cache_file": "gaia_d1f6cb4ab252630e.ecsv",
+    "cache_mag": 17.25,
+    "footprint": [
+     359.99999999999994,
+     -89.5,
+     12.5
+    ]
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 123.456, 1e-17, 1e+16)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ],
+    "mag_gt": null,
+    "mag_lt": null,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 123.456, 1e-17, 1e+16)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag < 18.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ],
+    "mag_gt": null,
+    "mag_lt": 18.0,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 2000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 123.456, 1e-17, 1e+16)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 12.345 AND g.phot_g_mean_mag < 17.5 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ],
+    "mag_gt": 12.345,
+    "mag_lt": 17.5,
+    "top": 2000
+   },
+   {
+    "adql": "SELECT TOP 5 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 123.456, 1e-17, 1e+16)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 9.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ],
+    "mag_gt": 9.0,
+    "mag_lt": null,
+    "top": 5
+   },
+   {
+    "cache_file": "gaia_ee03c7f8be83d219.ecsv",
+    "cache_mag": null,
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ]
+   },
+   {
+    "cache_file": "gaia_83d68623f878c5ee.ecsv",
+    "cache_mag": 18.0,
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ]
+   },
+   {
+    "cache_file": "gaia_2758b08809fa53c8.ecsv",
+    "cache_mag": 17.25,
+    "footprint": [
+     123.456,
+     1e-17,
+     1e+16
+    ]
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.1, 2.5e-07, 0.30000000000000004)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ],
+    "mag_gt": null,
+    "mag_lt": null,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 600000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.1, 2.5e-07, 0.30000000000000004)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag < 18.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ],
+    "mag_gt": null,
+    "mag_lt": 18.0,
+    "top": 600000
+   },
+   {
+    "adql": "SELECT TOP 2000 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.1, 2.5e-07, 0.30000000000000004)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 12.345 AND g.phot_g_mean_mag < 17.5 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ],
+    "mag_gt": 12.345,
+    "mag_lt": 17.5,
+    "top": 2000
+   },
+   {
+    "adql": "SELECT TOP 5 g.ra, g.dec, d.r_med_geo, d.r_lo_geo, d.r_hi_geo, g.source_id, g.phot_g_mean_mag, g.bp_rp FROM gaiadr3.gaia_source AS g JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', 0.1, 2.5e-07, 0.30000000000000004)) AND d.r_med_geo IS NOT NULL AND g.phot_g_mean_mag IS NOT NULL AND g.phot_g_mean_mag > 9.0 ORDER BY g.phot_g_mean_mag ASC",
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ],
+    "mag_gt": 9.0,
+    "mag_lt": null,
+    "top": 5
+   },
+   {
+    "cache_file": "gaia_c7f8725bca90d7d5.ecsv",
+    "cache_mag": null,
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ]
+   },
+   {
+    "cache_file": "gaia_b32b5845fb86a908.ecsv",
+    "cache_mag": 18.0,
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ]
+   },
+   {
+    "cache_file": "gaia_6bf5ea29a60bcdad.ecsv",
+    "cache_mag": 17.25,
+    "footprint": [
+     0.1,
+     2.5e-07,
+     0.30000000000000004
+    ]
+   }
+  ]
+ },
  "wcs": {
   "header": {
    "CDELT1": -0.00027777777777778,
