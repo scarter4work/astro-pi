@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="author" content="Scott Carter" />
+<meta name="description" content="EZ Stretch: three stretches of a linear colour image in one dialog with a live preview. What it does, its parameters, and what it does not do: no network connections, no external programs, no files written." />
+<title>EZ Stretch</title>
+<style>
+   body { font-family: "DejaVu Sans", "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px;
+          line-height: 1.5; color: #222; background: #fff; max-width: 52em; margin: 0 auto; padding: 1em 1.5em 3em; }
+   h1 { font-size: 1.9em; margin-bottom: 0.1em; }
+   h2 { font-size: 1.35em; margin-top: 1.8em; border-bottom: 1px solid #ccc; padding-bottom: 0.15em; }
+   h3 { font-size: 1.1em; margin-top: 1.3em; }
+   .subtitle { color: #555; margin-top: 0; }
+   code { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 0.92em; background: #f2f2f2; padding: 0 0.2em; }
+   pre { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 0.85em; background: #f6f6f6; padding: 0.6em; white-space: pre-wrap; }
+   table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+   th, td { border: 1px solid #ccc; padding: 0.35em 0.5em; text-align: left; vertical-align: top; }
+   th { background: #f2f2f2; }
+   .toc a { text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1>EZ Stretch</h1>
+<p class="subtitle">Three stretches of a linear colour image in one dialog, with a live preview &mdash; script version 1.0.12.<br />
+By Scott Carter. Copyright &copy; 2025-2026 Brian Scott Carter.</p>
+
+<div class="toc">
+<p><b>Contents:</b>
+<a href="#what">What it does</a> &middot;
+<a href="#needs">What it needs</a> &middot;
+<a href="#use">Using it</a> &middot;
+<a href="#lupton">Lupton RGB</a> &middot;
+<a href="#rnc">RNC-ColorStretch</a> &middot;
+<a href="#photo">PhotometricStretch</a> &middot;
+<a href="#network">Network connections</a> &middot;
+<a href="#programs">External programs</a> &middot;
+<a href="#files">Files</a> &middot;
+<a href="#remove">What installing this version removes</a> &middot;
+<a href="#licence">Licence and references</a></p>
+</div>
+
+<h2 id="what">What it does</h2>
+<p>EZ Stretch turns a linear (unstretched) colour image into a stretched one with one of three algorithms, chosen in
+the dialog: <b>Lupton RGB</b>, <b>RNC-ColorStretch</b> and <b>PhotometricStretch</b>. While you adjust the parameters,
+a preview shows the result. <b>Execute</b> creates a new image window with the stretched result; the image you started
+from is never changed.</p>
+<p>The new window is a 32-bit floating-point RGB image named after the source view, with a suffix for the algorithm:
+<code>&lt;id&gt;_lupton</code>, <code>&lt;id&gt;_rnc</code> or <code>&lt;id&gt;_photo</code>. EZ Stretch does not save it;
+you save it through PixInsight as usual.</p>
+
+<h2 id="needs">What it needs</h2>
+<ul>
+   <li>PixInsight 1.8.0 or later.</li>
+   <li>An open colour image with at least three channels (the first three are used as red, green and blue). Monochrome
+       images are not supported: the preview stays empty and <b>Execute</b> reports &ldquo;Processing failed&rdquo; in
+       the Process Console.</li>
+   <li>Linear data, normally straight from integration and colour calibration. On an image that is already stretched
+       the result is far too bright.</li>
+</ul>
+
+<h2 id="use">Using it</h2>
+<p>Open an image, then run <b>Script &gt; scarter4work &gt; EZ Stretch</b>. If no image window is open, the script says so
+and stops.</p>
+<ul>
+   <li><b>Target</b>: the image to stretch. The active image window is selected when the dialog opens.</li>
+   <li><b>Algorithm</b>: the stretch. Only the selected algorithm's parameters are shown; each algorithm keeps its own
+       values while you switch between them.</li>
+   <li><b>Before / Split / After</b>: the preview shows the source, a split view (source on the left of the line,
+       result on the right; the default), or the result. The source is shown linear and multiplied by 10 so that it is
+       visible; that brightening is for display only.</li>
+   <li><b>Zoom</b>: the &minus; and + buttons or the mouse wheel zoom by a factor of 1.25 per step, up to 800%; <b>Fit</b> fits the image to the
+       preview. Drag with the left mouse button to pan a zoomed preview.</li>
+   <li><b>Reset</b> restores the defaults of the selected algorithm. <b>Execute</b> creates the stretched image and
+       writes the algorithm, the source and the time taken to the Process Console. <b>Close</b> closes the dialog.</li>
+</ul>
+<p>The preview is computed at display size from a nearest-neighbour sample of the image, so fine detail can look
+different from the full-resolution result. In Lupton RGB's <b>Rescale to Max</b> clipping mode the preview does not show
+the final rescaling.</p>
+
+<h2 id="lupton">Lupton RGB</h2>
+<p>The colour-preserving arcsinh stretch of Lupton et al. (2004). With intensity <i>I</i> = (R + G + B) / 3 and black point
+<i>m</i>, every channel is multiplied by the same factor
+asinh(&alpha;&middot;Q&middot;(<i>I</i> &minus; <i>m</i>)) / (Q&middot;(<i>I</i> &minus; <i>m</i>)) after <i>m</i> is subtracted,
+so the ratios between the channels (the colour) are kept.</p>
+<table>
+<tr><th>Parameter</th><th>Range</th><th>Default</th><th>Effect</th></tr>
+<tr><td>Stretch (&alpha;)</td><td>0.1 &ndash; 1000</td><td>5</td><td>Linear amplification before the arcsinh.</td></tr>
+<tr><td>Q (softening)</td><td>&minus;10 &ndash; 30</td><td>8</td><td>Where the response turns from linear to
+logarithmic. On Execute, a Q closer to 0 than 0.01 is used as 0.01.</td></tr>
+<tr><td>Black Point</td><td>0 &ndash; 0.1</td><td>0</td><td>Background level subtracted from every channel first.</td></tr>
+<tr><td>Saturation</td><td>0.5 &ndash; 2</td><td>1</td><td>Scales each channel's distance from the mean of the three
+channels after the stretch (1 = unchanged).</td></tr>
+<tr><td>Clipping</td><td>&mdash;</td><td>Preserve Color</td><td>Values above 1: <b>Preserve Color</b> divides all three
+channels of a pixel by its largest value (hue kept); <b>Hard Clip</b> cuts each channel at 1; <b>Rescale to Max</b>
+rescales the whole result to the range 0&ndash;1.</td></tr>
+</table>
+
+<h2 id="rnc">RNC-ColorStretch</h2>
+<p>A root-power stretch after the method of Roger N. Clark's rnc-color-stretch: each channel is raised to the power
+1 / <i>Root Power</i>. This is an implementation of the root-power stretch only; it does not include the colour-recovery
+step of Clark's method.</p>
+<table>
+<tr><th>Parameter</th><th>Range</th><th>Default</th><th>Effect</th></tr>
+<tr><td>Root Power</td><td>1 &ndash; 200</td><td>6</td><td>Each channel becomes <i>x</i><sup>1/Root Power</sup>.</td></tr>
+<tr><td>Two-Pass Stretch</td><td>on / off</td><td>off</td><td>Applies a second root-power stretch with <b>Root Power 2</b>.</td></tr>
+<tr><td>Root Power 2</td><td>1 &ndash; 20</td><td>3</td><td>The second pass's power (only with Two-Pass Stretch).</td></tr>
+<tr><td>S-Curve</td><td>None, SC1&ndash;SC4</td><td>None</td><td>A fixed tone curve applied to each channel after the stretch:
+SC1 <i>x</i> + 0.15&middot;sin(&pi;<i>x</i>)&middot;(1 &minus; <i>x</i>) (lifts the mid-tones); SC2 <i>x</i><sup>0.85</sup>;
+SC3 a small sinusoidal contrast change centred on 0.5; SC4 a blend of 30% linear and 70% smoothstep
+(<i>x</i>&sup2;(3 &minus; 2<i>x</i>)), which adds contrast.</td></tr>
+<tr><td>Saturation</td><td>0.5 &ndash; 2</td><td>1</td><td>Scales each channel's distance from the Rec.&nbsp;709 luminance
+(0.2126 R + 0.7152 G + 0.0722 B).</td></tr>
+</table>
+<p>The result is clipped to the range 0&ndash;1.</p>
+
+<h2 id="photo">PhotometricStretch</h2>
+<p>A luminance-weighted arcsinh stretch. After the black point is subtracted, the luminance
+<i>L</i> = 0.2126 R + 0.7152 G + 0.0722 B (fixed Rec.&nbsp;709 weights; no camera or sensor data are used) is stretched to
+asinh(&alpha;&middot;<i>L</i> / Q) / asinh(&alpha; / Q), and all three channels are multiplied by the same factor, so the
+colour ratios are kept. The result is clipped to the range 0&ndash;1. This algorithm computes every pixel in the script
+itself, so on a large image Execute can take noticeably longer than the other two.</p>
+<table>
+<tr><th>Parameter</th><th>Range</th><th>Default</th><th>Effect</th></tr>
+<tr><td>Stretch (&alpha;)</td><td>0.1 &ndash; 1000</td><td>100</td><td>Linear amplification before the arcsinh.</td></tr>
+<tr><td>Q (softening)</td><td>0 &ndash; 100</td><td>25</td><td>Where the response turns from linear to logarithmic
+(values below 0.01 are used as 0.01).</td></tr>
+<tr><td>Black Point</td><td>0 &ndash; 0.01</td><td>0</td><td>Background level subtracted from every channel first.</td></tr>
+<tr><td>Saturation</td><td>0.5 &ndash; 2</td><td>1</td><td>Scales each channel's distance from the luminance after the
+stretch.</td></tr>
+</table>
+
+<h2 id="network">Network connections</h2>
+<p><b>None.</b> EZ Stretch makes no network connection of any kind.</p>
+
+<h2 id="programs">External programs</h2>
+<p><b>None.</b> EZ Stretch does not launch any program or process. Apart from its own code it uses only PixInsight's
+scripting runtime and, for Lupton RGB, PixInsight's PixelMath process.</p>
+
+<h2 id="files">Files</h2>
+<p>EZ Stretch writes <b>no files</b>, inside or outside the PixInsight installation, stores no settings, and opens no
+files: it reads only the pixels of the image you select. Its only outputs are the new image window and a few lines in
+the Process Console.</p>
+
+<h2 id="remove">What installing this version removes</h2>
+<p>EZ Donut Repair is no longer distributed. When the PixInsight update system installs this version of EZ Stretch, it
+first deletes these two files of EZ Donut Repair from the PixInsight installation, if they are there:</p>
+<ul>
+   <li><code>src/scripts/scarter4work/EZDonutRepair.js</code></li>
+   <li><code>src/scripts/scarter4work/EZDonutRepair.xsgn</code></li>
+</ul>
+<p>Nothing else is removed. If EZ Donut Repair was never installed, nothing happens; the updater's log may mention the
+two missing files.</p>
+
+<h2 id="licence">Licence and references</h2>
+<p>EZ Stretch contains no third-party code. It is released under the BSD 3-Clause License:</p>
+<pre>Copyright (c) 2025-2026, Brian Scott Carter
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.</pre>
+<p>The algorithms are described in:</p>
+<ul>
+   <li>R. Lupton, M. R. Blanton, G. Fekete, D. W. Hogg, W. O'Mullane, A. Szalay and N. Wherry, &ldquo;Preparing
+       Red-Green-Blue Images from CCD Data&rdquo;, <i>Publications of the Astronomical Society of the Pacific</i> 116
+       (2004) 133&ndash;137.</li>
+   <li>R. N. Clark, &ldquo;rnc-color-stretch&rdquo;, clarkvision.com. EZ Stretch's RNC-ColorStretch is an independent
+       implementation of the root-power stretch described there, not Clark's software.</li>
+</ul>
+<p>Neither author is associated with EZ Stretch or endorses it.</p>
+
+</body>
+</html>

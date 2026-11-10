@@ -150,12 +150,30 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
 EZ_NAMES=(EZStretch EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.11 [EZHazeKill]=1.0.2 )
+declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.0.2 )
+# EZ script documentation (CPD rule 6.1; Repository Reference 4.2): scripts/ez-stretch/doc/<Name>/ holds
+# <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it.
+EZDOC="$ROOT/scripts/ez-stretch/doc"
+EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
 # Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
 # first release after a withdrawal drops the entry from the work copy and, once the new manifest is
 # installed (step 6c), deletes the package file(s) from repository/. EZDonutRepair: withdrawn 2026-11-10
 # (source: private repo scarter4work/ez-donut-repair).
 RETIRED_PKG_RE=('EZDonutRepair_v[0-9.]+\.zip')
+# Installed files a package deletes when the updater installs it (Repository Reference 3, <remove>: paths
+# relative to the PixInsight installation, removed before the package is installed; missing ones are
+# ignored, with a warning in the updater's log). A package leaving the manifest uninstalls nothing, so a
+# withdrawn or reorganised product's leftovers are removed through a package that stays: one entry per
+# carrying package, '<fileName regex>=<item>[,<item>...]'. Step 3g writes exactly these <remove>
+# elements into the manifest, and no others (manifest_removes). Each regex must match exactly one package
+# of this release, each item must lie under bin/, src/scripts/, doc/scripts/ or doc/tools/, and no item may
+# be or contain a file that another package of this release installs. The carrying package must be
+# bumped in the same release (a reused package is not reinstalled), and its documentation must say what
+# it removes.
+#   EZStretch 1.0.12: EZDonutRepair (withdrawn 2026-11-10; 1.0.3 and 1.0.4 installed exactly these two).
+PKG_REMOVE=(
+  'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/EZDonutRepair.js,src/scripts/scarter4work/EZDonutRepair.xsgn'
+)
 GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
 REPO_DESC="$ROOT/tools/repository-description.xml"
 declare -A PKG_DESC=(
@@ -380,6 +398,87 @@ open(mf,'w').write(s)
 PY
 }
 
+# manifest_removes <manifest> <package dir> [<fileName-regex>=<item>[,<item>...]]... : make the manifest's
+# <remove> elements exactly these (PKG_REMOVE): every existing <remove> is dropped, then each spec's items
+# go into the one package whose fileName matches its regex, after its <title>, one item per line. Refuses
+# (manifest unchanged) a regex matching no package or several, an item that is empty, absolute, contains
+# "..", a comma, a glob or a backslash, is not under bin/, src/scripts/, doc/scripts/ or doc/tools/ (or is
+# one of those roots), or is (or is a directory containing) a file that another package in <package dir>
+# installs -- the contents of every manifest package are read from <package dir> (.zip or .tar.gz).
+manifest_removes(){
+  python3 - "$@" <<'PY' || die "manifest_removes: refused (see above); $1 is unchanged"
+import re,sys,os,zipfile,tarfile
+mf,pkgdir=sys.argv[1:3]; specs=sys.argv[3:]
+s=open(mf,encoding="utf-8").read()
+roots=("bin/","src/scripts/","doc/scripts/","doc/tools/")
+def contents(fn):
+    p=os.path.join(pkgdir,fn)
+    if not os.path.isfile(p): sys.exit("  package file %s is not in %s"%(fn,pkgdir))
+    if fn.endswith(".zip"):
+        with zipfile.ZipFile(p) as z: names=z.namelist()
+    elif fn.endswith(".tar.gz"):
+        with tarfile.open(p,"r:gz") as t: names=[m.name for m in t.getmembers() if not m.isdir()]
+    else: sys.exit("  %s: not a .zip or .tar.gz"%fn)
+    return [n[2:] if n.startswith("./") else n for n in names if not n.endswith("/")]
+pkgs=re.findall(r'<package fileName="([^"]+)"',s)
+errs=[]; plan={}
+for spec in specs:
+    if "=" not in spec: errs.append("%s: not <regex>=<items>"%spec); continue
+    rx,items=spec.split("=",1)
+    hit=[fn for fn in pkgs if re.fullmatch(rx,fn)]
+    if len(hit)!=1: errs.append("%s matches %d manifest packages, expected 1"%(rx,len(hit))); continue
+    fn=hit[0]; its=[i.strip() for i in items.split(",")]
+    for it in its:
+        if (not it or it.startswith("/") or ".." in it or re.search(r'[*?\[\]\\,]',it)
+            or not it.startswith(roots) or it.rstrip("/")+"/" in roots):
+            errs.append("%s: item %r is not a file or directory below bin/, src/scripts/, doc/scripts/ or doc/tools/"%(fn,it)); continue
+        for other in pkgs:
+            if other==fn: continue
+            for n in contents(other):
+                if n==it.rstrip("/") or n.startswith(it.rstrip("/")+"/"):
+                    errs.append("%s: item %s would delete %s, which %s installs"%(fn,it,n,other))
+    if fn in plan: errs.append("%s is named by two specs"%fn)
+    plan[fn]=its
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+s,_=re.subn(r'\n[ \t]*<remove>.*?</remove>[ \t]*(?=\n)','',s,flags=re.S)
+for fn,its in plan.items():
+    m=re.search(r'(<package fileName="'+re.escape(fn)+r'"[^>]*>)(.*?)(</package>)',s,re.S)
+    body=m.group(2); t=re.search(r'</title>',body)
+    ind=re.search(r'\n([ \t]*)<',body); ind=ind.group(1) if ind else "         "
+    el="\n"+ind+"<remove>\n"+"".join(ind+"   "+i+"\n" for i in its)+ind+"</remove>"
+    at=t.end() if t else 0
+    body=body[:at]+el+body[at:]
+    s=s[:m.start(2)]+body+s[m.end(2):]
+    print("  %s removes %s"%(fn,", ".join(its)))
+open(mf,"w",encoding="utf-8").write(s)
+PY
+}
+
+# ez_pkg_check <zip> <Name> : the EZ script package deploys exactly src/scripts/scarter4work/<Name>.{js,xsgn}
+# and the current doc/scripts/<Name>/ (each doc file and the .js byte for byte as in the source tree).
+# Run on an already-published zip before it is reused, and on every zip this release packages.
+ez_pkg_check(){
+  python3 - "$1" "$2" "$EZSRC" "$EZDOC" <<'PY'
+import sys,os,zipfile
+zp,name,src,doc=sys.argv[1:5]
+want={"src/scripts/scarter4work/%s.js"%name: os.path.join(src,name+".js"),
+      "src/scripts/scarter4work/%s.xsgn"%name: None}
+d=os.path.join(doc,name)
+if not os.path.isfile(os.path.join(d,name+".html")): sys.exit("  %s: no documentation %s/%s.html"%(name,d,name))
+for root,_,files in os.walk(d):
+    for f in files:
+        p=os.path.join(root,f); want["doc/scripts/%s/%s"%(name,os.path.relpath(p,d))]=p
+with zipfile.ZipFile(zp) as z:
+    have={n for n in z.namelist() if not n.endswith("/")}
+    errs=["%s: %s"%(os.path.basename(zp),e) for e in
+          ["missing "+n for n in sorted(set(want)-have)]+["unexpected "+n for n in sorted(have-set(want))]]
+    for n,p in want.items():
+        if p and n in have and z.read(n)!=open(p,"rb").read(): errs.append("%s: %s differs from %s"%(os.path.basename(zp),n,p))
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+print("  OK  %s deploys %s.js/.xsgn and doc/scripts/%s/ (%d doc files)"%(os.path.basename(zp),name,name,len(want)-2))
+PY
+}
+
 # manifest_names_check <manifest> <fileName>... : the manifest's packages are exactly these, each once.
 manifest_names_check(){
   python3 - "$@" <<'PY' || die "updates.xri does not list exactly this release's packages"
@@ -514,6 +613,16 @@ published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "${PLANETARY_
 SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
 [[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
 EZ_ZIPS=(); for name in "${EZ_NAMES[@]}"; do EZ_ZIPS+=("${name}_v${EZVER[$name]}.zip"); done
+# EZ scripts: the version in each .js is EZVER's, the documentation exists, and an already-published zip
+# of that version carries exactly the current .js and documentation (else: bump the version).
+for name in "${EZ_NAMES[@]}"; do
+  grep -qE "^#define VERSION +\"${EZVER[$name]}\"" "$EZSRC/$name.js" \
+    || die "$name.js's #define VERSION is not ${EZVER[$name]} (EZVER in release.sh)"
+  [ -f "$EZDOC/$name/$name.html" ] || die "$name has no documentation: $EZDOC/$name/$name.html (CPD rule 6.1)"
+  ! git -C "$ROOT" ls-files --error-unmatch "repository/${name}_v${EZVER[$name]}.zip" >/dev/null 2>&1 \
+    || ez_pkg_check "$REPO/${name}_v${EZVER[$name]}.zip" "$name" \
+    || die "$name ${EZVER[$name]} is already published without the current $name.js and doc/scripts/$name/ -- bump $name's version so a new package is built"
+done
 GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
 # The sidecar package of SIDECAR_VER: its published (committed) tarball whatever date it was cut on,
 # else a new dated name (step 3d builds it).
@@ -674,24 +783,26 @@ open(mf,'w').write(s)
 PY
 [ -f "$REPO/$PLANETARY_TGZ" ] || die "tarball $PLANETARY_TGZ not produced"
 
-echo "== 3b/6 package EZ script zips (install under src/scripts/scarter4work) =="
-EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
+echo "== 3b/6 package EZ script zips (src/scripts/scarter4work + doc/scripts/<Name>) =="
 for name in "${EZ_NAMES[@]}"; do
   ver="${EZVER[$name]}"
   zipname="${name}_v${ver}.zip"
   # Stage into src/scripts/scarter4work/ so the menu and the on-disk folder both
-  # read scarter4work (the #feature-id in each .js already points there).
-  stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work"
+  # read scarter4work (the #feature-id in each .js already points there); the
+  # documentation goes to doc/scripts/<Name>/ (Repository Reference 4.2).
+  stage="$(mktemp -d)"; mkdir -p "$stage/src/scripts/scarter4work" "$stage/doc/scripts"
   cp "$EZSRC/$name.js" "$EZSRC/$name.xsgn" "$stage/src/scripts/scarter4work/"
+  cp -r "$EZDOC/$name" "$stage/doc/scripts/$name"
   # World-readable whatever the build's umask (mktemp -d is 0700): the updater
   # keeps archive modes and installs as root, so 0600/0700 entries would leave
   # the scripts unreadable to the user. (EZ <= 1.0.10/1.0.3/1.0.1 shipped 0600.)
   chmod -R u=rwX,go=rX "$stage"
   rm -f "$REPO/$zipname"
-  ( cd "$stage" && zip -qrX "$REPO/$zipname" src )
+  ( cd "$stage" && zip -qrX "$REPO/$zipname" src doc )
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
   reuse_if_published "$zipname"
+  ez_pkg_check "$REPO/$zipname" "$name" || die "$zipname does not deploy exactly $name.js/.xsgn and the current doc/scripts/$name/"
   manifest_rename "$WORK_MF" "${name}_v[0-9.]+\.zip" "$zipname"
 done
 
@@ -754,6 +865,9 @@ manifest_names_check "$WORK_MF" "${RELEASE_PKGS[@]}"
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions apply "$WORK_MF" "${DESC_ARGS[@]}" || die "could not write the package descriptions"
+
+echo "== 3g/6 write the <remove> elements (PKG_REMOVE), and no others =="
+manifest_removes "$WORK_MF" "$REPO" "${PKG_REMOVE[@]}"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$WORK_MF" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"

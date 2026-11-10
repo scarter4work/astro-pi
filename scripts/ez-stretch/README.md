@@ -4,6 +4,10 @@ A collection of PixInsight tools for astrophotography - stretching scripts and B
 
 ## Scripts (PJSR)
 
+The update repository ships **EZ Stretch** (`EZStretch.js`: Lupton RGB, a root-power RNC-ColorStretch and a
+luminance-weighted PhotometricStretch in one dialog; documentation in `doc/EZStretch/EZStretch.html`, installed as
+`doc/scripts/EZStretch/`) and EZ Haze Kill. The standalone scripts below are in this folder but are not distributed.
+
 ### PhotometricStretch
 Physics-based RGB asinh stretch with automatic sensor/filter detection from FITS metadata. Combines Lupton RGB mathematics, RNC-Color-Stretch workflow, and Veralux sensor-aware QE weighting.
 
@@ -39,7 +43,7 @@ Implementation of Roger N. Clark's rnc-color-stretch algorithm for advanced imag
 1. In PixInsight, go to **Resources > Updates > Manage Repositories**
 2. Click **Add** and enter this URL:
    ```
-   https://raw.githubusercontent.com/scarter4work/EZ-Stretch-BSC/main/repository/
+   https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/
    ```
 3. Click **OK**, then go to **Resources > Updates > Check for Updates**
 4. Select the scripts you want and click **Apply**

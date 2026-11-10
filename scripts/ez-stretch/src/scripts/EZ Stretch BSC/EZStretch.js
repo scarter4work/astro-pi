@@ -4,8 +4,8 @@
 //
 // Combines three stretch algorithms into a single interface:
 // - Lupton RGB: Color-preserving asinh stretch (Lupton et al. 2004)
-// - RNC-ColorStretch: Power stretch with color recovery (Roger Clark)
-// - PhotometricStretch: Physics-based stretch with sensor QE weighting
+// - RNC-ColorStretch: root-power stretch after Roger N. Clark's rnc-color-stretch
+// - PhotometricStretch: luminance-weighted asinh stretch (Rec. 709 weights)
 //
 // SPDX-License-Identifier: BSD-3-Clause (see LICENSE in the astro-pi repository)
 //
@@ -34,7 +34,7 @@
 #error This script requires PixInsight 1.8.0 or higher.
 #endif
 
-#define VERSION "1.0.11"
+#define VERSION "1.0.12"
 #define TITLE   "EZ Stretch"
 
 var jsAutoGC = true;
@@ -219,7 +219,6 @@ function RNCEngine() {
    this.rootpower2 = 3.0;
    this.twoPass = false;
    this.scurve = 0;
-   this.colorRecovery = true;
    this.enhance = 1.0;
 
    this.processPixel = function(r, g, b) {
@@ -369,7 +368,6 @@ function RNCEngine() {
       this.rootpower2 = 3.0;
       this.twoPass = false;
       this.scurve = 0;
-      this.colorRecovery = true;
       this.enhance = 1.0;
    };
 }
@@ -835,8 +833,8 @@ function EZStretchDialog() {
 
    this.algorithmCombo = new ComboBox(this);
    this.algorithmCombo.addItem("Lupton RGB - Color-preserving asinh stretch");
-   this.algorithmCombo.addItem("RNC-ColorStretch - Power stretch with color recovery");
-   this.algorithmCombo.addItem("PhotometricStretch - Physics-based QE weighting");
+   this.algorithmCombo.addItem("RNC-ColorStretch - Root-power stretch");
+   this.algorithmCombo.addItem("PhotometricStretch - Luminance-weighted asinh stretch");
    this.algorithmCombo.currentItem = 0;
    this.algorithmCombo.toolTip = "Select stretch algorithm";
    this.algorithmCombo.onItemSelected = function(index) {
