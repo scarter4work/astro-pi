@@ -31,6 +31,7 @@ gdg_add_test(test_match unit/test_match.cpp gdg_core)
 gdg_add_test(test_pipeline unit/test_pipeline.cpp gdg_core)
 gdg_add_test(test_distances unit/test_distances.cpp gdg_core)
 gdg_add_test(test_tap unit/test_tap.cpp gdg_core)
+gdg_add_test(test_solvemath unit/test_solvemath.cpp gdg_core)
 
 # GaiaDepthGradeVersion.h is PCL-free (header only): the version release.sh reads.
 gdg_add_test(test_version unit/test_version.cpp)
