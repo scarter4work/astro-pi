@@ -6,6 +6,7 @@ set(MODULE_SOURCES
     EZHazeKillProcess.cpp
     EZHazeKillParameters.cpp
     EZHazeKillInstance.cpp
+    EZHazeKillInterface.cpp
 )
 
 add_library(EZTools SHARED ${MODULE_SOURCES})

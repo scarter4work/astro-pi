@@ -3,6 +3,7 @@
 
 #include "EZHazeKillProcess.h"
 #include "EZHazeKillInstance.h"
+#include "EZHazeKillInterface.h"
 #include "EZHazeKillParameters.h"
 
 #include <pcl/ErrorHandler.h>
@@ -58,7 +59,7 @@ String EZHazeKillProcess::Description() const
 
 ProcessInterface* EZHazeKillProcess::DefaultInterface() const
 {
-   return nullptr;   // the interface arrives in plan Task 4
+   return TheEZHazeKillInterface;
 }
 
 ProcessImplementation* EZHazeKillProcess::Create() const

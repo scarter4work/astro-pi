@@ -12,6 +12,7 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "EZToolsModule.h"
+#include "EZHazeKillInterface.h"
 #include "EZHazeKillProcess.h"
 #include "EZToolsLicense.h"
 
@@ -99,6 +100,7 @@ PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
    if ( mode == pcl::InstallMode::FullInstall )
    {
       new pcl::EZHazeKillProcess;
+      new pcl::EZHazeKillInterface;
    }
    return 0;
 }

@@ -292,7 +292,33 @@ def check(run_dir, script_run=None):
     return 0 if not fails else 1
 
 
+def compare(inp, out, amount, neutralize, target, invert):
+    """One PixInsight result vs hk_v11 on its input (1 - input with invert): the GUI smoke's Execute."""
+    img = read(inp)
+    if invert:
+        img = (np.float32(1) - img).astype(np.float32)   # PixInsight's Invert on a float image
+    # The reference in float64, as the module computes (plan: arithmetic in double). hk_v11 in float32
+    # can select a different tile set when a tile's luminance sits within float32 rounding of the 10%
+    # cut: measured 2026-11-10 on the inverted L2, one tile 2.3e-8 from the cut -> 199 vs 198 tiles,
+    # sky level 6.6e-6 apart; the module's result agrees with the float64 reference to 2.6e-9.
+    ref, info = hk_v11(img.astype(np.float64), amount=amount, neutralize=neutralize, target=target)
+    pi = read(out, as_float64=True)
+    if pi.shape != ref.shape:
+        print("FAIL: output shape %s, expected %s" % (pi.shape, ref.shape))
+        return 1
+    d = np.abs(pi - ref.astype(np.float32).astype(np.float64))
+    dmax, drms = float(d.max()), float(np.sqrt((d ** 2).mean()))
+    ok = dmax <= TOL_PIXEL_MAX and drms <= TOL_PIXEL_RMS
+    print("%s: max |PI - hk_v11| %.3g (tol %.1e), RMS %.3g (tol %.0e); hk_v11 offsets %s" % (
+        "PASS" if ok else "FAIL", dmax, TOL_PIXEL_MAX, drms, TOL_PIXEL_RMS, np.round(info["offset"], 6).tolist()))
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "compare":
+        # compare <input> <output> <amount> <neutralize> <target> [--invert]
+        a = sys.argv[2:]
+        sys.exit(compare(a[0], a[1], float(a[2]), float(a[3]), float(a[4]), "--invert" in a))
     if len(sys.argv) < 3 or sys.argv[1] not in ("prep", "check"):
         sys.exit(__doc__)
     args = sys.argv[3:]
