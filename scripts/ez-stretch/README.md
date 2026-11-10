@@ -32,21 +32,6 @@ Implementation of Roger N. Clark's rnc-color-stretch algorithm for advanced imag
 - Color recovery to preserve original ratios
 - Multiple S-curve variants
 
-## Native Modules (C++/Julia)
-
-### BayesianAstro (In Development)
-Distribution-aware image stacking with per-pixel confidence scoring. Uses Welford's algorithm for statistical accumulation, automatic distribution classification, and GPU acceleration via CUDA.
-
-**Features:**
-- Per-pixel statistical distribution tracking
-- Distribution classification (Gaussian, Poisson, Bimodal, Skewed, Uniform)
-- Confidence scoring based on distribution properties
-- Multiple fusion strategies (MLE, confidence-weighted, lucky imaging, multi-scale)
-- GPU acceleration (CUDA.jl)
-- React-based UI embedded in PixInsight via Qt WebView
-
-**Status:** Awaiting PixInsight certified developer access. See [BayesianAstro/README.md](BayesianAstro/README.md) for details.
-
 ## Installation
 
 ### Via PixInsight Repository Manager (Recommended)
