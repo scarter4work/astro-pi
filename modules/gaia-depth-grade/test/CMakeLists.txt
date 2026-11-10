@@ -18,3 +18,4 @@ endfunction()
 
 gdg_add_test(test_npy unit/test_npy.cpp)
 gdg_add_test(test_gaussian unit/test_gaussian.cpp gdg_core)
+gdg_add_test(test_orderstats unit/test_orderstats.cpp gdg_core)

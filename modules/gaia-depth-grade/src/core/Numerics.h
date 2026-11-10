@@ -46,4 +46,36 @@ int gaussian_radius(double sigma);
 /// negative or non-finite sigma.
 Image gaussian_filter(const Image& in, double sigma);
 
+// --- order statistics (numpy 2.5) -----------------------------------------------------------
+//
+// NaN policy: percentile / percentiles / median / mad require finite input and throw
+// std::invalid_argument otherwise (and on empty input); callers filter first, exactly where the
+// Python core does. nanmedian_rows is the one NaN-aware function.
+
+/// np.percentile(v, q), method "linear": virtual index (n-1)*(q/100), neighbours by partial
+/// selection, numpy's _lerp (a + (b-a)*g, or b - (b-a)*(1-g) when g >= 0.5). q in [0, 100].
+double percentile(std::vector<double> v, double q);
+
+/// np.percentile(v, qs) for several q at once (one copy of v).
+std::vector<double> percentiles(std::vector<double> v, const std::vector<double>& qs);
+
+/// np.median: the middle value, or (a + b) / 2 of the two middle values when n is even.
+double median(std::vector<double> v);
+
+/// median(|v - median(v)|), unscaled; callers multiply by 1.4826 where Python does.
+double mad(const std::vector<double>& v);
+
+/// np.interp(xq, xp, fp, left, right). xp must be non-decreasing (numpy does not check either).
+/// A NaN query returns NaN. Throws std::invalid_argument on empty xp or a size mismatch.
+std::vector<double> interp(const std::vector<double>& xq, const std::vector<double>& xp,
+                           const std::vector<double>& fp, double left, double right);
+
+/// np.interp's defaults: left = fp[0], right = fp[-1].
+std::vector<double> interp(const std::vector<double>& xq, const std::vector<double>& xp,
+                           const std::vector<double>& fp);
+
+/// np.nanmedian(np.vstack(stack), axis=0): per column, the median of the non-NaN entries; NaN
+/// for an all-NaN column. Every row must have the same length (std::invalid_argument otherwise).
+std::vector<double> nanmedian_rows(const std::vector<std::vector<double>>& stack);
+
 }  // namespace gdg
