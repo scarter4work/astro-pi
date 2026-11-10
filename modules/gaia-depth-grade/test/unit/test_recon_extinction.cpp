@@ -143,6 +143,50 @@ TEST_CASE("balmer_flat_field_is_not_gated", "[recon][extinction]") {
     for (double v : d.data) CHECK(v == Catch::Approx(want).margin(1e-7));
 }
 
+TEST_CASE("lane_on_a_sky_pedestal_is_dust", "[recon][extinction]") {
+    // The gate scales with bright - sky, not bright: a faint field on a 0.5 pedestal still shows
+    // its lane. Python oracle (gaia-depth-grade venv, 2026-11-10): lane mean 0.96837, field 0.0.
+    Image lum(64, 64, 1, 0.5);
+    for (int y = 0; y < 64; ++y)
+        for (int x = 8; x < 64; ++x) lum.at(x, y) = f32(0.52);
+    for (int y = 10; y < 54; ++y)
+        for (int x = 30; x < 36; ++x) lum.at(x, y) = 0.5;
+    const Image d = dust_from_structure(lum);
+    CHECK(region_mean(d, 20, 44, 31, 35) == Catch::Approx(0.9683718681335449).margin(1e-6));
+    CHECK(region_mean(d, 20, 44, 45, 60) == 0.0);
+}
+
+TEST_CASE("balmer_gated_by_hb_signal", "[recon][extinction]") {
+    // Ha bright and reddened from column 32, Hb above its sky only from column 48: where Hb sits
+    // at its floor the ratio is noise. Python oracle: mean 0.0 on 34..43, 0.47761 on 52..61.
+    Image ha(64, 64, 1, 0.02), hb(64, 64, 1, 0.02);
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 32; x < 64; ++x) ha.at(x, y) += 2.86 * 3.0;
+        for (int x = 48; x < 64; ++x) hb.at(x, y) += 1.0;
+    }
+    const Image d = dust_from_balmer(ha, hb);
+    CHECK(region_mean(d, 0, 64, 34, 44) == 0.0);
+    CHECK(region_mean(d, 0, 64, 52, 62) == Catch::Approx(0.4776112139225006).margin(1e-6));
+}
+
+TEST_CASE("dust_inputs_are_cleaned", "[recon][extinction]") {
+    // clip(nan_to_num(.), 0, None) first: NaN and negatives read as 0.
+    Image lum = lane_field(), lum0 = lum;
+    lum.data[5] = -4.0;
+    lum.data[7] = std::nan("");
+    lum0.data[5] = lum0.data[7] = 0.0;
+    CHECK(dust_from_structure(lum).data == dust_from_structure(lum0).data);
+    Image ha(32, 32, 1, 2.86 * 3.0), hb(32, 32, 1, 1.0);
+    for (int x = 0; x < 16; ++x) hb.at(x, 3) = 0.0;  // some structure so the gate is active
+    Image ha_n = ha, hb_n = hb;
+    ha_n.data[40] = -1.0;
+    hb_n.data[41] = -1.0;
+    Image ha_0 = ha, hb_0 = hb;
+    ha_0.data[40] = 0.0;
+    hb_0.data[41] = 0.0;
+    CHECK(dust_from_balmer(ha_n, hb_n).data == dust_from_balmer(ha_0, hb_0).data);
+}
+
 TEST_CASE("dust_rejects_bad_input", "[recon][extinction]") {
     CHECK_THROWS_AS(dust_from_structure(Image(8, 8, 3)), std::invalid_argument);
     CHECK_THROWS_AS(dust_from_balmer(Image(8, 8), Image(8, 9)), std::invalid_argument);

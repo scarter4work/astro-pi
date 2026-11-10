@@ -161,6 +161,9 @@ TEST_CASE("unusable_rows_are_skipped", "[recon][ionizer]") {
     IonizerTable nc = t;
     nc.bp_rp.reset();
     check_ionizer(pick_ionizer(&nc, NY, NX), 42.0, 43.0, 9.0, "gaia-bright");
+    // zero flux alone is unusable (Python oracle: field-center)
+    const IonizerTable zero = table({{10, 10, 0.0, NaN, 5.0}});
+    check_ionizer(pick_ionizer(&zero, NY, NX), 100.0, 50.0, std::nullopt, "field-center");
     // an infinite colour is not "finite colour": falls back to brightness
     const IonizerTable inf_col = table({{10, 10, 5.0, INFINITY, 1.0}, {20, 20, 50.0, NaN, 2.0}});
     check_ionizer(pick_ionizer(&inf_col, NY, NX), 20.0, 20.0, 2.0, "gaia-bright");

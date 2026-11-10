@@ -201,3 +201,18 @@ TEST_CASE("footprint_from_flat_lum_is_everything", "[recon][cavity]") {
     const Mask m = footprint_from_lum(Image(6, 4, 1, 0.2), 0.05);
     CHECK(m.count() == 24u);
 }
+
+TEST_CASE("footprint_threshold_rules", "[recon][cavity]") {
+    // Python oracle (gaia-depth-grade venv, 2026-11-10). A pixel exactly at the threshold is out
+    // (strict >): 10 px, the 0.5 tie excluded.
+    Image t(10, 10);
+    for (int x = 0; x < 10; ++x) t.at(x, 0) = 1.0;
+    t.at(5, 5) = 0.5;
+    const Mask m = footprint_from_lum(t, 0.5);
+    CHECK(m.count() == 10u);
+    CHECK(m.data[55] == 0);
+    // A range below 1e-12 is floored to 1e-12: nothing passes, so the footprint is everything.
+    Image u(10, 10);
+    for (int x = 0; x < 10; ++x) u.at(x, 0) = 1e-13;
+    CHECK(footprint_from_lum(u, 0.5).count() == 100u);
+}

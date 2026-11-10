@@ -177,6 +177,19 @@ TEST_CASE("looks_linear_discriminates", "[recon][channels]") {
     CHECK_FALSE(looks_linear(stretch(linear_master())));
 }
 
+TEST_CASE("looks_linear_percentiles_and_nan", "[recon][channels]") {
+    // Python oracle (gaia-depth-grade venv, 2026-11-10): 995 values on [0, 0.1] plus five 1.0
+    // outliers is linear only because hi is the 99.9th percentile (the 99th would read ~0.1).
+    Image a(25, 40);
+    for (int i = 0; i < 995; ++i) a.data[i] = 0.1 * i / 994.0;
+    for (int i = 995; i < 1000; ++i) a.data[i] = 1.0;
+    CHECK(looks_linear(a));
+    // numpy propagates NaN through percentile and median, and NaN < 0.10 is False.
+    Image n(4, 1);
+    n.data = {0.1, std::nan(""), 0.2, 0.3};
+    CHECK_FALSE(looks_linear(n));
+}
+
 TEST_CASE("stretched_input_zeros_ratio_confidence", "[recon][channels]") {
     const ChannelSet cs = extract_channels(
         {{"ha", stretch(linear_master(1))}, {"oiii", stretch(linear_master(2))}, {"sii", stretch(linear_master(3))}},

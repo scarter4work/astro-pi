@@ -101,9 +101,11 @@ TEST_CASE("nan_and_negative_input_are_cleaned", "[recon][ionization]") {
     // nan_to_num then clip(., 0): NaN and negatives count as 0 flux.
     Image ha(8, 8, 1, 0.5), oiii(8, 8, 1, 0.5);
     ha.data[10] = std::nan("");
+    ha.data[30] = -2.0;
     oiii.data[20] = -3.0;
     Image ha0 = ha, oiii0 = oiii;
     ha0.data[10] = 0.0;
+    ha0.data[30] = 0.0;
     oiii0.data[20] = 0.0;
     const Image a = ionization_ratio(ChannelSet(ha, oiii, std::nullopt, 1.0, true)).oiii_fraction;
     const Image b = ionization_ratio(ChannelSet(ha0, oiii0, std::nullopt, 1.0, true)).oiii_fraction;

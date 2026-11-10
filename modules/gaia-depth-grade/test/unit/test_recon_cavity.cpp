@@ -295,6 +295,15 @@ TEST_CASE("reconstruct_cavity_edges", "[recon][cavity]") {
     CHECK(g.meta.ionization_confidence == 1.0);
     const Mask foot = footprint_from_lum(lum, zero.footprint_frac);
     CHECK(g.z.data == geometry_prior(140, 140, {50.0, 86.0}, &foot).data);
+    // model.dust is clip(nan_to_num(dust), 0, 1)
+    Image wild = dust;
+    wild.data[0] = 3.0;
+    wild.data[1] = -2.0;
+    wild.data[2] = std::nan("");
+    const CavityModel w = reconstruct_cavity(ch, ion, blister_ionizer(), lum, wild, std::nullopt, ReconConfig{});
+    CHECK(w.dust.data[0] == 1.0);
+    CHECK(w.dust.data[1] == 0.0);
+    CHECK(w.dust.data[2] == 0.0);
     // w_dust is clipped to [0, 1] in the blend but reported raw
     ReconConfig heavy;
     heavy.w_dust = 5.0;
