@@ -12,4 +12,4 @@ target_link_libraries(nukex4_combine
     PUBLIC nukex4_core nukex4_fitting nukex4_classify nukex4_io
 )
 
-target_compile_features(nukex4_combine PUBLIC cxx_std_17)
+target_compile_features(nukex4_combine PUBLIC cxx_std_20)

@@ -42,7 +42,7 @@ else()
     message(STATUS "OpenCL not found -- building with CPU fallback only")
 endif()
 
-target_compile_features(nukex4_gpu PUBLIC cxx_std_17)
+target_compile_features(nukex4_gpu PUBLIC cxx_std_20)
 
 # The per-voxel Ceres fitting loop in execute_phase_b() is parallelised with
 # nukex::parallel_for_dynamic (std::thread), NOT OpenMP: OpenMP made the
