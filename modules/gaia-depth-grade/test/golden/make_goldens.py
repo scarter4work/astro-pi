@@ -552,12 +552,12 @@ def phase_c_cases(o: Out):
         raise RuntimeError("detect_empty_input: detect_stars found a star in pure noise")
 
     # 6. Render order: two overlapping enlarged stars, rendered in table order and reversed.
-    ov = np.full((32, 40, 3), 0.01)
-    _add_star(ov, 17.6, 15.3, 0.5, np.array([1.0, 0.85, 0.6]))
-    _add_star(ov, 21.2, 16.9, 0.35, np.array([0.55, 0.8, 1.0]))
+    ov = np.full((24, 32, 3), 0.01)
+    _add_star(ov, 13.6, 11.3, 0.5, np.array([1.0, 0.85, 0.6]))
+    _add_star(ov, 17.2, 12.9, 0.35, np.array([0.55, 0.8, 1.0]))
     ov = np.clip(ov + rng.normal(0, 0.002, ov.shape), 0, 1).astype(np.float32).astype(np.float64)
     t = Table()
-    t["x"], t["y"], t["flux"] = [17.6, 21.2], [15.3, 16.9], [3.1, 2.2]
+    t["x"], t["y"], t["flux"] = [13.6, 17.2], [11.3, 12.9], [3.1, 2.2]
     mod = compute_modulation(np.array([0.85, 0.55]), DIALOG_GAINS)
     fwd = render_stars(ov, t, mod, 2.0)
     t_rev = t[::-1]
@@ -568,7 +568,7 @@ def phase_c_cases(o: Out):
     o.save("overlap_stars", ov, "f4")
     o.save_table("overlap_table", t, ["x", "y", "flux"])
     o.save("overlap_modulation", np.stack([mod.brightness, mod.size, mod.contrast, mod.saturation]))
-    o.save("overlap_rendered", fwd, "f4")
+    o.save("overlap_rendered", fwd)  # float64: the one render golden at full precision
     o.save("overlap_rendered_reversed", rev, "f4")
     o.params("overlap", gains=dict(brightness=0.65, size=0.85, contrast=0.12, saturation=0.4, halo_gain=1.0),
              strength=[0.85, 0.55], halo="default Moffat (halo_profile=None)",

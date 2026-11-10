@@ -579,7 +579,7 @@
    "size": 0.85
   },
   "halo": "default Moffat (halo_profile=None)",
-  "max_abs_order_effect": 0.19921298885175942,
+  "max_abs_order_effect": 0.20002955689869162,
   "strength": [
    0.85,
    0.55

@@ -630,7 +630,7 @@
   },
   "halo_select_stars": {
    "dtype": "<f4",
-   "sha256": "2d8ca8b601fc347f925ba6b72d4cd61b63f02cd17a0da8095d896893bf2bd492",
+   "sha256": "8151cfe305708cfd7b37f4cd0dfe5705e7e7d38d3cb027ae25bd8bba9f5e93e3",
    "shape": [
     48,
     64
@@ -638,7 +638,7 @@
   },
   "halo_select_table_flux": {
    "dtype": "<f8",
-   "sha256": "0455d51edff275ad8642bdbf6cf2e16bce05971cda8c9c104cb3a3cc382e3d1e",
+   "sha256": "b46b4fd953f4bcdd60f142c6af25153afae4a74516b1ca3078c1cad2b4dbfbc6",
    "shape": [
     21
    ]
@@ -659,14 +659,14 @@
   },
   "halo_select_three_values": {
    "dtype": "<f8",
-   "sha256": "320e9f2db68915e010ce1ab81ecf448876b08b1e0049c7e1988b602e21f7410d",
+   "sha256": "484077380139287c290ff675bb4e9263aafb01de62b3a7cd4227c816b04d75ec",
    "shape": [
     5
    ]
   },
   "halo_select_values": {
    "dtype": "<f8",
-   "sha256": "66f4f86d1ba129ef381bba7ad45506560fba6e534c1f7121267628f5ba500dbe",
+   "sha256": "6cbb340cef2727a9fd4956076498da574d6cee91ab6d476892ec5b964a22216d",
    "shape": [
     5
    ]
@@ -1311,29 +1311,29 @@
    ]
   },
   "overlap_rendered": {
-   "dtype": "<f4",
-   "sha256": "ae7d429cb8844c4038fe00fb809af1da60751131dbbb4a8cb16fcec9fd983808",
+   "dtype": "<f8",
+   "sha256": "6bd85331c78ded8cfde6528273749f1c02492addcfca7bfe8e6ac181e1d37d09",
    "shape": [
+    24,
     32,
-    40,
     3
    ]
   },
   "overlap_rendered_reversed": {
    "dtype": "<f4",
-   "sha256": "aef2ef8ce30f1a3aa7ebade00b309b13c32c1ce3fe4a34a82d36973896e396d5",
+   "sha256": "1246c57906845648fba9fc625079eb110a13cd554bff8af3d7dbb002ce394f72",
    "shape": [
+    24,
     32,
-    40,
     3
    ]
   },
   "overlap_stars": {
    "dtype": "<f4",
-   "sha256": "77d7254558da8b119f57d053e8adacdcd46239927eb3994200ad06c5a7ba57b4",
+   "sha256": "e64c311f0f4e15978848805f67d259710da7c48496059cb00967f33f9669f6e5",
    "shape": [
+    24,
     32,
-    40,
     3
    ]
   },
@@ -1346,14 +1346,14 @@
   },
   "overlap_table_x": {
    "dtype": "<f8",
-   "sha256": "585fdec0406618c3fc8ffbc30cee355b847352e503478a7ae6ffd3ba8ab86489",
+   "sha256": "58fbfe3718193113e5d781382a69c549b7523fd31137d96596b46297aaf4ac82",
    "shape": [
     2
    ]
   },
   "overlap_table_y": {
    "dtype": "<f8",
-   "sha256": "5eb944f12b82e13dba2eecc770aef0393a7f5412f8e79de1cf977ad27ff7c69b",
+   "sha256": "c7b20d86ac005a7f8f0b9dab0b1f81b6d466243d113686c21055adf71335fd6f",
    "shape": [
     2
    ]
@@ -1730,7 +1730,7 @@
  "python_core": {
   "core_last_change_commit": "d46f6995376c2a95f9d05ea1b52537dee8714318",
   "core_tree_dirty": false,
-  "repo_head": "7597f08bde490815c018985681073ca89ad1436b"
+  "repo_head": "e96135045bcec8711a4ecb4130b751658018d27e"
  },
  "seed": 20261110,
  "selftest_files": [
