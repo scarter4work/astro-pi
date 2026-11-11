@@ -10,7 +10,7 @@ merely what is on the link line. The component's copyright notice, licence
 conditions and disclaimer follow, as its licence requires for binary
 redistribution.
 
-  1. PixInsight Class Library (PCL) 2.9.4 .... PixInsight Class Library
+  1. PixInsight Class Library (PCL) 2.13 .... PixInsight Class Library
                                                 License 2.0
 
 Not inside the module: PCL's link line also names its bundled LZ4, Zstandard,
@@ -24,7 +24,7 @@ the PlanetaryStack engine (including its FFT) are this module's own code.
 1. PixInsight Class Library (PCL)
 ===============================================================================
 
-PCL 2.9.4, https://gitlab.com/pixinsight/PCL -- statically linked.
+PCL 2.13, https://gitlab.com/pixinsight/PCL -- statically linked.
 
 This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).
 

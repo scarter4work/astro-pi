@@ -10,7 +10,7 @@ releases), so it names what is actually inside the module, not merely what is
 on the link line. Each component's copyright notice, licence conditions and
 disclaimer follow, as their licences require for binary redistribution.
 
-  1. PixInsight Class Library (PCL) 2.9.4 .... PixInsight Class Library
+  1. PixInsight Class Library (PCL) 2.13 .... PixInsight Class Library
                                                 License 2.0
   2. CFITSIO 4.6.3 ............................ NASA/HEASARC licence (plus
                                                 component notices)
@@ -35,7 +35,7 @@ its unlimited-linking exception; neither requires a notice.
 1. PixInsight Class Library (PCL)
 ===============================================================================
 
-PCL 2.9.4, https://gitlab.com/pixinsight/PCL -- statically linked.
+PCL 2.13, https://gitlab.com/pixinsight/PCL -- statically linked.
 
 This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).
 

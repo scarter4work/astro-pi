@@ -1,5 +1,9 @@
 # NukeX — Changelog
 
+## v5.2.0.4 — 2026-11-10
+
+Third-party notices corrected to PCL 2.13.
+
 ## v5.2.0.3 — 2026-11-10
 
 Rebuilt for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later.
