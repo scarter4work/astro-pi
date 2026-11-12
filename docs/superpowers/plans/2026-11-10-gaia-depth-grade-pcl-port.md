@@ -12,7 +12,7 @@
 - a native plate solver (StarDetector, Gaia, StarAlignment, spline fit, and `BlindAstrometricSolver` as the fallback);
 - the `GaiaDepthGrade` process and its interface.
 
-The recon core (plan tasks 1–8 of `2026-11-05-nebula-3d-depth-reconstruction.md`) is ported into `gdg_core/recon` with the same golden discipline, and no UI.
+The recon core (plan tasks 1–8 of `2026-11-05-nebula-3d-depth-reconstruction.md`) is ported into `gdg_core/recon` with the same golden discipline, and no UI. That plan's tasks 9–13 (2D render, `reconstruct` CLI, GLB export, orbit animation, NAS validation) were never written in Python; Scott ruled on 2026-11-12 that they are built only in native C++, here, as Tasks 21–26 (Phase G2), with no Python or PJSR in what ships or in their tests.
 
 **Tech Stack:**
 - **C++20**: PCL 2.11 and 2.13 build with `-std=c++20` [verified, both `src/pcl/linux/g++/makefile-x64`].
@@ -87,7 +87,11 @@ These are Scott's rulings, or my recommendations where he has not ruled. A chang
 | D4 | PCL 2.13 enters the image as a **second** tree `/opt/pcl-2.13`, from a sha256-pinned tarball of `/opt/PixInsight/{include,src}`; NukeX and Planetary keep `PCL_COMMIT` | rec. | 2 |
 | D5 | Star detection = exact DAOFIND port (photutils 3.0.0), not `pcl::StarDetector` (the solver uses StarDetector, as ImageSolver does) | rec. | 6, 14 |
 | D6 | Synthetic G→σ knot table kept for parity; switching to Gaia parallax-quality flags is a later, separate change | rec. | 12 |
-| D7 | Recon core ported (tasks 1–8) with no process/UI; tasks 9–13 are built in C++ in Part 2 | rec. | 18 |
+| D7 | Recon core ported (tasks 1–8) with no process/UI; tasks 9–13 are built in C++ only, never Python | Scott (2026-11-12) | 18, 21–26 |
+| D10 | Recon Part 2 ships as a second process, `NebulaReconstruct` (global, category `scarter4work`, id stable once shipped), in `GaiaDepthGrade-pxm`. Its command-line interface is the native form of the Python plan's `reconstruct`/`export3d` subcommands. No GUI interface in this plan (the Python plan's "Part 2" panel) | rec. | 25 |
+| D11 | Orbit animation = own GIF89a encoder in `gdg_core` (one 256-colour median-cut palette, LZW); no new third-party dependency | rec. | 24 |
+| D12 | In-PI tests of Tasks 25–26 launch `pi-headless.sh … -r=<one-line .scp the harness generates> --force-exit` and drive C++ through the probe's command-line interface; no new PJSR or Python, committed or generated | Scott (no scripts, 2026-11-12); `.scp` route rec. | 25, 26 |
+| D13 | NAS validation masters do not exist (subs only); the freeze probe integrates them once, uncalibrated, from the 2023 subs | rec. | 26 |
 | D8 | Python core moves to `archive/gaia-depth-grade-python/` at cut-over; goldens stay committed | rec. | 20 |
 | D9 | Process defaults = dialog defaults; the headless script's engine defaults (0.5/0.4/0.3/0.3, online) are reproducible as parameter values | rec. | 16 |
 
@@ -147,7 +151,10 @@ modules/gaia-depth-grade/
     Nebula.{h,cpp}  Display.{h,cpp}  Pipeline.{h,cpp}
     SolveMath.{h,cpp}             # seed parsing, gnomonic projection, affine LSQ
     recon/ Model.h Channels.{h,cpp} Ionization.{h,cpp} Ionizer.{h,cpp} Extinction.{h,cpp} Cavity.{h,cpp}
+    recon/ Render2D Reconstruct Glb Orbit Validate .{h,cpp}   # Phase G2 (Tasks 21-26)
+    Gif.{h,cpp}                   # GIF89a writer (Task 24)
   src/module/                     # PCL glue
+    NebulaReconstruct{Process,Parameters,Instance}.{h,cpp}  ReconBridge.{h,cpp}   # Task 25
     GaiaDepthGradeModule.{h,cpp}  GaiaDepthGradeVersion.h  pixinsight-module.map
     GaiaDepthGradeProcess.{h,cpp} GaiaDepthGradeParameters.{h,cpp} GaiaDepthGradeInstance.{h,cpp} GaiaDepthGradeInterface.{h,cpp}
     ImageBridge.{h,cpp}  PclSky.{h,cpp}  LocalGaia.{h,cpp}  TapClient.{h,cpp}  OnlineCache.{h,cpp}
@@ -664,6 +671,260 @@ Rationale and evidence: spec Addendum A2. The algorithm follows ImageSolver 6.6.
 - [ ] **Step 4: Run.** Expected: PASS.
 - [ ] **Step 5: Commit** `feat(gdg-core): recon core (cavity, ionization, dust, ionizer) ported with golden parity`.
 
+## Phase G2: Recon Part 2, native (the Python plan's Tasks 9–13)
+
+Scott's ruling (2026-11-12): these are written only in PCL C++, never Python. Numbered 21–26 so the existing references to Tasks 19 and 20 stay valid; Task 20's gate covers them (see its Step 4). The Python versions were never written, so there are **no Python goldens**: tests assert against analytic truth on a C++ synthetic blister, and against real data in Task 26.
+
+**Rules for this phase (in addition to the Global Constraints):**
+- Nothing here ships or depends on Python or PJSR, including test fixtures: the synthetic blister is generated in C++ (`test/util/Blister.h`), and the NAS validation is a ctest executable. Bash is used only as the thin PixInsight-launch harness, in the `run-probe.sh` style (D12).
+- New core code is PCL-free, in `gdg_core`, threaded with `gdg::parallel_for_dynamic` / `parallel_for_if` (`src/core/Parallel.h`), no OpenMP, no global mutable state; each task carries a `*_concurrent_calls_identical` test (two threads, same input, bit-identical output).
+- No new third-party code. PNG output in Task 26's test reuses the already vendored `modules/nukex/third_party/stb/stb_image_write.h` (test-only, like Catch2).
+- Frame: core y = PixInsight row (C1). 3D exports put +Y up, so `Y = −(y − apex_y)`.
+- Honesty text, verbatim from the Python plan's Task 10, on every recon output (FITS keyword `RECONTAG`, GLB `asset.extras.honesty`, doc): `Reconstructed HII cavity; physically motivated, not measured gas depth`.
+
+**Review Focus (Phase G2):**
+1. **Stretched input.** A finished RGB fed to the linear path must run geometry-only and say so (`degraded = "stretched-input"`, a console warning), never emit physics-flavoured output silently. Tests: Task 22 `reconstruct_stretched_input_degrades`, Task 25 `recon_stretched_input_flagged`.
+2. **Channel views not co-registered.** Different geometry → one error naming both views and their sizes; no output window. Test: Task 25 `recon_mismatched_geometry_error`.
+3. **No Gaia distance** (no reference view, ionizer unmatched, or override without distance). No physical scale: GLB units `px`, `outPcPerPx` = 0, no crash. Tests: Task 22 `reconstruct_no_distance_no_scale`, Task 23 `glb_units_px_without_scale`.
+4. **Unwritable or existing output path.** Loud error naming the path; never a partial file; an existing file is replaced only by the atomic rename. Tests: Task 23 `glb_write_atomic_and_errors`, Task 24 `gif_write_errors`.
+5. **Full-size masters.** 6072×4042 at decimate 1 must stay under glTF's 4 GiB uint32 limit or fail naming `glbDecimate`. Test: Task 23 `glb_size_limit_error`.
+
+### Task 21: Render the CavityModel to a registered linear image
+
+**Files:** Create `src/core/recon/Render2D.{h,cpp}`, `test/util/Blister.h`, `test/unit/test_recon_render2d.cpp`; modify `src/core/recon/Model.h` (add `double render_limb_gain = 0.5;` to `ReconConfig`, after `render_dust_strength`), `src/core/CMakeLists.txt` (recon block), `test/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: Task 18 (`CavityModel`, `ReconConfig`, `reconstruct_cavity`, `from_mono_sho`, `ionization_ratio`, `dust_from_structure`, `ionizer_from_xy`); Task 3 `gaussian_filter`; Task 4 `percentile`.
+- Produces (test util): `struct gdg::test::BlisterTruth { double apex_x, apex_y, radius_px; double lane_y0, lane_y1; }`, `struct gdg::test::Blister { gdg::Image ha, oiii, sii, rgb; BlisterTruth truth; }` and `Blister make_blister(int nx = 128, int ny = 96, std::uint64_t seed = 20261112)`.
+  - A paraboloid cavity about the apex (0.55 nx, 0.45 ny), radius 0.4 min(nx, ny); [O III] bright for r < 0.5 R, Hα and [S II] on the 0.6–1.0 R rim; a dark near-side lane (rows `lane_y0..lane_y1`, 4 px wide) attenuating all channels ×0.2 inside the footprint; sky 0.002, Gaussian noise σ 0.0005 from `std::mt19937_64(seed)`; `rgb` = (ha + sii, 0.5 oiii, oiii). Deterministic for a seed.
+- Produces: `gdg::Image gdg::recon::render_cavity_2d(const CavityModel& model, const ReconConfig& cfg)`: (ny, nx, 3), float32-valued, in [0, 1], same grid as the model. Throws `std::invalid_argument` unless `emissivity.channels == 3`. Per pixel, with a = `render_ambient`, s = `render_depth_shading`, γ = `render_gamma`:
+  - `z_rel = z − min(z)` (a flat model has no depth cue);
+  - `shade = (a + (1 − a)·clip(1 − s·z_rel, 0, 1))^γ` (γ shapes the shading only; the data is never stretched);
+  - limb: `g = |∇ gaussian_filter(z, 1)|` (central differences, one-sided at edges, as `np.gradient`); `q` = 99.5th percentile of the g > 0 values (limb term off when none); `limb = 1 + render_limb_gain·clip(g/q, 0, 1)`;
+  - occlusion: `T = 1 − clip(render_dust_strength·dust, 0, 1)`;
+  - `out_c = clip(f32(E_c·shade·limb·T), 0, 1)`.
+
+- [ ] **Step 1: Failing tests:**
+  - `blister_is_deterministic` (same seed → identical planes);
+  - `render2d_output_registered_linear_rgb` (shape (ny, nx, 3), every value finite and in [0, 1]);
+  - `render2d_core_reads_concave` (blister through `reconstruct_cavity` with an `ionizer_from_xy` at the truth apex: mean of out/E over r ≤ 0.1 R is at least 0.15 below its mean over 0.8–1.0 R);
+  - `render2d_dust_occludes` (where dust ≥ 0.5 and `render_dust_strength` = 1: out ≤ 0.5 E);
+  - `render2d_degenerate_is_identity` (z ≡ 0.3, dust ≡ 0: max |out − clip(E, 0, 1)| ≤ 1e-7);
+  - `render2d_rejects_mono_emissivity`;
+  - `render2d_concurrent_calls_identical`.
+- [ ] **Step 2: Run** `cmake --build build && (cd build && ctest -R test_recon_render2d --output-on-failure)`. Expected: FAIL.
+- [ ] **Step 3: Implement** `render_cavity_2d` and `make_blister`, rows through `parallel_for_dynamic`.
+- [ ] **Step 4: Run** the same command, then `ctest -R test_recon` (the Task 18 goldens stay green: the new `ReconConfig` field is not in the meta). Expected: PASS.
+- [ ] **Step 5: Commit** `feat(gdg-core): render CavityModel to a registered linear dimensional image`.
+
+### Task 22: Reconstruct pipeline (the `reconstruct` subcommand's core)
+
+**Files:** Create `src/core/recon/Reconstruct.{h,cpp}`, `test/unit/test_recon_reconstruct.cpp`; modify `src/core/CMakeLists.txt`, `test/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: Task 18 (all of `recon/*`, `ionizer_table`), Task 11 `StarRow`, Task 7 `Log`, Task 21.
+- Produces:
+  - `inline constexpr const char* gdg::recon::RECON_HONESTY = "Reconstructed HII cavity; physically motivated, not measured gas depth";`
+  - `gdg::Image channel_mean(const gdg::Image&)`: mono pass-through; colour → per-pixel channel mean (f32). Duoband inputs that are OSC masters (Scott's D1/D2 on the ASI2400MC) enter `from_duoband` this way: an OSC D1 frame's total signal is Hα + [O III].
+  - `struct ReconInputs { std::string mode; std::map<std::string, gdg::Image> channels; std::optional<gdg::Image> hb; std::vector<gdg::StarRow> stars; std::optional<Ionizer> ionizer_override; std::function<std::optional<double>(double x, double y)> deg_per_px_at; };` (mode and channel keys as `extract_channels`; `deg_per_px_at` null = no astrometry).
+  - `struct ReconResult { CavityModel model; IonizationMap ionization; Ionizer ionizer; gdg::Image lum; std::string degraded; };`
+  - `ReconResult reconstruct(const ReconInputs&, const ReconConfig&, const gdg::Log&)`:
+    1. duoband channels through `channel_mean`; `extract_channels(channels, mode)`;
+    2. `ionization_ratio`;
+    3. `lum = f32(ha + oiii + (sii or 0))`;
+    4. ionizer = override, else `pick_ionizer(ionizer_table(stars), ny, nx)`;
+    5. `dust = dust_from_structure(lum)`; with `hb`: `dust = max(dust, dust_from_balmer(ha, hb))` (hb of another shape throws `std::invalid_argument`);
+    6. `pc_per_px = distance_pc · deg_per_px_at(x, y) · π/180` when both exist, else none;
+    7. `reconstruct_cavity(...)`;
+    8. `degraded = "stretched-input"` when `!channels.is_linear`, with the warning, verbatim: `recon: input looks stretched (non-linear); ratio term off, geometry prior only. The result is not physically constrained.`
+
+- [ ] **Step 1: Failing tests:**
+  - `reconstruct_sho_end_to_end_concave` (blister SHO: mean z over r ≤ 0.1 R > mean z over 0.8–1.0 R; `meta.capture_mode == "sho"`; degraded empty);
+  - `reconstruct_duoband_rgb_uses_channel_mean` (RGB d1/d2 give the same model as their precomputed channel means, bit-identical);
+  - `reconstruct_osc_low_confidence_still_concave`;
+  - `reconstruct_stretched_input_degrades` (asinh-stretched blister RGB: degraded `"stretched-input"`, `meta.ratio_confidence == 0`, the warning captured through `Log`; Review Focus G2-1);
+  - `reconstruct_mismatched_shapes_throw`, `reconstruct_hb_shape_mismatch_throws`;
+  - `reconstruct_override_ionizer_used` (`source == "override"`, apex = the override);
+  - `reconstruct_pc_per_px` (distance 1000 pc at 1″/px → 1000 · (1/3600) · π/180 pc/px, rel ≤ 1e-12);
+  - `reconstruct_no_distance_no_scale` (no stars, no override → `field-center`, `pc_per_px` none; Review Focus G2-3);
+  - `reconstruct_concurrent_calls_identical`.
+- [ ] **Step 2: Run** `(cd build && ctest -R test_recon_reconstruct --output-on-failure)`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat(gdg-core): reconstruct pipeline (channels -> CavityModel), degraded-input flag, Gaia pc scale`.
+
+### Task 23: Native GLB writer (rotatable 3D model)
+
+**Files:** Create `src/core/recon/Glb.{h,cpp}`, `test/util/GlbRead.h` (header + chunk parser and typed reads of the BIN chunk; test-only), `test/unit/test_recon_glb.cpp`; modify `src/core/CMakeLists.txt`, `test/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: Task 18 `CavityModel`, `cavity_meta_json`; Task 22 `RECON_HONESTY`.
+- Produces: `struct ExportConfig { int decimate = 2; double depth_ratio = 0.5; double dust_offset_frac = 0.02; double dust_min = 0.01; };` (`decimate` 2 is the Python plan's default), `std::vector<std::uint8_t> build_glb(const CavityModel&, const ExportConfig&)`, and `void write_glb(const std::string& path, const CavityModel&, const ExportConfig&)` (writes `path + ".tmp"`, fsyncs, renames; any failure throws `std::runtime_error("cannot write <path>: <strerror>")` and removes the temporary file).
+- **Layout contract** (glTF 2.0 binary; the tests rely on it):
+  - Grid: columns `x = i·d` for i = 0 … (nx − 1)/d, rows likewise; vertex index `row·cols + col`.
+  - Positions (float32 VEC3, accessor min/max set): `X = (x − ax)·u`, `Y = −(y − ay)·u`, `Z = −z·D·u`. (ax, ay) = `apex_xy`; `D = depth_ratio · R`, R = the largest apex distance of a pixel with z > 0 (the whole image when none); `u = pc_per_px`, or 1 when absent.
+  - Surface colour: `COLOR_0` float32 VEC3 = clip(emissivity, 0, 1) (glTF vertex colours are linear, as the model is).
+  - Indices: uint32, two triangles per cell, counter-clockwise seen from +Z.
+  - Material 0: `KHR_materials_unlit` (listed in `extensionsUsed`), `doubleSided`.
+  - Dust mesh, only when max(dust) ≥ `dust_min`: the same grid at `Z + dust_offset_frac·D·u` (nearer the viewer); `COLOR_0` float32 VEC4 (0.05, 0.04, 0.03, dust); material 1 unlit, `alphaMode` `BLEND`; it reuses the index accessor.
+  - bufferViews and accessors in this order: surface positions, surface colours, indices, then dust positions and dust colours.
+  - `asset`: `{"version":"2.0","generator":"GaiaDepthGrade NebulaReconstruct","extras":{"honesty":RECON_HONESTY,"units":"pc"|"px","depth_ratio":…,"meta":<cavity_meta_json object>}}`.
+  - JSON chunk space-padded and BIN chunk zero-padded to 4 bytes; magic `glTF`, version 2.
+  - A total over 4 294 967 295 bytes throws `std::length_error("GLB would exceed 4 GiB; raise glbDecimate (now <d>)")` before allocating.
+
+- [ ] **Step 1: Failing tests:**
+  - `glb_header_and_chunks_valid` (magic, version, total length = file size, chunk types JSON/BIN, 4-byte alignment);
+  - `glb_vertex_grid_count` (9×7 model, d = 2 → 5×4 = 20 vertices, 72 indices; d = 1 → 63 vertices);
+  - `glb_surface_is_concave` (blister model: Z at the apex vertex < mean Z of the rim vertices);
+  - `glb_position_min_max_match_data`;
+  - `glb_front_faces_toward_viewer` (z ≡ 0: the first triangle's normal has +Z);
+  - `glb_units_pc_when_scale_known`, `glb_units_px_without_scale` (Review Focus G2-3);
+  - `glb_dust_mesh_only_when_dust`;
+  - `glb_honesty_and_meta_in_extras`;
+  - `glb_write_atomic_and_errors` (unwritable directory → the error names the path, no `.tmp` left; Review Focus G2-4);
+  - `glb_size_limit_error` (a 6072×4042 model at d = 1 is sized arithmetically and passes; a synthetic over-limit size throws the message above, without allocating; Review Focus G2-5);
+  - `glb_concurrent_calls_identical`.
+- [ ] **Step 2: Run** `(cd build && ctest -R test_recon_glb --output-on-failure)`. Expected: FAIL.
+- [ ] **Step 3: Implement** (hand-written JSON; the BIN chunk filled in parallel by rows).
+- [ ] **Step 4: Run.** Expected: PASS. Then load one written blister `.glb` in any glTF viewer available on the box and attach a screenshot to the task report (manual look, not a gate).
+- [ ] **Step 5: Commit** `feat(gdg-core): native GLB export of the cavity model (unlit emissive surface + dust layer)`.
+
+### Task 24: Orbit animation (native GIF89a)
+
+**Files:** Create `src/core/Gif.{h,cpp}`, `src/core/recon/Orbit.{h,cpp}`, `test/util/GifRead.h` (GIF89a + LZW decoder, test-only), `test/unit/test_gif.cpp`, `test/unit/test_recon_orbit.cpp`; modify `src/core/Display.{h,cpp}` (split `autostretch_u8` into the two functions below; its behaviour is unchanged), `src/core/CMakeLists.txt`, `test/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: Tasks 10 (`downscale_u8`), 21, 23 (`ExportConfig`, the `D` of its contract).
+- Produces (Display): `struct StfParams { std::vector<double> c0, m; };` (one entry per channel), `StfParams stf_params(const gdg::Image& rgb, double target_bg = 0.25, double shadows_clip = -2.8)` and `std::vector<std::uint8_t> apply_stf_u8(const gdg::Image& rgb, const StfParams&)`; `autostretch_u8(x) == apply_stf_u8(x, stf_params(x))`.
+- Produces (GIF): `void write_gif(const std::string& path, const std::vector<std::vector<std::uint8_t>>& frames_rgb, int width, int height, int delay_cs, int loops = 0)`.
+  - GIF89a, one global 256-entry palette by median cut over all frames' pixels (every pixel up to 4 M samples, else every k-th, k = ⌈total / 4 M⌉).
+  - Nearest palette colour by squared RGB distance, lowest index on ties, through a 32³ cache.
+  - LZW: minimum code size 8, clear code when the table reaches 4096.
+  - `NETSCAPE2.0` loop extension; one graphic control extension per frame carrying `delay_cs`.
+  - Atomic write and errors as `write_glb`.
+- Produces (orbit): `struct OrbitConfig { int frames = 36; double amplitude_deg = 12.0; int max_width = 760; int delay_cs = 8; };` (36 and 12 are the Python plan's defaults), `std::vector<gdg::Image> orbit_views(const CavityModel&, const ReconConfig&, const ExportConfig&, const OrbitConfig&)` and `void write_orbit_gif(const std::string& path, const CavityModel&, const ReconConfig&, const ExportConfig&, const OrbitConfig&)`.
+  - Frame k: `θ_k = amplitude·sin(2πk / frames)`, a small yaw parallax orbit.
+  - Base = `render_cavity_2d(model, cfg)`. Each pixel moves to `x' = x + tan θ_k·(z·D − z_apex·D)` (D as in Task 23 with u = 1, z_apex = z at the rounded apex), splatted to `round(x')` with a z-buffer (smaller z wins).
+  - Holes are filled by linear interpolation along the row, nearest value at the ends. θ = 0 gives the base image exactly.
+  - `write_orbit_gif`: STF parameters from frame 0, applied to every frame (no flicker), `downscale_u8` to `max_width`, then `write_gif`.
+
+- [ ] **Step 1: Failing tests:**
+  - `autostretch_split_is_identical` (and Task 10's `autostretch_matches_golden` stays green);
+  - `gif_roundtrip_exact_for_256_colours` (an image with ≤ 256 colours decodes bit-exact);
+  - `gif_lzw_table_reset` (320×240 noise over 256 colours forces clear codes; decodes exact);
+  - `gif_frame_count_delay_and_loop`;
+  - `gif_quantization_error_bounded` (a 256×64 truecolour gradient: mean |error| ≤ 4 per channel);
+  - `gif_write_errors` (Review Focus G2-4);
+  - `orbit_frame0_equals_render`;
+  - `orbit_frames_differ` (blister: frame 0 vs frame `frames/4`, mean |Δ| > 1e-3);
+  - `orbit_flat_model_frames_identical`;
+  - `orbit_gif_has_n_frames_and_width` (decoded: 36 frames, width ≤ 760);
+  - `orbit_concurrent_calls_identical`.
+- [ ] **Step 2: Run** `(cd build && ctest -R 'test_gif|test_recon_orbit|test_display' --output-on-failure)`. Expected: FAIL (test_display passes).
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 5: Commit** `feat(gdg-core): parallax orbit animation with a native GIF89a writer`.
+
+### Task 25: `NebulaReconstruct` process (reconstruct + export, headless and command line)
+
+**Files:** Create `src/module/NebulaReconstruct{Process,Parameters,Instance}.{h,cpp}`, `src/module/ReconBridge.{h,cpp}`, `src/module/probe/ProbeRecon.cpp`, `doc/NebulaReconstruct/NebulaReconstruct.html`, `test/run-probe-recon.sh`; modify `src/module/GaiaDepthGradeModule.cpp` (register the process), `src/module/probe/ProbeProcess.{h,cpp}` (command-line interface), `src/module/CMakeLists.txt`, `release.sh` (`GDG_DOC_IDS=(GaiaDepthGrade NebulaReconstruct)`)
+
+**Interfaces:**
+- Consumes: Tasks 21–24; Task 11 `ImageBridge`; Task 16 `RunPrepare`, `PrepareSession`, `GradeOptions` and `SplitWithStarXTerminator` (names as in the Task 16 work in progress, `src/module/PrepareSession.h` / `StarSplit.h`; use whatever Task 16 commits).
+- Produces: process `NebulaReconstruct` (D10): category `scarter4work`, global (`CanExecuteGlobal`/`ExecuteGlobal`; `ExecuteOn` is refused with "NebulaReconstruct is a global process: set the channel views and execute globally").
+
+  | Parameter id | Type | Default / range | Notes |
+  |---|---|---|---|
+  | `source` | enum | Channels* / ModelViews | ModelViews re-renders/re-exports a saved model (the `.npz` of the Python plan) |
+  | `mode` | enum | SHO / Duoband* / OSC | |
+  | `haViewId` `oiiiViewId` `siiViewId` `d1ViewId` `d2ViewId` `rgbViewId` `hbViewId` | string | | linear, starless, co-registered; `hbViewId` optional |
+  | `referenceViewId` | string | empty = no Gaia | a linear image of the same field; Task 16's `RunPrepare` on it gives the star table and the solution |
+  | `catalog` `magLimitEnabled` `magLimit` `parallaxSNR` `detectSigma` `detectFWHM` `matchTolerance` `splitMode` `starsViewId` `starlessViewId` `solveIndexFile` `gaiaDatabaseFiles` | | ids, types and defaults exactly as Task 16 | passed to `RunPrepare` as `GradeOptions` |
+  | `ionizerOverride` | bool | false | |
+  | `ionizerX`, `ionizerY` | double | 0 | core-frame pixels |
+  | `ionizerDistancePc` | double | 0 = none | |
+  | `wGeometry` `wIonization` `wEmission` `emissionSign` `wDust` `footprintFrac` `geometryPower` `ionizationGamma` | double | `ReconConfig` defaults (1.0, 0.6, 0.15, 1.0, 0.8, 0.05, 2.0, 1.0) | |
+  | `renderGamma` `renderAmbient` `renderDepthShading` `renderDustStrength` `renderLimbGain` | double | 1.0, 0.05, 0.5, 1.0, 0.5 | |
+  | `zViewId` `emissivityViewId` `dustViewId` | string | | ModelViews source |
+  | `outputModel` | bool | true | z / emissivity / dust windows |
+  | `outputRender` | bool | true | |
+  | `glbPath` | string | empty = none | |
+  | `glbDecimate` | int32 | 2 [1,64] | |
+  | `depthRatio` | double | 0.5 [0.05,4] | |
+  | `orbitPath` | string | empty = none | |
+  | `orbitFrames` | int32 | 36 [2,360] | |
+  | `orbitAmplitude` | double | 12 [0,45] | degrees |
+  | `outIonizerX` `outIonizerY` `outPcPerPx` | double | read-only | 0 = no scale |
+  | `outIonizerSource` `outCaptureMode` `outDegraded` | string | read-only | |
+
+- **Outputs** (base = the ha/d1/rgb view id; the z view's id under ModelViews):
+  - Windows `<base>_recon_z`, `<base>_recon_emissivity`, `<base>_recon_dust` and `<base>_recon` (the render), 32-bit float, not shown.
+  - Each carries the base's keywords plus `RECONTAG` = `RECON_HONESTY` and a HISTORY line, and the reference's astrometric solution when there is one.
+  - `<base>_recon_z` carries storable properties `GaiaDepthGrade:Recon:ApexX`, `:ApexY`, `:PcPerPx` (absent when none), `:Meta` (`cavity_meta_json`) and `:Degraded`. ModelViews reads them back; a view without `:Meta` → `not a NebulaReconstruct model: <id> lacks GaiaDepthGrade:Recon:Meta`.
+- **Errors:**
+  - Geometry mismatch (Review Focus G2-2), verbatim: `channel views are not co-registered: <idA> is <w>x<h>, <idB> is <w>x<h>`.
+  - Missing view: `view not found: <id> (<parameter>)`.
+  - Every core exception → `pcl::Error` with its text.
+  - No window is left open on failure.
+- **Command-line interface** (`CanProcessCommandLines` true): `NebulaReconstruct [--mode=sho|duoband|osc] [--ha= --oiii= --sii= | --d1= --d2= | --rgb=] [--hb=] [--reference=] [--ionizer=x,y[,dist]] [--from-model=z,emissivity,dust] [--model=<dir>] [--image=<file>] [--glb=<file>] [--decimate=N] [--depth-ratio=R] [--orbit=<file.gif>] [--frames=N] [--amplitude=deg]`.
+  - Each value is a view id or an image file; files are opened as windows and closed afterwards.
+  - `--model` saves the three model windows as XISF (`recon_z.xisf`, `recon_emissivity.xisf`, `recon_dust.xisf`, properties kept).
+  - `--image` saves the render.
+  - Exit 0 on success; non-zero with the error on the console. This is the native form of the Python plan's `reconstruct` and `export3d` subcommands.
+- **Test harness** (D12): `GaiaDepthGradeProbe` gains `CanProcessCommandLines` / `ProcessCommandLine` for `GaiaDepthGradeProbe --case=<id> --out=<json>`, with case inputs taken from the environment as today.
+  - `run-probe-recon.sh` sources `harness.sh`. Per case it writes a one-line `<case>.scp` into `$GDG_RUN_DIR` (never committed) and launches `pi_headless timeout 600 "$PI" -n="$GDG_SLOT" --automation-mode --no-startup-scripts -m="$SO" -r="$GDG_RUN_DIR/<case>.scp" --force-exit`.
+  - It asserts on the JSON with `jq`, as `run-probe.sh` does. The probe builds its synthetic inputs from `test/util/Blister.h` (probe sources are test-only, `-DGDG_BUILD_PROBES=ON`).
+
+- [ ] **Step 1: Failing probes** (`bash modules/gaia-depth-grade/test/run-probe-recon.sh`):
+  - `scp_launch_reaches_probe` **first**: proves `-r=<file>.scp` runs a command script under `--automation-mode` and `--force-exit` exits. If it does not, **stop and report to Scott**; no PJSR fallback.
+  - `recon_execute_global_sho`: blister windows → ExecuteGlobal → four windows, `RECONTAG` on each, z concave, properties present, read-only outputs set.
+  - `recon_model_views_roundtrip`: `--model` save, then `--from-model` → render max |Δ| ≤ 1e-6 against the first run; the GLB is written.
+  - `recon_command_line_files`: `NebulaReconstruct --mode=osc --rgb=<blister.xisf> --image=… --glb=… --orbit=…` from the `.scp` → three files; GLB header valid; GIF frame count 36.
+  - `recon_mismatched_geometry_error` (Review Focus G2-2: the exact text, no window left).
+  - `recon_stretched_input_flagged` (Review Focus G2-1: `outDegraded == "stretched-input"`).
+  - `recon_execute_on_refused`.
+  - `recon_reference_gaia_scale`: the NAS HaO3 master as both d1 and the reference, SXT split → `outPcPerPx > 0`, `outIonizerSource` ∈ {gaia-blue, gaia-bright}. Exits 77 without the NAS or StarXTerminator.
+  - `process_category` (both processes under `scarter4work`).
+- [ ] **Step 2: Run.** Expected: FAIL (no process).
+- [ ] **Step 3: Implement** the process, `ReconBridge` (views ↔ `ReconInputs`; model ↔ windows/properties), the command line, the probe command line and the doc page. The doc page covers what it does, the honesty statement, inputs and capture modes, outputs, files written (only the named paths), and network (only through `referenceViewId` with `catalog = Online`).
+- [ ] **Step 4: Run** `tools/build-env/build-modules.sh` (container build, ctest, `verify-portable.sh`), then `GDG_SO=<host probe build> bash modules/gaia-depth-grade/test/run-probe-recon.sh`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat(gdg): NebulaReconstruct process (reconstruct, re-render, GLB, orbit; command line)`.
+
+### Task 26: NAS real-data validation (acceptance)
+
+**Files:** Create `src/core/recon/Validate.{h,cpp}`, `test/unit/test_recon_validate.cpp`, `src/module/probe/ProbeReconFreeze.cpp`, `src/module/probe/NpyWrite.h` (`<f4`/`<f8` C-order `.npy` v1 writer; test-only), `test/run-recon-freeze.sh`, `test/unit/test_recon_real.cpp`, `test/golden/RECON_VALIDATION.md`; modify `src/core/CMakeLists.txt`, `test/CMakeLists.txt` (`test_recon_real` with `SKIP_RETURN_CODE 77`; it includes `modules/nukex/third_party/stb`)
+
+**Interfaces:**
+- Consumes: Tasks 10 (`render_nebula`, `downscale_u8`), 16 (`RunPrepare`, `SplitWithStarXTerminator`), 21–25.
+- Produces (core):
+  - `double cavity_depth_index(const CavityModel&)`: footprint = z > 0, R as in Task 23; = mean z over r ≤ 0.1 R − mean z over 0.8 R < r ≤ R; NaN when either set is empty.
+  - `double interior_vs_front_ratio(const CavityModel&, const IonizationMap&)`: inside the footprint, interior = `oiii_fraction` ≥ its 75th percentile there, front = ≤ its 25th; = mean z(front) − mean z(interior). Positive means the front is correctly farther.
+- Produces (freeze; probe case `freeze_recon_fixtures`, launched by `run-recon-freeze.sh` through the `.scp` route of Task 25). It writes `$GDG_FIXTURES/recon/<target>/` (default `~/.cache/gdg-fixtures`, on disk, not the tmpfs `/tmp`) and reads the NAS read-only.
+
+  | Target | Subs | Mode |
+  |---|---|---|
+  | `M42-duoband` | `9_24_2023/M42` HaO3 ×20, S2O3 ×26 | duoband |
+  | `M42-broadband` | `2_4_2023/M42_1-<k>`: the panel whose first sub solves nearest M42 (RA 83.8221°, Dec −5.3911°) | osc |
+  | `M8-duoband` | `8_8_2023/M8` HaO3 ×5, S2O3 ×5 | duoband |
+  | `M8-broadband` | `5_10_2023/M8` ×40 | osc |
+
+  - Per target, in C++ through `ProcessInstance`: Debayer (pattern from `BAYERPAT`; error if absent), StarAlignment (every filter of a target registered to the first sub of its first filter), then ImageIntegration with PixInsight's defaults (D13: no calibration frames).
+  - Then `RunPrepare` on the D1/broadband master (offline Gaia, StarXTerminator); SXT on the D2 master.
+  - Writes `starless_<filter>.npy` (`<f4`, (ny, nx, 3)), `stars.npy` (`<f8`, N×5: x, y, flux, bp_rp, r_med), and `fixture.json`: subs with sha256, `deg_per_px` at every star from `ResolutionAt`, the PixInsight version, and `"calibrated": false`.
+  - A target whose `fixture.json` exists is skipped unless `GDG_REFREEZE=1`. `$GDG_FIXTURES/recon/MANIFEST.json` lists the frozen targets.
+- Produces (ctest `test_recon_real`): exits 77 when the manifest is absent. Per target it loads the fixtures into `ReconInputs` (`deg_per_px_at` = the nearest star's value) and runs `reconstruct`. It writes `out/metrics.json`, plus `out/<target>_before.png` (Task 10 nebula grade of the starless at strength/atmos/structure 1) and `out/<target>_after.png` (`render_cavity_2d`), both with the STF parameters of `before`, ≤ 1600 px wide, through `stb_image_write`. For the two duoband targets it also writes `<target>.glb` and `<target>_orbit.gif`.
+
+- [ ] **Step 1: Failing tests:**
+  - `test_recon_validate`: `depth_index_positive_for_bowl`, `depth_index_nan_without_footprint`, `interior_vs_front_positive_when_front_far`, `interior_vs_front_negative_when_inverted` (synthetic models with known ordering).
+  - `test_recon_real`, for every target: z finite and in [0, 1]; `degraded` empty (masters are linear); (a) `interior_vs_front_ratio > 0`. Across targets: (b) `cavity_depth_index(M8-x) > cavity_depth_index(M42-x)` for x ∈ {duoband, broadband}; (c) duoband and broadband of one target agree in the sign of both metrics.
+- [ ] **Step 2: Run** `(cd build && ctest -R test_recon_validate --output-on-failure)`. Expected: FAIL.
+- [ ] **Step 3: Implement** the metrics, then the freeze probe; run `bash modules/gaia-depth-grade/test/run-recon-freeze.sh` once (it reports per-target sub counts, integration time and fixture sizes).
+- [ ] **Step 4: Run** `(cd build && ctest -R 'test_recon_validate|test_recon_real' --output-on-failure)`. Expected: PASS, with `test_recon_real` executed, not skipped.
+  - A red (a)–(c) on real data is fixed in the owning task's code or reported to Scott with the numbers. Never fixed by loosening the assertion or deselecting a target.
+  - Assertion (b) compares the reconstruction's relative concavity (z is normalised to [0, 1]). The physical stand-off difference (M8 1–1.8 pc vs M42 0.23 pc) is a design expectation the metric does not measure; `RECON_VALIDATION.md` says so.
+- [ ] **Step 5: Acceptance.** Record the metrics in `test/golden/RECON_VALIDATION.md`. Scott judges the before/after renders of M42 and M8 (duoband) against the Robles M8 reference: (a) the bright core reads as a concave cavity; (b) [O III] interior / Hα–[S II] front ordering is visible; (c) M8 reads deeper than M42. His verdict is recorded as a dated row in that file.
+- [ ] **Step 6: Commit** `test(gdg): recon real-data validation on NAS M42/M8 (duoband + broadband)`.
+
 ## Phase H: Real-data parity and cut-over
 
 ### Task 19: Real-data parity harness
@@ -702,7 +963,7 @@ Rationale and evidence: spec Addendum A2. The algorithm follows ImageSolver 6.6.
 - [ ] **Step 1: Failing checks:** `bash tools/test-release-manifest.sh` with the new expectations (no sidecar or script package; the GaiaDepthGrade module is in a `1.9.6:2.0.0` block); `release.sh --package-test` lists the module.
 - [ ] **Step 2: Run.** Expected: FAIL.
 - [ ] **Step 3: Implement.** Then confirm on a scratch slot what the 1.9.6 updater does with the old installed sidecar and scripts once their packages leave the manifest. Report the result to Scott; do not guess.
-- [ ] **Step 4: Run the full gate:** container build with ctest, ASan host build of `gdg_core` tests, `verify-portable.sh`, every probe in `run-probe.sh`, `gui-smoke.sh`, `run-real-parity.sh`, the Feature Parity Checklist ticked with evidence. Then `./release.sh`. Expected: green, with a signed manifest.
+- [ ] **Step 4: Run the full gate:** container build with ctest, ASan host build of `gdg_core` tests, `verify-portable.sh`, every probe in `run-probe.sh`, `gui-smoke.sh`, `run-real-parity.sh`, `run-probe-recon.sh` and `test_recon_real` (executed on the frozen NAS fixtures, Task 26), the Feature Parity Checklist and the Phase G2 table ticked with evidence. Then `./release.sh`. Expected: green, with a signed manifest.
 - [ ] **Step 5: Commit and push** `release(gdg): GaiaDepthGrade 1.0.0.0 native module; retire sidecar + scripts`. Scott then runs the repo-pull test.
 
 ---
@@ -779,6 +1040,17 @@ Every item must be ticked with its test before Task 20 Step 4. "Removed" items a
 | F47 | Menu location `scarter4work > Gaia Depth Grade` | process category `scarter4work` | 16 | probe `process_category` |
 | F48 | Recon core (branch) | functions and defaults | 18 | `test_recon_*` |
 
+### Recon Part 2 (Phase G2): the Python plan's Tasks 9–13, never shipped in Python
+
+| # | Feature (Python plan task) | Detail | Task | Test |
+|---|---|---|---|---|
+| G1 | 2D render of the model (9) | occlusion, limb-brightening, depth-keyed shading; registered, linear [0,1]; flat model = identity | 21 | `render2d_*` |
+| G2 | `reconstruct` subcommand + multi-master reader (10) | SHO / duoband / OSC, Hβ, ionizer override, co-registration error, stretched-input degrade, honesty tag | 22, 25 | `reconstruct_*`, `recon_execute_global_sho`, `recon_command_line_files` |
+| G3 | Portable model (10, `.npz`) | model windows + properties, saved XISF, re-render/export from them | 25 | `recon_model_views_roundtrip` |
+| G4 | GLB export + `export3d` (11) | decimated emissive surface + dust layer, honesty in extras | 23, 25 | `glb_*` |
+| G5 | Orbit animation (12) | 36 frames, ±12°, animated GIF | 24, 25 | `orbit_*`, `gif_*` |
+| G6 | Real-data validation (13) | M42/M8 duoband + broadband; metrics (a)–(c); Scott's before/after sign-off | 26 | `test_recon_real`, `RECON_VALIDATION.md` |
+
 ### Removed internal artifacts (deliberate)
 
 | # | Artifact | Why it goes |
@@ -808,3 +1080,26 @@ Run as tracks after Tasks 1–2:
 Then 16 → 17 → 19 → 20 on top of both tracks: **about 19 days of critical path**. That gives a **release candidate by 2026-12-01** and about 11 days for Scott's repo-pull test and fixes.
 
 The deadline holds **only** with parallel tracks (subagent-driven, at least 2 concurrent implementers on disjoint files) and the solver gate passing. If the gate fails, the D2 contingency costs about 1 day but needs Scott's approval. If the critical path slips past 2026-12-04, Task 18 (recon) moves out of the release first. It ships nothing user-visible.
+
+### Re-plan with Phase G2 (2026-11-12)
+
+State on 2026-11-12, from the branches:
+- Tasks 1–15 and 18 are committed (`gdg/phaseB…E`, `gdg/phaseG-recon`, merged into `gdg/phaseE-solver`); the solver gate passed.
+- Tasks 16–17 are in progress, uncommitted, on `gdg/phaseF-process`.
+- Left: 16, 17, 19 and 20, about 9 focused days.
+
+| Task | 21 | 22 | 23 | 24 | 25 | 26 |
+|---|---|---|---|---|---|---|
+| Days | 1.5 | 1 | 1.5 | 2 | 3 | 2.5 |
+
+Phase G2 adds **11.5 days**; serial, everything left is about 20.5 days. Tracks from 2026-11-13:
+
+| Track | Tasks | Needs |
+|---|---|---|
+| M | 16 → 17 → 19 | — |
+| R (PCL-free, starts now) | 21 → 22, then 23 ∥ 24 | Task 18 only |
+| then | 25 → 26 → 20 | 16 and 21–24; 26 also needs PixInsight time for four integrations |
+
+Critical path: R (~4.5 days) ∥ 16, then 25 + 26 + 20 ≈ **12 focused days**, so a release candidate about **2026-11-28** with two concurrent implementers. That leaves about two weeks for Scott's repo-pull test and the Task 26 sign-off.
+
+Valve: if Task 25 or 26 is not green by 2026-12-04, `NebulaReconstruct` is not registered in the 12-12 build (Tasks 21–24 stay in `gdg_core`, invisible), and Part 2 ships in the next release.
