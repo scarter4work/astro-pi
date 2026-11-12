@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-05-nebula-3d-depth-reconstruction-design.md`
 
+> **Status (2026-11-12).** Tasks 1–8 are done in Python (2026-11-06) and ported to C++ by Task 18 of `docs/superpowers/plans/2026-11-10-gaia-depth-grade-pcl-port.md`. Tasks 9–13 were never started and are **superseded**: Scott ruled on 2026-11-12 that they are written only as native PCL C++ in the Gaia Depth Grade port, never Python. They are port plan Tasks 21–26 (Phase G2). The authoritative copy of that plan is on branch `gdg/phaseE-solver` and its successors. Do not implement Tasks 9–13 below.
+
 ## Global Constraints
 
 Every task's requirements implicitly include these (copied verbatim from the spec):
@@ -49,7 +51,7 @@ Input classes the spec implies but that no single happy-path test exercises — 
   - `@dataclass(frozen=True) CavityModel(z: np.ndarray, emissivity: np.ndarray, dust: np.ndarray, pc_per_px: float | None, apex_xy: tuple[float,float], meta: dict)` — `z` in px-relative depth units (observer at `-∞`, larger = farther), `emissivity` `(ny,nx,3)` linear, `dust` `(ny,nx)` opacity `[0,1]`.
   - `validate_shapes(*arrays) -> None` — raises `ValueError` on shape mismatch.
 
-- [ ] **Step 1: Write the failing test** `tests/recon/test_model.py`
+- [x] **Step 1: Write the failing test** `tests/recon/test_model.py`
 
 ```python
 def test_channelset_rejects_shape_mismatch():
@@ -64,10 +66,10 @@ def test_cavitymodel_fields_roundtrip():
     ...
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `pytest tests/recon/test_model.py -v` → FAIL (module missing).
-- [ ] **Step 3: Implement the dataclasses + `validate_shapes` in `recon/model.py`.** `__post_init__` on `ChannelSet`/`CavityModel` calls `validate_shapes`. `sii=None` is allowed.
-- [ ] **Step 4: Run to verify it passes** — `pytest tests/recon/test_model.py -v` → PASS.
-- [ ] **Step 5: Commit** — `feat(recon): shared CavityModel/ChannelSet/Ionizer types`.
+- [x] **Step 2: Run to verify it fails** — `pytest tests/recon/test_model.py -v` → FAIL (module missing).
+- [x] **Step 3: Implement the dataclasses + `validate_shapes` in `recon/model.py`.** `__post_init__` on `ChannelSet`/`CavityModel` calls `validate_shapes`. `sii=None` is allowed.
+- [x] **Step 4: Run to verify it passes** — `pytest tests/recon/test_model.py -v` → PASS.
+- [x] **Step 5: Commit** — `feat(recon): shared CavityModel/ChannelSet/Ionizer types`.
 
 ---
 
@@ -86,7 +88,7 @@ def test_cavitymodel_fields_roundtrip():
   - `looks_linear(arr) -> bool` — non-linearity heuristic (histogram of a starless master: a stretched image has a filled midtone/raised black point; linear emission is sky-floored and right-skewed). Returns `False` for an obviously stretched array.
   - `extract_channels(inputs: dict, mode: str) -> ChannelSet` — dispatch on `mode ∈ {"sho","duoband","osc"}`; validates co-registration (shapes equal) else `ValueError`; if `looks_linear` is False, sets `is_linear=False` and zeroes `ratio_confidence` (forces geometry-only downstream).
 
-- [ ] **Step 1: Write failing tests** `tests/recon/test_channels.py`
+- [x] **Step 1: Write failing tests** `tests/recon/test_channels.py`
 
 ```python
 def test_sho_passthrough_full_confidence(): # arrays unchanged, confidence==1.0
@@ -98,10 +100,10 @@ def test_stretched_input_zeros_ratio_confidence():
     # a synthetic stretched (sigmoid'd) master -> is_linear False, ratio_confidence==0.0
 ```
 
-- [ ] **Step 2: Run to verify they fail.**
-- [ ] **Step 3: Implement `channels.py`** with the signatures above. `looks_linear`: flag as stretched when `median > k*MAD`-style midtone fill exceeds a threshold (one defensible heuristic; implementer tunes the constant against the fixture).
-- [ ] **Step 4: Run to verify pass.**
-- [ ] **Step 5: Commit** — `feat(recon): linear channel ingest for SHO/duoband/OSC with non-linearity guard`.
+- [x] **Step 2: Run to verify they fail.**
+- [x] **Step 3: Implement `channels.py`** with the signatures above. `looks_linear`: flag as stretched when `median > k*MAD`-style midtone fill exceeds a threshold (one defensible heuristic; implementer tunes the constant against the fixture).
+- [x] **Step 4: Run to verify pass.**
+- [x] **Step 5: Commit** — `feat(recon): linear channel ingest for SHO/duoband/OSC with non-linearity guard`.
 
 ---
 
@@ -115,7 +117,7 @@ def test_stretched_input_zeros_ratio_confidence():
 - Consumes: `ChannelSet` (Task 1/2).
 - Produces: `ionization_ratio(ch: ChannelSet, eps: float = 1e-6) -> IonizationMap` — `oiii_fraction = oiii / (oiii + ha + eps)`, smoothed, clipped `[0,1]`; `confidence = ch.ratio_confidence`. S II, when present, sharpens the front term but `sii=None` is fully supported.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_oiii_bright_core_reads_high_fraction(): # planted OIII-dominant disc -> oiii_fraction>0.7 there
@@ -124,8 +126,8 @@ def test_handles_sii_none(): # ChannelSet(sii=None) -> no crash, valid map
 def test_confidence_propagates(): # map.confidence == ch.ratio_confidence
 ```
 
-- [ ] **Step 2–4:** fail → implement → pass.
-- [ ] **Step 5: Commit** — `feat(recon): ionization ratio map (OIII fraction) as depth coordinate`.
+- [x] **Step 2–4:** fail → implement → pass.
+- [x] **Step 5: Commit** — `feat(recon): ionization ratio map (OIII fraction) as depth coordinate`.
 
 ---
 
@@ -139,7 +141,7 @@ def test_confidence_propagates(): # map.confidence == ch.ratio_confidence
 **Interfaces:**
 - Produces: an **optional** `bp_rp` column on the distance `Table`. New constant `_OPTIONAL = ("bp_rp",)`; consumers still read `_REQUIRED` unchanged. Online SELECT adds `bp_rp`; offline TSV gains an optional 5th column; when absent the column is filled with `NaN` (not dropped, not required).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_required_consumers_unaffected(): # existing prepare_grade path still passes (regression guard)
@@ -148,10 +150,10 @@ def test_offline_tsv_optional_bp_rp():
     # 5-col TSV -> bp_rp populated; 4-col TSV -> bp_rp all-NaN, no error
 ```
 
-- [ ] **Step 2: Run — the 4-col/regression tests pass, the bp_rp tests FAIL** (column absent). Confirm the regression guard is green against current code *before* changing it.
-- [ ] **Step 3: Implement** additive `bp_rp` (optional) in both sources; keep `tbl[list(_REQUIRED)]` consumers intact by selecting `_REQUIRED + present-optionals`.
-- [ ] **Step 4: Run — all pass**, including the untouched existing distance tests.
-- [ ] **Step 5: Commit** — `feat(distances): carry optional Gaia bp_rp colour (additive, non-breaking)`.
+- [x] **Step 2: Run — the 4-col/regression tests pass, the bp_rp tests FAIL** (column absent). Confirm the regression guard is green against current code *before* changing it.
+- [x] **Step 3: Implement** additive `bp_rp` (optional) in both sources; keep `tbl[list(_REQUIRED)]` consumers intact by selecting `_REQUIRED + present-optionals`.
+- [x] **Step 4: Run — all pass**, including the untouched existing distance tests.
+- [x] **Step 5: Commit** — `feat(distances): carry optional Gaia bp_rp colour (additive, non-breaking)`.
 
 ---
 
@@ -167,7 +169,7 @@ def test_offline_tsv_optional_bp_rp():
   - `pick_ionizer(table, shape, footprint) -> Ionizer` — among stars inside the footprint, pick the **bluest luminous** (low `bp_rp`, high `flux`); if no `bp_rp` present/finite, fall back to brightest (`source="gaia-bright"`); if the table is empty, return the footprint-center apex with `distance_pc=None` (`source="field-center"`).
   - `ionizer_from_xy(x, y, distance_pc) -> Ionizer` (`source="override"`).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_picks_blue_luminous_star(): # table with a blue bright star + red bright star -> blue one
@@ -176,8 +178,8 @@ def test_empty_table_returns_field_center(): # source=="field-center", apex at s
 def test_override_returns_specified_point(): # ionizer_from_xy echoes inputs, source=="override"
 ```
 
-- [ ] **Step 2–4:** fail → implement → pass.
-- [ ] **Step 5: Commit** — `feat(recon): Gaia-anchored exciting-star (ionizer) identification with fallbacks`.
+- [x] **Step 2–4:** fail → implement → pass.
+- [x] **Step 5: Commit** — `feat(recon): Gaia-anchored exciting-star (ionizer) identification with fallbacks`.
 
 ---
 
@@ -192,15 +194,15 @@ def test_override_returns_specified_point(): # ionizer_from_xy echoes inputs, so
   - `dust_from_structure(lum) -> np.ndarray` — `[0,1]` opacity; dark lanes embedded in bright surroundings → high opacity (near-side occluder), sky floor → 0.
   - `dust_from_balmer(ha, hb, eps=1e-6) -> np.ndarray` — optional; higher `ha/hb` above the Case B ratio 2.86 → more extinction. Used only when an Hβ master is supplied.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_dark_lane_reads_high_opacity(): # planted dark stripe in bright field -> high dust there, ~0 in sky
 def test_balmer_decrement_tracks_extinction(): # raised Ha/Hb region -> higher dust_from_balmer
 ```
 
-- [ ] **Step 2–4:** fail → implement → pass.
-- [ ] **Step 5: Commit** — `feat(recon): near-side dust layer from structure and optional Balmer decrement`.
+- [x] **Step 2–4:** fail → implement → pass.
+- [x] **Step 5: Commit** — `feat(recon): near-side dust layer from structure and optional Balmer decrement`.
 
 ---
 
@@ -216,7 +218,7 @@ def test_balmer_decrement_tracks_extinction(): # raised Ha/Hb region -> higher d
   - `ionization_depth(ion_map: IonizationMap) -> z_ion` — high `oiii_fraction` (interior, near the hot star) → nearer/forward on the cavity wall; low (front/outer) → farther. (Physically: O III fills the cavity interior; Hα/S II hug the far ionization front.)
   - `emission_measure_relief(lum) -> z_em` — bright filamentary edges (tangent sightlines, limb-brightening) bulge along the line of sight; returns a signed relief centered on 0.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_geometry_prior_is_concave_about_apex(): # radial profile from apex increases then the center sightline is deepest
@@ -224,8 +226,8 @@ def test_ionization_depth_places_oiii_forward(): # high oiii_fraction -> smaller
 def test_emission_measure_relief_bulges_bright_edges(): # bright rim -> relief != 0, sky -> ~0
 ```
 
-- [ ] **Step 2–4:** fail → implement → pass. Each formula is a defensible first version; constants are the implementer's to tune against the Task 8 blister fixture.
-- [ ] **Step 5: Commit** — `feat(recon): cavity depth transfer functions (geometry, ionization, emission-measure)`.
+- [x] **Step 2–4:** fail → implement → pass. Each formula is a defensible first version; constants are the implementer's to tune against the Task 8 blister fixture.
+- [x] **Step 5: Commit** — `feat(recon): cavity depth transfer functions (geometry, ionization, emission-measure)`.
 
 ---
 
@@ -241,7 +243,7 @@ def test_emission_measure_relief_bulges_bright_edges(): # bright rim -> relief !
 
 **Fixture:** `synthetic_blister` — a planted concave front (known apex + curvature), O III-bright interior, Hα/S II-bright rim, one dark near-side lane; plus a `truth` describing apex, concavity sign, interior-vs-rim ionization.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_reconstructs_concave_cavity_with_apex(): # recovered z concave; deepest near planted apex
@@ -251,12 +253,14 @@ def test_low_ratio_confidence_still_concave(): # same fixture via OSC ingest -> 
 def test_sii_none_supported(): # duoband/OSC path reconstructs without SII
 ```
 
-- [ ] **Step 2–4:** fail → implement → pass.
-- [ ] **Step 5: Commit** — `feat(recon): assemble confidence-weighted blister CavityModel`.
+- [x] **Step 2–4:** fail → implement → pass.
+- [x] **Step 5: Commit** — `feat(recon): assemble confidence-weighted blister CavityModel`.
 
 ---
 
 ### Task 9: 2D render of the model (`recon/render2d.py`)
+
+> **Superseded (2026-11-12)** by port plan Task 21 (`render_cavity_2d`, native C++). Not to be implemented in Python.
 
 **Files:**
 - Create: `src/gaia_depth_grade/recon/render2d.py`
@@ -281,6 +285,8 @@ def test_degenerate_model_is_near_identity(): # flat z + zero dust -> np.allclos
 ---
 
 ### Task 10: `reconstruct` CLI subcommand + multi-master reader
+
+> **Superseded (2026-11-12)** by port plan Task 22 (reconstruct pipeline) and Task 25 (`NebulaReconstruct` process and its command line). Not to be implemented in Python.
 
 **Files:**
 - Modify: `src/gaia_depth_grade/cli.py` (subparser, handler, a `_read_masters` helper)
@@ -309,6 +315,8 @@ def test_mismatched_master_shapes_exit_nonzero(tmp_path):
 
 ### Task 11: 3D export (`recon/export3d.py`) + `export3d` CLI
 
+> **Superseded (2026-11-12)** by port plan Task 23 (native GLB writer, no pygltflib) and Task 25 (command line). Not to be implemented in Python.
+
 **Files:**
 - Create: `src/gaia_depth_grade/recon/export3d.py`
 - Modify: `src/gaia_depth_grade/cli.py` (subparser + handler)
@@ -336,6 +344,8 @@ def test_cli_export3d_writes_glb(tmp_path): # main(["export3d", model, out.glb])
 
 ### Task 12: Orbit animation
 
+> **Superseded (2026-11-12)** by port plan Task 24 (native GIF89a orbit, no imageio). Not to be implemented in Python.
+
 **Files:**
 - Modify: `src/gaia_depth_grade/recon/export3d.py` (`render_orbit`)
 - Modify: `src/gaia_depth_grade/cli.py` (`--orbit out.gif --frames N` on `export3d`)
@@ -359,6 +369,8 @@ def test_orbit_frames_differ(): # first vs middle frame differ beyond noise (rot
 
 ### Task 13: Real-data validation harness (acceptance)
 
+> **Superseded (2026-11-12)** by port plan Task 26 (C++ ctest `test_recon_real` on frozen NAS fixtures; the masters are integrated by a C++ probe). Not to be implemented in Python or as a shell/Python harness.
+
 **Files:**
 - Create: `gaia-depth-grade/test/run-recon-validation.sh` (host-only; reads the NAS; no PixInsight launch)
 - Create: `src/gaia_depth_grade/recon/validate.py` (metrics)
@@ -380,6 +392,8 @@ def test_orbit_frames_differ(): # first vs middle frame differ beyond noise (rot
 ---
 
 ## Not in this plan (Part 2: PixInsight / PJSR integration)
+
+> **Superseded (2026-11-12).** There is no PJSR integration: the reconstruction is exposed as the native `NebulaReconstruct` process (port plan Task 25). The dialog panel described below is not yet planned.
 
 A separate plan covers: multi-channel view selection in the dialog, per-channel `saveAs` into the private work dir, passing the master paths as new positional argv (the contract is already files-on-disk + argv), the new panel controls (mode, ionizer click-override, weights), loading the GLB/orbit for preview, and the recombine point for the reconstructed image. Part 1 is independently shippable and testable through the sidecar CLI, which is how it gets validated on the NAS data before any PI wiring.
 
