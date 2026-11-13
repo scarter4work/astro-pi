@@ -4,7 +4,11 @@
 #include "Extinction.h"
 #include "Ionization.h"
 
+#include <algorithm>
 #include <cmath>
+#include <numbers>
+#include <stdexcept>
+#include <string>
 
 namespace gdg::recon {
 
@@ -16,13 +20,15 @@ Image channel_mean(const Image& img) {
 }
 
 ReconResult reconstruct(const ReconInputs& in, const ReconConfig& cfg, const Log& log) {
-    std::map<std::string, Image> inputs = in.channels;
+    // Only the duoband inputs are reduced to their channel mean; every other mode passes the
+    // caller's map straight through.
+    std::map<std::string, Image> duoband_means;
     if (in.mode == "duoband")
         for (const char* key : {"d1", "d2"}) {
-            auto it = inputs.find(key);
-            if (it != inputs.end()) it->second = channel_mean(it->second);
+            auto it = in.channels.find(key);
+            if (it != in.channels.end()) duoband_means.emplace(key, channel_mean(it->second));
         }
-    const ChannelSet ch = extract_channels(inputs, in.mode);
+    const ChannelSet ch = extract_channels(in.mode == "duoband" ? duoband_means : in.channels, in.mode);
     const int ny = ch.ha.height, nx = ch.ha.width;
     if (in.hb) validate_shapes({&ch.ha, &*in.hb});
 
@@ -35,11 +41,14 @@ ReconResult reconstruct(const ReconInputs& in, const ReconConfig& cfg, const Log
         lum.data[i] = v;
     }
 
-    Ionizer ionizer = in.ionizer_override ? *in.ionizer_override : Ionizer{};
-    if (!in.ionizer_override) {
+    Ionizer ionizer = [&] {
+        if (in.ionizer_override) return *in.ionizer_override;
         const IonizerTable table = ionizer_table(in.stars);
-        ionizer = pick_ionizer(&table, ny, nx);
-    }
+        return pick_ionizer(&table, ny, nx);
+    }();
+    if (ionizer.distance_pc && !(std::isfinite(*ionizer.distance_pc) && *ionizer.distance_pc > 0.0))
+        throw std::invalid_argument("reconstruct: ionizer distance_pc must be finite and > 0, got " +
+                                    std::to_string(*ionizer.distance_pc));
 
     Image dust = dust_from_structure(lum);
     if (in.hb) {
@@ -49,8 +58,13 @@ ReconResult reconstruct(const ReconInputs& in, const ReconConfig& cfg, const Log
 
     std::optional<double> pc_per_px;
     if (ionizer.distance_pc && in.deg_per_px_at) {
-        const std::optional<double> deg = in.deg_per_px_at(ionizer.x, ionizer.y);
-        if (deg) pc_per_px = *ionizer.distance_pc * *deg * 3.14159265358979323846 / 180.0;
+        if (const std::optional<double> deg = in.deg_per_px_at(ionizer.x, ionizer.y)) {
+            if (!(std::isfinite(*deg) && *deg > 0.0))
+                throw std::invalid_argument("reconstruct: deg_per_px_at(" + std::to_string(ionizer.x) + ", " +
+                                            std::to_string(ionizer.y) + ") must be finite and > 0, got " +
+                                            std::to_string(*deg));
+            pc_per_px = *ionizer.distance_pc * *deg * std::numbers::pi / 180.0;
+        }
     }
 
     CavityModel model = reconstruct_cavity(ch, ion, ionizer, lum, dust, pc_per_px, cfg);

@@ -136,20 +136,51 @@ TEST_CASE("reconstruct_mismatched_shapes_throw", "[recon][reconstruct]") {
     const Blister b = make_blister();
     ReconInputs in = sho_inputs(b);
     in.channels.at("oiii") = Image(b.ha.width - 1, b.ha.height);
-    CHECK_THROWS_AS(reconstruct(in, ReconConfig{}, gdg::Log{}), std::invalid_argument);
+    REQUIRE_THROWS_AS(reconstruct(in, ReconConfig{}, gdg::Log{}), std::invalid_argument);
+    REQUIRE_THROWS_WITH(reconstruct(in, ReconConfig{}, gdg::Log{}), Catch::Matchers::ContainsSubstring("shape mismatch"));
 }
 
 TEST_CASE("reconstruct_hb_shape_mismatch_throws", "[recon][reconstruct]") {
     const Blister b = make_blister();
     ReconInputs in = sho_inputs(b);
     in.hb = Image(b.ha.width, b.ha.height + 1);
-    CHECK_THROWS_AS(reconstruct(in, ReconConfig{}, gdg::Log{}), std::invalid_argument);
+    REQUIRE_THROWS_AS(reconstruct(in, ReconConfig{}, gdg::Log{}), std::invalid_argument);
+    REQUIRE_THROWS_WITH(reconstruct(in, ReconConfig{}, gdg::Log{}), Catch::Matchers::ContainsSubstring("shape mismatch"));
 
-    in.hb = b.ha;  // same shape: accepted, and the dust is the max of both estimates
+    // hb = ha / 5 on the left half: Ha/Hb = 5 exceeds Case B (2.86) there.
+    Image hb = b.ha;
+    for (int y = 0; y < hb.height; ++y)
+        for (int x = 0; x < hb.width; ++x)
+            if (x < b.truth.apex_x) hb.at(x, y) = b.ha.at(x, y) / 5.0;
+    in.hb = hb;
     const ReconResult with_hb = reconstruct(in, ReconConfig{}, gdg::Log{});
     const ReconResult without = reconstruct(sho_inputs(b), ReconConfig{}, gdg::Log{});
-    for (size_t i = 0; i < without.model.dust.data.size(); ++i)
+    size_t greater = 0;
+    for (size_t i = 0; i < without.model.dust.data.size(); ++i) {
         REQUIRE(with_hb.model.dust.data[i] >= without.model.dust.data[i]);
+        greater += with_hb.model.dust.data[i] > without.model.dust.data[i] ? 1 : 0;
+    }
+    CHECK(greater > 0);
+}
+
+TEST_CASE("reconstruct_scale_guards", "[recon][reconstruct]") {
+    const Blister b = make_blister();
+    ReconInputs in = sho_inputs(b);
+    const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    in.ionizer_override = ionizer_from_xy(40.0, 30.0, 1000.0);
+    for (double bad : {0.0, -1.0, nan, inf}) {
+        in.deg_per_px_at = [bad](double, double) -> std::optional<double> { return bad; };
+        REQUIRE_THROWS_AS(reconstruct(in, ReconConfig{}, gdg::Log{}), std::invalid_argument);
+        REQUIRE_THROWS_WITH(reconstruct(in, ReconConfig{}, gdg::Log{}),
+                            Catch::Matchers::ContainsSubstring("deg_per_px_at(40.0"));
+    }
+    in.deg_per_px_at = nullptr;
+    for (double bad : {0.0, -5.0, nan, inf}) {
+        in.ionizer_override = ionizer_from_xy(40.0, 30.0, bad);
+        REQUIRE_THROWS_AS(reconstruct(in, ReconConfig{}, gdg::Log{}), std::invalid_argument);
+        REQUIRE_THROWS_WITH(reconstruct(in, ReconConfig{}, gdg::Log{}),
+                            Catch::Matchers::ContainsSubstring("distance_pc"));
+    }
 }
 
 TEST_CASE("reconstruct_override_ionizer_used", "[recon][reconstruct]") {
@@ -227,5 +258,32 @@ TEST_CASE("reconstruct_concurrent_calls_identical", "[recon][reconstruct]") {
         CHECK(r->model.dust.data == serial.model.dust.data);
         CHECK(r->model.emissivity.data == serial.model.emissivity.data);
         CHECK(r->lum.data == serial.lum.data);
+    }
+}
+
+TEST_CASE("reconstruct_concurrent_star_table_identical", "[recon][reconstruct]") {
+    const Blister b = make_blister();
+    ReconInputs in = sho_inputs(b);
+    in.ionizer_override.reset();
+    for (int i = 0; i < 6; ++i) {
+        StarRow s{20.0 + 15.0 * i, 20.0 + 9.0 * i, 100.0 + i};
+        s.bp_rp = 0.5 - 0.1 * i;
+        s.r_med = 800.0 + 10.0 * i;
+        in.stars.push_back(s);
+    }
+    in.deg_per_px_at = [](double, double) -> std::optional<double> { return 1.0 / 3600.0; };
+    const ReconResult serial = reconstruct(in, ReconConfig{}, gdg::Log{});
+    CHECK(serial.ionizer.source == "gaia-blue");
+    std::optional<ReconResult> r1, r2;
+    std::thread t1([&] { r1.emplace(reconstruct(in, ReconConfig{}, gdg::Log{})); });
+    std::thread t2([&] { r2.emplace(reconstruct(in, ReconConfig{}, gdg::Log{})); });
+    t1.join();
+    t2.join();
+    for (const auto* r : {&*r1, &*r2}) {
+        CHECK(r->model.z.data == serial.model.z.data);
+        CHECK(r->model.dust.data == serial.model.dust.data);
+        CHECK(r->model.pc_per_px == serial.model.pc_per_px);
+        CHECK(r->ionizer.x == serial.ionizer.x);
+        CHECK(r->ionizer.y == serial.ionizer.y);
     }
 }
