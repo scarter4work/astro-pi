@@ -66,9 +66,9 @@ void glb_check_size(int nx, int ny, int decimate, bool has_dust, std::uint64_t j
 /// Reentrant: the BIN chunk is filled in parallel by rows, with bit-identical output.
 std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig& cfg);
 
-/// build_glb() written atomically to `path` (gdg::write_file_atomic: `path + ".tmp"`, fsync,
-/// rename). A write failure throws std::runtime_error("cannot write <path>: <strerror>") and leaves
-/// no temporary file.
+/// build_glb() written atomically to `path` (gdg::write_file_atomic: a unique `<path>.tmp.XXXXXX`,
+/// fsync, rename, directory fsync). A write failure throws std::runtime_error("cannot write <path>:
+/// <strerror>") and leaves no temporary file.
 void write_glb(const std::string& path, const CavityModel& model, const ExportConfig& cfg);
 
 }  // namespace gdg::recon

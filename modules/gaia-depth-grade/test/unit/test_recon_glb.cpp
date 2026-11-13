@@ -5,6 +5,7 @@
 
 #include "Blister.h"
 #include "GlbRead.h"
+#include "core/Format.h"
 #include "core/recon/Glb.h"
 #include "core/recon/Reconstruct.h"
 
@@ -113,6 +114,17 @@ struct TempDir {
         fs::remove_all(path, ec);
     }
 };
+
+/// True when the directory of `path` holds no `<name>.tmp*` entry (the atomic writer's temporaries).
+bool no_temps(const std::string& path) {
+    const fs::path p(path);
+    const std::string prefix = p.filename().string() + ".tmp";
+    std::error_code ec;
+    if (!fs::exists(p.parent_path(), ec)) return true;
+    for (const auto& e : fs::directory_iterator(p.parent_path()))
+        if (e.path().filename().string().rfind(prefix, 0) == 0) return false;
+    return true;
+}
 
 std::string thrown_message(const std::function<void()>& f) {
     try {
@@ -364,6 +376,21 @@ TEST_CASE("glb_dust_mesh_only_when_dust", "[recon][glb]") {
             for (int k = 0; k < 3; ++k)
                 CHECK(sc[3 * v + k] == static_cast<float>(clip(m.emissivity.at(2 * c, 2 * r, k), 0.0, 1.0)));
         }
+
+    {
+        // Dust outside [0, 1] is clipped in the alpha channel: -0.5 -> 0, 1.7 -> 1.
+        const CavityModel o = grid_model(9, 7, std::nullopt, ramp_z,
+                                         [](int x, int) { return x < 4 ? -0.5 : (x > 4 ? 1.7 : 0.25); });
+        const GlbFile go = parse_glb(build_glb(o, cfg));
+        REQUIRE(go.json["accessors"].arr.size() == 5);
+        const std::vector<float> oc = read_accessor<float>(go, 4);
+        REQUIRE(oc.size() == 4 * 20);
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 5; ++c) {
+                const float expect = c < 2 ? 0.0f : (c > 2 ? 1.0f : 0.25f);  // x = 2c vs 4
+                CHECK(oc[4 * static_cast<size_t>(r * 5 + c) + 3] == expect);
+            }
+    }
 }
 
 TEST_CASE("glb_honesty_and_meta_in_extras", "[recon][glb]") {
@@ -405,6 +432,14 @@ TEST_CASE("glb_honesty_and_meta_in_extras", "[recon][glb]") {
     CHECK(g2.json["asset"]["extras"]["meta"]["ionizer_source"].str == odd.meta.ionizer_source);
     CHECK(std::none_of(g2.json_text.begin(), g2.json_text.end(),
                        [](char ch) { return static_cast<unsigned char>(ch) < 0x20; }));  // no raw control bytes
+    // Exact escaped text: named escapes, \u00xx (lowercase) for other control bytes; DEL and UTF-8 as is.
+    CHECK(gdg::json_quote("a\"\\\b\f\n\r\t\x01\x1f\x7f\xc3\xa9") ==
+          "\"a\\\"\\\\\\b\\f\\n\\r\\t\\u0001\\u001f\x7f\xc3\xa9\"");
+    CHECK(gdg::json_quote("") == "\"\"");
+    CavityMeta cm;
+    cm.ionizer_source = "x\x01\x1b";
+    CHECK(cavity_meta_json(cm).find(", \"ionizer_source\": \"x\\u0001\\u001b\", ") != std::string::npos);
+    CHECK(g2.json_text.find("\\n\\t\\u0001\"") != std::string::npos);
 
     // A non-finite meta value would make invalid JSON: refused.
     CavityModel nan_meta = m;
@@ -422,7 +457,7 @@ TEST_CASE("glb_write_atomic_and_errors", "[recon][glb]") {
         const std::string path = (tmp.path / "cavity.glb").string();
         write_glb(path, m, cfg);
         CHECK(gdg::test::read_file_bytes(path) == expect);
-        CHECK_FALSE(fs::exists(path + ".tmp"));
+        CHECK(no_temps(path));
     }
     SECTION("an existing file is replaced") {
         const std::string path = (tmp.path / "cavity.glb").string();
@@ -431,7 +466,7 @@ TEST_CASE("glb_write_atomic_and_errors", "[recon][glb]") {
         }
         write_glb(path, m, cfg);
         CHECK(gdg::test::read_file_bytes(path) == expect);
-        CHECK_FALSE(fs::exists(path + ".tmp"));
+        CHECK(no_temps(path));
     }
     SECTION("unwritable directory") {
         const fs::path dir = tmp.path / "locked";
@@ -441,13 +476,13 @@ TEST_CASE("glb_write_atomic_and_errors", "[recon][glb]") {
         const std::string msg = thrown_message([&] { write_glb(path, m, cfg); });
         CHECK(msg == "cannot write " + path + ": " + std::strerror(EACCES));
         CHECK_FALSE(fs::exists(path));
-        CHECK_FALSE(fs::exists(path + ".tmp"));
+        CHECK(no_temps(path));
     }
     SECTION("nonexistent directory") {
         const std::string path = (tmp.path / "missing" / "cavity.glb").string();
         const std::string msg = thrown_message([&] { write_glb(path, m, cfg); });
         CHECK(msg == "cannot write " + path + ": " + std::strerror(ENOENT));
-        CHECK_FALSE(fs::exists(path + ".tmp"));
+        CHECK(no_temps(path));
     }
     SECTION("the rename fails: the temporary is removed") {
         // The target is a non-empty directory: the temporary is written, then rename() refuses.
@@ -458,7 +493,7 @@ TEST_CASE("glb_write_atomic_and_errors", "[recon][glb]") {
         const std::string msg = thrown_message([&] { write_glb(path, m, cfg); });
         CHECK(msg.rfind("cannot write " + path + ": ", 0) == 0);
         CHECK(msg.size() > ("cannot write " + path + ": ").size());
-        CHECK_FALSE(fs::exists(path + ".tmp"));
+        CHECK(no_temps(path));
         CHECK(fs::is_directory(target));
         CHECK(fs::exists(target / "keep"));
     }

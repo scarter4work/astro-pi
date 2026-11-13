@@ -1,6 +1,7 @@
 #include "Cavity.h"
 
 #include "Channels.h"
+#include "core/Format.h"
 #include "core/Numerics.h"
 #include "core/Parallel.h"
 
@@ -237,34 +238,6 @@ std::string py_float_repr(double v) {
     return sign + out;
 }
 
-/// A JSON string literal escaped as Python's json.dumps escapes ASCII: quote, backslash, the named
-/// control escapes and \u00xx for the other control characters (the GLB embeds this text verbatim,
-/// so it must be strict JSON).
-std::string json_string(const std::string& s) {
-    std::string out = "\"";
-    for (char ch : s) {
-        switch (ch) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        case '\b': out += "\\b"; break;
-        case '\f': out += "\\f"; break;
-        default:
-            if (static_cast<unsigned char>(ch) < 0x20) {
-                static const char hex[] = "0123456789abcdef";
-                out += "\\u00";
-                out += hex[(static_cast<unsigned char>(ch) >> 4) & 0xF];
-                out += hex[static_cast<unsigned char>(ch) & 0xF];
-            } else {
-                out += ch;
-            }
-        }
-    }
-    return out + "\"";
-}
-
 }  // namespace
 
 std::string cavity_meta_json(const CavityMeta& m) {
@@ -276,8 +249,8 @@ std::string cavity_meta_json(const CavityMeta& m) {
            ", \"emission_sign\": " + py_float_repr(m.emission_sign) + ", \"w_dust\": " + py_float_repr(m.w_dust) +
            ", \"ionization_confidence\": " + py_float_repr(m.ionization_confidence) +
            ", \"ratio_confidence\": " + py_float_repr(m.ratio_confidence) + ", \"is_linear\": " + b(m.is_linear) +
-           ", \"sii_present\": " + b(m.sii_present) + ", \"capture_mode\": " + json_string(m.capture_mode) +
-           ", \"ionizer_source\": " + json_string(m.ionizer_source) +
+           ", \"sii_present\": " + b(m.sii_present) + ", \"capture_mode\": " + gdg::json_quote(m.capture_mode) +
+           ", \"ionizer_source\": " + gdg::json_quote(m.ionizer_source) +
            ", \"footprint_frac\": " + py_float_repr(m.footprint_frac) +
            ", \"footprint_px\": " + std::to_string(m.footprint_px) + "}";
 }

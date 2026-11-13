@@ -4,12 +4,12 @@
 #include "Reconstruct.h"
 #include "core/Adql.h"
 #include "core/AtomicFile.h"
+#include "core/Format.h"
 #include "core/Parallel.h"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -35,32 +35,6 @@ constexpr std::uint64_t kCellIndexBytes = 6 * 4;
 std::uint64_t sat_mul(std::uint64_t a, std::uint64_t b) { return a != 0 && b > kSat / a ? kSat : a * b; }
 std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) { return b > kSat - a ? kSat : a + b; }
 std::uint64_t pad4(std::uint64_t n) { return n > kSat - 3 ? kSat : (n + 3) & ~std::uint64_t{3}; }
-
-/// A JSON string literal: quotes, backslashes and control characters escaped (UTF-8 passes as is).
-std::string json_str(const std::string& s) {
-    std::string out = "\"";
-    for (const char ch : s) {
-        const auto c = static_cast<unsigned char>(ch);
-        switch (ch) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        case '\b': out += "\\b"; break;
-        case '\f': out += "\\f"; break;
-        default:
-            if (c < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned>(c));
-                out += buf;
-            } else {
-                out += ch;
-            }
-        }
-    }
-    return out + "\"";
-}
 
 /// A finite JSON number in shortest round-trip form (py_float_repr throws on non-finite).
 std::string num(double v) { return gdg::py_float_repr(v); }
@@ -243,9 +217,9 @@ std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig
     };
 
     std::string js;
-    js += "{\"asset\":{\"version\":\"2.0\",\"generator\":" + json_str(GLB_GENERATOR) +
-          ",\"extras\":{\"honesty\":" + json_str(RECON_HONESTY) + ",\"units\":" +
-          json_str(model.pc_per_px ? "pc" : "px") + ",\"depth_ratio\":" + num(cfg.depth_ratio) +
+    js += "{\"asset\":{\"version\":\"2.0\",\"generator\":" + gdg::json_quote(GLB_GENERATOR) +
+          ",\"extras\":{\"honesty\":" + gdg::json_quote(RECON_HONESTY) + ",\"units\":" +
+          gdg::json_quote(model.pc_per_px ? "pc" : "px") + ",\"depth_ratio\":" + num(cfg.depth_ratio) +
           ",\"meta\":" + cavity_meta_json(model.meta) + "}}";
     js += ",\"extensionsUsed\":[\"KHR_materials_unlit\"]";
     js += ",\"scene\":0,\"scenes\":[{\"nodes\":" + std::string(has_dust ? "[0,1]" : "[0]") + "}]";
