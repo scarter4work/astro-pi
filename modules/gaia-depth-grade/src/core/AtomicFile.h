@@ -9,8 +9,8 @@
 namespace gdg {
 
 /// Writes `size` bytes to `path` atomically (Ruling R10): the bytes go to a unique temporary
-/// `<path>.tmp.XXXXXX` created by mkstemp in the target's directory, which is chmod 0644, fsynced,
-/// closed and renamed over `path`; the directory is then fsynced so the rename is durable. A reader
+/// `<path>.tmp.XXXXXX` created by mkostemp (O_CLOEXEC) in the target's directory, which is chmod
+/// 0644, fsynced, closed and renamed over `path`; the directory is then fsynced so the rename is durable. A reader
 /// sees the old file or a complete new one, never a partial file; an existing `path` is replaced
 /// only by the rename. Concurrent writers to one path each use their own temporary, so the last
 /// complete rename wins. Any failure throws std::runtime_error("cannot write <path>: <strerror>")

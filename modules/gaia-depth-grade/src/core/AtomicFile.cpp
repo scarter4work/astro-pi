@@ -27,12 +27,13 @@ void write_file_atomic(const std::string& path, const void* data, std::size_t si
         throw std::runtime_error("cannot write " + path + ": " + std::strerror(err));
     };
 
-    // A unique temporary beside the target (same filesystem, so the rename is atomic). mkstemp
-    // opens it O_EXCL, mode 0600: never another writer's file, never through a symlink.
+    // A unique temporary beside the target (same filesystem, so the rename is atomic). mkostemp
+    // opens it O_EXCL, mode 0600: never another writer's file, never through a symlink. O_CLOEXEC:
+    // PixInsight forks external processes, which must not inherit the descriptor.
     std::string tmpl = path + ".tmp.XXXXXX";
-    const int fd = ::mkstemp(tmpl.data());
+    const int fd = ::mkostemp(tmpl.data(), O_CLOEXEC);
     if (fd < 0) fail(errno);
-    const std::string& tmp = tmpl;  // mkstemp wrote the generated name in place
+    const std::string& tmp = tmpl;  // mkostemp wrote the generated name in place
 
     // Closes the descriptor (when still open), removes the temporary, throws.
     auto abandon = [&](int err, bool close_fd) {
