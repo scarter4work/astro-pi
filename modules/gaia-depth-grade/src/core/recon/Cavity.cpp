@@ -237,11 +237,30 @@ std::string py_float_repr(double v) {
     return sign + out;
 }
 
+/// A JSON string literal escaped as Python's json.dumps escapes ASCII: quote, backslash, the named
+/// control escapes and \u00xx for the other control characters (the GLB embeds this text verbatim,
+/// so it must be strict JSON).
 std::string json_string(const std::string& s) {
     std::string out = "\"";
     for (char ch : s) {
-        if (ch == '"' || ch == '\\') out += '\\';
-        out += ch;
+        switch (ch) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
+        default:
+            if (static_cast<unsigned char>(ch) < 0x20) {
+                static const char hex[] = "0123456789abcdef";
+                out += "\\u00";
+                out += hex[(static_cast<unsigned char>(ch) >> 4) & 0xF];
+                out += hex[static_cast<unsigned char>(ch) & 0xF];
+            } else {
+                out += ch;
+            }
+        }
     }
     return out + "\"";
 }
