@@ -3,6 +3,7 @@
 #include "Channels.h"
 #include "core/Format.h"
 #include "core/Numerics.h"
+#include "core/ParseNumber.h"
 #include "core/Parallel.h"
 
 #include <algorithm>
@@ -414,8 +415,7 @@ private:
     double double_value(const std::string& key) {
         const std::string t = number_text(key, false);
         double v = 0.0;
-        const auto r = std::from_chars(t.data(), t.data() + t.size(), v);
-        if (r.ec != std::errc() || r.ptr != t.data() + t.size() || !std::isfinite(v))
+        if (!gdg::parse_double_exact(t, v) || !std::isfinite(v))
             fail("the number for " + gdg::json_quote(key) + " is out of range for a double: " + t);
         return v;
     }

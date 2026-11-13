@@ -3,6 +3,7 @@
 
 #include "Adql.h"
 #include "Format.h"
+#include "ParseNumber.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,6 +14,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace gdg {
@@ -81,12 +83,17 @@ bool is_null(const std::string& s) {
 template <class T>
 T parse_num(const std::string& s, long row, const char* col) {
     T v{};
-    const char* b = s.data();
-    const char* e = s.data() + s.size();
-    if (!s.empty() && s[0] == '+') ++b;
-    const auto r = std::from_chars(b, e, v);
-    if (r.ec != std::errc() || r.ptr != e)
-        throw std::runtime_error(strformat("Gaia result: row %ld, column %s: not a number: '%s'", row, col, s.c_str()));
+    bool ok;
+    const std::string digits = (!s.empty() && s[0] == '+') ? s.substr(1) : s;
+    if constexpr (std::is_same_v<T, double>) {
+        ok = parse_double_exact(digits, v);
+    } else if constexpr (std::is_same_v<T, float>) {
+        ok = parse_float_exact(digits, v);
+    } else {
+        const auto r = std::from_chars(digits.data(), digits.data() + digits.size(), v);
+        ok = r.ec == std::errc() && r.ptr == digits.data() + digits.size();
+    }
+    if (!ok) throw std::runtime_error(strformat("Gaia result: row %ld, column %s: not a number: '%s'", row, col, s.c_str()));
     return v;
 }
 

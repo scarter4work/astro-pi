@@ -21,6 +21,7 @@
 #include <functional>
 #include <sstream>
 #include <stdexcept>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -483,4 +484,22 @@ TEST_CASE("online_cache_default_location", "[tap][cache]") {
         setenv("XDG_CACHE_HOME", saved.c_str(), 1);
     else
         unsetenv("XDG_CACHE_HOME");
+}
+
+TEST_CASE("tap_csv_parses_subnormal_values", "[tap]") {
+    // A DOUBLE column printing a subnormal double and REAL columns printing a subnormal float must
+    // parse on every libstdc++ (GCC 11's from_chars reports them out of range); a true overflow
+    // stays the "not a number" error.
+    const std::string head = "ra,dec,r_med_geo,r_lo_geo,r_hi_geo,source_id,phot_g_mean_mag,bp_rp\n";
+    Captured cap;
+    const gdg::Catalog c = gdg::parse_tap_csv(head + "5e-324,2.2250738585072009e-308,500.5,1e-45,600.5,42,13.0,0.5\n", cap.log());
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].ra == std::numeric_limits<double>::denorm_min());
+    CHECK(c[0].dec == 2.2250738585072009e-308);
+    CHECK(c[0].r_lo == static_cast<double>(std::numeric_limits<float>::denorm_min()));
+    Captured cap2;
+    CHECK_THROWS_WITH(gdg::parse_tap_csv(head + "1e999,1.0,500.5,1.0,600.5,42,13.0,0.5\n", cap2.log()),
+                      Catch::Matchers::ContainsSubstring("column ra: not a number: '1e999'"));
+    CHECK_THROWS_WITH(gdg::parse_tap_csv(head + "1.0,1.0,500.5,1e39,600.5,42,13.0,0.5\n", cap2.log()),
+                      Catch::Matchers::ContainsSubstring("column r_lo_geo: not a number: '1e39'"));
 }
