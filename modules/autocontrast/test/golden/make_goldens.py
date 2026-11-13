@@ -642,10 +642,49 @@ def stage_distance(out: Out):
     out.npy("distance/emd_raw.npy", np.array(raw))
     out.npy("distance/emd_normalized.npy", np.array(norm))
 
+    # Exact reference EMDs for the same pairs. scipy's wasserstein_distance_nd solves the DUAL LP through milp at
+    # HiGHS's default 1e-7 tolerances, which leaves pairs 2 and 3 up to 2.6e-6 below the optimum. This solves the
+    # PRIMAL transportation LP (scipy's normalisation, scipy's cdist cost) with HiGHS dual simplex at 1e-10
+    # primal/dual feasibility (the tolerances that govern highs-ds; ipm_optimality_tolerance applies to the
+    # interior-point solver only) and presolve OFF: with presolve on, postsolve left pair 4 with a 3.1e-12
+    # equality residual and a cost 6.8e-11 below the optimum. Without it every pair's residual is <= 1e-16 and
+    # the value agrees with a dual-certified exact network simplex to ~1e-14. The residual guard below keeps it so.
+    from scipy import sparse
+    from scipy.optimize import linprog
+    from scipy.spatial.distance import cdist
+    cost = cdist(coords, coords).ravel()
+    nb = coords.shape[0]
+    a_eq = sparse.vstack([sparse.kron(sparse.eye(nb), np.ones((1, nb))),
+                          sparse.kron(np.ones((1, nb)), sparse.eye(nb))]).tocsr()
+    exact = []
+    for p in pairs_arr:
+        u, v = p[0].ravel(), p[1].ravel()
+        if u.sum() == 0 or v.sum() == 0:
+            exact.append(0.0)
+            continue
+        b_eq = np.concatenate([u / np.sum(u), v / np.sum(v)])
+        res = linprog(cost, A_eq=a_eq, b_eq=b_eq, bounds=(0, None), method="highs-ds",
+                      options=dict(primal_feasibility_tolerance=1e-10, dual_feasibility_tolerance=1e-10,
+                                   presolve=False))
+        if res.status != 0:
+            raise RuntimeError(f"exact EMD reference: linprog status {res.status}: {res.message}")
+        resid = float(np.abs(a_eq @ res.x - b_eq).max())
+        if resid > 1e-14 or res.x.min() < 0.0:
+            raise RuntimeError(f"exact EMD reference: residual {resid:.3g}, min flow {res.x.min():.3g}")
+        exact.append(float(res.fun))
+    exact = np.array(exact)
+    out.npy("distance/emd_exact_raw.npy", exact)
+    out.npy("distance/emd_exact_normalized.npy", exact / np.hypot(200.0, 200.0))
+
     # fingerprints + fingerprint_distance --------------------------------------------------------------
+    # _fp_set draws from `rng` AFTER the 20 EMD pairs above, so these fingerprints are NOT the ones
+    # stage_actions_propose builds from a fresh rng0(): every fingerprint this stage's goldens were computed
+    # from is written under distance/fingerprints/. fingerprints/ keeps only the three names no other stage
+    # writes (ref_sho, ref_unknown, ref_hargb, built from this stage's "ref"); the shared names there are
+    # stage_actions_propose's, as they always were after a full run.
     fps = _fp_set(rng)
     for name, fp in fps.items():
-        out.json(f"fingerprints/{name}.json", fp_dict(fp))
+        out.json(f"distance/fingerprints/{name}.json", fp_dict(fp))
     import dataclasses as dc
     rep = dc.replace
     fp_extra = {
@@ -658,7 +697,9 @@ def stage_distance(out: Out):
         "flat06_psf20": rep(fps["flat06"], psf_fwhm_arcsec=20.0),
     }
     for name, fp in fp_extra.items():
-        out.json(f"fingerprints/{name}.json", fp_dict(fp))
+        out.json(f"distance/fingerprints/{name}.json", fp_dict(fp))
+        if name in ("ref_sho", "ref_unknown", "ref_hargb"):
+            out.json(f"fingerprints/{name}.json", fp_dict(fp))
     allfp = {**fps, **fp_extra}
     plan = [
         ("ref", "ref"), ("ref", "flat03"), ("ref", "flat06"), ("ref", "flat10"), ("ref", "sharp05"),
@@ -787,7 +828,8 @@ def stage_actions_propose(out: Out):
     fps["flat06_psf20"] = rep(fps["flat06"], psf_fwhm_arcsec=20.0)
     fps["ref_bigpsf"] = rep(fps["ref"], psf_fwhm_arcsec=500.0)
     for name, fp in fps.items():
-        out.json(f"fingerprints/{name}.json", fp_dict(fp))     # same bytes as the distance stage for shared names
+        out.json(f"fingerprints/{name}.json", fp_dict(fp))     # this stage's fingerprints (fresh rng0()); the
+                                                               # distance stage's own are distance/fingerprints/
     plan = [
         ("ref", "flat06", []), ("ref", "flat03", []), ("ref", "flat10", ["star_split"]),
         ("ref", "sharp05", []), ("ref", "desat05", ["background_neutralize"]),

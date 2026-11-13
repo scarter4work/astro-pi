@@ -661,6 +661,14 @@
    "bytes": 563,
    "sha256": "cad11aeaf5b4f329f8a1e8d457f3dad8bc906d8239b997667e34b8d043da2d95"
   },
+  "synthetic/distance/emd_exact_normalized.npy": {
+   "bytes": 288,
+   "sha256": "611f54bae97f204e643f9e3f41d618ab96b45905d6c173579e8049ee1ab30ac2"
+  },
+  "synthetic/distance/emd_exact_raw.npy": {
+   "bytes": 288,
+   "sha256": "e4a855587406d5f94bc2213dbaa1096c69990758fa37c46fee5eaa0aa7753f45"
+  },
   "synthetic/distance/emd_normalized.npy": {
    "bytes": 288,
    "sha256": "45a0594ea35c0391530d2ac5aafbbe71d894866ee39577cae262e5af58562713"
@@ -676,6 +684,70 @@
   "synthetic/distance/fingerprint_distance.json": {
    "bytes": 9645,
    "sha256": "41b7afb6f9eeffc98404e7c6de31601e67333bef82bfb1ca9f80815b19f62bdb"
+  },
+  "synthetic/distance/fingerprints/desat05.json": {
+   "bytes": 2042,
+   "sha256": "a5bede7dfd02d56cc6722abca51b07286aee2f1e96e91f97f5a65afb58c79ce7"
+  },
+  "synthetic/distance/fingerprints/flat03.json": {
+   "bytes": 2135,
+   "sha256": "0e89be50bfa39bbcc75895b811b07c4f6f456854baa69816eb19937855973359"
+  },
+  "synthetic/distance/fingerprints/flat06.json": {
+   "bytes": 2073,
+   "sha256": "80a3955e2a3c5350e4b84fe5dc4cf0d5df1f9dd3f7d508e3416cfdb06e1897c2"
+  },
+  "synthetic/distance/fingerprints/flat06_fine.json": {
+   "bytes": 2097,
+   "sha256": "a9b1a1039ba7adff2c8913cd2a19085b3b92bc22b8aa70a257ac8f1c555321a0"
+  },
+  "synthetic/distance/fingerprints/flat06_psf20.json": {
+   "bytes": 2074,
+   "sha256": "15f7271c0ee838aa27641608322d6d5054252b162020c62a800613f790a41215"
+  },
+  "synthetic/distance/fingerprints/flat10.json": {
+   "bytes": 1990,
+   "sha256": "67494bb842389ac130563b00ad1c6c87686d1160ca2aad9c68284d8b633f5353"
+  },
+  "synthetic/distance/fingerprints/oversat05.json": {
+   "bytes": 2696,
+   "sha256": "cf055815b5e26034acee766d1bd895c44bdcc4da8b87df0e3f5a91929b557482"
+  },
+  "synthetic/distance/fingerprints/ref.json": {
+   "bytes": 2271,
+   "sha256": "0a8f62b5409cf453dcd1dab3381348f74ce5b4c678b962f735271bce0d58efee"
+  },
+  "synthetic/distance/fingerprints/ref_bigpsf.json": {
+   "bytes": 2273,
+   "sha256": "54a5f65aad01921c9bde410180b98b89eff0a6b5754d8e5d7ab74f4ac901afb1"
+  },
+  "synthetic/distance/fingerprints/ref_fine.json": {
+   "bytes": 2295,
+   "sha256": "1f7c45de74ce9851de0fa3884715fce240366556bcefd595ceae8229111b97ed"
+  },
+  "synthetic/distance/fingerprints/ref_hargb.json": {
+   "bytes": 2273,
+   "sha256": "134c564b9ffe381f5dfa36aeac6dd315e392e8c25d953d9b62d37fa49e0d8055"
+  },
+  "synthetic/distance/fingerprints/ref_hoo.json": {
+   "bytes": 2271,
+   "sha256": "3e93bc2923b46934b723aef8e8fd1dd1cdde25ce594d200ef5b09ca574d7b4f5"
+  },
+  "synthetic/distance/fingerprints/ref_lonly.json": {
+   "bytes": 2274,
+   "sha256": "abd672c416745a8ab4c5361e3c7298bc8541c6f87432b99a598c35c736967075"
+  },
+  "synthetic/distance/fingerprints/ref_sho.json": {
+   "bytes": 2271,
+   "sha256": "dda21b6b6520bb32af06b841f01360a7180eb3dd4602c6bd199983a9f251dc55"
+  },
+  "synthetic/distance/fingerprints/ref_unknown.json": {
+   "bytes": 2275,
+   "sha256": "a88197313ea2d6411a45687944820c412350e5791d0e3ce87d6d071edf3dd4a2"
+  },
+  "synthetic/distance/fingerprints/sharp05.json": {
+   "bytes": 2365,
+   "sha256": "f8525c380101375f60c3a4bca0eb50c36559f9c03fd064388a0d83cc303b56bc"
   },
   "synthetic/distance/palette_compat.json": {
    "bytes": 472,
@@ -2559,7 +2631,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 8692044,
+ "total_bytes": 8728295,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",
