@@ -136,4 +136,46 @@ Catalog online_gaia_distances(HttpTransport& http, const OnlineCache* cache, con
     return cat;
 }
 
+std::string positions_cache_key(double ra, double dec, double radius, double mag_high) {
+    return "pos" + sha1_hex(strformat("pos_%.6f_%.6f_%.6f_mag%.2f", ra, dec, radius, mag_high)).substr(0, 16);
+}
+
+std::vector<GaiaPosition> online_gaia_positions(HttpTransport& http, const OnlineCache* cache, double ra, double dec,
+                                                double radius, double mag_high, const Log& log,
+                                                const TapOptions& opt) {
+    const std::string key = positions_cache_key(ra, dec, radius, mag_high);
+    if (cache) {
+        if (const std::optional<std::string> hit = cache->read(key)) {
+            log_warning(log, "using cached Gaia result " + cache->path_for(key));
+            return parse_positions_csv(*hit);
+        }
+    }
+    log_gaia_notices(http, log);
+    const std::string adql = build_positions_adql(ra, dec, radius, mag_high, opt.top);
+    std::string csv, last;
+    bool ok = false;
+    for (int attempt = 1; attempt <= opt.attempts; ++attempt) {
+        try {
+            csv = run_async_job(http, adql, opt);
+            const long rows = csv_row_count(csv);
+            if (rows >= opt.top)
+                log_warning(log, strformat("Gaia returned the %ld-row safety cap; the plate solver's catalogue may "
+                                           "be incomplete.",
+                                           opt.top));
+            log_info(log, strformat("Gaia DR3 positions (async): %ld sources", rows));
+            ok = true;
+            break;
+        } catch (const std::exception& e) {  // retry, then surface the real error
+            last = e.what();
+            log_warning(log, strformat("Gaia async attempt %d/%d failed: %s", attempt, opt.attempts, last.c_str()));
+        }
+    }
+    if (!ok)
+        throw std::runtime_error(strformat("Gaia TAP query failed: Gaia async query failed after %d attempts: %s",
+                                           opt.attempts, last.c_str()));
+    std::vector<GaiaPosition> rows = parse_positions_csv(csv);
+    if (cache) cache->write(key, csv);
+    return rows;
+}
+
 }  // namespace gdg

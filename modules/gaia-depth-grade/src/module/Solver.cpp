@@ -7,12 +7,15 @@
 #include "Solver.h"
 
 #include "LocalGaia.h"
+#include "TapClient.h"
 #include "SolverAlign.h"
 #include "SolverBlind.h"
 #include "SolverDetect.h"
 
 #include "core/Format.h"
 #include "core/SolveMath.h"
+#include "core/OnlineCache.h"
+#include "core/TapJob.h"
 
 #include <pcl/AstrometricMetadata.h>
 #include <pcl/ElapsedTime.h>
@@ -109,70 +112,38 @@ struct CatStar
    double mag; // G
 };
 
-/// The local Gaia DR3 catalogue (GaiaXPSDCatalogBase.Load on pcl::GaiaDatabaseFile): every file,
-/// G in [-1.5, magHigh], no source without proper motions, sorted by G, star places for the
-/// observation time in the image's reference system.
+/// The solver's Gaia DR3 catalogue (GaiaXPSDCatalogBase.Load): G in [-1.5, magHigh], no source
+/// without proper motions, sorted by G, star places for the observation time in the image's
+/// reference system. The sources come from the local XPSD database files (LocalGaiaCatalog) or,
+/// on a machine without one, from the ESA Gaia archive (OnlineGaiaCatalog; plan C21).
 class GaiaCatalog
 {
 public:
-   GaiaCatalog( const StringList& paths, double observationJD, const IsoString& referenceSystem )
+
+   GaiaCatalog( double observationJD, const IsoString& referenceSystem )
       : m_jd( observationJD ), m_refsys( referenceSystem.Uppercase() )
    {
-      for ( const String& p : paths )
-         m_files.push_back( std::make_unique<GaiaDatabaseFile>( p ) );
-      if ( m_files.empty() )
-         throw Error( "Plate solver: no Gaia database file" );
    }
 
-   double MagnitudeHigh() const
-   {
-      double m = -100;
-      for ( const auto& f : m_files )
-         m = Max( m, double( f->MagnitudeHigh() ) );
-      return m;
-   }
+   virtual ~GaiaCatalog() = default;
+
+   /// For error texts ("Insufficient stars found in catalog: <name>").
+   virtual const char* Name() const = 0;
+
+   /// True when Count() can drive ImageSolver's adaptive magnitude-limit search (a local XPSD
+   /// server); otherwise the automatic limit is the empirical formula alone, as ImageSolver
+   /// does with an online catalogue.
+   virtual bool Adaptive() const = 0;
+   virtual double MagnitudeHigh() const = 0;
 
    /// Stars of G <= mag within `radius` of the centre (a count search: sourceLimit 0).
-   long Count( double ra, double dec, double radius, double mag, long excessLimit ) const
-   {
-      long n = 0;
-      for ( const auto& f : m_files )
-      {
-         GaiaSearchData data;
-         data.centerRA = ra;
-         data.centerDec = dec;
-         data.radius = radius;
-         data.magnitudeLow = -1.5f;
-         data.magnitudeHigh = float( mag );
-         data.sourceLimit = 0;
-         data.excessLimit = uint32( Max( 1L, excessLimit ) );
-         data.exclusionFlags = GaiaStarFlag::NoPM;
-         f->Search( data );
-         n += long( data.excessCount );
-      }
-      return n;
-   }
+   virtual long Count( double ra, double dec, double radius, double mag, long excessLimit ) const = 0;
 
    void Load( double ra, double dec, double radius, double magHigh )
    {
       m_center = DPoint( ra, dec );
       m_radius = radius;
-      struct Raw { double ra, dec; float parx, pmra, pmdec, magG; };
-      std::vector<Raw> raw;
-      for ( const auto& f : m_files )
-      {
-         GaiaSearchData data;
-         data.centerRA = ra;
-         data.centerDec = dec;
-         data.radius = Min( 180.0, radius*kSearchExpansion );
-         data.magnitudeLow = -1.5f;
-         data.magnitudeHigh = float( magHigh );
-         data.sourceLimit = 20000000;
-         data.exclusionFlags = GaiaStarFlag::NoPM;
-         f->Search( data );
-         for ( const GaiaStarData& s : data.stars )
-            raw.push_back( Raw{ s.ra, s.dec, s.parx, s.pmra, s.pmdec, s.magG } );
-      }
+      std::vector<Raw> raw = Search( ra, dec, Min( 180.0, radius*kSearchExpansion ), magHigh );
       std::stable_sort( raw.begin(), raw.end(), []( const Raw& a, const Raw& b ) { return a.magG < b.magG; } );
 
       Position P( TimePoint( m_jd ), "UTC" );
@@ -201,14 +172,156 @@ public:
    double Radius() const { return m_radius; }
    const std::vector<CatStar>& Stars() const { return m_stars; }
 
+protected:
+
+   /// A source at the catalogue epoch (J2016.0). The local database stores parallax, proper
+   /// motions and G as float; the online archive's double values are narrowed to the same.
+   struct Raw { double ra, dec; float parx, pmra, pmdec, magG; };
+
+   /// Every source of G in [-1.5, magHigh] within `radius` (degrees) of (ra, dec) that has proper
+   /// motions, in any order.
+   virtual std::vector<Raw> Search( double ra, double dec, double radius, double magHigh ) = 0;
+
 private:
+
+   double               m_jd;
+   IsoString            m_refsys;
+   std::vector<CatStar> m_stars;
+   DPoint               m_center = 0.0;
+   double               m_radius = 0;
+   bool                 m_loaded = false;
+};
+
+/// The local Gaia DR3 catalogue: pcl::GaiaDatabaseFile, every file.
+class LocalGaiaCatalog : public GaiaCatalog
+{
+public:
+
+   LocalGaiaCatalog( const StringList& paths, double observationJD, const IsoString& referenceSystem )
+      : GaiaCatalog( observationJD, referenceSystem )
+   {
+      for ( const String& p : paths )
+         m_files.push_back( std::make_unique<GaiaDatabaseFile>( p ) );
+      if ( m_files.empty() )
+         throw Error( "Plate solver: no Gaia database file" );
+   }
+
+   const char* Name() const override { return "Gaia DR3 (XPSD)"; }
+   bool Adaptive() const override { return true; }
+
+   double MagnitudeHigh() const override
+   {
+      double m = -100;
+      for ( const auto& f : m_files )
+         m = Max( m, double( f->MagnitudeHigh() ) );
+      return m;
+   }
+
+   long Count( double ra, double dec, double radius, double mag, long excessLimit ) const override
+   {
+      long n = 0;
+      for ( const auto& f : m_files )
+      {
+         GaiaSearchData data;
+         data.centerRA = ra;
+         data.centerDec = dec;
+         data.radius = radius;
+         data.magnitudeLow = -1.5f;
+         data.magnitudeHigh = float( mag );
+         data.sourceLimit = 0;
+         data.excessLimit = uint32( Max( 1L, excessLimit ) );
+         data.exclusionFlags = GaiaStarFlag::NoPM;
+         f->Search( data );
+         n += long( data.excessCount );
+      }
+      return n;
+   }
+
+protected:
+
+   std::vector<Raw> Search( double ra, double dec, double radius, double magHigh ) override
+   {
+      std::vector<Raw> raw;
+      for ( const auto& f : m_files )
+      {
+         GaiaSearchData data;
+         data.centerRA = ra;
+         data.centerDec = dec;
+         data.radius = radius;
+         data.magnitudeLow = -1.5f;
+         data.magnitudeHigh = float( magHigh );
+         data.sourceLimit = 20000000;
+         data.exclusionFlags = GaiaStarFlag::NoPM;
+         f->Search( data );
+         for ( const GaiaStarData& s : data.stars )
+            raw.push_back( Raw{ s.ra, s.dec, s.parx, s.pmra, s.pmdec, s.magG } );
+      }
+      return raw;
+   }
+
+private:
+
    std::vector<std::unique_ptr<GaiaDatabaseFile>> m_files;
-   double                                         m_jd;
-   IsoString                                      m_refsys;
-   std::vector<CatStar>                           m_stars;
-   DPoint                                         m_center = 0.0;
-   double                                         m_radius = 0;
-   bool                                           m_loaded = false;
+};
+
+/// The Gaia DR3 catalogue of the ESA archive (plan C21: no local database), over the module's
+/// TAP client (HTTPS to gea.esac.esa.int only) and its private cache. One query serves every
+/// later cone it contains: the solver loads the full field width for the initial alignment
+/// first, then the (smaller) matching cone, so a solve normally costs one archive job.
+class OnlineGaiaCatalog : public GaiaCatalog
+{
+public:
+
+   OnlineGaiaCatalog( double observationJD, const IsoString& referenceSystem, const gdg::Log& log )
+      : GaiaCatalog( observationJD, referenceSystem ), m_log( log )
+   {
+   }
+
+   const char* Name() const override { return "Gaia DR3 (ESA archive)"; }
+   bool Adaptive() const override { return false; }
+   double MagnitudeHigh() const override { return 21; }
+
+   long Count( double, double, double, double, long ) const override
+   {
+      throw Error( "Plate solver: the online Gaia catalogue cannot count sources" ); // Adaptive() is false
+   }
+
+protected:
+
+   std::vector<Raw> Search( double ra, double dec, double radius, double magHigh ) override
+   {
+      if ( !m_fetched || magHigh > m_fetchMag || DistanceDeg( DPoint( ra, dec ), m_fetchCenter ) + radius > m_fetchRadius )
+      {
+         const gdg::OnlineCache cache;
+         TapClient http;
+         m_rows = gdg::online_gaia_positions( http, &cache, ra, dec, radius, magHigh, m_log );
+         m_fetched = true;
+         m_fetchCenter = DPoint( ra, dec );
+         m_fetchRadius = radius;
+         m_fetchMag = magHigh;
+      }
+      std::vector<Raw> raw;
+      for ( const gdg::GaiaPosition& p : m_rows )
+         if ( p.g <= magHigh && DistanceDeg( DPoint( p.ra, p.dec ), DPoint( ra, dec ) ) <= radius )
+            raw.push_back( Raw{ p.ra, p.dec, float( p.parallax ), float( p.pmra ), float( p.pmdec ), float( p.g ) } );
+      return raw;
+   }
+
+private:
+
+   const gdg::Log&                m_log;
+   std::vector<gdg::GaiaPosition> m_rows;
+   bool                           m_fetched = false;
+   DPoint                         m_fetchCenter = 0.0;
+   double                         m_fetchRadius = 0, m_fetchMag = 0;
+
+   /// Angular distance in degrees (the haversine formula, as Distance() below).
+   static double DistanceDeg( const DPoint& a, const DPoint& b )
+   {
+      const double d1 = Rad( a.y ), d2 = Rad( b.y );
+      const double sdd = std::sin( (d2 - d1)/2 ), sda = std::sin( Rad( b.x - a.x )/2 );
+      return Deg( 2*std::asin( Min( 1.0, std::sqrt( sdd*sdd + std::cos( d1 )*std::cos( d2 )*sda*sda ) ) ) );
+   }
 };
 
 /// The solution under refinement (ImageSolver's metadata object): a gnomonic projection about
@@ -488,7 +601,7 @@ void Engine::FindLimitMagnitude()
    double m = gdg::auto_limit_magnitude( fov );
    if ( m_p.magLimit > 0 )
       m = m_p.magLimit;
-   else
+   else if ( m_catalog->Adaptive() )
    {
       // The adaptive search for the magnitude limit that gives 1.25 x the detected stars.
       const double radius = res*std::sqrt( 2.0 )*std::sqrt( double( m_W )*m_H )/2;
@@ -625,7 +738,7 @@ StarMatch Engine::MatchStars( const Model& m )
    }
    const std::vector<CatStar>& cat = m_catalog->Stars();
    if ( int( cat.size() ) < kMinCatalogStars )
-      throw Error( "Insufficient stars found in catalog: Gaia DR3 (XPSD)" );
+      throw Error( String( "Insufficient stars found in catalog: " ) + m_catalog->Name() );
    m_report.catalogStars = int( cat.size() );
 
    StarMatch r;
@@ -913,8 +1026,27 @@ SolveReport Engine::Run()
       if ( !gdg::seed_is_valid( m_seed ) )
          throw Error( kUnsolvableMessage );
 
-      const StringList files = m_p.gaiaDatabaseFiles.IsEmpty() ? DiscoverGaiaDatabases() : m_p.gaiaDatabaseFiles;
-      m_catalog = std::make_unique<GaiaCatalog>( files, m_obsJD, m_refsys );
+      // The local database (the files given, else the Gaia process' configured DR3 / DR3SP);
+      // without one, the ESA archive when the caller allows the network (plan C21), else the
+      // discovery error.
+      StringList files = m_p.gaiaDatabaseFiles;
+      if ( files.IsEmpty() )
+         try
+         {
+            files = DiscoverGaiaDatabases();
+         }
+         catch ( const Error& e )
+         {
+            if ( !m_p.onlineCatalogFallback )
+               throw;
+            Warn( "No local Gaia DR3 database (" + std::string( e.Message().ToUTF8().c_str() ) + ") - plate "
+                  "solving with the online Gaia DR3 catalogue of the ESA archive (https://gea.esac.esa.int/)." );
+         }
+      if ( files.IsEmpty() )
+         m_catalog = std::make_unique<OnlineGaiaCatalog>( m_obsJD, m_refsys, m_log );
+      else
+         m_catalog = std::make_unique<LocalGaiaCatalog>( files, m_obsJD, m_refsys );
+      m_report.catalog = m_catalog->Name();
       FindLimitMagnitude();
 
       // Initial alignment; in automatic blind mode a failure with the image's seed is retried

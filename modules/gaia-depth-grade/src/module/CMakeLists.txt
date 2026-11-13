@@ -12,6 +12,11 @@ set(MODULE_SOURCES
     SolverAlign.cpp
     SolverBlind.cpp
     SolverDetect.cpp
+    StarSplit.cpp
+    PrepareSession.cpp
+    GaiaDepthGradeParameters.cpp
+    GaiaDepthGradeProcess.cpp
+    GaiaDepthGradeInstance.cpp
 )
 
 # GDG_BUILD_PROBES (OFF; host test builds only, never the container/release build) adds the

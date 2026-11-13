@@ -190,6 +190,50 @@ Catalog parse_tap_csv(const std::string& csv, const Log& log) {
     return out;
 }
 
+std::vector<GaiaPosition> parse_positions_csv(const std::string& csv) {
+    std::vector<std::string> lines = lines_of(csv);
+    lines.erase(std::remove_if(lines.begin(), lines.end(), [](const std::string& l) { return trim(l).empty(); }),
+                lines.end());
+    std::map<std::string, size_t> col;
+    if (!lines.empty()) {
+        const std::vector<std::string> h = split_csv(lines[0]);
+        for (size_t i = 0; i < h.size(); ++i) col.emplace(h[i], i);
+    }
+    static const char* kRequired[] = {"ra", "dec", "pmra", "pmdec", "parallax", "phot_g_mean_mag"};
+    std::set<std::string> missing;
+    for (const char* r : kRequired)
+        if (!col.count(r)) missing.insert(r);
+    if (!missing.empty()) {
+        std::string m = "[";
+        for (const std::string& s : missing) m += (m.size() > 1 ? ", '" : "'") + s + "'";
+        throw std::runtime_error("Gaia result missing columns: " + m + "]");
+    }
+    std::vector<GaiaPosition> out;
+    out.reserve(lines.empty() ? 0 : lines.size() - 1);
+    for (size_t li = 1; li < lines.size(); ++li) {
+        const std::vector<std::string> f = split_csv(lines[li]);
+        const long row = static_cast<long>(li);
+        auto field = [&](const char* name) -> const std::string& {
+            const size_t i = col.at(name);
+            if (i >= f.size()) throw std::runtime_error(strformat("Gaia result: row %ld is short", row));
+            return f[i];
+        };
+        GaiaPosition p;
+        p.ra = as_double(field("ra"), row, "ra");
+        p.dec = as_double(field("dec"), row, "dec");
+        p.pmra = as_double(field("pmra"), row, "pmra");
+        p.pmdec = as_double(field("pmdec"), row, "pmdec");
+        p.parallax = as_double(field("parallax"), row, "parallax");
+        p.g = as_real(field("phot_g_mean_mag"), row, "phot_g_mean_mag");
+        if (!std::isfinite(p.ra) || !std::isfinite(p.dec) || !std::isfinite(p.pmra) || !std::isfinite(p.pmdec) ||
+            !std::isfinite(p.g))
+            continue;
+        if (!std::isfinite(p.parallax)) p.parallax = 0;
+        out.push_back(p);
+    }
+    return out;
+}
+
 std::string sha1_hex(const std::string& bytes) {
     uint32_t h[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
     std::string m = bytes;

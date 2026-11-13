@@ -36,8 +36,27 @@ IsoString Describe( const ProcessParameter& p )
    IsoString s = "{" + Field( "id", Str( String( p.Id() ) ) ) + "," + Field( "type", Str( String( TypeName( p ) ) ) ) +
                  "," + Field( "dataType", IsoString( int( p.Type() ) ) ) + "," +
                  Field( "readOnly", p.IsReadOnly() ? "true" : "false" );
+   // Defaults and ranges (for the module's own GaiaDepthGrade parameter table).
+   if ( p.IsNumeric() )
+      s += "," + Field( "default", Num( p.DefaultValue().ToDouble() ) ) + "," + Field( "min", Num( p.MinimumValue() ) ) +
+           "," + Field( "max", Num( p.MaximumValue() ) ) +
+           (p.IsReal() ? "," + Field( "precision", IsoString( p.Precision() ) ) : IsoString());
+   else if ( p.IsBoolean() )
+      s += "," + Field( "default", p.DefaultValue().ToBool() ? "true" : "false" );
+   else if ( p.IsEnumeration() )
+      s += "," + Field( "default", IsoString( p.DefaultValue().ToInt() ) );
    if ( p.IsString() )
-      s += "," + Field( "allowedCharacters", Str( p.AllowedCharacters() ) );
+   {
+      // Some third-party processes (StarXTerminator) fail this API call: record that.
+      try
+      {
+         s += "," + Field( "allowedCharacters", Str( p.AllowedCharacters() ) );
+      }
+      catch ( const Exception& x )
+      {
+         s += "," + Field( "allowedCharacters", Str( "unavailable: " + x.Message() ) );
+      }
+   }
    if ( p.IsEnumeration() )
    {
       // Some core processes do not publish element identifiers (the API call fails): record that.
@@ -83,6 +102,11 @@ IsoString ProbeIntrospect( const String& args )
       for ( const ProcessParameter& p : P.Parameters() )
          list += (n++ ? "," : "") + Describe( p );
       out += (np++ ? "," : "") + Str( id ) + ":" + list + "]";
+      IsoString cats = "[";
+      int nc = 0;
+      for ( const IsoString& c : P.Categories() )
+         cats += (nc++ ? "," : "") + Str( String( c ) );
+      out += "," + Str( id + ".categories" ) + ":" + cats + "]";
    }
    return out + "}";
 }

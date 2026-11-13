@@ -22,6 +22,7 @@ add_library(gdg_core STATIC
     TapJob.cpp
     OnlineCache.cpp
     SolveMath.cpp
+    Grade.cpp
 )
 # Consumers include "core/<Header>.h".
 target_include_directories(gdg_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")

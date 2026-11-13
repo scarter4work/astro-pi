@@ -72,4 +72,17 @@ std::string build_adql(const Footprint& fp, long top, std::optional<double> mag_
            mag_clause + "ORDER BY g.phot_g_mean_mag ASC";
 }
 
+std::string build_positions_adql(double ra, double dec, double radius, double mag_high, long top) {
+    return "SELECT TOP " + std::to_string(top) + " " +
+           "ra, dec, pmra, pmdec, parallax, phot_g_mean_mag "
+           "FROM gaiadr3.gaia_source "
+           "WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', " +
+           py_float_repr(ra) + ", " + py_float_repr(dec) + ", " + py_float_repr(radius) +
+           ")) "
+           "AND pmra IS NOT NULL AND pmdec IS NOT NULL "
+           "AND phot_g_mean_mag IS NOT NULL "
+           "AND phot_g_mean_mag >= -1.5 AND phot_g_mean_mag <= " +
+           py_float_repr(mag_high) + " ORDER BY phot_g_mean_mag ASC";
+}
+
 }  // namespace gdg
