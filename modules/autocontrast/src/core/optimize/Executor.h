@@ -19,8 +19,12 @@ namespace ac {
 class Executor {
 public:
    virtual ~Executor();
-   // A new image with `action` applied to `parent` (never mutates it). Throws on failure; the loop logs the
-   // failure as an `executor` entry for that candidate only and goes on with the next action (§12).
+   // A new image with `action` applied to `parent` (never mutates it). A candidate failure must be thrown as a
+   // std::exception: the loop catches exactly std::exception, logs it as an `executor` entry for that candidate
+   // only and goes on with the next action (§12). Anything that must END the run — a user Cancel
+   // (pcl::ProcessAborted) and every other PCL exception, none of which derives from std::exception — is not
+   // caught and escapes advance(); an implementation translates a per-candidate PCL error into a std::exception
+   // itself and lets aborts through.
    virtual Image apply(const Image& parent, const Action& action, double pixel_scale_arcsec) = 0;
 };
 
@@ -33,6 +37,8 @@ public:
 //    std::bad_alloc                             -> MemoryError
 //    std::overflow_error, std::underflow_error  -> OverflowError
 //    std::range_error, std::runtime_error, std::logic_error and any other std::exception -> RuntimeError
+//    (including std::system_error / std::ios_base::failure, which Python would name OSError; no executor in
+//    ac_core throws them)
 // (Order matters: the most derived classes are tested first.)
 const char* python_exception_name(const std::exception& e);
 

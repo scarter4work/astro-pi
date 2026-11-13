@@ -29,6 +29,8 @@ std::string read_text(const std::string& path)
 void check_session(const std::string& name)
 {
    const ac::Session& s = loop_run(name).session;
+   // The trailing "\n" is the golden writer's (make_goldens.py writes session_text + "\n"), not part of the
+   // contract: Session.save writes json.dumps(payload, indent=2) with no newline, and so must a session.json writer.
    const std::string text = ac::dump_python(s.to_json(), 2) + "\n";
    const std::string want = read_text(loop_golden("loop/" + name + "_session.json"));
    const bool byte_equal = text == want;

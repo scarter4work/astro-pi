@@ -57,9 +57,12 @@ struct Branch {
 constexpr double kPruneTieTolerance = 1e-12;
 
 // Keep the `width` best live, distinct branches (beam.py:110-126). A stable sort by distance — Python's sorted()
-// is stable, so ties keep their input order — with noise-level ties (kPruneTieTolerance: maximal runs of sorted
-// distances whose neighbours differ by at most that) also kept in input order; then the first branch of each
-// recipe key. Like Python, `width` is tested only after a branch is kept (width <= 0 therefore keeps every
+// is stable, so ties keep their input order — then noise-level ties are also kept in input order: the sorted list
+// is cut into runs, each starting at the smallest distance not yet placed (its anchor) and holding every following
+// branch whose distance is at most anchor + kPruneTieTolerance; each run is ordered by input position.
+// Guarantee: two branches change relative order versus a plain stable sort by distance only if they are in the
+// same run, so their distances differ by at most kPruneTieTolerance (both lie in [anchor, anchor + tol]). Branches
+// further apart than the tolerance always keep distance order. Then the first branch of each recipe key. Like Python, `width` is tested only after a branch is kept (width <= 0 therefore keeps every
 // distinct branch). Throws std::invalid_argument on a NaN distance among the live branches: Python's sort order is
 // then an artefact of timsort's comparisons, and a NaN distance is an upstream bug that must not pick the beam
 // silently.

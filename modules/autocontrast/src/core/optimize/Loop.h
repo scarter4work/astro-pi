@@ -50,6 +50,10 @@ Session begin(const std::string& source_path, const std::string& proxy_id, const
 // An executor exception is logged (`failed: ["executor"]`, reason describe_executor_failure) and the branch goes
 // on. After closing the iteration, every store image no live branch, best or the proxy references is released,
 // then on_iteration(session) runs (the caller writes session.json there). No-op on a converged session.
+// If advance() throws (an exception escaping the executor, a NaN distance refused by prune, a failure inside
+// extract / the guardrails), the session and store are left mid-iteration — this iteration's log entries
+// appended and its kept candidates stored, `iteration` not advanced — and must not be advanced again: a retry
+// would duplicate log entries and collide on the reused candidate ids. Python's advance behaves the same way.
 void advance(Session& session, Executor& executor, ImageStore& store, const GuardrailLimits& limits = {},
              const std::function<void(const Session&)>& on_iteration = {}, const LoopTrace* trace = nullptr);
 

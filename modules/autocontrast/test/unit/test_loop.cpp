@@ -168,7 +168,8 @@ TEST_CASE("prune_noise_level_ties_keep_input_order", "[beam]")
    out = ac::prune(in, 3);
    CHECK(out[0].image_id == "b");
 
-   // A run chains through neighbours within the tolerance; a run is ordered by input position; runs stay ordered.
+   // Several branches within the tolerance of the run's anchor form one run, ordered by input position; runs stay
+   // in distance order.
    in = {branch({act("core_hdr")}, 0.3, true, "late"), branch({le}, 0.1 + 2e-13, true, "x"),
          branch({ch}, 0.1 + 1e-13, true, "y"), branch({act("black_point")}, 0.1, true, "z")};
    out = ac::prune(in, 4);
@@ -177,6 +178,38 @@ TEST_CASE("prune_noise_level_ties_keep_input_order", "[beam]")
    CHECK(out[1].image_id == "y");
    CHECK(out[2].image_id == "z");
    CHECK(out[3].image_id == "late");
+}
+
+TEST_CASE("prune_tie_runs_are_anchored", "[beam]")
+{
+   // Review I1: A (input 2) = 0.1, B (input 1) = A + 0.9e-12, C (input 0) = A + 1.8e-12. Neighbours are each within
+   // the tolerance but A and C are not. Python orders A, B, C. Chaining runs neighbour to neighbour gave C, B, A
+   // (reversing A and C, 1.8e-12 apart); anchored runs give {A, B} (B within 1e-12 of A) -> input order B, A,
+   // then {C}.
+   const double a = 0.1, b = a + 0.9e-12, c = a + 1.8e-12;
+   REQUIRE(b - a <= ac::kPruneTieTolerance);
+   REQUIRE(c - b <= ac::kPruneTieTolerance);
+   REQUIRE(c - a > ac::kPruneTieTolerance);
+   std::vector<ac::Branch> in = {branch({act("core_hdr")}, c, true, "C"), branch({act("chroma")}, b, true, "B"),
+                                 branch({act("black_point")}, a, true, "A")};
+   auto out = ac::prune(in, 3);
+   REQUIRE(out.size() == 3);
+   CHECK(out[0].image_id == "B");
+   CHECK(out[1].image_id == "A");
+   CHECK(out[2].image_id == "C");   // A and C (beyond the tolerance) keep distance order
+
+   // Every reordered pair lies within the tolerance: over a ladder of 9 branches 0.4e-12 apart, in reverse input
+   // order, any two whose distances differ by more than the tolerance keep distance order.
+   in.clear();
+   for (int k = 0; k < 9; ++k)
+      in.push_back(branch({act("tonal_reshape", std::to_string(k))}, 0.2 + (8 - k) * 0.4e-12, true,
+                          std::to_string(k)));
+   out = ac::prune(in, 9);
+   REQUIRE(out.size() == 9);
+   for (size_t p = 0; p < out.size(); ++p)
+      for (size_t q = p + 1; q < out.size(); ++q)
+         if (out[p].distance - out[q].distance > ac::kPruneTieTolerance)
+            FAIL("pair " << out[p].image_id << ", " << out[q].image_id << " reordered beyond the tolerance");
 }
 
 TEST_CASE("beam_config_defaults_match_python", "[beam]")
