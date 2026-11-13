@@ -33,3 +33,6 @@ modules/pi-copilot/test/.test_api_key
 
 # Planetary real-data e2e screenshots (test/run-real-data.sh)
 modules/planetary/test/output/
+
+# AutoContrast native module build trees
+modules/autocontrast/build*/
