@@ -1,5 +1,14 @@
 # AutoContrast PCL Port Implementation Plan
 
+
+## HANDOFF (2026-11-12, session landed on Scott's "lets land this")
+
+- Branch `ac/pcl-port` (worktree /home/scarter4work/projects/astro-pi-ac), head = the merge-of-origin/main + handoff commit pushed with this note (see `git log -1 origin/ac/pcl-port`). Spec+plan 795846b8.
+- **Done (10 of 23 plan tasks + corrective 10b), each reviewed clean:** T1 02e559fd · T2 f8f41b33..7af8c741 · T3 45fe1085 · T4 f1c27f9c..7fbb7111 · T5 83a4fbb5 · T6 146a69f2 (+spec 2444b724) · T7 1069131a..f4c8677a · T8 11effe05 · T9 c3cef0ad..54a3de02 · T10 4606e737..a5e25163 (+spec f611fc35) · T10b 3dcb572f. Host ctest 22/22 and Rocky 9 container ctest 22/22 (container with `AC_DATA_DIR` set).
+- **Next: Task 11** (WCS geometry, XMP/AVM pyavm-strict, tiers). Started then stopped before any C++: only an `avm` golden stage existed, saved (uncommitted) as ~/projects/backups/ac-partial-2026-11-12/task-11-avm-goldens.patch with its stopped-at note; that stage has a defect (reads `w.wcs.altlin`, absent in astropy 8.0.1, so every `to_wcs` record holds an error) — fix before using; `_from_avm` results in it are correct.
+- **Open design points:** (1) A8 `star_split` = StarXTerminator stars=false with no recombination → always tripped by the star guardrail; needs Scott (design change). (2) A7 one `AutoContrast` process with a mode enum vs two processes — ids permanent, decide before first release. (3) A10 ship a prebuilt gallery index (release-time). (4) Task 19 waits until GDG's solver (cddc1ba0) is on main (A11). (5) Every later task must also pass the container ctest (`podman ps` checked in its own step; one container build at a time; `AC_DATA_DIR=/home/scarter4work/projects/astro-pi/tools/autocontrast/data`). (6) Test slots 93 (probes) / 92 (GUI), not the plan's 94/97. (7) Deferred minors are kept in the SDD ledger .superpowers/sdd/2026-11-12-autocontrast-pcl-port/progress.md (local, gitignored); the rulings are also in spec §6.4–6.5.
+- Rulings recorded in the ledger and spec (EMD tolerance vs scipy's inexact milp, component tolerance 1e-9·max(|v|,1), libm not bit-portable, prune tie anchoring 1e-12, WebP kept via libwebp 1.6.0, Python loader defects fixed in both Python and C++).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace AutoContrast's Python sidecar and PJSR scripts with one native PCL module, `AutoContrast-pxm.so` (processes `AutoContrast` and `AutoContrastReferences`), that does everything they do, matches the Python reference numerically, and loses no functionality.
