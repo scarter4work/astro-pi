@@ -7,7 +7,9 @@
 
 namespace ac {
 
+// tools/autocontrast/src/autocontrast/optimize/actions.py:16
 const std::array<const char*, 3> kLevels = {"gentle", "moderate", "strong"};
+// actions.py:19
 const std::set<std::string> kOnceOnly = {"star_split", "background_neutralize"};
 
 std::string Action::key() const
@@ -23,6 +25,7 @@ std::string Action::key() const
 
 double Action::strength() const
 {
+   // actions.py:22 (_STRENGTH) and the empty-level rule in Action.strength
    if (level.empty())
       return 1.0;
    if (level == "gentle")
@@ -80,6 +83,7 @@ std::vector<Action> available_actions(double px, double psf, int n_scales, bool 
       const std::string lv = level;
       out.push_back(Action{"tonal_reshape", lv, std::nullopt, Json{{"monotone", true}}});
       out.push_back(Action{"black_point", lv, std::nullopt, Json{{"clip_limited", true}}});
+      // actions.py:101: core_hdr layers gentle 2, moderate 3, strong 4
       const int layers = lv == "gentle" ? 2 : lv == "moderate" ? 3 : 4;
       out.push_back(Action{"core_hdr", lv, std::nullopt, Json{{"layers", layers}}});
       if (palette_compatible)

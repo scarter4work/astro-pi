@@ -67,6 +67,7 @@ struct GroupLess {
    }
 };
 
+// The remedy table of propose.py:36-41 (_REMEDIES); scale kinds (propose.py:43 _SCALE_KINDS) are ranked per band.
 double remedy_gap(const std::string& kind, const std::map<std::string, double>& gaps)
 {
    double gap = 0.0;
@@ -104,7 +105,7 @@ std::vector<Action> propose_actions(const FingerprintData& ref, const Fingerprin
 
    std::map<GroupKey, std::vector<Action>, GroupLess> groups;
    for (const auto& a : menu)
-      groups[GroupKey{-gap_for(a), a.scale_arcsec ? *a.scale_arcsec : -1.0, a.kind}].push_back(a);
+      groups[GroupKey{-gap_for(a), a.scale_arcsec ? *a.scale_arcsec : -1.0 /* propose.py:174 */, a.kind}].push_back(a);
 
    std::vector<Action> proposed;
    for (const auto& [gk, members] : groups) {

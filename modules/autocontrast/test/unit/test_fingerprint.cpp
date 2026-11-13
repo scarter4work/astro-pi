@@ -146,7 +146,7 @@ ac::Json in_to_dict_order(const ac::Json& g)
    return j;
 }
 
-double g_worst_lab = 0.0, g_worst_scalar = 0.0, g_worst_extract = 0.0;
+double g_worst_lab = 0.0, g_worst_extract = 0.0;
 
 struct Worst {
    double abs = 0.0, rel = 0.0;

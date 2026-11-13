@@ -12,6 +12,7 @@
 
 namespace ac {
 
+// tools/autocontrast/src/autocontrast/optimize/propose.py:60-61
 constexpr double kGapGentleMax = 0.075;
 constexpr double kGapModerateMax = 0.15;
 

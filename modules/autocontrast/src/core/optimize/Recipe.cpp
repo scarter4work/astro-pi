@@ -4,6 +4,7 @@
 
 namespace ac {
 
+// tools/autocontrast/src/autocontrast/optimize/recipe.py:15-24
 const std::map<std::string, std::string> kProcessForKind = {
    {"local_contrast", "MultiscaleLinearTransform"}, {"local_equalize", "LocalHistogramEqualization"},
    {"core_hdr", "HDRMultiscaleTransform"},          {"tonal_reshape", "CurvesTransformation"},

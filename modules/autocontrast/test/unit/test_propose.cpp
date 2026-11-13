@@ -74,8 +74,8 @@ TEST_CASE("component_gaps / band_deficits match Python", "[propose]")
    REQUIRE(g.at("cases").size() == 12);
    for (const auto& c : g.at("cases")) {
       INFO(c.at("ref").get<std::string>() + " vs " + c.at("target").get<std::string>());
-      const auto& ref = fp(c.at("ref").get<std::string>());
-      const auto& tgt = fp(c.at("target").get<std::string>());
+      const ac::FingerprintData ref = fp(c.at("ref").get<std::string>());
+      const ac::FingerprintData tgt = fp(c.at("target").get<std::string>());
       const auto gaps = ac::component_gaps(ref, tgt);
       for (const auto& [k, v] : c.at("component_gaps").items())
          CHECK(gaps.at(k) == Catch::Approx(v.get<double>()).margin(1e-9));
@@ -91,8 +91,8 @@ TEST_CASE("propose_matches_python", "[propose]")
    const auto g = cases();
    for (const auto& c : g.at("cases")) {
       INFO(c.at("ref").get<std::string>() + " vs " + c.at("target").get<std::string>());
-      const auto& ref = fp(c.at("ref").get<std::string>());
-      const auto& tgt = fp(c.at("target").get<std::string>());
+      const ac::FingerprintData ref = fp(c.at("ref").get<std::string>());
+      const ac::FingerprintData tgt = fp(c.at("target").get<std::string>());
       const auto applied = kinds(c.at("applied_kinds"));
       const int n = c.at("n_scales");
       check_list(ac::propose_actions(ref, tgt, applied, n, 3), c.at("top3"));
