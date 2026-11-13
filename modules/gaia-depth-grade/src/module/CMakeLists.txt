@@ -17,6 +17,7 @@ set(MODULE_SOURCES
     GaiaDepthGradeParameters.cpp
     GaiaDepthGradeProcess.cpp
     GaiaDepthGradeInstance.cpp
+    GaiaDepthGradeInterface.cpp
 )
 
 # GDG_BUILD_PROBES (OFF; host test builds only, never the container/release build) adds the

@@ -1,6 +1,7 @@
 #include "GaiaDepthGradeProcess.h"
 
 #include "GaiaDepthGradeInstance.h"
+#include "GaiaDepthGradeInterface.h"
 #include "GaiaDepthGradeParameters.h"
 
 #include <pcl/ErrorHandler.h>
@@ -58,7 +59,7 @@ String GaiaDepthGradeProcess::Description() const
 
 ProcessInterface* GaiaDepthGradeProcess::DefaultInterface() const
 {
-   return nullptr; // the dialog arrives with GaiaDepthGradeInterface (plan Task 17)
+   return TheGaiaDepthGradeInterface;
 }
 
 ProcessImplementation* GaiaDepthGradeProcess::Create() const

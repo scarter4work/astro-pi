@@ -6,6 +6,7 @@
 
 #include <pcl/Control.h>
 #include <pcl/ErrorHandler.h>
+#include <pcl/MetaModule.h>
 #include <pcl/NetworkTransfer.h>
 #include <pcl/Thread.h>
 
@@ -56,6 +57,11 @@ gdg::HttpResponse TapClient::Transfer( const std::string& url, const std::string
    static const std::string allowed( gdg::kGaiaArchive );
    if ( url.compare( 0, allowed.size(), allowed ) != 0 )
       throw std::runtime_error( "Gaia TAP: refusing to connect to " + url + " (only " + allowed + " is allowed)" );
+   // Plan C14: the transfer's event receiver is a Control, a GUI-thread object, so the transfer runs
+   // on PixInsight's main thread only (RunPrepare fetches the catalogue there, never on the
+   // interface's worker thread). A call from another thread is a programming error, not a retry.
+   if ( !Thread::IsRootThread() )
+      throw std::logic_error( "Gaia TAP: the online catalogue must be fetched on PixInsight's main thread" );
 
    gdg::HttpResponse r;
    try
@@ -99,8 +105,17 @@ gdg::HttpResponse TapClient::post_form( const std::string& url, const std::strin
 
 void TapClient::sleep_seconds( double seconds )
 {
-   if ( seconds > 0 )
-      pcl::Sleep( unsigned( std::lround( seconds*1000 ) ) );
+   // The poll interval (1, 2, 4, 8 ... s, C13). On the main thread (always: C14) the GUI keeps
+   // painting meanwhile; user input stays held back, as during the rest of a Prepare.
+   unsigned left = seconds > 0 ? unsigned( std::lround( seconds*1000 ) ) : 0;
+   while ( left > 0 )
+   {
+      const unsigned slice = left < 50 ? left : 50;
+      pcl::Sleep( slice );
+      left -= slice;
+      if ( Thread::IsRootThread() )
+         Module->ProcessEvents( true/*excludeUserInputEvents*/ );
+   }
 }
 
 OnlineGaiaSource::OnlineGaiaSource( std::optional<double> magLimit, const gdg::Log& log, const std::string& cacheDir )

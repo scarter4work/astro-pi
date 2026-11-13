@@ -12,6 +12,7 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "GaiaDepthGradeModule.h"
+#include "GaiaDepthGradeInterface.h"
 #include "GaiaDepthGradeProcess.h"
 
 #ifdef GDG_PROBES
@@ -99,6 +100,7 @@ PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
    if ( mode == pcl::InstallMode::FullInstall )
    {
       new pcl::GaiaDepthGradeProcess;
+      new pcl::GaiaDepthGradeInterface;
    }
 #ifdef GDG_PROBES
    // Test-only probe process; compiled only into host test builds (GDG_BUILD_PROBES).

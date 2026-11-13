@@ -154,6 +154,18 @@ mods = [m for m in mods if m != "GaiaDepthGrade-pxm.so"]
 vals = "".join('<v k="%08d" t="s">%s</v>' % (i + 1, escape("@pxi_bin_dir/" + m)) for i, m in enumerate(mods))
 end = s.rindex("</xsdt>")
 s = s[:end] + '<i k="Modules">' + vals + "</i>" + s[end:]
+# PixInsight 1.9.6 opens a modal "Risky Temporary Folders" warning at GUI start-up when image swap files go to a
+# system temporary folder (the run's private TMPDIR, by design); the GUI smoke never got past it (2026-11-12,
+# not-ready.png). Answered as its own "Don't show again" box does (PI Copilot's harness, a03f0efe). Headless
+# --automation-mode runs never show it.
+warn = '<v k="WarningOnSystemTempFolderBeingUsedForSwapFiles_Value" t="b" v="false"/>'
+if "WarningOnSystemTempFolderBeingUsedForSwapFiles_Value" in s:
+    sys.exit("the bootstrapped settings already carry the swap-folder warning answer; review this seeding")
+if '<i k="DontShowAgain">' in s:
+    s = s.replace('<i k="DontShowAgain">', '<i k="DontShowAgain">' + warn, 1)
+else:
+    end = s.rindex("</xsdt>")
+    s = s[:end] + '<i k="DontShowAgain">' + warn + "</i>" + s[end:]
 tmp = path + ".seed-tmp"
 open(tmp, "w", encoding="utf-8").write(s)
 os.replace(tmp, path)
@@ -161,4 +173,105 @@ PY
    if grep -q 'GaiaDepthGrade-pxm\.so' "$GDG_SLOT_SETTINGS"; then
       echo "FAIL: seeded $GDG_SLOT_SETTINGS still names a GaiaDepthGrade-pxm.so"; return 1
    fi
+}
+
+# ---- GUI smoke (gui-smoke.sh) -----------------------------------------------
+# A REAL PixInsight GUI on a private Xvfb display (:100 + slot), isolated slot
+# GDG_GUI_SLOT (default 97: Planetary's GUI slot; the slot guard refuses a second
+# PixInsight on it), driven with XTest by gui_drive.py. Adapted from
+# modules/planetary/test/harness.sh (planetary_gui_*), whose header explains each rule.
+#   gdg_gui_setup                 # slot, run dir, display
+#   ... gdg_sign, gdg_seed_slot_modules, caller's exports ...
+#   gdg_gui_launch OUT SETUP.js   # Xvfb + PixInsight -r=SETUP.js; ready; only the dev build mapped
+#   ... gui_drive.py steps, -x IPC scripts ...
+#   gdg_gui_quit OUT              # File > Quit; PixInsight must exit 0 within 60 s
+gdg_gui_setup()
+{
+   local tool
+   for tool in Xvfb xprop import; do
+      command -v "$tool" >/dev/null || { echo "FAIL: $tool not found"; return 1; }
+   done
+   GDG_TEST_SLOT="${GDG_GUI_SLOT:-97}" gdg_slot_setup || return 1
+   gdg_private_tmp || return 1
+   GDG_DISPLAY_NO=$(( 100 + GDG_SLOT ))
+   if [ -e "/tmp/.X11-unix/X$GDG_DISPLAY_NO" ]; then
+      echo "FAIL: display :$GDG_DISPLAY_NO is already in use (another GUI smoke on slot $GDG_SLOT?)"; return 1
+   fi
+   GDG_GUI_XVFB_PID="" GDG_GUI_PI_PID=""
+   gdg_on_exit gdg_gui_cleanup
+}
+
+gdg_gui_cleanup()
+{
+   [ -n "${GDG_GUI_PI_PID:-}" ] && kill -9 "$GDG_GUI_PI_PID" 2>/dev/null
+   pkill -9 -f -- "^$GDG_PI_BIN_DIR/PixInsight -n=$GDG_SLOT " 2>/dev/null
+   [ -n "${GDG_GUI_XVFB_PID:-}" ] && kill "$GDG_GUI_XVFB_PID" 2>/dev/null
+   return 0
+}
+
+gdg_assert_only_dev_mapped()
+{
+   local so="$1" pid maps
+   pid="$(pgrep -f -- "^$GDG_PI_BIN_DIR/PixInsight -n=$GDG_SLOT " | head -1)"
+   [ -n "$pid" ] || { echo "FAIL: no running PixInsight for slot $GDG_SLOT to check"; return 1; }
+   maps="$(grep -- 'GaiaDepthGrade-pxm\.so' "/proc/$pid/maps" | awk '{print $NF}' | sort -u | xargs -r -n1 realpath -m | sort -u)"
+   if [ "$maps" != "$(realpath -e "$so")" ]; then
+      echo "FAIL: PixInsight (slot $GDG_SLOT, pid $pid) maps [${maps//$'\n'/ }], expected ONLY the dev build $so"; return 1
+   fi
+   echo "only the dev module is mapped (pid $pid): $maps"
+}
+
+# Starts the Xvfb and PixInsight with the dev build $SO and the start-up script $2, which must
+# write "$GDG_GUI_DIR/ready" holding launchInterface=true (copied to OUT/ready.txt either way). No desktop session variables and a
+# session bus that leads nowhere (a Qt file dialog must not reach the desktop portal).
+gdg_gui_launch()
+{
+   local out="$1" setup="$2" n=0
+   Xvfb ":$GDG_DISPLAY_NO" -screen 0 1920x1080x24 -nolisten tcp >"$out/xvfb.log" 2>&1 & GDG_GUI_XVFB_PID=$!
+   export DISPLAY=":$GDG_DISPLAY_NO"
+   for _ in $(seq 50); do xprop -root >/dev/null 2>&1 && break; sleep 0.1; done
+
+   pi_headless_env
+   unset XDG_CURRENT_DESKTOP DESKTOP_SESSION KDE_FULL_SESSION KDE_SESSION_VERSION GNOME_DESKTOP_SESSION_ID \
+         QT_QPA_PLATFORMTHEME XDG_SESSION_TYPE
+   export DBUS_SESSION_BUS_ADDRESS="unix:path=$GDG_RUN_DIR/no-session-bus"
+   export XDG_DATA_HOME="$GDG_RUN_DIR/xdg"; mkdir -m 700 "$XDG_DATA_HOME"
+   export GDG_GUI_DIR="$GDG_RUN_DIR/gui"; mkdir -m 700 "$GDG_GUI_DIR"
+   # The interface's state file (test builds only; gui_drive.py reads it), and a private cache so an
+   # online Prepare never writes the user's ~/.cache.
+   export GDG_GUI_STATE="$GDG_GUI_DIR/state.json"
+   export XDG_CACHE_HOME="$GDG_RUN_DIR/xdg-cache"; mkdir -m 700 "$XDG_CACHE_HOME"
+
+   pi_require_private_display || return 1
+   timeout 1800 "$PI" -n="$GDG_SLOT" --no-startup-scripts -m="$SO" -r="$setup" >"$out/pi.log" 2>&1 & GDG_GUI_PI_PID=$!
+   for _ in $(seq 360); do
+      [ -f "$GDG_GUI_DIR/ready" ] && break
+      kill -0 "$GDG_GUI_PI_PID" 2>/dev/null || break
+      n=$(( n + 1 ))
+      (( n % 10 == 0 )) && { python3 "$HERE/gui_drive.py" dismiss "$out" || { echo "FAIL: driver (dismiss)"; return 1; }; }
+      sleep 0.5
+   done
+   if [ ! -f "$GDG_GUI_DIR/ready" ]; then
+      import -window root "$out/not-ready.png" 2>/dev/null || true
+      echo "FAIL: the GUI script never became ready (see $out/pi.log, $out/not-ready.png)"; return 1
+   fi
+   cp "$GDG_GUI_DIR/ready" "$out/ready.txt"
+   import -window root "$out/00-ready.png" 2>/dev/null || true
+   grep -q "launchInterface=true" "$out/ready.txt" || { echo "FAIL: setup: $(cat "$out/ready.txt")"; return 1; }
+   gdg_assert_only_dev_mapped "$SO" || return 1
+   sleep 1
+}
+
+gdg_gui_quit()
+{
+   local out="$1" rc=0
+   python3 "$HERE/gui_drive.py" quit "$out" || { echo "FAIL: driver (quit)"; return 1; }
+   for _ in $(seq 240); do kill -0 "$GDG_GUI_PI_PID" 2>/dev/null || break; sleep 0.25; done
+   if kill -0 "$GDG_GUI_PI_PID" 2>/dev/null; then
+      import -window root "$out/hang.png" 2>/dev/null || true
+      echo "FAIL: PixInsight still running 60 s after Quit (see $out/hang.png)"; return 1
+   fi
+   wait "$GDG_GUI_PI_PID" || rc=$?
+   GDG_GUI_PI_PID=""
+   [ "$rc" = 0 ] || { echo "FAIL: PixInsight exit code $rc (see $out/pi.log)"; return 1; }
 }
