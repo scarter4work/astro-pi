@@ -1338,6 +1338,61 @@ def stage_loop(out: Out):
                                      epsilon_improve=5e-3))
 
 
+def stage_executor(out: Out):
+    """NumpyExecutor.apply on two 32x48 crops (an 8-bit render and the flattened float image): every action
+    kind and level, local_contrast at every layer the crop supports plus the refusal one layer past it,
+    local_equalize at several scales and two pixel scales (a Gaussian wider than the crop included).
+    Outputs stacked in case order into one f8 array; refusals recorded as Python's exception text."""
+    from autocontrast.eval.degrade import flatten
+    from autocontrast.optimize.actions import Action
+    from autocontrast.optimize.executors.numpy_exec import NumpyExecutor
+    rng = rng0()
+    neb_u8 = make_nebula(rng, 120, 160)          # the same draw stage_images / stage_loop start from
+    neb = u8_to_rgb(neb_u8)
+    crop_u8 = np.ascontiguousarray(neb_u8[40:72, 50:98])
+    crop_flat = np.ascontiguousarray(flatten(neb, 0.6)[40:72, 50:98])
+    out.npy("executor/in_u8.npy", crop_u8)
+    out.npy("executor/in_flat_f8.npy", crop_flat)
+    inputs = {"u8": u8_to_rgb(crop_u8), "flat": crop_flat}
+
+    plan = []                                    # (action, pixel_scale_arcsec)
+    for layer in range(0, 7):                    # 32x48 supports layers 0..5; 6 is refused
+        plan.append((Action("local_contrast", "moderate", float(2 ** layer), {"layer": layer}), 1.0))
+    for level in ("gentle", "strong", ""):
+        plan.append((Action("local_contrast", level, 4.0, {"layer": 2}), 1.0))
+    plan.append((Action("local_contrast", "moderate", None, {}), 1.0))      # no layer param: default 3
+    for px in (1.0, 0.37):
+        for scale in (1.0, 4.0, 13.7, None):     # None -> the executor's 8" default
+            plan.append((Action("local_equalize", "moderate", scale,
+                                {} if scale is None else {"radius_arcsec": scale}), px))
+    for level in ("gentle", "strong"):
+        plan.append((Action("local_equalize", level, 4.0, {"radius_arcsec": 4.0}), 1.0))
+    for kind in ("core_hdr", "tonal_reshape", "black_point", "chroma"):
+        for level in ("gentle", "moderate", "strong", ""):
+            plan.append((Action(kind, level, None, {}), 1.0))
+    plan.append((Action("background_neutralize", "", None, {}), 1.0))
+    plan.append((Action("star_split", "", None, {}), 1.0))
+    plan.append((Action("no_such_kind", "gentle", None, {}), 1.0))
+
+    cases, stack = [], []
+    ex = NumpyExecutor()
+    for in_name, rgb in inputs.items():
+        for a, px in plan:
+            rec = {"input": in_name, "pixel_scale_arcsec": px, "action": action_dict(a)}
+            try:
+                res = ex.apply(rgb, a, pixel_scale_arcsec=px)
+            except Exception as exc:
+                rec["error"] = f"{type(exc).__name__}: {exc}"
+                rec["index"] = None
+            else:
+                rec["error"] = None
+                rec["index"] = len(stack)
+                stack.append(res)
+            cases.append(rec)
+    out.npy("executor/outputs_f8.npy", np.stack(stack).astype(np.float64))
+    out.json("executor/cases.json", {"shape": list(crop_flat.shape), "cases": cases})
+
+
 def _float_repr_table() -> list:
     """Floats whose Python repr the C++ dump_python must reproduce: edge cases plus a seeded draw
     over the whole exponent range (random 64-bit patterns) and over ordinary magnitudes."""
@@ -1390,6 +1445,7 @@ SYNTHETIC_STAGES = [
     ("skymath_wcs", stage_skymath_wcs),
     ("guardrails", stage_guardrails),
     ("loop", stage_loop),
+    ("executor", stage_executor),
     ("json_float_repr", stage_json_float_repr),
     ("json_string_escape", stage_json_string_escape),
     ("np_sum", stage_np_sum),

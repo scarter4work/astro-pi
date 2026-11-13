@@ -761,6 +761,22 @@
    "bytes": 951,
    "sha256": "c59f2a685a9d38308b9bfecbb889ad31fc0a816722842dfe006dbb4a34ff6eda"
   },
+  "synthetic/executor/cases.json": {
+   "bytes": 15262,
+   "sha256": "0b7d263426ccadf9bec1c88b8a52135a5ac1573696179c8e6ec0bf21007d14bd"
+  },
+  "synthetic/executor/in_flat_f8.npy": {
+   "bytes": 36992,
+   "sha256": "f7172c1672d10621166b61169f85afcac369d62de5246fa92af850dc1a9368ac"
+  },
+  "synthetic/executor/in_u8.npy": {
+   "bytes": 4736,
+   "sha256": "e221a666666fabea5b9d844264787067967eba083b91fcb0c3a080e961d973dd"
+  },
+  "synthetic/executor/outputs_f8.npy": {
+   "bytes": 2801792,
+   "sha256": "dc89b47a467d0cb4999ae8acb6e353424bf92c805995b27898621d56f5d55166"
+  },
   "synthetic/extract/cast_u8.npy": {
    "bytes": 9344,
    "sha256": "17de4e1aa20fb011991314702dcbc54767c0caf63bbd38597843558044bb3139"
@@ -2635,7 +2651,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 8741997,
+ "total_bytes": 11600779,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",
