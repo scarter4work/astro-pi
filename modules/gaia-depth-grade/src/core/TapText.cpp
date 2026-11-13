@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -84,7 +85,7 @@ template <class T>
 T parse_num(const std::string& s, long row, const char* col) {
     T v{};
     bool ok;
-    const std::string digits = (!s.empty() && s[0] == '+') ? s.substr(1) : s;
+    const std::string_view digits = (!s.empty() && s[0] == '+') ? std::string_view(s).substr(1) : std::string_view(s);
     if constexpr (std::is_same_v<T, double>) {
         ok = parse_double_exact(digits, v);
     } else if constexpr (std::is_same_v<T, float>) {

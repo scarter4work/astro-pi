@@ -3,7 +3,6 @@
 #include <catch_amalgamated.hpp>
 
 #include "core/ParseNumber.h"
-#include "core/Catalog.h"
 
 #include <cstring>
 #include <limits>

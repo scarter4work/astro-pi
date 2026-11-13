@@ -1,7 +1,7 @@
 // Portable exact parsing of a complete decimal floating-point number (PCL-free).
 #pragma once
 
-#include <string>
+#include <string_view>
 
 namespace gdg {
 
@@ -12,10 +12,11 @@ namespace gdg {
 /// std::from_chars(double) lives in the runtime libstdc++, and the GCC 11 one (Rocky 9) reports
 /// errc::result_out_of_range for subnormal results (5e-324), which newer libstdc++ parses. On that
 /// error the text is re-parsed with strtod_l under a "C" locale (never the global locale) and a
-/// finite non-zero result is accepted. Reentrant; the locale is created once, thread-safely.
-bool parse_double_exact(const std::string& text, double& out);
+/// finite non-zero result is accepted. errno is preserved. Throws std::runtime_error if the C locale
+/// cannot be created. Reentrant; the locale is created once, thread-safely.
+bool parse_double_exact(std::string_view text, double& out);
 
 /// The same for float (strtof_l fallback): 1e-45 -> the smallest subnormal float.
-bool parse_float_exact(const std::string& text, float& out);
+bool parse_float_exact(std::string_view text, float& out);
 
 }  // namespace gdg
