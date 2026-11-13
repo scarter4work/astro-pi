@@ -122,13 +122,24 @@ TEST_CASE("orbit_frames_differ", "[recon][orbit]") {
     const OrbitConfig o;
     const std::vector<Image> v = orbit_views(m, ReconConfig{}, ExportConfig{}, o);
     const double d_quarter = mean_abs_diff(v[0], v[static_cast<size_t>(o.frames / 4)]);
-    WARN("mean |frame 0 - frame " << o.frames / 4 << "| = " << d_quarter);
+    CAPTURE(d_quarter);
     CHECK(d_quarter > 1e-3);
     // The opposite yaws (frames 9 and 27: +12 and -12 degrees) are different views.
     CHECK(mean_abs_diff(v[9], v[27]) > 1e-3);
-    // Every view keeps the render's range.
-    for (const Image& f : v)
-        for (double s : f.data) REQUIRE((s >= 0.0 && s <= 1.0));
+    // Every view keeps the render's range: one aggregated check, the first offender captured.
+    size_t out_of_range = 0, first_frame = 0, first_index = 0;
+    double first_value = 0.0;
+    for (size_t k = 0; k < v.size(); ++k)
+        for (size_t i = 0; i < v[k].data.size(); ++i) {
+            const double s = v[k].data[i];
+            if (!(s >= 0.0 && s <= 1.0) && out_of_range++ == 0) {
+                first_frame = k;
+                first_index = i;
+                first_value = s;
+            }
+        }
+    CAPTURE(out_of_range, first_frame, first_index, first_value);
+    REQUIRE(out_of_range == 0);
 }
 
 TEST_CASE("orbit_flat_model_frames_identical", "[recon][orbit]") {
@@ -336,4 +347,23 @@ TEST_CASE("orbit_concurrent_calls_identical", "[recon][orbit]") {
     const auto ba = gdg::test::read_file_bytes(pa);
     CHECK(ba == gdg::test::read_file_bytes(pb));
     CHECK(parse_gif(ba).frames.size() == 36);
+}
+
+TEST_CASE("orbit_rejects_mismatched_plane_shapes", "[recon][orbit]") {
+    // Planes replaced after construction are refused before any pixel is read, by both entry points.
+    TempDir tmp("gdg_orbit");
+    const std::string path = (tmp.path / "o.gif").string();
+    for (const Image& bad : {Image(11, 9), Image(13, 9), Image(12, 8)}) {
+        CavityModel m = plain_model(12, 9, {5.0, 4.0}, [](int x, int y) { return 0.01 * (x + y); });
+        m.dust = bad;
+        CHECK_THROWS_WITH(orbit_views(m, ReconConfig{}, ExportConfig{}, OrbitConfig{}),
+                          Catch::Matchers::ContainsSubstring("shape mismatch"));
+        CHECK_THROWS_WITH(write_orbit_gif(path, m, ReconConfig{}, ExportConfig{}, OrbitConfig{}),
+                          Catch::Matchers::ContainsSubstring("shape mismatch"));
+        CavityModel e = plain_model(12, 9, {5.0, 4.0}, [](int x, int y) { return 0.01 * (x + y); });
+        e.emissivity = Image(bad.width, bad.height, 3);
+        CHECK_THROWS_WITH(orbit_views(e, ReconConfig{}, ExportConfig{}, OrbitConfig{}),
+                          Catch::Matchers::ContainsSubstring("shape mismatch"));
+        CHECK_FALSE(fs::exists(path));
+    }
 }

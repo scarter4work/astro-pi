@@ -536,3 +536,15 @@ TEST_CASE("glb_cavity_radius_px_is_the_contract_R", "[recon][glb]") {
     rgb_z.z = Image(9, 7, 3);
     CHECK_THROWS_AS(cavity_radius_px(rgb_z), std::invalid_argument);
 }
+
+TEST_CASE("glb_rejects_mismatched_plane_shapes", "[recon][glb]") {
+    // Planes replaced after construction are refused before any pixel is read.
+    for (const Image& bad : {Image(8, 7), Image(10, 7), Image(9, 6)}) {
+        CavityModel m = model_9x7();
+        m.dust = bad;
+        CHECK_THROWS_WITH(build_glb(m, with_decimate(1)), Catch::Matchers::ContainsSubstring("shape mismatch"));
+        CavityModel e = model_9x7();
+        e.emissivity = Image(bad.width, bad.height, 3);
+        CHECK_THROWS_WITH(build_glb(e, with_decimate(1)), Catch::Matchers::ContainsSubstring("shape mismatch"));
+    }
+}

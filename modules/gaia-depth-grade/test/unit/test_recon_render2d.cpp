@@ -274,3 +274,17 @@ TEST_CASE("render2d_concurrent_calls_identical", "[recon][render2d]") {
     CHECK(o1.data == serial.data);
     CHECK(o2.data == serial.data);
 }
+
+TEST_CASE("render2d_rejects_mismatched_plane_shapes", "[recon][render2d]") {
+    // A plane replaced after construction (the members are public) is refused before any pixel is
+    // read: a narrower plane would otherwise be indexed out of bounds.
+    const Image z(8, 6), dust(8, 6), rgb(8, 6, 3);
+    for (const Image& bad : {Image(7, 6), Image(9, 6), Image(8, 5)}) {
+        CavityModel m(z, rgb, dust, std::nullopt, {4.0, 3.0}, CavityMeta{});
+        m.dust = bad;
+        CHECK_THROWS_WITH(render_cavity_2d(m, ReconConfig{}), Catch::Matchers::ContainsSubstring("shape mismatch"));
+        CavityModel e(z, rgb, dust, std::nullopt, {4.0, 3.0}, CavityMeta{});
+        e.emissivity = Image(bad.width, bad.height, 3);
+        CHECK_THROWS_WITH(render_cavity_2d(e, ReconConfig{}), Catch::Matchers::ContainsSubstring("shape mismatch"));
+    }
+}

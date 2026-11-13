@@ -142,26 +142,31 @@ int dist2(const Colour& p, int r, int g, int b) {
 std::vector<std::vector<std::uint8_t>> cell_candidates(const std::vector<Colour>& palette) {
     std::vector<std::vector<std::uint8_t>> cells(static_cast<std::size_t>(kCells));
     constexpr int kSpan = 256 >> kCellBits;  // 8 levels per cell
-    gdg::parallel_for_dynamic(kCells, 256, [&](int cell, int) {
-        const int lo[3] = {(cell >> (2 * kCellBits)) * kSpan, ((cell >> kCellBits) & ((1 << kCellBits) - 1)) * kSpan,
-                           (cell & ((1 << kCellBits) - 1)) * kSpan};
+    constexpr int kChunk = 256;  // cells per task: one scratch buffer per chunk, not per cell
+    static_assert(kCells % kChunk == 0, "the chunks must cover every cell");
+    gdg::parallel_for_dynamic(kCells / kChunk, 1, [&](int chunk, int) {
         std::vector<int> dmin(palette.size());
-        int minmax = INT_MAX;
-        for (std::size_t p = 0; p < palette.size(); ++p) {
-            int near = 0, far = 0;
-            for (int c = 0; c < 3; ++c) {
-                const int v = palette[p][static_cast<std::size_t>(c)], a = lo[c], b = lo[c] + kSpan - 1;
-                const int dn = v < a ? a - v : (v > b ? v - b : 0);
-                const int df = std::max(std::abs(v - a), std::abs(v - b));
-                near += dn * dn;
-                far += df * df;
+        for (int cell = chunk * kChunk; cell < (chunk + 1) * kChunk; ++cell) {
+            const int lo[3] = {(cell >> (2 * kCellBits)) * kSpan,
+                               ((cell >> kCellBits) & ((1 << kCellBits) - 1)) * kSpan,
+                               (cell & ((1 << kCellBits) - 1)) * kSpan};
+            int minmax = INT_MAX;
+            for (std::size_t p = 0; p < palette.size(); ++p) {
+                int near = 0, far = 0;
+                for (int c = 0; c < 3; ++c) {
+                    const int v = palette[p][static_cast<std::size_t>(c)], a = lo[c], b = lo[c] + kSpan - 1;
+                    const int dn = v < a ? a - v : (v > b ? v - b : 0);
+                    const int df = std::max(std::abs(v - a), std::abs(v - b));
+                    near += dn * dn;
+                    far += df * df;
+                }
+                dmin[p] = near;
+                minmax = std::min(minmax, far);
             }
-            dmin[p] = near;
-            minmax = std::min(minmax, far);
+            std::vector<std::uint8_t>& list = cells[static_cast<std::size_t>(cell)];
+            for (std::size_t p = 0; p < palette.size(); ++p)
+                if (dmin[p] <= minmax) list.push_back(static_cast<std::uint8_t>(p));
         }
-        std::vector<std::uint8_t>& list = cells[static_cast<std::size_t>(cell)];
-        for (std::size_t p = 0; p < palette.size(); ++p)
-            if (dmin[p] <= minmax) list.push_back(static_cast<std::uint8_t>(p));
     });
     return cells;
 }

@@ -34,6 +34,8 @@ Image render_cavity_2d(const CavityModel& model, const ReconConfig& cfg) {
                                     std::to_string(E.channels) + " channel(s)");
     if (model.z.channels != 1 || model.dust.channels != 1)
         throw std::invalid_argument("render_cavity_2d: z and dust must be (ny, nx) planes");
+    // The members are public: a plane replaced after construction must not be indexed past its end.
+    validate_shapes({&model.z, &model.emissivity, &model.dust});
 
     const int nx = model.z.width, ny = model.z.height;
     Image out(nx, ny, 3);

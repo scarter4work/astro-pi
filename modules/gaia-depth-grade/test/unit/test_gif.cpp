@@ -187,8 +187,9 @@ TEST_CASE("gif_quantization_error_bounded", "[gif]") {
     for (std::size_t i = 0; i < f.size(); ++i) err[i % 3] += std::abs(int(g.frames[0].rgb[i]) - int(f[i]));
     const double n = static_cast<double>(w) * h;
     for (int c = 0; c < 3; ++c) {
-        WARN("channel " << c << " mean |error| = " << err[c] / n);
-        CHECK(err[c] / n <= 4.0);
+        const double mean_err = err[c] / n;
+        CAPTURE(c, mean_err);
+        CHECK(mean_err <= 4.0);
     }
     // The palette is fully used: 256 distinct indices for a field this rich.
     std::set<int> used(g.frames[0].index.begin(), g.frames[0].index.end());
@@ -213,7 +214,9 @@ TEST_CASE("gif_nearest_matches_full_search", "[gif]") {
     }
     const GifFile g = decode_checked(encode_gif({f}, w, h, 1), w, h, 1);
     const auto& pal = g.global_table;
-    std::size_t ties = 0;
+    std::size_t ties = 0, mismatches = 0;
+    long first_pixel = -1;
+    int first_got = -1, first_want = -1;
     for (std::size_t p = 0; p < f.size() / 3; ++p) {
         int best = INT_MAX, pick = -1, at_best = 0;
         for (int e = 0; e < 256; ++e) {
@@ -231,9 +234,15 @@ TEST_CASE("gif_nearest_matches_full_search", "[gif]") {
             }
         }
         if (at_best > 1) ++ties;
-        REQUIRE(int(g.frames[0].index[p]) == pick);
+        if (int(g.frames[0].index[p]) != pick && mismatches++ == 0) {
+            first_pixel = static_cast<long>(p);
+            first_got = g.frames[0].index[p];
+            first_want = pick;
+        }
     }
-    WARN(ties << " pixels had tied nearest entries");
+    CAPTURE(mismatches, first_pixel, first_got, first_want, ties);
+    REQUIRE(mismatches == 0);
+    REQUIRE(ties > 0);  // the lowest-index-on-ties rule was exercised (883 tied pixels at this seed)
 }
 
 TEST_CASE("gif_write_errors", "[gif]") {

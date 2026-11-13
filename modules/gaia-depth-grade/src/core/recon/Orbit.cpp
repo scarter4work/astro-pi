@@ -48,6 +48,7 @@ Orbit prepare(const CavityModel& model, const ReconConfig& cfg, const ExportConf
     const Image& e = model.emissivity;
     const Image& d = model.dust;
     require(e.channels == 3 && d.channels == 1, "emissivity must be 3-channel and dust a plane");
+    validate_shapes({&z, &e, &d});  // planes replaced after construction: never read past an end
     std::vector<int> bad_x(static_cast<size_t>(ny), -1);
     gdg::parallel_for_dynamic(ny, std::max(1, 65536 / nx), [&](int y, int) {
         for (int x = 0; x < nx; ++x)

@@ -142,6 +142,7 @@ std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig
     const Image& di = model.dust;
     require(zi.channels == 1 && di.channels == 1 && ei.channels == 3,
             "z and dust must be mono and emissivity 3-channel");
+    validate_shapes({&zi, &ei, &di});  // planes replaced after construction: never read past an end
     if (model.pc_per_px)
         require(std::isfinite(*model.pc_per_px) && *model.pc_per_px > 0.0,
                 "pc_per_px must be a positive finite scale when present");
