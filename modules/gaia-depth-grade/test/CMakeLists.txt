@@ -47,3 +47,4 @@ gdg_add_test(test_recon_cavity unit/test_recon_cavity.cpp gdg_core)
 
 # Recon Part 2, native (Phase G2)
 gdg_add_test(test_recon_render2d unit/test_recon_render2d.cpp gdg_core)
+gdg_add_test(test_recon_reconstruct unit/test_recon_reconstruct.cpp gdg_core)
