@@ -1,10 +1,12 @@
 // The real render corpus (tools/autocontrast/data: references/, amateur/, discovery_cache/), read-only.
 // Taken from env AC_DATA_DIR, default the worktree's tools/autocontrast/data. Tests that need it link
-// data_main.cpp, which exits 77 (ctest SKIP_RETURN_CODE) only when one of the three directories is absent;
-// a present corpus with a missing or changed file FAILS.
+// data_main.cpp, which exits 77 (ctest SKIP_RETURN_CODE) only when that directory itself is absent. Once it
+// exists, every subdirectory a test needs must resolve: a missing or dangling one FAILS the test, naming the path
+// (require_corpus), and so does any missing or changed file.
 #pragma once
 
 #include <cstdlib>
+#include <initializer_list>
 #include <string>
 #include <sys/stat.h>
 
@@ -18,29 +20,42 @@ inline std::string data_dir()
    return std::string(AC_TEST_DIR) + "/../../../tools/autocontrast/data";
 }
 
-// golden group -> corpus subdirectory (make_goldens.py run_real)
-inline std::string group_dir(const std::string& group)
+inline bool is_dir(const std::string& p)
 {
-   if (group == "reference") return data_dir() + "/references";
-   if (group == "amateur") return data_dir() + "/amateur";
-   if (group == "cache") return data_dir() + "/discovery_cache";
-   return data_dir() + "/<unknown group " + group + ">";
+   struct stat st {};
+   return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);   // stat follows symlinks: a dangling link is not
 }
 
-// Same rule as make_goldens.py resolve_data_dir(): the corpus is there when all three subdirectories resolve
-// (stat follows symlinks, so a dangling discovery_cache link -- e.g. inside the build container -- is absent).
-inline bool corpus_present(std::string* why)
+// golden group -> corpus subdirectory (make_goldens.py run_real)
+inline std::string group_subdir(const std::string& group)
 {
-   for (const char* sub : {"references", "amateur", "discovery_cache"}) {
-      struct stat st {};
-      const std::string p = data_dir() + "/" + sub;
-      if (::stat(p.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
-         if (why != nullptr)
-            *why = "render corpus absent: " + p + " is not a directory (set AC_DATA_DIR)";
-         return false;
-      }
+   if (group == "reference") return "references";
+   if (group == "amateur") return "amateur";
+   if (group == "cache") return "discovery_cache";
+   return "<unknown group " + group + ">";
+}
+
+inline std::string group_dir(const std::string& group) { return data_dir() + "/" + group_subdir(group); }
+
+// The skip rule: the corpus is absent only when the data directory itself is.
+inline bool data_dir_present(std::string* why)
+{
+   if (is_dir(data_dir()))
+      return true;
+   if (why != nullptr)
+      *why = "render corpus absent: " + data_dir() + " is not a directory (set AC_DATA_DIR)";
+   return false;
+}
+
+// "" when every listed subdirectory resolves, else a message naming the first that does not (the test FAILS on it).
+inline std::string missing_subdir(std::initializer_list<const char*> subs)
+{
+   for (const char* s : subs) {
+      const std::string p = data_dir() + "/" + s;
+      if (!is_dir(p))
+         return "corpus subdirectory missing or a dangling link: " + p;
    }
-   return true;
+   return "";
 }
 
 } // namespace ac::test

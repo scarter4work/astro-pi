@@ -1,4 +1,4 @@
-// Catch2 main for the real-render tests: exit 77 (ctest SKIP) only when the corpus is absent (DataDir.h).
+// Catch2 main for the real-render tests: exit 77 (ctest SKIP) only when the data directory is absent (DataDir.h).
 // ac_catch2_nomain is built with CATCH_AMALGAMATED_CUSTOM_MAIN (PUBLIC), so this is the only main.
 #include <catch_amalgamated.hpp>
 
@@ -10,7 +10,7 @@
 int main(int argc, char* argv[])
 {
    std::string why;
-   if (!ac::test::corpus_present(&why)) {
+   if (!ac::test::data_dir_present(&why)) {
       std::printf("SKIP: %s\n", why.c_str());
       return 77;
    }

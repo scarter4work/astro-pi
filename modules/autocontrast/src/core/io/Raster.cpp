@@ -21,6 +21,8 @@
 #include <jpeglib.h>
 #include <png.h>
 #include <tiffio.h>
+#include <webp/decode.h>
+#include <webp/demux.h>
 
 namespace ac {
 
@@ -456,6 +458,31 @@ Decoded decode_png(const std::string& path)
    case PNG_COLOR_TYPE_RGB_ALPHA: planes = 4; break;
    default: fail("unknown colour type " + std::to_string(c.color_type));
    }
+   if (deep) {
+      // pypng _process_tRNS / _process_sBIT: str(png.FormatError) carries its class name, as Python reports it
+      const auto chunks = scan_png_chunks(path, name);
+      const bool alpha = c.color_type == PNG_COLOR_TYPE_GRAY_ALPHA || c.color_type == PNG_COLOR_TYPE_RGB_ALPHA;
+      if (chunks.has_trns) {
+         if (alpha)
+            fail("FormatError: tRNS chunk is not valid with colour type " + std::to_string(c.color_type) + ".");
+         if (chunks.trns.size() != static_cast<size_t>(planes) * 2)
+            fail("FormatError: tRNS chunk has incorrect length.");
+      }
+      if (chunks.has_sbit && chunks.sbit.size() != static_cast<size_t>(planes))
+         fail("FormatError: sBIT chunk has incorrect length.");
+   }
+   if (c.color_type == PNG_COLOR_TYPE_PALETTE) {
+      // Pillow's palette: the PLTE entries, then (0, 0, 0) up to 256 (ImagingPaletteNew callocs it)
+      d.palette.assign(256 * 3, 0);
+      png_colorp plte = nullptr;
+      int n = 0;
+      if (png_get_PLTE(c.png, c.info, &plte, &n) != 0 && plte != nullptr)
+         for (int i = 0; i < std::min(n, 256); ++i) {
+            d.palette[3 * i + 0] = plte[i].red;
+            d.palette[3 * i + 1] = plte[i].green;
+            d.palette[3 * i + 2] = plte[i].blue;
+         }
+   }
    const size_t samples = static_cast<size_t>(d.width) * d.height * planes;
    const size_t sample_bytes = c.bit_depth == 16 ? 2 : 1;
    if (c.rowbytes != static_cast<size_t>(d.width) * planes * sample_bytes)
@@ -492,44 +519,12 @@ Decoded decode_png(const std::string& path)
       return d;
    }
 
-   // 16 bits: pypng Reader.asDirect()
+   // 16 bits: pypng Reader.read() -- the stored samples, every plane, no sBIT shift and no tRNS alpha (load_raster
+   // drops alpha anyway). pypng's chunk parser still refuses malformed tRNS / sBIT chunks, and so does this.
    d.mode = "png16";
-   const auto chunks = scan_png_chunks(path, name);
-   const uint16_t* s = reinterpret_cast<const uint16_t*>(raw.data());
-   const bool trns = chunks.has_trns && (c.color_type == PNG_COLOR_TYPE_GRAY || c.color_type == PNG_COLOR_TYPE_RGB);
-   if (chunks.has_trns && !trns)
-      fail("tRNS chunk is not valid with colour type " + std::to_string(c.color_type));
-   uint16_t key[3] = {0, 0, 0};
-   if (trns) {
-      if (chunks.trns.size() != static_cast<size_t>(planes) * 2)
-         fail("tRNS chunk has the wrong length for colour type " + std::to_string(c.color_type));
-      for (int p = 0; p < planes; ++p)
-         key[p] = static_cast<uint16_t>((chunks.trns[2 * p] << 8) | chunks.trns[2 * p + 1]);
-   }
-   d.channels = planes + (trns ? 1 : 0);
-   d.u16.resize(static_cast<size_t>(d.width) * d.height * d.channels);
-   const size_t npx = static_cast<size_t>(d.width) * d.height;
-   for (size_t i = 0; i < npx; ++i) {
-      bool opaque = false;
-      for (int p = 0; p < planes; ++p) {
-         d.u16[i * d.channels + p] = s[i * planes + p];
-         opaque = opaque || s[i * planes + p] != key[p];
-      }
-      if (trns)
-         d.u16[i * d.channels + planes] = opaque ? 65535 : 0;
-   }
-   if (chunks.has_sbit && !chunks.sbit.empty()) {
-      const int target = *std::max_element(chunks.sbit.begin(), chunks.sbit.end());
-      const int lowest = *std::min_element(chunks.sbit.begin(), chunks.sbit.end());
-      if (target > 16)
-         fail("sBIT chunk exceeds bitdepth 16");
-      if (lowest <= 0)
-         fail("sBIT chunk has a 0-entry");
-      const int shift = 16 - target;
-      if (shift > 0)
-         for (auto& v : d.u16)
-            v = static_cast<uint16_t>(v >> shift);
-   }
+   d.channels = planes;
+   d.u16.resize(samples);
+   std::memcpy(d.u16.data(), raw.data(), raw.size());   // png_set_swap: host order already
    return d;
 }
 
@@ -801,6 +796,55 @@ double downsample_factor(const std::string& path, const Image& loaded)
    return static_cast<double>(std::max(w, h)) / std::max(loaded.width, loaded.height);
 }
 
+// ---- WebP (libwebp) --------------------------------------------------------------------------------------------
+
+Decoded decode_webp(const std::string& path)
+{
+   const std::string name = base_name(path);
+   std::vector<uint8_t> bytes;
+   {
+      File f(path, name);
+      if (std::fseek(f.fp, 0, SEEK_END) != 0)
+         throw std::runtime_error(name + ": cannot seek");
+      const long size = std::ftell(f.fp);
+      if (size < 0 || std::fseek(f.fp, 0, SEEK_SET) != 0)
+         throw std::runtime_error(name + ": cannot size");
+      bytes.resize(static_cast<size_t>(size));
+      if (std::fread(bytes.data(), 1, bytes.size(), f.fp) != bytes.size())
+         throw std::runtime_error(name + ": short read");
+   }
+   // _webp.c _anim_decoder_new: the mode is sniffed with WebPGetFeatures (RGBA unless the file says it has no
+   // alpha), and the decoder gets NULL options (MODE_RGBA canvas, no threads); frame 0 is the image.
+   WebPBitstreamFeatures features;
+   bool alpha = true;
+   if (WebPGetFeatures(bytes.data(), bytes.size(), &features) == VP8_STATUS_OK && !features.has_alpha)
+      alpha = false;
+   WebPData data;
+   data.bytes = bytes.data();
+   data.size = bytes.size();
+   std::unique_ptr<WebPAnimDecoder, void (*)(WebPAnimDecoder*)> dec(WebPAnimDecoderNew(&data, nullptr),
+                                                                     WebPAnimDecoderDelete);
+   WebPAnimInfo info;
+   if (!dec || !WebPAnimDecoderGetInfo(dec.get(), &info))
+      throw std::runtime_error(name + ": could not create decoder object");
+   uint8_t* canvas = nullptr;
+   int timestamp = 0;
+   if (!WebPAnimDecoderGetNext(dec.get(), &canvas, &timestamp))
+      throw std::runtime_error(name + ": failed to read next frame");
+   Decoded d;
+   d.width = static_cast<int>(info.canvas_width);
+   d.height = static_cast<int>(info.canvas_height);
+   d.bits = 8;
+   d.channels = alpha ? 4 : 3;
+   d.mode = alpha ? "RGBA" : "RGB";   // rawmode "RGBX" -> mode "RGB": the canvas's fourth byte is dropped
+   const size_t npx = static_cast<size_t>(d.width) * d.height;
+   d.u8.resize(npx * d.channels);
+   for (size_t i = 0; i < npx; ++i)
+      for (int ch = 0; ch < d.channels; ++ch)
+         d.u8[i * d.channels + ch] = canvas[i * 4 + ch];
+   return d;
+}
+
 // ---- load_raster ----------------------------------------------------------------------------------------------
 
 namespace {
@@ -816,55 +860,81 @@ std::pair<int, int> target_size(int w, int h, int max_dim)
 
 bool needs_resize(int w, int h, std::optional<int> max_dim) { return max_dim && std::max(w, h) > *max_dim; }
 
-// An (H, W, C) array widened to double, before load_raster's promotion / alpha / normalisation.
-struct Array {
-   int width = 0, height = 0, channels = 0;
-   std::vector<double> v;
-};
+// load_raster's channel handling, applied while writing the float64 result (no intermediate full-size copy):
+// 1 plane (gray) and 2 (gray + alpha) -> plane 0 three times; 4 -> the first three; anything else kept as is.
+int out_channels(int c) { return (c == 1 || c == 2 || c == 4) ? 3 : c; }
 
-// _resize_native: each plane resized as a float32 "F" image when over max_dim, else the native values as is.
-template <class T>
-Array native_planes(const T* src, int w, int h, int c, const std::vector<int>& keep, std::optional<int> max_dim)
+// The planes of a c-channel array that survive that handling (resizing only those gives the same values).
+std::vector<int> kept_planes(int c)
 {
-   Array a;
-   const int k = static_cast<int>(keep.size());
-   const size_t npx = static_cast<size_t>(w) * h;
-   if (!needs_resize(w, h, max_dim)) {
-      a.width = w;
-      a.height = h;
-      a.channels = k;
-      a.v.resize(npx * k);
-      for (size_t i = 0; i < npx; ++i)
-         for (int j = 0; j < k; ++j)
-            a.v[i * k + j] = static_cast<double>(src[i * c + keep[static_cast<size_t>(j)]]);
-      return a;
+   if (c == 1 || c == 2)
+      return {0};
+   if (c == 4)
+      return {0, 1, 2};
+   std::vector<int> all(static_cast<size_t>(c));
+   for (int i = 0; i < c; ++i)
+      all[static_cast<size_t>(i)] = i;
+   return all;
+}
+
+// Divide by the decoder's full scale, or infer one for float data (numpy's max propagates NaN, and NaN > 1.0 is
+// false); then np.clip(arr, 0, 1): x < 0 -> 0, x > 1 -> 1, anything else (NaN, -0.0) unchanged.
+void normalise(Image& img, std::optional<double> full_scale)
+{
+   if (full_scale) {
+      for (double& v : img.data)
+         v = v / *full_scale;
+   } else {
+      double max_value = img.data.empty() ? 1.0 : -std::numeric_limits<double>::infinity();
+      for (double v : img.data) {
+         if (std::isnan(v)) {
+            max_value = v;
+            break;
+         }
+         max_value = std::max(max_value, v);
+      }
+      if (max_value > 1.0) {
+         const double divisor = max_value > 255.0 ? 65535.0 : 255.0;
+         for (double& v : img.data)
+            v = v / divisor;
+      }
    }
+   for (double& v : img.data)
+      v = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+}
+
+template <class T>
+Image assemble(const T* src, int w, int h, int c, std::optional<double> full_scale)
+{
+   const int oc = out_channels(c);
+   Image img(w, h, oc);
+   const size_t npx = static_cast<size_t>(w) * h;
+   for (size_t i = 0; i < npx; ++i)
+      for (int ch = 0; ch < oc; ++ch)
+         img.data[i * oc + ch] = static_cast<double>(src[i * c + (c <= 2 ? 0 : ch)]);
+   normalise(img, full_scale);
+   return img;
+}
+
+// _resize_native: every kept plane resized as a float32 "F" image when over max_dim, else the native values.
+template <class T>
+Image native(const T* src, int w, int h, int c, std::optional<int> max_dim, std::optional<double> full_scale)
+{
+   if (!needs_resize(w, h, max_dim))
+      return assemble(src, w, h, c, full_scale);
+   const auto keep = kept_planes(c);
+   const int k = static_cast<int>(keep.size());
    const auto [nw, nh] = target_size(w, h, *max_dim);
-   a.width = nw;
-   a.height = nh;
-   a.channels = k;
-   a.v.resize(static_cast<size_t>(nw) * nh * k);
-   std::vector<float> plane(npx);
+   const size_t npx = static_cast<size_t>(w) * h;
+   std::vector<float> plane(npx), out(static_cast<size_t>(nw) * nh * k);
    for (int j = 0; j < k; ++j) {
       for (size_t i = 0; i < npx; ++i)
          plane[i] = static_cast<float>(src[i * c + keep[static_cast<size_t>(j)]]);   // .astype(np.float32)
       const auto r = resize_f32(plane.data(), w, h, nw, nh);
       for (size_t i = 0; i < r.size(); ++i)
-         a.v[i * k + j] = static_cast<double>(r[i]);
+         out[i * k + j] = r[i];
    }
-   return a;
-}
-
-Array from_u8(std::vector<uint8_t>&& px, int w, int h, int c)
-{
-   Array a;
-   a.width = w;
-   a.height = h;
-   a.channels = c;
-   a.v.resize(px.size());
-   for (size_t i = 0; i < px.size(); ++i)
-      a.v[i] = px[i];
-   return a;
+   return assemble(out.data(), nw, nh, k, full_scale);
 }
 
 // Pillow's RGBA -> RGBa / LA -> La (premultiply) and back, around the resampler (Image.resize).
@@ -892,16 +962,48 @@ void unpremultiply(std::vector<uint8_t>& px, int c)
    }
 }
 
-// The 8-bit Pillow path: Image.open -> [im.resize(new_size)] -> np.asarray. Sets full_scale (255) except for
-// mode "1", which numpy holds as bool (no full scale; the 0/1 values pass the range inference untouched).
-Array pillow_path(const std::string& path, const std::string& name, const std::string& sfx, std::optional<int> max_dim,
-                  std::optional<double>& full_scale)
+// im.resize(new_size) for a decoded 8-bit Pillow image of the given mode, when max_dim asks for it.
+Image pillow_resize_and_assemble(Decoded&& d, std::optional<int> max_dim, std::optional<double> full_scale)
+{
+   if (!needs_resize(d.width, d.height, max_dim))
+      return assemble(d.u8.data(), d.width, d.height, d.channels, full_scale);
+   const auto [nw, nh] = target_size(d.width, d.height, *max_dim);
+   std::vector<uint8_t> out;
+   if (d.mode == "1") {   // Pillow forces NEAREST for "1" ("P" was converted to RGB before this)
+      out = resize_nearest_u8(d.u8.data(), d.width, d.height, d.channels, nw, nh);
+   } else if (d.mode == "LA" || d.mode == "RGBA") {
+      premultiply(d.u8, d.channels);
+      out = resize_u8(d.u8.data(), d.width, d.height, d.channels, nw, nh);
+      unpremultiply(out, d.channels);
+   } else {
+      out = resize_u8(d.u8.data(), d.width, d.height, d.channels, nw, nh);
+   }
+   d.u8.clear();
+   d.u8.shrink_to_fit();
+   return assemble(out.data(), nw, nh, d.channels, full_scale);
+}
+
+// im.convert("RGB") of a mode "P" image: the palette lookup (transparency dropped).
+void palette_to_rgb(Decoded& d)
+{
+   std::vector<uint8_t> rgb(d.u8.size() * 3);
+   for (size_t i = 0; i < d.u8.size(); ++i)
+      for (int ch = 0; ch < 3; ++ch)
+         rgb[i * 3 + ch] = d.palette[static_cast<size_t>(d.u8[i]) * 3 + ch];
+   d.u8 = std::move(rgb);
+   d.channels = 3;
+   d.mode = "RGB";
+}
+
+// The 8-bit Pillow path: Image.open -> [convert("RGB") for "P"] -> [im.resize(new_size)] -> np.asarray, then
+// load_raster's channel handling. full_scale 255, except mode "1" (numpy bool: no full scale, and its 0/1 values
+// pass the range inference untouched).
+Image pillow_path(const std::string& path, const std::string& name, const std::string& sfx, std::optional<int> max_dim)
 {
    const Content kind = sniff(read_head(path, 16));
    if (kind == Content::Jpeg) {
       JpegReader r(path);
       const int w = r.width(), h = r.height(), c = r.channels();
-      full_scale = 255.0;
       std::vector<uint8_t> row(static_cast<size_t>(w) * c);
       if (needs_resize(w, h, max_dim)) {
          const auto [nw, nh] = target_size(w, h, *max_dim);
@@ -910,35 +1012,26 @@ Array pillow_path(const std::string& path, const std::string& name, const std::s
             r.read_row(row.data());
             s.push_row(row.data());
          }
-         return from_u8(s.finish(), nw, nh, c);
+         const auto out = s.finish();
+         return assemble(out.data(), nw, nh, c, 255.0);
       }
       std::vector<uint8_t> px(static_cast<size_t>(w) * h * c);
       for (int y = 0; y < h; ++y)
          r.read_row(px.data() + static_cast<size_t>(y) * w * c);
-      return from_u8(std::move(px), w, h, c);
+      return assemble(px.data(), w, h, c, 255.0);
    }
    if (kind == Content::Png) {
       Decoded d = decode_png(path);
       if (d.u8.empty())   // a 16-bit PNG whose IHDR is not where _png_bit_depth looks: libpng still decodes it
          throw std::invalid_argument(name + ": PNG IHDR is not the first chunk; refusing an 8-bit read of " +
                                      std::to_string(d.bits) + "-bit data");
-      full_scale = d.mode == "1" ? std::nullopt : std::optional<double>(255.0);
-      if (!needs_resize(d.width, d.height, max_dim))
-         return from_u8(std::move(d.u8), d.width, d.height, d.channels);
-      const auto [nw, nh] = target_size(d.width, d.height, *max_dim);
-      if (d.mode == "1" || d.mode == "P")
-         return from_u8(resize_nearest_u8(d.u8.data(), d.width, d.height, d.channels, nw, nh), nw, nh, d.channels);
-      if (d.mode == "LA" || d.mode == "RGBA") {
-         premultiply(d.u8, d.channels);
-         auto out = resize_u8(d.u8.data(), d.width, d.height, d.channels, nw, nh);
-         unpremultiply(out, d.channels);
-         return from_u8(std::move(out), nw, nh, d.channels);
-      }
-      return from_u8(resize_u8(d.u8.data(), d.width, d.height, d.channels, nw, nh), nw, nh, d.channels);
+      if (d.mode == "P")
+         palette_to_rgb(d);
+      const std::optional<double> fs = d.mode == "1" ? std::nullopt : std::optional<double>(255.0);
+      return pillow_resize_and_assemble(std::move(d), max_dim, fs);
    }
    if (kind == Content::WebP)
-      throw std::invalid_argument(name + ": WebP pixels cannot be read by the native AutoContrast loader (no WebP "
-                                         "decoder is built in); convert the render to PNG or TIFF");
+      return pillow_resize_and_assemble(decode_webp(path), max_dim, 255.0);
    if (kind == Content::Tiff)
       throw std::invalid_argument(name + ": TIFF data under a " + py_repr(sfx) +
                                   " suffix; rename it .tif so it is read at native depth");
@@ -954,77 +1047,23 @@ Image load_raster(const std::string& path, std::optional<int> max_dim)
    const std::string sfx = lower(py_suffix(name));
    if (kFits.count(sfx))
       throw std::invalid_argument(name + ": FITS pixels open through PixInsight (load_image); load_raster reads "
-                                         "TIFF, PNG and JPEG");
+                                         "TIFF, PNG, JPEG and WebP");
    if (max_dim && *max_dim < 1)
       throw std::invalid_argument(name + ": max_dim must be positive, got " + std::to_string(*max_dim));
 
-   Array a;
-   std::optional<double> full_scale;
    if (kTiff.count(sfx)) {
       const Decoded d = decode_tiff(path);
-      // every plane but a 4th (dropped below as alpha) is resized; channel order kept
-      std::vector<int> keep;
-      for (int ch = 0; ch < d.channels; ++ch)
-         if (!(d.channels == 4 && ch == 3))
-            keep.push_back(ch);
-      if (d.bits == 8) { a = native_planes(d.u8.data(), d.width, d.height, d.channels, keep, max_dim); full_scale = 255.0; }
-      else if (d.bits == 16) { a = native_planes(d.u16.data(), d.width, d.height, d.channels, keep, max_dim); full_scale = 65535.0; }
-      else a = native_planes(d.f32.data(), d.width, d.height, d.channels, keep, max_dim);
-   } else if (png_bit_depth(path) == 16) {
+      if (d.bits == 8)
+         return native(d.u8.data(), d.width, d.height, d.channels, max_dim, 255.0);
+      if (d.bits == 16)
+         return native(d.u16.data(), d.width, d.height, d.channels, max_dim, 65535.0);
+      return native(d.f32.data(), d.width, d.height, d.channels, max_dim, std::nullopt);
+   }
+   if (png_bit_depth(path) == 16) {
       const Decoded d = decode_png(path);
-      // gray(+alpha) -> one plane; RGB(+alpha) -> three
-      const std::vector<int> keep = d.channels <= 2 ? std::vector<int>{0} : std::vector<int>{0, 1, 2};
-      a = native_planes(d.u16.data(), d.width, d.height, d.channels, keep, max_dim);
-      full_scale = 65535.0;
-   } else {
-      a = pillow_path(path, name, sfx, max_dim, full_scale);
-      if (a.channels == 4) {   // RGBA / CMYK: drop the fourth channel
-         Array b;
-         b.width = a.width;
-         b.height = a.height;
-         b.channels = 3;
-         b.v.resize(static_cast<size_t>(a.width) * a.height * 3);
-         for (size_t i = 0, n = static_cast<size_t>(a.width) * a.height; i < n; ++i)
-            for (int ch = 0; ch < 3; ++ch)
-               b.v[i * 3 + ch] = a.v[i * 4 + ch];
-         a = std::move(b);
-      }
+      return native(d.u16.data(), d.width, d.height, d.channels, max_dim, 65535.0);
    }
-
-   // ndim == 2 -> stack([arr] * 3)
-   const int out_c = a.channels == 1 ? 3 : a.channels;
-   Image img(a.width, a.height, out_c);
-   const size_t npx = static_cast<size_t>(a.width) * a.height;
-   for (size_t i = 0; i < npx; ++i)
-      for (int ch = 0; ch < out_c; ++ch)
-         img.data[i * out_c + ch] = a.v[i * a.channels + (a.channels == 1 ? 0 : ch)];
-   a.v.clear();
-   a.v.shrink_to_fit();
-
-   if (full_scale) {
-      for (double& v : img.data)
-         v = v / *full_scale;
-   } else {
-      // no known full scale (float data, mode "1"): infer the smallest standard range that fits; numpy's max
-      // propagates NaN, and NaN > 1.0 is false
-      double max_value = img.data.empty() ? 1.0 : -std::numeric_limits<double>::infinity();
-      for (double v : img.data) {
-         if (std::isnan(v)) {
-            max_value = v;
-            break;
-         }
-         max_value = std::max(max_value, v);
-      }
-      if (max_value > 1.0) {
-         const double divisor = max_value > 255.0 ? 65535.0 : 255.0;
-         for (double& v : img.data)
-            v = v / divisor;
-      }
-   }
-   // np.clip(arr, 0, 1): x < 0 -> 0, x > 1 -> 1, anything else (NaN, -0.0) unchanged -- the bytes numpy writes
-   for (double& v : img.data)
-      v = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
-   return img;
+   return pillow_path(path, name, sfx, max_dim);
 }
 
 } // namespace ac

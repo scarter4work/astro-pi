@@ -1510,7 +1510,8 @@ def stage_raster(out: Out):
             return np.asarray(im), im.mode
 
     def pypng_decode(p):
-        w, h, rows, info = png.Reader(filename=str(p)).asDirect()
+        # read(), as _decode_png16 decodes (no sBIT shift, no synthesized tRNS alpha)
+        w, h, rows, info = png.Reader(filename=str(p)).read()
         a = np.vstack([np.asarray(r, dtype=np.uint16) for r in rows]).reshape(h, w, int(info["planes"]))
         return a
 
@@ -1567,6 +1568,16 @@ def stage_raster(out: Out):
     pal4 = Image.fromarray(smooth_u8(40, 52, 3), "RGB").quantize(colors=16, dither=Image.Dither.NONE)
     p = out._path("raster/files/png8_p4.png"); pal4.save(p, bits=4)
     record("png8_p4", p, "png8", max_dims=(None, 17), decode=pil_decode(p)[0], mode="P")
+    # palette shorter than the indices used: Pillow's palette entries past PLTE are (0, 0, 0)
+    idx = (np.arange(14 * 9).reshape(9, 14) * 7 % 256).astype(np.uint8)
+    plte = bytes([200, 10, 10, 10, 200, 10, 10, 10, 200, 90, 90, 90])
+    p = write("png8_p_short.png", _png_bytes(14, 9, 8, 3, b"".join(b"\x00" + idx[y].tobytes() for y in range(9)),
+                                             [(b"PLTE", plte)]))
+    record("png8_p_short", p, "png8", max_dims=(None, 7), decode=pil_decode(p)[0], mode="P")
+    # palette + tRNS (Pillow keeps mode "P"; the loader drops the transparency with the palette lookup)
+    p = write("png8_p_trns.png", _png_bytes(14, 9, 8, 3, b"".join(b"\x00" + (idx[y] % 4).tobytes() for y in range(9)),
+                                            [(b"PLTE", plte), (b"tRNS", bytes([0, 128]))]))
+    record("png8_p_trns", p, "png8", max_dims=(None, 7), decode=pil_decode(p)[0], mode="P")
     bw = Image.fromarray((smooth_u8(33, 45, 1)[..., 0] > 127).astype(np.uint8) * 255, "L").convert("1", dither=Image.Dither.NONE)
     p = out._path("raster/files/png8_1bit.png"); bw.save(p)
     record("png8_1bit", p, "png8", max_dims=(None, 16), decode=pil_decode(p)[0], mode="1")
@@ -1661,15 +1672,15 @@ def stage_raster(out: Out):
     cases.append({"name": "tiff16_planar", "file": "files/tiff16_planar.tif", "kind": "tiff",
                   "dims": list(image_dimensions(p)), "python_shape": list(tifffile.imread(p).shape), "loads": []})
 
-    # ---- WebP: header dimensions only (the native port has no WebP pixel decoder) ---------------------------
+    # ---- WebP (Pillow path: WebPAnimDecoder, RGBA canvas, mode RGB when the file has no alpha) --------------
     for name, kw in [("webp_lossy", dict(quality=80)), ("webp_lossless", dict(lossless=True))]:
         p = out._path(f"raster/files/{name}.webp"); Image.fromarray(smooth_u8(23, 31, 3), "RGB").save(p, **kw)
-        cases.append({"name": name, "file": f"files/{name}.webp", "kind": "webp", "dims": list(image_dimensions(p)),
-                      "loads": []})
+        dec, mode = pil_decode(p)
+        record(name, p, "webp", max_dims=(None, 15), decode=dec, mode=mode)
     p = out._path("raster/files/webp_alpha.webp")
     Image.fromarray(np.concatenate([smooth_u8(23, 31, 3), np.full((23, 31, 1), 128, np.uint8)], axis=-1), "RGBA").save(p, quality=80)
-    cases.append({"name": "webp_alpha", "file": "files/webp_alpha.webp", "kind": "webp", "dims": list(image_dimensions(p)),
-                  "loads": []})
+    dec, mode = pil_decode(p)
+    record("webp_alpha", p, "webp", max_dims=(None, 15), decode=dec, mode=mode)
 
     # ---- FITS: header dimensions only (pixels open through PixInsight) --------------------------------------
     from astropy.io import fits as _fits
@@ -1677,8 +1688,6 @@ def stage_raster(out: Out):
     _fits.PrimaryHDU(np.zeros((3, 11, 13), np.float32)).writeto(p, overwrite=True)
     cases.append({"name": "fits_cube", "file": "files/fits_cube.fits", "kind": "fits", "dims": list(image_dimensions(p)),
                   "loads": []})
-
-    out.json("raster/cases.json", {"cases": cases})
 
     # ---- unsupported-suffix messages ------------------------------------------------------------------------
     msgs = []
@@ -1715,7 +1724,48 @@ def stage_raster(out: Out):
         out.npy(f"raster/resize/u8_{i}_in.npy", u); out.npy(f"raster/resize/u8_{i}_out.npy", res)
         rcases.append({"kind": "u8", "mode": mode, "in": f"resize/u8_{i}_in.npy", "out": f"resize/u8_{i}_out.npy",
                        "w": w, "h": h, "c": c, "nw": nw, "nh": nh})
+    # enlarging (filterscale clamps to 1): both axes up, and one axis up with the other down. Drawn after every
+    # earlier case so their inputs are unchanged.
+    for j, (h, w, nh, nw) in enumerate([(7, 13, 29, 40), (30, 20, 12, 50)]):
+        i = 8 + j
+        f = (rng.standard_normal((h, w)) * 1000.0).astype(np.float32)
+        res = np.asarray(Image.fromarray(f, "F").resize((nw, nh)))
+        out.npy(f"raster/resize/f32_{i}_in.npy", f); out.npy(f"raster/resize/f32_{i}_out.npy", res)
+        rcases.append({"kind": "f32", "in": f"resize/f32_{i}_in.npy", "out": f"resize/f32_{i}_out.npy",
+                       "w": w, "h": h, "nw": nw, "nh": nh})
+    for j, (h, w, c, nh, nw) in enumerate([(7, 13, 3, 29, 40), (30, 20, 1, 12, 50)]):
+        i = 8 + j
+        u = rng.integers(0, 256, (h, w, c), dtype=np.uint8)
+        u[: h // 2, : w // 2] = 255; u[h // 2:, w // 2:] = 0
+        src = Image.fromarray(u[..., 0] if c == 1 else u, "L" if c == 1 else "RGB")
+        res = np.asarray(src.resize((nw, nh)))
+        if res.ndim == 2:
+            res = res[..., None]
+        out.npy(f"raster/resize/u8_{i}_in.npy", u); out.npy(f"raster/resize/u8_{i}_out.npy", res)
+        rcases.append({"kind": "u8", "mode": "L" if c == 1 else "RGB", "in": f"resize/u8_{i}_in.npy",
+                       "out": f"resize/u8_{i}_out.npy", "w": w, "h": h, "c": c, "nw": nw, "nh": nh})
     out.json("raster/resize.json", {"cases": rcases})
+
+    # ---- later additions (drawn last so every earlier fixture is unchanged) ----------------------------------
+    # larger WebPs: lossy 4:2:0 with fancy upsampling over many blocks, and lossless with alpha
+    mid = smooth_u8(150, 201, 3)
+    p = out._path("raster/files/webp_mid.webp"); Image.fromarray(mid, "RGB").save(p, quality=75)
+    dec, mode = pil_decode(p)
+    record("webp_mid", p, "webp", max_dims=(None, 64), decode=dec, mode=mode)
+    mida = np.concatenate([mid, rng.integers(0, 256, (150, 201, 1), dtype=np.uint8)], axis=-1)
+    p = out._path("raster/files/webp_mid_alpha.webp"); Image.fromarray(mida, "RGBA").save(p, lossless=True)
+    dec, mode = pil_decode(p)
+    record("webp_mid_alpha", p, "webp", max_dims=(None, 64), decode=dec, mode=mode)
+    # a malformed sBIT (wrong length) is refused by pypng's chunk parser
+    p = write("png16_sbit_badlen.png", _png16_bytes(np.full((3, 4, 3), 40000, np.uint16), [(b"sBIT", bytes([12]))]))
+    try:
+        load_raster(p)
+        raise RuntimeError("malformed sBIT accepted")
+    except ValueError as exc:
+        cases.append({"name": "png16_sbit_badlen", "file": "files/png16_sbit_badlen.png", "kind": "png16",
+                      "dims": list(image_dimensions(p)), "python_error": str(exc), "loads": []})
+
+    out.json("raster/cases.json", {"cases": cases})
 
 
 SYNTHETIC_STAGES = [

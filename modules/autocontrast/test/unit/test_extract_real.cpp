@@ -84,6 +84,9 @@ void compare(const nlohmann::json& want, const ac::Json& got, const std::string&
 
 TEST_CASE("extract_real_renders_match_golden", "[fingerprint][real]")
 {
+   const std::string missing = ac::test::missing_subdir({"references", "amateur"});   // the 10 Phase 0 renders
+   INFO(missing);
+   REQUIRE(missing.empty());
    const auto index = ac::test::load_json(real("index.json"));
    const auto& params = index.at("extract_params");
    const int max_dim = index.at("max_dim");

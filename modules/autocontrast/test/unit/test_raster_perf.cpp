@@ -26,6 +26,9 @@ long max_rss_kib()
 
 TEST_CASE("heic0601a_peak_memory_under_300mb", "[raster][real][perf]")
 {
+   const std::string missing = ac::test::missing_subdir({"references"});
+   INFO(missing);
+   REQUIRE(missing.empty());
    const auto g = ac::test::load_json(std::string(AC_TEST_DIR) + "/golden/real/reference__heic0601a.json");
    REQUIRE(g.at("image_dimensions")[0] == 18000);
    const std::string path = ac::test::group_dir("reference") + "/" + g.at("file").get<std::string>();

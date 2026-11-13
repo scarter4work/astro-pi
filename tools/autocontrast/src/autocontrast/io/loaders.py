@@ -133,8 +133,15 @@ def _decode_png16(path: Path, max_dim: int | None) -> tuple[np.ndarray, float]:
     """
     import png
 
+    # read(), not asDirect(): asDirect() right-shifts every sample to the depth an
+    # sBIT chunk declares (sBIT 12 -> values / 16), and the division by 65535 below
+    # would then make the image 16x too dark. sBIT only says how many bits were
+    # significant at the source; the stored samples are already full-scale 16-bit.
+    # asDirect()'s other conversions are moot here: a tRNS colour would only add an
+    # alpha plane (dropped below), and 16-bit PNG has no palette. A malformed sBIT or
+    # tRNS chunk is still refused by pypng's chunk parser ("incorrect length").
     try:
-        width, height, rows, info = png.Reader(filename=str(path)).asDirect()
+        width, height, rows, info = png.Reader(filename=str(path)).read()
         planes = int(info["planes"])
         arr = np.vstack([np.asarray(row, dtype=np.uint16) for row in rows])
         arr = arr.reshape(height, width, planes)
@@ -353,6 +360,12 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
         full_scale = None
         Image.MAX_IMAGE_PIXELS = None  # professional mosaics exceed Pillow's default guard
         with Image.open(path) as im:
+            if im.mode in ("P", "PA"):
+                # A palette image's array is its INDICES; numpy would hand those on
+                # as grey levels. Look the colours up first (any palette alpha or
+                # tRNS transparency is dropped, as alpha is for every format), then
+                # resize the colours, not the indices (Pillow resizes "P" by NEAREST).
+                im = im.convert("RGB")
             if max_dim is not None and max(im.size) > max_dim:
                 scale = max_dim / max(im.size)
                 new_size = (max(1, round(im.size[0] * scale)),
@@ -361,6 +374,8 @@ def load_raster(path: str | Path, max_dim: int | None = None) -> np.ndarray:
             arr = np.asarray(im)
             full_scale = _INTEGER_FULL_SCALE.get(arr.dtype)
 
+    if arr.ndim == 3 and arr.shape[-1] == 2:  # gray + alpha (8-bit "LA" PNG, 2-sample TIFF): drop alpha
+        arr = arr[..., 0]
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)
     if arr.shape[-1] == 4:  # drop alpha

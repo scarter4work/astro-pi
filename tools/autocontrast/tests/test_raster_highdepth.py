@@ -189,3 +189,53 @@ def test_eight_bit_formats_on_the_allow_list_still_load(tmp_path, suffix, kwargs
 
     assert img.shape == (8, 8, 3)
     np.testing.assert_allclose(img, 128 / 255, atol=2 / 255)
+
+
+# ---- sBIT (reference bug found by the native port, Task 10 review) ------------------------------------
+
+
+def _png16_with_chunks(path, arr, chunks):
+    """_write_png16 plus ancillary chunks before IDAT."""
+    height, width = arr.shape[:2]
+    color_type = 0 if arr.ndim == 2 else 2
+    raw = b"".join(b"\x00" + arr[y].astype(">u2").tobytes() for y in range(height))
+
+    def chunk(tag, body):
+        crc = zlib.crc32(tag + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 16, color_type, 0, 0, 0)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + b"".join(chunk(t, b) for t, b in chunks)
+                     + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def test_sixteen_bit_png_with_sbit_is_not_shifted_down(tmp_path):
+    """sBIT says how many bits were significant at the source; the stored samples are still full-scale
+    16-bit. pypng's asDirect() shifted them right by 16 - sBIT, so dividing by 65535 made the image 16x too
+    dark for sBIT 12."""
+    path = tmp_path / "sbit.png"
+    arr = np.full((3, 4, 3), 40000, dtype=np.uint16)
+    _png16_with_chunks(path, arr, [(b"sBIT", bytes([12, 12, 12]))])
+
+    np.testing.assert_allclose(load_raster(path), 40000 / 65535, rtol=0, atol=1e-12)
+
+
+def test_sixteen_bit_png_with_a_malformed_sbit_is_refused(tmp_path):
+    path = tmp_path / "sbit-bad.png"
+    _png16_with_chunks(path, np.full((3, 4, 3), 40000, dtype=np.uint16), [(b"sBIT", bytes([12]))])
+
+    with pytest.raises(ValueError, match="sbit-bad.png: could not decode 16-bit PNG: .*sBIT"):
+        load_raster(path)
+
+
+def test_sixteen_bit_png_with_trns_still_loads_its_colour_planes(tmp_path):
+    path = tmp_path / "trns.png"
+    arr = np.full((3, 4, 3), 1000, dtype=np.uint16)
+    arr[0, 0] = (1, 2, 3)
+    _png16_with_chunks(path, arr, [(b"tRNS", struct.pack(">HHH", 1, 2, 3))])
+
+    img = load_raster(path)
+
+    assert img.shape == (3, 4, 3)
+    np.testing.assert_allclose(img[0, 0], np.array([1, 2, 3]) / 65535, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(img[1, 1], 1000 / 65535, rtol=0, atol=1e-12)

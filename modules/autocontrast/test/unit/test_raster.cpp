@@ -1,7 +1,7 @@
 // AutoContrast: raster decoding and load_raster (core/io/Raster) vs the Python loader, on the synthetic fixtures
 // make_goldens.py writes (golden/synthetic/raster: 16-bit PNG/TIFF round trips from test_raster_highdepth.py,
 // every Pillow PNG mode, JPEG subsamplings / progressive / gray / CMYK, LZW/PackBits/deflate/tiled TIFF, float TIFF,
-// WebP and FITS headers, refusal messages).
+// WebP (lossy, lossless, alpha) decode, FITS headers, refusal messages).
 #include <catch_amalgamated.hpp>
 
 #include "Npy.h"
@@ -70,6 +70,7 @@ ac::Decoded decode(const std::string& kind, const std::string& path)
    if (kind == "jpeg") return ac::decode_jpeg(path);
    if (kind == "png8" || kind == "png16") return ac::decode_png(path);
    if (kind == "tiff") return ac::decode_tiff(path);
+   if (kind == "webp") return ac::decode_webp(path);
    throw std::runtime_error("no decoder for " + kind);
 }
 
@@ -142,7 +143,7 @@ TEST_CASE("decode_matches_python_decoders", "[raster]")
       CHECK(diff == 0);
       ++n;
    }
-   CHECK(n == 40);
+   CHECK(n == 47);
 }
 
 TEST_CASE("load_raster_matches_python_on_fixtures", "[raster]")
@@ -157,7 +158,7 @@ TEST_CASE("load_raster_matches_python_on_fixtures", "[raster]")
          ++n;
       }
    }
-   CHECK(n == 82);
+   CHECK(n == 96);
 }
 
 TEST_CASE("image_dimensions_match_python", "[raster]")
@@ -252,19 +253,50 @@ TEST_CASE("refusals_name_the_file", "[raster]")
    CHECK(what_of([&] { ac::load_raster(two); }).rfind("tiff16_twopage.tif: ", 0) == 0);
    const std::string planar = golden(case_named("tiff16_planar").at("file"));
    CHECK(what_of([&] { ac::decode_tiff(planar); }).rfind("tiff16_planar.tif: ", 0) == 0);
-   for (const char* name : {"webp_lossy", "webp_lossless", "webp_alpha"}) {
-      const std::string p = golden(case_named(name).at("file"));
-      const std::string msg = what_of([&] { ac::load_raster(p); });
-      CHECK(msg.find("WebP") != std::string::npos);
-      CHECK(msg.rfind(std::string(name) + ".webp: ", 0) == 0);
-   }
    const std::string fits = golden(case_named("fits_cube").at("file"));
    CHECK(what_of([&] { ac::load_raster(fits); }).rfind("fits_cube.fits: ", 0) == 0);
+   // pypng's chunk parser refuses a malformed sBIT: Python's message, byte for byte
+   const auto bad = case_named("png16_sbit_badlen");
+   const std::string sbit = golden(bad.at("file"));
+   CHECK(what_of([&] { ac::load_raster(sbit); }) == bad.at("python_error").get<std::string>());
+}
+
+TEST_CASE("palette_gray_alpha_and_sbit_load_as_corrected", "[raster]")
+{
+   // reference bugs fixed on both sides (Task 10 review): palette PNGs load their colours, gray + alpha loads as
+   // three-channel gray, 16-bit sBIT PNGs are not shifted down
+   const auto p = ac::load_raster(golden(case_named("png8_p_short").at("file")));
+   REQUIRE(p.channels == 3);
+   CHECK(p.at(0, 0, 0) == 200 / 255.0);   // index 0 -> (200, 10, 10)
+   CHECK(p.at(0, 0, 1) == 10 / 255.0);
+   bool past_plte = false;                 // indices past the 4-entry PLTE are Pillow's (0, 0, 0)
+   for (int x = 0; x < p.width; ++x)
+      past_plte = past_plte || (p.at(0, x, 0) == 0.0 && p.at(0, x, 1) == 0.0 && p.at(0, x, 2) == 0.0);
+   CHECK(past_plte);
+   const auto la = ac::load_raster(golden(case_named("png8_la").at("file")));
+   REQUIRE(la.channels == 3);
+   for (size_t i = 0; i < la.data.size(); i += 3)
+      REQUIRE((la.data[i] == la.data[i + 1] && la.data[i] == la.data[i + 2]));
+   const auto raw = ac::decode_png(golden(case_named("png16_sbit12_gray").at("file")));
+   const auto sb = ac::load_raster(golden(case_named("png16_sbit12_gray").at("file")));
+   REQUIRE(sb.channels == 3);
+   for (size_t i = 0; i < raw.u16.size(); ++i)
+      REQUIRE(sb.data[i * 3] == raw.u16[i] / 65535.0);
 }
 
 TEST_CASE("corrupt_files_raise_instead_of_loading", "[raster]")
 {
-   auto truncated = [](const std::string& src, const std::string& dst, size_t cut) {
+   // written into the working directory (the build tree under ctest) and removed however the test exits
+   struct Scratch {
+      std::vector<std::string> files;
+      ~Scratch()
+      {
+         for (const auto& f : files)
+            std::remove(f.c_str());
+      }
+   } scratch;
+   auto truncated = [&](const std::string& src, const std::string& dst, size_t cut) {
+      scratch.files.push_back(dst);
       std::ifstream in(src, std::ios::binary);
       std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       REQUIRE(bytes.size() > cut);
@@ -281,7 +313,7 @@ TEST_CASE("corrupt_files_raise_instead_of_loading", "[raster]")
    CHECK_THROWS(ac::decode_jpeg("raster_bad.jpg"));
    truncated(golden(case_named("tiff16_deflate_pred").at("file")), "raster_bad.tif", 300);
    CHECK_THROWS(ac::load_raster("raster_bad.tif"));
+   truncated(golden(case_named("webp_mid").at("file")), "raster_bad.webp", 500);
+   CHECK_THROWS(ac::load_raster("raster_bad.webp"));
    CHECK_THROWS_AS(ac::load_raster("raster_missing.jpg"), std::runtime_error);
-   for (const char* f : {"raster_bad16.png", "raster_bad8.png", "raster_bad.jpg", "raster_bad.tif"})
-      std::remove(f);   // written into the working directory (the build tree under ctest)
 }

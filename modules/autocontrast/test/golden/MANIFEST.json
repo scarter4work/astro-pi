@@ -1834,8 +1834,8 @@
    "sha256": "9b41887c2eaa968edf22b7670ea44d0b15d1c35b8fb523b5811c796c1fa69bd9"
   },
   "synthetic/raster/cases.json": {
-   "bytes": 20817,
-   "sha256": "64d987669c0c32125547c762e0dade37572698362c46de33fe115397821b4cd8"
+   "bytes": 24063,
+   "sha256": "7b732db55ca0b34ee99ac4f4114dff6379f662b3c30a07b02d41ba092487b5ab"
   },
   "synthetic/raster/files/fits_cube.fits": {
    "bytes": 5760,
@@ -1909,6 +1909,10 @@
    "bytes": 898,
    "sha256": "21184abef6697002294251eac627d4d36268e1446d535b8425cb79b0900e0ef6"
   },
+  "synthetic/raster/files/png16_sbit_badlen.png": {
+   "bytes": 86,
+   "sha256": "4999904d71d8558810f9798f0e6a2eaa976ea053a865a6224bec487de3120e89"
+  },
   "synthetic/raster/files/png16_trns_rgb.png": {
    "bytes": 2449,
    "sha256": "692703279de2c5ef2de02760909d8936df5891a2ce8603305a24c214b1fd2138"
@@ -1940,6 +1944,14 @@
   "synthetic/raster/files/png8_p4.png": {
    "bytes": 981,
    "sha256": "8a4a70704745403824725c53d10f41f89c4028fdd2a34360a08a5d6a696502d7"
+  },
+  "synthetic/raster/files/png8_p_short.png": {
+   "bytes": 227,
+   "sha256": "331a01a4aa62c1af8604bd1a757fcf7a391a57ed84afd6298a575a1913087765"
+  },
+  "synthetic/raster/files/png8_p_trns.png": {
+   "bytes": 116,
+   "sha256": "8a51579dea23cc87696f51c44c64a5d4b036c77a6e935fbac23e509dd648ac55"
   },
   "synthetic/raster/files/png8_rgb.png": {
    "bytes": 7037,
@@ -2044,6 +2056,14 @@
   "synthetic/raster/files/webp_lossy.webp": {
    "bytes": 414,
    "sha256": "c557c6a21049c6ee21150c64aebf4d71f920868f999318dd5db345017cf9727a"
+  },
+  "synthetic/raster/files/webp_mid.webp": {
+   "bytes": 7994,
+   "sha256": "c1fa592afa1f72bde1e226f3dd289654bcc3a8ac75a68ff2d4098d32f7f9727c"
+  },
+  "synthetic/raster/files/webp_mid_alpha.webp": {
+   "bytes": 98904,
+   "sha256": "6d017e7348c6d7a9ec51667bc36ef995a200e7da871b082d87d423d6a798c13a"
   },
   "synthetic/raster/jpeg_420.decode.npy": {
    "bytes": 9173,
@@ -2199,19 +2219,19 @@
   },
   "synthetic/raster/png16_sbit12_gray.decode.npy": {
    "bytes": 926,
-   "sha256": "c5cd7bb162f1a38628790fb522dd448c723e07402e29c53583700bf141fa467d"
+   "sha256": "7f49f0c27d1de57c9ee8271b1e749cd0317e039bb59d04b324e3fe50f144e658"
   },
   "synthetic/raster/png16_sbit12_gray.load.npy": {
    "bytes": 9704,
-   "sha256": "914575eee0394b8623e7169a0195a375c537b57b809a718181654eee5338aff9"
+   "sha256": "3b4b856a66d875506d2e984a400d818a6e6ce2c33a2916af548c4bc2b3521374"
   },
   "synthetic/raster/png16_sbit12_gray.load_md10.npy": {
    "bytes": 2288,
-   "sha256": "33091e15325045514f1bfef1074f67d04d2ac14d5a5cc429fe9ba5e36cb1028b"
+   "sha256": "19a9ed3110e4c3c8572c40fa8c8ab1a5d60f5452f2e7b7ac37b7f22aea00f3da"
   },
   "synthetic/raster/png16_trns_rgb.decode.npy": {
-   "bytes": 3256,
-   "sha256": "6a1279b8adad966d2865fbe06e44e6c89a2e93e12a8a7c029206ada55d33f081"
+   "bytes": 2474,
+   "sha256": "8458ad8ac08d676b6ed3e281fd0568fef9f68f3c4df0449d6dec1c5a98c27f67"
   },
   "synthetic/raster/png16_trns_rgb.load.npy": {
    "bytes": 9512,
@@ -2274,12 +2294,12 @@
    "sha256": "a729edc75485ec5233aa9a589796c8fb647b8868ac1ddfd376e511374e1b1ed7"
   },
   "synthetic/raster/png8_la.load.npy": {
-   "bytes": 46000,
-   "sha256": "979055b2d7e59bfde935438bfebfabf4993e9fab7e255beed5750a27eba57ba9"
+   "bytes": 68936,
+   "sha256": "12ccb9f8f6cb853ce4e890c1b1380be07265bc0b0537bfabf44065c37765d80c"
   },
   "synthetic/raster/png8_la.load_md23.npy": {
-   "bytes": 6752,
-   "sha256": "29908cefa302132ff03fbe27782d8b13f8f65479d0a71062a7255e725b3ffa57"
+   "bytes": 10064,
+   "sha256": "f34c3967bff3b050be0d1ece649de3ff621b9526daba058be8bdcd027fd98dc4"
   },
   "synthetic/raster/png8_p.decode.npy": {
    "bytes": 2208,
@@ -2287,11 +2307,11 @@
   },
   "synthetic/raster/png8_p.load.npy": {
    "bytes": 50048,
-   "sha256": "db7a6d3dbc4c6c8e5a804b2e63c086b6cd90241d35b9a877640afff8803e7f4d"
+   "sha256": "7deb890c07b0fce08da9ef3818a2d51089b7934748c5e93541c04f5162a09605"
   },
   "synthetic/raster/png8_p.load_md17.npy": {
    "bytes": 5432,
-   "sha256": "fef19554bdc5e4d4b4e8ada91a7034494f4de3413a7df337cbd4b61745b84405"
+   "sha256": "9d235bde682f3591b12dc3b94270117c3d3c2671e486cac86aa8d7d48eed3f83"
   },
   "synthetic/raster/png8_p4.decode.npy": {
    "bytes": 2208,
@@ -2299,11 +2319,35 @@
   },
   "synthetic/raster/png8_p4.load.npy": {
    "bytes": 50048,
-   "sha256": "c8303e114543b305cfe582a8e3cd7349c5520b2eb7815c6ec1ae7366adc4fcc4"
+   "sha256": "4942debd078b04e1b5a0a326cbbc935fc7fb01bc7696929be27b01cab12f4d9f"
   },
   "synthetic/raster/png8_p4.load_md17.npy": {
    "bytes": 5432,
-   "sha256": "bae96f11193a1c58966ff96df7adf696b09e4fef48f209f03f96ffc6f1c7ee64"
+   "sha256": "e87b00c91c54371a020a4d9597e46ba16da2ddabd58cb7259c3b185e5bc6e155"
+  },
+  "synthetic/raster/png8_p_short.decode.npy": {
+   "bytes": 254,
+   "sha256": "a03007635c1416d242caf7c2a00b3ff188491f151d8bd32ecc0c07f3124deb96"
+  },
+  "synthetic/raster/png8_p_short.load.npy": {
+   "bytes": 3152,
+   "sha256": "65dea25464fa262cc0665efb1ec06d99cdd651307c3eec0e7790f04102b2c137"
+  },
+  "synthetic/raster/png8_p_short.load_md7.npy": {
+   "bytes": 800,
+   "sha256": "a9462deb1770caa099f8a3b02bbc84a6337fdc8680f6c0b9718e55184ff80e46"
+  },
+  "synthetic/raster/png8_p_trns.decode.npy": {
+   "bytes": 254,
+   "sha256": "7ebce77b4fd14ca75ab53a182b9ab22a7976f69f6f57db878b268578dec050b1"
+  },
+  "synthetic/raster/png8_p_trns.load.npy": {
+   "bytes": 3152,
+   "sha256": "45331a52eb78451adc0d7552d26a9ca043dcedf2b81b82440f5dae0328621f56"
+  },
+  "synthetic/raster/png8_p_trns.load_md7.npy": {
+   "bytes": 800,
+   "sha256": "c3e771958ae7675b6e68361c3b8ba2352bfebbbbb2cac1b4075f2df7992638f8"
   },
   "synthetic/raster/png8_rgb.decode.npy": {
    "bytes": 8729,
@@ -2366,8 +2410,8 @@
    "sha256": "324888c5d5b778da64d3b5127906a9796ad2ff7a905693698afded5ea4deae1d"
   },
   "synthetic/raster/resize.json": {
-   "bytes": 1749,
-   "sha256": "43c082cd36e26feaee4b79b11615f1722d6cd7db8a84e6ebe175389de4c542c2"
+   "bytes": 2181,
+   "sha256": "b3028d462f56cd4ca7cc45080a9fb443fe960e2e2d18523886e78641ef6459d4"
   },
   "synthetic/raster/resize/f32_0_in.npy": {
    "bytes": 23796,
@@ -2433,6 +2477,22 @@
    "bytes": 132,
    "sha256": "97e31e21736c197f92cd71830f1bb5c31013db55ecf331ffa906b939c59a8dfe"
   },
+  "synthetic/raster/resize/f32_8_in.npy": {
+   "bytes": 492,
+   "sha256": "a8d12bc29aec6e0c8da072338c140c9090aca4f6a58c011e9dd22e29e5486691"
+  },
+  "synthetic/raster/resize/f32_8_out.npy": {
+   "bytes": 4768,
+   "sha256": "76f2924ace364111309d8c37877eb66c5e016057856c638f267fe615a277554c"
+  },
+  "synthetic/raster/resize/f32_9_in.npy": {
+   "bytes": 2528,
+   "sha256": "42f1e0d2defb9de1346eb3e863070b1bcb25cd57f374013f99b4e928ea6e5f4a"
+  },
+  "synthetic/raster/resize/f32_9_out.npy": {
+   "bytes": 2528,
+   "sha256": "d9db7addf883b90a2d6e7cd582a9d47133bde90976f6636d9fee2d2c8c67fb54"
+  },
   "synthetic/raster/resize/u8_0_in.npy": {
    "bytes": 17879,
    "sha256": "cc08a1aa6a9dee62817cf2364f20f7ca2f8a94765795b4839170d1ff9a985ce0"
@@ -2496,6 +2556,22 @@
   "synthetic/raster/resize/u8_7_out.npy": {
    "bytes": 131,
    "sha256": "25faac159c328af7f89c12ad17ec91d1fe9995a50359543e1d62315badd69cc7"
+  },
+  "synthetic/raster/resize/u8_8_in.npy": {
+   "bytes": 401,
+   "sha256": "89cc32ebbc0e1f50fb58a7dbfb493e788adfb341a4e2f70a3d37ccf66edb3914"
+  },
+  "synthetic/raster/resize/u8_8_out.npy": {
+   "bytes": 3608,
+   "sha256": "4c54a0cf6bba4fab97555d75ff10b683dfb8866d5e5626f072c57eee9297ccf8"
+  },
+  "synthetic/raster/resize/u8_9_in.npy": {
+   "bytes": 728,
+   "sha256": "6bcbe24cb2f29a287011b77b8686f120dc7788e9235c07768778b8bd106d2ed6"
+  },
+  "synthetic/raster/resize/u8_9_out.npy": {
+   "bytes": 728,
+   "sha256": "6e323d17f88ac06027caa43cecd94433a29db29d0cb00132fdff973dabe3a68f"
   },
   "synthetic/raster/tiff16_big.load_md50.npy": {
    "bytes": 30128,
@@ -2644,6 +2720,58 @@
   "synthetic/raster/tiff_f32_wide.load_md16.npy": {
    "bytes": 5120,
    "sha256": "2426eea1bb8caf19bd646ca8831fd8f3d93f402f0543562be280e3a6a1664ab7"
+  },
+  "synthetic/raster/webp_alpha.decode.npy": {
+   "bytes": 2980,
+   "sha256": "7a3d18f0a4907117e8d278d3785e60bd5d0faad7cebfe8e51507896464ccdea0"
+  },
+  "synthetic/raster/webp_alpha.load.npy": {
+   "bytes": 17240,
+   "sha256": "ba3aad95f126da61dee7c7f95252e101a3be31099a2e4f1497a19a774f6896f4"
+  },
+  "synthetic/raster/webp_alpha.load_md15.npy": {
+   "bytes": 4088,
+   "sha256": "6297fd8c40a23367d47737f49144eb20a2fd502d7183e00a600d79082136d328"
+  },
+  "synthetic/raster/webp_lossless.decode.npy": {
+   "bytes": 2267,
+   "sha256": "1949eb5f68b26a8cf64c9739434ab23245ac25e0a723af06047277872466589c"
+  },
+  "synthetic/raster/webp_lossless.load.npy": {
+   "bytes": 17240,
+   "sha256": "8445e753b14b32a84ef9d3dd0c419a5bef0dbda124a35553df8f35f66d659acf"
+  },
+  "synthetic/raster/webp_lossless.load_md15.npy": {
+   "bytes": 4088,
+   "sha256": "7ba08275025602199c4f3aa580174c5de9f4b72a7d3fcfbabe1879f7b3b0941d"
+  },
+  "synthetic/raster/webp_lossy.decode.npy": {
+   "bytes": 2267,
+   "sha256": "1fd2b2fc132507ec50375adc3bd898b556fe990f18731190c627dc88b3a6f8d7"
+  },
+  "synthetic/raster/webp_lossy.load.npy": {
+   "bytes": 17240,
+   "sha256": "ec084ef33e5499b7622470daca42d497152de87c0574dbe12b0191a57972ba6b"
+  },
+  "synthetic/raster/webp_lossy.load_md15.npy": {
+   "bytes": 4088,
+   "sha256": "d3198ada52c7881031302e572d21e981de39f891cb27ada7e04f78db13a946bb"
+  },
+  "synthetic/raster/webp_mid.decode.npy": {
+   "bytes": 90578,
+   "sha256": "e10fabfdd3df3e3eab165de37804473051a129aad93861db196ad8df5cac54ca"
+  },
+  "synthetic/raster/webp_mid.load_md64.npy": {
+   "bytes": 73856,
+   "sha256": "8159db092a563ff6f6f52f89ea1341526c89ca9cd0ff7e28141835616740904b"
+  },
+  "synthetic/raster/webp_mid_alpha.decode.npy": {
+   "bytes": 120728,
+   "sha256": "e0b3fc0abf8072f1fbacd09a53cd8d1e68b6f2b43e2b82dac0e909c0510a5ebd"
+  },
+  "synthetic/raster/webp_mid_alpha.load_md64.npy": {
+   "bytes": 73856,
+   "sha256": "0e5bc8dc460666e73a6ccaad93bc6b5ca11e7493dcc38500e1444f2503026c1a"
   },
   "synthetic/recipe/dumps.json": {
    "bytes": 13702,
@@ -3463,7 +3591,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 14275612,
+ "total_bytes": 14866792,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",

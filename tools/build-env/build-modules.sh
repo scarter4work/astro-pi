@@ -16,6 +16,8 @@
 # Usage: tools/build-env/build-modules.sh [--no-tests] [--only <module>]
 #   --only builds (and tests) just one module: nukex | pi-copilot | planetary | gaia-depth-grade | autocontrast.
 #   BUILD_JOBS=<n> sets the parallel build/test job count (default: nproc).
+#   AC_DATA_DIR=<dir> (optional) mounts the AutoContrast render corpus read-only so its real-data tests run in
+#   the container instead of skipping (point it at the directory holding the files, not at symlinks to them).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$ROOT/tools/build-env/image-tag.sh"
@@ -47,8 +49,29 @@ ensure_image
 # root): outputs are owned by the user, and permission-based tests are real
 # (root bypasses directory permissions, so test_atomic_write's read-only-dir
 # case can never fail as root).
+# Opt-in, read-only AutoContrast render corpus for the real-data tests (AC_DATA_DIR on the host). Without it the
+# container has no corpus and those tests SKIP (exit 77) -- the default, unchanged. Each of references/,
+# amateur/ and discovery_cache/ is resolved on the host and mounted on its own, so a data dir whose
+# subdirectories are symlinks (a worktree's) still works; a subdirectory that is missing on the host is simply
+# not mounted, and the tests then FAIL naming it. Entries that are themselves symlinks would dangle inside the
+# container, so they are refused here: point AC_DATA_DIR at the directory that holds the files (the main
+# checkout's tools/autocontrast/data).
+CORPUS=()
+if [ -n "${AC_DATA_DIR:-}" ]; then
+   [ -d "$AC_DATA_DIR" ] || die "AC_DATA_DIR=$AC_DATA_DIR is not a directory"
+   CORPUS=(-e AC_DATA_DIR=/acdata)
+   for sub in references amateur discovery_cache; do
+      [ -d "$AC_DATA_DIR/$sub" ] || { echo "note: $AC_DATA_DIR/$sub absent; not mounted" >&2; continue; }
+      real="$(realpath "$AC_DATA_DIR/$sub")"
+      links="$(find "$real" -mindepth 1 -maxdepth 1 -type l -print -quit)"
+      [ -z "$links" ] || die "AC_DATA_DIR: $real holds symlinks ($links) that would dangle in the container; point AC_DATA_DIR at the directory holding the files"
+      CORPUS+=(-v "$real:/acdata/$sub:ro")
+   done
+   echo "corpus: $AC_DATA_DIR mounted read-only at /acdata" >&2
+fi
+
 podman run --rm --security-opt label=disable --userns=keep-id \
-   -v "$ROOT:/src" -e RUN_TESTS="$RUN_TESTS" -e ONLY="$ONLY" -e JOBS="$JOBS" \
+   -v "$ROOT:/src" "${CORPUS[@]}" -e RUN_TESTS="$RUN_TESTS" -e ONLY="$ONLY" -e JOBS="$JOBS" \
    "$IMAGE" bash -euo pipefail -c '
    want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
    # test_pcl213_solver_links: the image libPCL is 2.13 with the blind solver

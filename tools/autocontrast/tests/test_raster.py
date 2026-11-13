@@ -250,3 +250,64 @@ def test_load_image_fits_is_nan_safe(tmp_path):
     img = load_image(path)
 
     assert np.isfinite(img).all()
+
+
+# ---- palette and gray+alpha PNGs (reference bugs found by the native port, Task 10 review) --------------
+
+
+def test_palette_png_loads_its_colours_not_its_indices(tmp_path):
+    """numpy sees a mode "P" image as palette INDICES; the loader must look the colours up."""
+    path = tmp_path / "pal.png"
+    im = Image.new("P", (4, 3))
+    im.putpalette([255, 0, 0, 0, 255, 0, 0, 0, 255] + [0] * (256 * 3 - 9))
+    im.putdata([0, 1, 2, 0] * 3)
+    im.save(path)
+
+    img = load_raster(path)
+
+    assert img.shape == (3, 4, 3)
+    np.testing.assert_array_equal(img[0, 0], [1.0, 0.0, 0.0])
+    np.testing.assert_array_equal(img[0, 1], [0.0, 1.0, 0.0])
+    np.testing.assert_array_equal(img[0, 2], [0.0, 0.0, 1.0])
+
+
+def test_palette_png_with_transparency_drops_the_alpha(tmp_path):
+    path = tmp_path / "pal-trns.png"
+    im = Image.new("P", (2, 2))
+    im.putpalette([10, 20, 30, 200, 150, 100] + [0] * (256 * 3 - 6))
+    im.putdata([0, 1, 1, 0])
+    im.save(path, transparency=0)
+
+    img = load_raster(path)
+
+    assert img.shape == (2, 2, 3)
+    np.testing.assert_allclose(img[0, 0], np.array([10, 20, 30]) / 255.0, rtol=0, atol=0)
+    np.testing.assert_allclose(img[0, 1], np.array([200, 150, 100]) / 255.0, rtol=0, atol=0)
+
+
+def test_palette_png_is_resized_as_colours(tmp_path):
+    """A palette image resized by NEAREST on its indices would keep only palette colours; resized as RGB it
+    blends them (the downsizing path every reference takes)."""
+    path = tmp_path / "pal-big.png"
+    im = Image.new("P", (40, 20))
+    im.putpalette([0, 0, 0, 255, 255, 255] + [0] * (256 * 3 - 6))
+    im.putdata([(x // 2) % 2 for y in range(20) for x in range(40)])
+    im.save(path)
+
+    img = load_raster(path, max_dim=10)
+
+    assert img.shape == (5, 10, 3)
+    assert 0.2 < img.mean() < 0.8 and not np.isin(img, [0.0, 1.0]).all()
+
+
+def test_gray_alpha_png_loads_as_three_channel_gray(tmp_path):
+    path = tmp_path / "la.png"
+    la = np.zeros((3, 5, 2), dtype=np.uint8)
+    la[..., 0] = 200
+    la[..., 1] = 7
+    Image.fromarray(la, "LA").save(path)
+
+    img = load_raster(path)
+
+    assert img.shape == (3, 5, 3)
+    np.testing.assert_array_equal(img, 200 / 255.0)

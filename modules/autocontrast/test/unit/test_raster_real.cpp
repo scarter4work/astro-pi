@@ -28,6 +28,9 @@ struct Entry {
 
 std::vector<Entry> entries()
 {
+   const std::string missing = ac::test::missing_subdir({"references", "amateur", "discovery_cache"});
+   INFO(missing);
+   REQUIRE(missing.empty());
    std::vector<Entry> out;
    const auto index = ac::test::load_json(real("index.json"));   // named: a range-for over .at() of a temporary dangles
    for (const auto& e : index.at("entries")) {

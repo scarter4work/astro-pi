@@ -75,7 +75,7 @@ TEST_CASE("resize_u8_matches_pillow", "[resample]")
       CHECK(streamed(in, w, h, ch, nw, nh) == got);
       ++n;
    }
-   REQUIRE(n == 8);
+   REQUIRE(n == 10);   // incl. two enlarging cases (both axes up; one up, one down)
 }
 
 TEST_CASE("resize_f32_matches_pillow", "[resample]")
@@ -100,7 +100,7 @@ TEST_CASE("resize_f32_matches_pillow", "[resample]")
       }
       ++n;
    }
-   REQUIRE(n == 8);
+   REQUIRE(n == 10);   // incl. two enlarging cases (both axes up; one up, one down)
    WARN("resize_f32 worst |ulp| vs Pillow: " << worst);
 }
 
