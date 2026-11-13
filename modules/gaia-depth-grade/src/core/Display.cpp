@@ -72,11 +72,27 @@ std::pair<int, int> downscale_size(int w, int h, int max_width) {
     return {max_width, std::max(1, nh)};
 }
 
+std::pair<int, int> fit_size(int w, int h, int max_width, int max_height) {
+    if (max_height < 1 || h <= 0) return downscale_size(w, h, max_width);
+    const double sw = (max_width < 1 || w <= max_width) ? 1.0 : static_cast<double>(max_width) / w;
+    const double sh = h <= max_height ? 1.0 : static_cast<double>(max_height) / h;
+    if (sw >= 1.0 && sh >= 1.0) return {w, h};
+    if (sw <= sh) return downscale_size(w, h, max_width);  // width-bound
+    const int nw = static_cast<int>(std::nearbyint(static_cast<double>(w) * sh));
+    return {std::max(1, nw), max_height};
+}
+
 std::vector<uint8_t> downscale_u8(const std::vector<uint8_t>& rgb, int w, int h, int channels, int max_width) {
+    const auto [ow, oh] = downscale_size(std::max(w, 0), std::max(h, 0), max_width);
+    return downscale_u8_to(rgb, w, h, channels, ow, oh);
+}
+
+std::vector<uint8_t> downscale_u8_to(const std::vector<uint8_t>& rgb, int w, int h, int channels, int ow, int oh) {
     if (w < 0 || h < 0 || channels < 1 ||
         rgb.size() != static_cast<size_t>(w) * static_cast<size_t>(h) * static_cast<size_t>(channels))
         throw std::invalid_argument("downscale_u8: buffer size does not match w * h * channels");
-    const auto [ow, oh] = downscale_size(w, h, max_width);
+    if (ow > w || oh > h || ow < 0 || oh < 0 || (ow == 0) != (w == 0) || (oh == 0) != (h == 0))
+        throw std::invalid_argument("downscale_u8: the target size must be within the source size");
     if (ow == w && oh == h) return rgb;
     std::vector<uint8_t> out(static_cast<size_t>(ow) * oh * channels);
     for (int oy = 0; oy < oh; ++oy) {

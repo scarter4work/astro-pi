@@ -32,4 +32,13 @@ std::pair<int, int> downscale_size(int w, int h, int max_width);
 /// std::invalid_argument when the buffer size does not match w * h * channels.
 std::vector<uint8_t> downscale_u8(const std::vector<uint8_t>& rgb, int w, int h, int channels, int max_width);
 
+/// The size that fits inside max_width x max_height with the aspect kept and no upscale: the
+/// limiting side exact, the other rounded as downscale_size rounds (half to even), at least 1.
+/// max_height < 1: no height bound (= downscale_size).
+std::pair<int, int> fit_size(int w, int h, int max_width, int max_height);
+
+/// downscale_u8's box average to an explicit (ow, oh) no larger than (w, h). Throws
+/// std::invalid_argument on a size mismatch or an upscale.
+std::vector<uint8_t> downscale_u8_to(const std::vector<uint8_t>& rgb, int w, int h, int channels, int ow, int oh);
+
 }  // namespace gdg

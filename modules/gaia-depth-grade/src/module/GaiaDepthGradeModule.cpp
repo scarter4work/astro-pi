@@ -14,6 +14,7 @@
 #include "GaiaDepthGradeModule.h"
 #include "GaiaDepthGradeInterface.h"
 #include "GaiaDepthGradeProcess.h"
+#include "TapClient.h"
 
 #ifdef GDG_PROBES
 #include "probe/ProbeProcess.h"
@@ -97,6 +98,7 @@ void GaiaDepthGradeModule::GetReleaseDate( int& year, int& month, int& day ) con
 PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
 {
    new pcl::GaiaDepthGradeModule;
+   pcl::RecordMainThread(); // the online catalogue's main-thread guard (TapClient, plan C14)
    if ( mode == pcl::InstallMode::FullInstall )
    {
       new pcl::GaiaDepthGradeProcess;

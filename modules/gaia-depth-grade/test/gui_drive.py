@@ -247,15 +247,20 @@ def actions():
     return state().get("actions", [])
 
 
-def run_action(button, expect, timeout):
+def run_action(button, expect, timeout, while_busy=None):
     """Clicks `button` and waits until the interface recorded the actions `expect` (e.g.
-    ["prepare ok", "preview ok"]) after the click and is idle again. Returns the new actions."""
+    ["prepare ok", "preview ok"]) after the click and is idle again. Returns the new actions.
+    `while_busy(state)`, when given, runs once the interface reports busy (FAIL if it never does)."""
     s = state()
     if not ctl(s, button)["enabled"]:
         raise SystemExit("FAIL: %s is disabled (prepared %r, status %r)" % (button, s["prepared"], s["status"]))
     n0 = len(s.get("actions", []))
     click_ctl(button, s)
     park()
+    if while_busy:
+        seen = []
+        wait_for(lambda: seen.append(state_or_none() or {}) or seen[-1].get("busy", False), 10, "%s to go busy" % button)
+        while_busy(seen[-1])
     def done():
         s = state_or_none() or {}
         a = s.get("actions", [])
@@ -422,6 +427,18 @@ def step_controls_and_defaults(master):
     wait_for(lambda: not ctl(state(), "advanced")["expanded"], 10, "Advanced to collapse")
     expect(not ctl(state(), "splitMode")["visible"], "Advanced collapsed again")
 
+    # Review M4: picking <No View Selected> (the list's first item) clears the target.
+    click_ctl("targetList")
+    time.sleep(0.6)
+    key("Home")
+    key("Return")
+    park()
+    wait_for(lambda: (state_or_none() or {}).get("target") == "", 10, "the target to clear")
+    s = state()
+    expect(s["status"] == "Pick a target and click Prepare." and not s["prepared"], "no target: status %r" % s["status"])
+    expect_buttons(s, False, False, False)
+    shot("01d-no-target.png", 1.0)
+
     # F2: Browse... opens the master as a window and makes it the target.
     click_ctl("browse")
     park()
@@ -434,7 +451,8 @@ def step_controls_and_defaults(master):
     time.sleep(0.5)
     key("Return")
     park()
-    wait_for(lambda: (state_or_none() or {}).get("target") not in (None, "gdg_gui_dummy"), 180, "the opened master as the target")
+    wait_for(lambda: (state_or_none() or {}).get("target") not in (None, "", "gdg_gui_dummy"), 180, "the opened master as the target")
+    time.sleep(2.0)   # anything the view lists do after the open must not take the target away
     s = state()
     expect(s["targetList"] == s["target"] and s["status"] == "Target: %s %s click Prepare." % (s["target"], DASH),
            "Browse... made %r the target (list %r, status %r)" % (s["target"], s["targetList"], s["status"]))
@@ -461,8 +479,14 @@ def check_prepared(tag):
     expect(s["prepared"] and not s["previewStale"], "prepared, preview fresh")
     expect_buttons(s, True, True, True)
     pw, ph = s["previewBitmap"][:2]
-    expect(pw == min(760, se["width"]) and 0 < ph and s["insetBitmap"][:2] == [256, 256],
-           "preview bitmap %dx%d (<= 760 wide), inset bitmap %r" % (pw, ph, s["insetBitmap"][:2]))
+    # Review M9: fitted inside the 760 x 420 control, aspect kept, one side at its bound.
+    fit_w, fit_h = (760, round(se["height"] * 760 / se["width"])) if se["width"] * 420 >= se["height"] * 760 \
+        else (round(se["width"] * 420 / se["height"]), 420)
+    expect((pw, ph) == (min(fit_w, se["width"]), min(fit_h, se["height"])) and s["insetBitmap"][:2] == [256, 256],
+           "preview bitmap %dx%d fits 760x420 (want %dx%d), inset bitmap %r" % (pw, ph, fit_w, fit_h, s["insetBitmap"][:2]))
+    # Review M9: the QA summary (and its LOW MATCH flag) stays on screen after the preview.
+    qa_line = [l for l in s["statusHistory"] if l.startswith("Prepared:")][-1]
+    expect(s.get("qa") == qa_line and ctl(s, "qaLabel")["visible"], "QA line kept visible: %r" % s.get("qa"))
     png = shot(tag, 1.5)
     pv = ctl(s, "previewControl")["rect"]
     m_, sd = region_stats(png, [pv[0], pv[1], min(pw, pv[2]), min(ph, pv[3])])
@@ -474,10 +498,30 @@ def check_prepared(tag):
     return s
 
 
+INPUTS = ["brightness", "size", "contrast", "saturation", "haloSigma", "pLow", "pHigh", "nebula", "nebulaStrength",
+          "nebulaAtmos", "nebulaStructure", "detect", "match", "offline", "advanced", "advancedPanel", "targetList",
+          "browse", "prepare", "preview", "execute", "close", "previewControl"]
+
+
+def busy_inputs_disabled(s):
+    """Review I1: while busy, no input of the interface is enabled (an edit then could reset the
+    session a render reads, or be overwritten by the Prepare that ends)."""
+    missing = [n for n in INPUTS if n not in s["controls"]]
+    on = [n for n in INPUTS if n in s["controls"] and s["controls"][n]["enabled"]]
+    expect(not on and not missing, "while busy every input is disabled (enabled: %r; not reported: %r)" % (on, missing))
+    shot("03a-busy.png", 0)
+    # An edit attempted now must not reach a prepared session (typed into the disabled field).
+    edit_value("detect", "9")
+
+
 def step_prepare_enables_preview():
     s = state()
     expect_buttons(s, True, False, False)
-    run_action("prepare", ["prepare ok", "preview ok"], 900)
+    run_action("prepare", ["prepare ok", "preview ok"], 900, while_busy=busy_inputs_disabled)
+    s = state()
+    expect(abs(ctl(s, "detect")["value"] - 6) < 1e-9 and s["sessionMatchesSettings"],
+           "the edit typed while busy did not land (detect %r; session matches the settings %r)"
+           % (ctl(s, "detect")["value"], s["sessionMatchesSettings"]))
     s = check_prepared("03-prepared.png")
     se = session(s)
     cx, cy = (se["width"] + 1) // 2, (se["height"] + 1) // 2     # Math.round(W/2) for integer W
@@ -514,6 +558,7 @@ def step_detect_edit_marks_prepare_stale():
     wait_for(lambda: abs(ctl(state(), "detect")["value"] - 7) < 1e-9, 10, "detect_threshold_sigma = 7")
     s = state()
     expect(not s["prepared"] and s["previewStale"], "detect_threshold_sigma 7: not prepared, preview stale")
+    expect(s.get("qa") == "", "the QA line is cleared with the session (%r)" % s.get("qa"))
     expect_buttons(s, True, False, False)
     png = shot("06-prepare-stale.png", 1.0)
     of = orange_fraction(png, ctl(s, "previewControl")["rect"])
@@ -543,7 +588,9 @@ def step_inset_click_moves_center():
     pw = s["previewBitmap"][0]
     scale = W / pw
     x0, y0 = ctl(s, "previewControl")["rect"][:2]
-    shots = [("08-inset-click.png", 190, 105), ("09-inset-top-left.png", 2, 2), ("10-inset-bottom-right.png", 757, 417)]
+    ph = s["previewBitmap"][1]
+    shots = [("08-inset-click.png", pw // 4, ph // 4), ("09-inset-top-left.png", 2, 2),
+             ("10-inset-bottom-right.png", pw - 3, ph - 3)]
     last = s["insetBitmap"][2]
     for png, px, py in shots:
         cx, cy = js_round(px * scale), js_round(py * scale)
@@ -559,6 +606,15 @@ def step_inset_click_moves_center():
         expect(s["insetBitmap"][2] != last, "the inset picture changed")
         last = s["insetBitmap"][2]
         shot(png, 1.0)
+    # A click on the control outside the picture (the fitted bitmap leaves room) is ignored.
+    pv = ctl(s, "previewControl")["rect"]
+    if pw + 6 < pv[2] or ph + 6 < pv[3]:
+        ox, oy = (pw + 5, ph // 2) if pw + 6 < pv[2] else (pw // 2, ph + 5)
+        n0, before = len(actions()), state()["inset"]
+        click(x0 + ox, y0 + oy)
+        park()
+        time.sleep(1.5)
+        expect(len(actions()) == n0 and state()["inset"] == before, "a click beside the picture (%d, %d) is ignored" % (ox, oy))
 
 
 def step_execute_creates_depthgraded():
@@ -575,12 +631,13 @@ def step_close_target_then_execute():
     s = state()
     target = open(OUT + "/target.txt").read().strip()
     expect(s["target"] == target, "the interface still names the closed target %r (%r)" % (target, s["target"]))
+    # Closing the window does not disable Execute: the session is checked when it is used.
+    expect(ctl(s, "execute")["enabled"], "Execute still enabled after the close")
     n0 = len(actions())
-    if ctl(s, "execute")["enabled"]:
-        click_ctl("execute")
-        park()
-        wait_for(lambda: len(actions()) > n0 and not state()["busy"], 60, "Execute to answer")
-        expect(actions()[n0:] == ["execute error"], "Execute refused (%r)" % actions()[n0:])
+    click_ctl("execute")
+    park()
+    wait_for(lambda: len(actions()) > n0 and not state()["busy"], 60, "Execute to answer")
+    expect(actions()[n0:] == ["execute error"], "Execute refused (%r)" % actions()[n0:])
     s = state()
     m = re.match(CLOSED_RE, s["status"])
     expect(m and m.group(1) == target, "status %r" % s["status"])

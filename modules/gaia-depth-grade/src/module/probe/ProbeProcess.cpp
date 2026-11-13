@@ -98,6 +98,8 @@ bool GDGProbeInstance::ExecuteGlobal()
          body = ProbeLocalGaia( p_args );
       else if ( p_case == "online" )
          body = ProbeOnline( p_args );
+      else if ( p_case == "tap_thread" )
+         body = ProbeTapThread( p_args );
       else if ( p_case == "introspect" )
          body = ProbeIntrospect( p_args );
       else if ( p_case == "solve" )

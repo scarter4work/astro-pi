@@ -10,6 +10,9 @@
 #                            same cone and files; BP-RP reaches the catalogue. Needs a configured DR3.
 #   online_live              Task 13: LIVE ESA Gaia TAP query through TapClient (NetworkTransfer), then
 #                            the cache; skipped unless GDG_LIVE_TAP=1.
+#   tap_off_main_thread      Task 17 (C14): TapClient called from std::threads refuses with
+#                            gdg::TransportMisuse before any request, directly and through the TAP flow
+#                            (no retry, no "after 3 attempts", no notices warning). No network.
 #   solver_enums             Task 14: StarAlignment's enumeration values the solver hardcodes
 #                            (SolverAlign.h) equal the running PixInsight's.
 #   solve_seeded_matches_imagesolver  Task 14: the native solver on two NAS masters, seeded from their
@@ -61,7 +64,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 . "$HERE/harness.sh"
 
-ALL_CASES=( sky_adapter_convention local_gaia_equals_gaia_process online_live solver_enums
+ALL_CASES=( sky_adapter_convention local_gaia_equals_gaia_process online_live tap_off_main_thread solver_enums
             solve_seeded_matches_imagesolver solve_spline_residuals solve_blind_no_metadata
             solve_fails_loudly_without_seed_or_index
             process_category params_reach_core execute_on_offline output_naming_and_tag master_never_modified
@@ -184,6 +187,20 @@ case_local_gaia_equals_gaia_process()
       ok "distances_for: $nc usable rows, $bf with BP-RP = BP - RP (none mismatched)"
    else bad "BP-RP pass-through: $bf of $nc finite, $(num .cpp.catalogBpMismatch "$c") mismatched"; fi
    echo "  info  log: $(jq -r '(.cpp.warnings + .cpp.infos) | join(" | ")' "$c")"
+}
+
+case_tap_off_main_thread()
+{
+   ran=$((ran + 1))
+   local netlog="$GDG_RUN_DIR/tap_thread.net.log"
+   rm -f "$netlog"
+   run_pi tap_off_main_thread "$HERE/probe-tap-thread.js" GDG_TEST_NET_LOG="$netlog" || return 0
+   local c="$OUT" want="Gaia TAP: the online catalogue must be fetched on PixInsight's main thread"
+   [ "$(jq -r .directMisuse "$c")" = true ] && [ "$(jq -r .direct "$c")" = "$want" ] \
+      && ok "TapClient off the main thread: TransportMisuse \"$want\"" || bad "direct call: $(jq -c '{directMisuse, direct}' "$c")"
+   [ "$(jq -r .flowMisuse "$c")" = true ] && [ "$(jq -r .flow "$c")" = "$want" ] && [ "$(num .flowWarnings "$c")" = 0 ] \
+      && ok "through the TAP flow: the same error, no retry wrapping, no warning" || bad "flow: $(jq -c '{flowMisuse, flow, flowWarnings}' "$c")"
+   [ ! -s "$netlog" ] && ok "no request was made" || bad "requests made: $(head -3 "$netlog" | tr '\n' ' ')"
 }
 
 case_online_live()

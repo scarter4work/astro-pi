@@ -296,6 +296,25 @@ TEST_CASE("preview_pixels_full_and_inset", "[grade][golden]") {
     CHECK(q.inset_height == 4);
 }
 
+TEST_CASE("preview_pixels_fit_the_control", "[grade]") {
+    // With a height bound the full view fits max_width x max_height (fit_size); the inset is
+    // unchanged; without one (0) it is the sidecar's width-only downscale.
+    gdg::GradeSettings s;
+    const Image comp = gdg::grade_composite(golden_image("stars_rgb"), golden_image("starless_rgb"), golden_prep(""), s,
+                                            gdg::Log{});
+    const gdg::InsetRegion r = gdg::inset_region(comp.width, comp.height, 100, 50, 64);
+    const gdg::PreviewPixels a = gdg::preview_pixels(comp, 100, 60, r);  // 192 x 144 -> 80 x 60 (height-bound)
+    CHECK(a.width == 80);
+    CHECK(a.height == 60);
+    CHECK(a.full == gdg::downscale_u8_to(gdg::autostretch_u8(comp), comp.width, comp.height, 3, 80, 60));
+    const gdg::PreviewPixels w = gdg::preview_pixels(comp, 100, r);
+    CHECK(a.inset == w.inset);
+    const gdg::PreviewPixels b = gdg::preview_pixels(comp, 100, 0, r);
+    CHECK(b.width == w.width);
+    CHECK(b.height == w.height);
+    CHECK(b.full == w.full);
+}
+
 TEST_CASE("qa_summary_text_is_the_dialogs", "[grade]") {
     gdg::QA qa{120, 87, 0.725, 0.94, false};
     CHECK(gdg::qa_summary(qa) == "Prepared: 87/120 matched (rate 0.72, offset 0.9 px)");

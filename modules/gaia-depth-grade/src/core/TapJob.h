@@ -11,10 +11,18 @@
 #include "TapText.h"
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace gdg {
+
+/// A transport used where it must not be (the module's TapClient off PixInsight's main thread,
+/// plan C14): a programming error, not a network failure. The TAP flow never retries it, never
+/// downgrades it to a warning, and lets it propagate unchanged.
+struct TransportMisuse : std::logic_error {
+    using std::logic_error::logic_error;
+};
 
 struct HttpResponse {
     int status = 0;            // HTTP status; 0 when no answer arrived

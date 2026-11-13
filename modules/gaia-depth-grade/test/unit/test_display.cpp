@@ -128,6 +128,24 @@ TEST_CASE("autostretch_matches_golden", "[display][golden]") {
     CHECK_THROWS_AS(gdg::autostretch_u8(nan), std::invalid_argument);
 }
 
+TEST_CASE("fit_size_bounds_both_sides", "[display]") {
+    // The interface's preview control is 760 x 420: the picture fits inside it, aspect kept, the
+    // limiting side exact and the other rounded as downscale_size rounds (nearest, ties to even).
+    CHECK(gdg::fit_size(3840, 2160, 760, 420) == std::pair<int, int>{747, 420});   // 746.67 -> 747, height-bound
+    CHECK(gdg::fit_size(6024, 4024, 760, 420) == std::pair<int, int>{629, 420});   // 628.77 -> 629
+    CHECK(gdg::fit_size(2160, 3840, 760, 420) == std::pair<int, int>{236, 420});   // portrait: 236.25 -> 236
+    CHECK(gdg::fit_size(7600, 1000, 760, 420) == std::pair<int, int>{760, 100});   // width-bound = downscale_size
+    CHECK(gdg::fit_size(700, 400, 760, 420) == std::pair<int, int>{700, 400});     // never upscaled
+    CHECK(gdg::fit_size(1, 100000, 760, 420) == std::pair<int, int>{1, 420});      // at least 1 px
+    CHECK(gdg::fit_size(3840, 2160, 760, 0) == gdg::downscale_size(3840, 2160, 760)); // no height bound
+    // downscale_u8_to is downscale_u8 for downscale_size's geometry.
+    std::vector<uint8_t> px(size_t(8) * 6 * 3);
+    for (size_t i = 0; i < px.size(); ++i) px[i] = static_cast<uint8_t>(i * 7);
+    CHECK(gdg::downscale_u8_to(px, 8, 6, 3, 4, 3) == gdg::downscale_u8(px, 8, 6, 3, 4));
+    CHECK(gdg::downscale_u8_to(px, 8, 6, 3, 8, 6) == px);
+    CHECK_THROWS_AS(gdg::downscale_u8_to(px, 8, 6, 3, 9, 6), std::invalid_argument);  // never upscaled
+}
+
 TEST_CASE("downscale_keeps_aspect_760", "[display]") {
     // The dialog's preview: <= 760 px wide, aspect kept (PIL: max(1, round(h * 760 / w))).
     CHECK(gdg::downscale_size(6024, 4024, 760) == std::pair<int, int>{760, 508});  // 507.67 -> 508

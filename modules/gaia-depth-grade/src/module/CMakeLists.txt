@@ -31,6 +31,7 @@ if(GDG_BUILD_PROBES)
         probe/ProbeOnline.cpp
         probe/ProbeIntrospect.cpp
         probe/ProbeSolve.cpp
+        probe/InterfaceState.cpp
     )
 endif()
 

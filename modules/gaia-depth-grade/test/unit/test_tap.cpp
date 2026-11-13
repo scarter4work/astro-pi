@@ -305,6 +305,44 @@ TEST_CASE("tap_notices_failure_does_not_stop_the_query", "[tap][flow]") {
     CHECK(cap2.warned("Gaia archive notices unavailable (TLS handshake failed)"));
 }
 
+TEST_CASE("tap_transport_misuse_is_never_retried_or_downgraded", "[tap][flow]") {
+    // A transport used where it must not be (TapClient off PixInsight's main thread, plan C14) is a
+    // programming error: it propagates as is from the notices request, with no retry and no
+    // "notices unavailable" warning, and never becomes "after 3 attempts".
+    class Misused : public FakeTransport {
+    public:
+        int calls = 0;
+        gdg::HttpResponse get(const std::string&) override {
+            ++calls;
+            throw gdg::TransportMisuse("Gaia TAP: wrong thread");
+        }
+        gdg::HttpResponse post_form(const std::string&, const std::string&) override {
+            ++calls;
+            throw gdg::TransportMisuse("Gaia TAP: wrong thread");
+        }
+    } t;
+    Captured cap;
+    CHECK_THROWS_MATCHES(gdg::online_gaia_distances(t, nullptr, kFp, 18.0, cap.log()), gdg::TransportMisuse,
+                         Catch::Matchers::Message("Gaia TAP: wrong thread"));
+    CHECK(t.calls == 1);
+    CHECK_FALSE(cap.warned("Gaia archive notices unavailable"));
+
+    // The same from the job's POST, past healthy notices: one call, no retry.
+    class MisusedPost : public FakeTransport {
+    public:
+        int posts = 0;
+        gdg::HttpResponse post_form(const std::string&, const std::string&) override {
+            ++posts;
+            throw gdg::TransportMisuse("Gaia TAP: wrong thread");
+        }
+    } u;
+    u.expect("GET", kNotices, 200, "text/plain", "");
+    Captured cap2;
+    CHECK_THROWS_AS(gdg::online_gaia_distances(u, nullptr, kFp, 18.0, cap2.log()), gdg::TransportMisuse);
+    CHECK(u.posts == 1);
+    CHECK_FALSE(cap2.warned("Gaia async attempt"));
+}
+
 TEST_CASE("tap_no_magnitude_cut_no_warning", "[tap][flow]") {
     FakeTransport t;
     t.expect("GET", kNotices, 200, "text/plain", "");

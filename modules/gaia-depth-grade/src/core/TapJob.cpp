@@ -81,6 +81,8 @@ void log_gaia_notices(HttpTransport& http, const Log& log) {
     HttpResponse r;
     try {
         r = http.get(kGaiaNotices);
+    } catch (const TransportMisuse&) {
+        throw;  // a programming error, never "notices unavailable"
     } catch (const std::exception& e) {  // only the notices are skipped; the query still runs
         log_warning(log, std::string("Gaia archive notices unavailable (") + e.what() + ")");
         return;
@@ -131,6 +133,8 @@ auto cached_tap_query(HttpTransport& http, const OnlineCache* cache, const TapQu
             log_info(log, strformat("%s: %ld sources", q.count_label.c_str(), rows));
             ok = true;
             break;
+        } catch (const TransportMisuse&) {
+            throw;  // a programming error: no retry, no wrapping
         } catch (const std::exception& e) {  // retry, then surface the real error
             last = e.what();
             log_warning(log, strformat("Gaia async attempt %d/%d failed: %s", attempt, opt.attempts, last.c_str()));

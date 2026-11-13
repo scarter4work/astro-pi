@@ -100,6 +100,9 @@ struct PreviewPixels {
     std::vector<uint8_t> inset;
 };
 PreviewPixels preview_pixels(const Image& composite, int max_width, const InsetRegion& inset);
+/// The same with the full view fitted inside max_width x max_height (fit_size; the interface's
+/// 760 x 420 control); max_height < 1: no height bound.
+PreviewPixels preview_pixels(const Image& composite, int max_width, int max_height, const InsetRegion& inset);
 
 /// The dialog's QA status line, verbatim: "Prepared: %d/%d matched (rate %.2f, offset %.1f px)",
 /// plus "  ⚠ LOW MATCH — depth grade unreliable" when the rate is below min_match_rate.

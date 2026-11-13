@@ -21,13 +21,6 @@
 #include <utility>
 #include <vector>
 
-#ifdef GDG_PROBES
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <fstream>
-#endif
-
 namespace pcl
 {
 
@@ -37,10 +30,50 @@ namespace
 {
 
 const char* const kTitle = "Gaia Depth Grade"; // UI_TITLE
+const char* const kPickTarget = "Pick a target and click Prepare.";
 
 String S( const std::string& u8 )
 {
    return String::UTF8ToUTF16( u8.c_str() );
+}
+
+/// The non-empty lines of a text, trimmed (the Gaia DR3 files box).
+StringList NonEmptyLines( const String& text )
+{
+   StringList lines, out;
+   text.Break( lines, '\n', true/*trim*/ );
+   for ( const String& l : lines )
+      if ( !l.IsEmpty() )
+         out << l;
+   return out;
+}
+
+/// The prepare-time options differ (the fields a Prepare depends on).
+bool PrepareOptionsDiffer( const GradeOptions& a, const GradeOptions& b )
+{
+   return gdg::prepare_settings_differ( a.settings, b.settings ) || a.suppliedViews != b.suppliedViews ||
+          a.starsViewId != b.starsViewId || a.starlessViewId != b.starlessViewId || a.solveIndexFile != b.solveIndexFile ||
+          a.gaiaDatabaseFiles != b.gaiaDatabaseFiles;
+}
+
+String MessageOf( std::exception_ptr e )
+{
+   try
+   {
+      std::rethrow_exception( e );
+   }
+   catch ( const Exception& x )
+   {
+      return x.Message();
+   }
+   catch ( const std::exception& x )
+   {
+      return String::UTF8ToUTF16( x.what() );
+   }
+   catch ( ... )
+   {
+      return "unknown error";
+   }
 }
 
 /// An 8-bit (h, w, channels) buffer as an opaque bitmap (grey for one channel).
@@ -125,6 +158,14 @@ private:
 
 } // namespace
 
+#ifdef GDG_PROBES
+#define GDG_RECORD( action, ok ) RecordAction( action, ok )
+#define GDG_WRITE_STATE() WriteState()
+#else
+#define GDG_RECORD( action, ok ) ((void)0)
+#define GDG_WRITE_STATE() ((void)0)
+#endif
+
 // ----------------------------------------------------------------------------
 
 GaiaDepthGradeInterface::GaiaDepthGradeInterface()
@@ -173,7 +214,7 @@ bool GaiaDepthGradeInterface::Launch( const MetaProcess& P, const ProcessImpleme
       if ( !aw.IsNull() )
          SetTarget( aw.MainView() );
       else
-         SetStatus( "Pick a target and click Prepare." );
+         SetStatus( kPickTarget );
    }
    dynamic = false;
    return &P == TheGaiaDepthGradeProcess;
@@ -199,15 +240,19 @@ bool GaiaDepthGradeInterface::RequiresInstanceValidation() const
 
 bool GaiaDepthGradeInterface::ImportProcess( const ProcessImplementation& p )
 {
-   const gdg::GradeSettings before = instance.Settings();
-   const GradeOptions beforeOpt = instance.Options();
+   if ( m_busy )
+   {
+      // A process icon dropped (or Reset) while Prepare / Preview / Execute runs: refused, so the
+      // settings the run uses stay the ones it started with.
+      Console().WarningLn( "<end><cbr>[GDG] ** Warning: Gaia Depth Grade is busy; the instance was not imported. "
+                           "Try again when it has finished." );
+      return false;
+   }
+   const GradeOptions before = instance.Options();
    instance.Assign( p );
    if ( GUI != nullptr )
    {
-      const GradeOptions now = instance.Options();
-      if ( gdg::prepare_settings_differ( before, now.settings ) || beforeOpt.suppliedViews != now.suppliedViews ||
-           beforeOpt.starsViewId != now.starsViewId || beforeOpt.starlessViewId != now.starlessViewId ||
-           beforeOpt.solveIndexFile != now.solveIndexFile || beforeOpt.gaiaDatabaseFiles != now.gaiaDatabaseFiles )
+      if ( PrepareOptionsDiffer( before, instance.Options() ) )
          MarkPrepareStale();
       else
          MarkPreviewStale();
@@ -266,24 +311,25 @@ void GaiaDepthGradeInterface::UpdateControls()
    GUI->Output_ComboBox.SetCurrentItem( instance.p_outputMode );
    if ( GUI->Index_Edit.Text().Trimmed() != instance.p_solveIndexFile )
       GUI->Index_Edit.SetText( instance.p_solveIndexFile );
-   {
-      // Rewritten only when it names other files: never under the user's caret while typing.
-      StringList lines, shown;
-      GUI->Files_TextBox.Text().Break( lines, '\n', true/*trim*/ );
-      for ( const String& l : lines )
-         if ( !l.IsEmpty() )
-            shown << l;
-      if ( shown != instance.p_gaiaDatabaseFiles )
-         GUI->Files_TextBox.SetText( String().ToNewLineSeparated( instance.p_gaiaDatabaseFiles ) );
-   }
+   // Rewritten only when it names other files: never under the user's caret while typing.
+   if ( NonEmptyLines( GUI->Files_TextBox.Text() ) != instance.p_gaiaDatabaseFiles )
+      GUI->Files_TextBox.SetText( String().ToNewLineSeparated( instance.p_gaiaDatabaseFiles ) );
+   GUI->QA_Label.SetText( m_qaLine );
 
+   // While busy every input is off (review I1); the handlers refuse too (m_busy).
    const bool idle = !m_busy;
-   GUI->Prepare_PushButton.Enable( idle );
+   Control* const inputs[] = { &GUI->Brightness_NumericControl, &GUI->Size_NumericControl, &GUI->Contrast_NumericControl,
+                               &GUI->Saturation_NumericControl, &GUI->HaloSigma_NumericControl, &GUI->PLow_NumericControl,
+                               &GUI->PHigh_NumericControl, &GUI->Nebula_CheckBox, &GUI->NebulaStrength_NumericControl,
+                               &GUI->NebulaAtmos_NumericControl, &GUI->NebulaStructure_NumericControl,
+                               &GUI->Detect_NumericEdit, &GUI->Match_NumericEdit, &GUI->Offline_CheckBox,
+                               &GUI->Advanced_SectionBar, &GUI->Advanced_Control, &GUI->Preview_Control,
+                               &GUI->Target_ViewList, &GUI->Browse_PushButton, &GUI->Close_PushButton };
+   for ( Control* c : inputs )
+      c->Enable( idle );
+   GUI->Prepare_PushButton.Enable( idle && !m_targetId.IsEmpty() );
    GUI->Preview_PushButton.Enable( idle && m_prepared );
    GUI->Execute_PushButton.Enable( idle && m_prepared );
-   GUI->Browse_PushButton.Enable( idle );
-   GUI->Target_ViewList.Enable( idle );
-   GUI->Close_PushButton.Enable( idle );
 }
 
 void GaiaDepthGradeInterface::SetStatus( const String& msg )
@@ -296,9 +342,7 @@ void GaiaDepthGradeInterface::SetStatus( const String& msg )
       GUI->Status_Label.SetText( msg );
    Console().NoteLn( "<end><cbr>[GDG] " + msg.EncodedHTMLSpecialChars() );
    Module->ProcessEvents( true/*excludeUserInputEvents*/ );
-#ifdef GDG_PROBES
-   WriteState();
-#endif
+   GDG_WRITE_STATE();
 }
 
 void GaiaDepthGradeInterface::SetError( const String& msg )
@@ -311,9 +355,7 @@ void GaiaDepthGradeInterface::SetError( const String& msg )
       GUI->Status_Label.SetText( m_status );
    Console().CriticalLn( "<end><cbr>[GDG] ERROR: " + msg.EncodedHTMLSpecialChars() );
    Module->ProcessEvents( true );
-#ifdef GDG_PROBES
-   WriteState();
-#endif
+   GDG_WRITE_STATE();
 }
 
 void GaiaDepthGradeInterface::SetTarget( const View& view )
@@ -337,6 +379,7 @@ void GaiaDepthGradeInterface::MarkPrepareStale()
 {
    m_prepared = false;
    m_session.reset();
+   m_qaLine.Clear();
    m_previewStale = true;
    UpdateControls();
    if ( GUI != nullptr )
@@ -348,9 +391,7 @@ void GaiaDepthGradeInterface::MarkPreviewStale()
    m_previewStale = true;
    if ( GUI != nullptr )
       GUI->Preview_Control.Update();
-#ifdef GDG_PROBES
-   WriteState();
-#endif
+   GDG_WRITE_STATE();
 }
 
 void GaiaDepthGradeInterface::SetBusy( bool busy )
@@ -359,9 +400,12 @@ void GaiaDepthGradeInterface::SetBusy( bool busy )
    if ( GUI != nullptr )
       SetCursor( pcl::Cursor( busy ? StdCursor::Wait : StdCursor::Arrow ) );
    UpdateControls();
-#ifdef GDG_PROBES
-   WriteState();
-#endif
+   GDG_WRITE_STATE();
+}
+
+bool GaiaDepthGradeInterface::SessionMatchesSettings() const
+{
+   return !m_prepared || (m_session && !PrepareOptionsDiffer( m_session->options, instance.Options() ));
 }
 
 gdg::Log GaiaDepthGradeInterface::GuiLog()
@@ -389,10 +433,11 @@ gdg::Log GaiaDepthGradeInterface::GuiLog()
 
 WorkRunner GaiaDepthGradeInterface::GuiRunner( const String& what )
 {
-   // The PCL-free stage on a pcl::Thread. The GUI thread keeps painting (user input is held back:
-   // every control is disabled while busy), writes the stage's log lines (the console and the
-   // status line live on this thread), and drives a StatusMonitor (unbounded: the core stages
-   // report no counts) on the console's standard status.
+   // The PCL-free stage on a pcl::Thread. The GUI thread keeps painting, writes the stage's log
+   // lines (the console and the status line live on this thread), and drives a StatusMonitor
+   // (unbounded: the core stages report no counts) on the console's standard status. Events are
+   // processed meanwhile -- here without user input, but the StatusMonitor's abort check processes
+   // events too -- so the window's inputs are disabled and its handlers refuse while busy (SetBusy).
    return [this, what]( const std::function<void( const gdg::Log& )>& work )
    {
       const gdg::Log to = GuiLog();
@@ -443,41 +488,13 @@ WorkRunner GaiaDepthGradeInterface::GuiRunner( const String& what )
 
 // ----------------------------------------------------------------------------
 
-namespace
+bool GaiaDepthGradeInterface::FailAction( const char* action )
 {
-
-String MessageOf( std::exception_ptr e )
-{
-   try
-   {
-      std::rethrow_exception( e );
-   }
-   catch ( const Exception& x )
-   {
-      return x.Message();
-   }
-   catch ( const std::exception& x )
-   {
-      return String::UTF8ToUTF16( x.what() );
-   }
-   catch ( ... )
-   {
-      return "unknown error";
-   }
+   SetBusy( false );
+   SetError( MessageOf( std::current_exception() ) );
+   GDG_RECORD( action, false );
+   return false;
 }
-
-} // namespace
-
-#ifdef GDG_PROBES
-void GaiaDepthGradeInterface::RecordAction( const char* action, bool ok )
-{
-   m_actionLog << String( action ) + (ok ? " ok" : " error");
-   WriteState();
-}
-#define GDG_RECORD( action, ok ) RecordAction( action, ok )
-#else
-#define GDG_RECORD( action, ok ) ((void)0)
-#endif
 
 bool GaiaDepthGradeInterface::DoPrepare()
 {
@@ -489,30 +506,34 @@ bool GaiaDepthGradeInterface::DoPrepare()
       return false;
    }
    MarkPrepareStale();
+   const IsoString targetId = m_targetId;
+   const GradeOptions options = instance.Options();
    SetBusy( true );
-   bool ok = false;
+   std::shared_ptr<const PrepareSession> session;
    try
    {
       SetStatus( String::UTF8ToUTF16( "Preparing: solving + StarXTerminator + Gaia match (~50s)\xE2\x80\xA6" ) );
-      PrepareSession s = RunPrepare( target, instance.Options(), GuiLog(), GuiRunner( "Prepare (detection + Gaia cross-match)" ) );
-      m_session = std::make_unique<PrepareSession>( std::move( s ) );
-      gdg::default_inset_center( m_session->width, m_session->height, m_insetCx, m_insetCy );
-      instance.SetQA( m_session->prep.qa );
-      m_prepared = true;
-      ok = true;
+      session = std::make_shared<const PrepareSession>(
+         RunPrepare( target, options, GuiLog(), GuiRunner( "Prepare (detection + Gaia cross-match)" ) ) );
+      // The settings or the target cannot change while busy; if they did anyway, this session
+      // describes neither and is dropped.
+      if ( m_targetId != targetId || PrepareOptionsDiffer( options, instance.Options() ) )
+         throw Error( "The settings or the target changed while Prepare ran. Prepare again." );
    }
    catch ( ... )
    {
-      SetBusy( false );
-      SetError( MessageOf( std::current_exception() ) );
-      GDG_RECORD( "prepare", false );
-      return false;
+      return FailAction( "prepare" );
    }
+   m_session = session;
+   gdg::default_inset_center( m_session->width, m_session->height, m_insetCx, m_insetCy );
+   instance.SetQA( m_session->prep.qa );
+   m_qaLine = S( gdg::qa_summary( m_session->prep.qa ) );
+   m_prepared = true;
    SetBusy( false );
-   SetStatus( S( gdg::qa_summary( m_session->prep.qa ) ) );
+   SetStatus( m_qaLine );
    GDG_RECORD( "prepare", true );
    DoPreview();
-   return ok;
+   return true;
 }
 
 bool GaiaDepthGradeInterface::DoPreview()
@@ -536,13 +557,13 @@ bool GaiaDepthGradeInterface::DoPreview()
    {
       SetStatus( String::UTF8ToUTF16( "Rendering preview\xE2\x80\xA6" ) );
       const gdg::GradeSettings settings = instance.Settings();
-      const gdg::InsetRegion region = gdg::inset_region( m_session->width, m_session->height, m_insetCx, m_insetCy, kInsetSize );
+      const std::shared_ptr<const PrepareSession> session = m_session; // held for the render
+      const gdg::InsetRegion region = gdg::inset_region( session->width, session->height, m_insetCx, m_insetCy, kInsetSize );
       gdg::PreviewPixels px;
-      const PrepareSession& session = *m_session;
       GuiRunner( "Preview" )( [&]( const gdg::Log& wl )
       {
-         const gdg::Image comp = gdg::grade_composite( session.stars, session.starless, session.prep, settings, wl );
-         px = gdg::preview_pixels( comp, kPreviewWidth, region );
+         const gdg::Image comp = gdg::grade_composite( session->stars, session->starless, session->prep, settings, wl );
+         px = gdg::preview_pixels( comp, kPreviewWidth, kPreviewHeight, region );
       } );
       m_previewBmp = MakeBitmap( px.full, px.width, px.height, px.channels );
       m_insetBmp = MakeBitmap( px.inset, px.inset_width, px.inset_height, px.channels );
@@ -550,10 +571,7 @@ bool GaiaDepthGradeInterface::DoPreview()
    }
    catch ( ... )
    {
-      SetBusy( false );
-      SetError( MessageOf( std::current_exception() ) );
-      GDG_RECORD( "preview", false );
-      return false;
+      return FailAction( "preview" );
    }
    SetBusy( false );
    GUI->Preview_Control.Update();
@@ -584,15 +602,13 @@ bool GaiaDepthGradeInterface::DoExecute()
    try
    {
       SetStatus( String::UTF8ToUTF16( "Executing: full-res render + recombine\xE2\x80\xA6" ) );
-      const gdg::Image comp = RenderComposite( *m_session, instance.Settings(), GuiRunner( "Execute (full-resolution render)" ) );
-      result = CreateOutputWindow( *m_session, comp );
+      const std::shared_ptr<const PrepareSession> session = m_session; // held for the render
+      const gdg::Image comp = RenderComposite( *session, instance.Settings(), GuiRunner( "Execute (full-resolution render)" ) );
+      result = CreateOutputWindow( *session, comp );
    }
    catch ( ... )
    {
-      SetBusy( false );
-      SetError( MessageOf( std::current_exception() ) );
-      GDG_RECORD( "execute", false );
-      return false;
+      return FailAction( "execute" );
    }
    SetBusy( false );
    const String id = result.MainView().Id();
@@ -617,25 +633,31 @@ void GaiaDepthGradeInterface::DoBrowse()
    }
    catch ( ... )
    {
+      SetError( "failed to open " + path + ": " + MessageOf( std::current_exception() ) );
+      return;
    }
    if ( w.IsEmpty() || w[0].IsNull() )
    {
       SetError( "failed to open " + path );
       return;
    }
-   w[0].Show();
-   GUI->Target_ViewList.Regenerate( true/*mainViews*/, false/*previews*/ );
+   {
+      // The new windows reach the view lists through events, and the lists report their own
+      // selection changes as they regenerate (a <No View Selected> that is nobody's pick: measured
+      // 2026-11-13, it cleared the target just set). Those are absorbed here, then the target set.
+      const bool was = m_updating;
+      m_updating = true;
+      w[0].Show();
+      GUI->Target_ViewList.Regenerate( true/*mainViews*/, false/*previews*/ );
+      Module->ProcessEvents( true/*excludeUserInputEvents*/ );
+      m_updating = was;
+   }
    SetTarget( w[0].MainView() );
 }
 
 void GaiaDepthGradeInterface::ReadFilesText()
 {
-   StringList lines;
-   GUI->Files_TextBox.Text().Break( lines, '\n', true/*trim*/ );
-   StringList files;
-   for ( const String& l : lines )
-      if ( !l.IsEmpty() )
-         files << l;
+   const StringList files = NonEmptyLines( GUI->Files_TextBox.Text() );
    if ( files != instance.p_gaiaDatabaseFiles )
    {
       instance.p_gaiaDatabaseFiles = files;
@@ -644,6 +666,8 @@ void GaiaDepthGradeInterface::ReadFilesText()
 }
 
 // ----------------------------------------------------------------------------
+// Event handlers. Each refuses while busy (review I1) and while UpdateControls writes the
+// controls (m_updating).
 
 void GaiaDepthGradeInterface::e_Click( Button& sender, bool )
 {
@@ -671,14 +695,12 @@ void GaiaDepthGradeInterface::e_Click( Button& sender, bool )
          MarkPrepareStale();
       }
    }
-#ifdef GDG_PROBES
-   WriteState();
-#endif
+   GDG_WRITE_STATE();
 }
 
 void GaiaDepthGradeInterface::e_Check( Button& sender, Button::check_state )
 {
-   if ( GUI == nullptr || m_updating )
+   if ( GUI == nullptr || m_updating || m_busy )
       return;
    const bool on = static_cast<CheckBox&>( sender ).IsChecked();
    if ( sender == GUI->Nebula_CheckBox )
@@ -701,7 +723,7 @@ void GaiaDepthGradeInterface::e_Check( Button& sender, Button::check_state )
 
 void GaiaDepthGradeInterface::e_ValueUpdated( NumericEdit& sender, double v )
 {
-   if ( GUI == nullptr || m_updating )
+   if ( GUI == nullptr || m_updating || m_busy )
       return;
    // Live (render) controls: the preview is stale.
    struct Live { NumericEdit* c; double* p; };
@@ -744,7 +766,9 @@ void GaiaDepthGradeInterface::e_ValueUpdated( NumericEdit& sender, double v )
 
 void GaiaDepthGradeInterface::e_SpinValueUpdated( SpinBox& sender, int v )
 {
-   if ( GUI != nullptr && !m_updating && sender == GUI->HaloMinRefs_SpinBox )
+   if ( GUI == nullptr || m_updating || m_busy )
+      return;
+   if ( sender == GUI->HaloMinRefs_SpinBox )
    {
       instance.p_haloMinRefs = v;
       MarkPreviewStale();
@@ -753,7 +777,7 @@ void GaiaDepthGradeInterface::e_SpinValueUpdated( SpinBox& sender, int v )
 
 void GaiaDepthGradeInterface::e_ItemSelected( ComboBox& sender, int item )
 {
-   if ( GUI == nullptr || m_updating )
+   if ( GUI == nullptr || m_updating || m_busy )
       return;
    if ( sender == GUI->Split_ComboBox )
    {
@@ -766,12 +790,23 @@ void GaiaDepthGradeInterface::e_ItemSelected( ComboBox& sender, int item )
 
 void GaiaDepthGradeInterface::e_ViewSelected( ViewList& sender, View& view )
 {
-   if ( GUI == nullptr || m_busy || m_updating )
+   if ( GUI == nullptr || m_updating || m_busy )
       return;
    if ( sender == GUI->Target_ViewList )
    {
       if ( !view.IsNull() )
          SetTarget( view );
+      else if ( (GUI->Target_ViewList.IsFocused() || GUI->Target_ViewList.IsUnderMouse()) &&
+                (m_targetId.IsEmpty() || !View::ViewById( m_targetId ).IsNull()) )
+      {
+         // <No View Selected> picked by the user (review M4): no target, nothing to Prepare. Not a
+         // pick: the list regenerating as windows come and go (it is then neither focused nor under
+         // the pointer), and a target whose window was closed, which keeps its id so that
+         // Preview/Execute/Prepare report it closed (Review Focus 4).
+         m_targetId.Clear();
+         MarkPrepareStale();
+         SetStatus( kPickTarget );
+      }
    }
    else if ( sender == GUI->Stars_ViewList )
    {
@@ -787,7 +822,9 @@ void GaiaDepthGradeInterface::e_ViewSelected( ViewList& sender, View& view )
 
 void GaiaDepthGradeInterface::e_EditCompleted( Edit& sender )
 {
-   if ( GUI != nullptr && !m_updating && sender == GUI->Index_Edit )
+   if ( GUI == nullptr || m_updating || m_busy )
+      return;
+   if ( sender == GUI->Index_Edit )
    {
       const String t = sender.Text().Trimmed();
       if ( t != instance.p_solveIndexFile )
@@ -800,7 +837,9 @@ void GaiaDepthGradeInterface::e_EditCompleted( Edit& sender )
 
 void GaiaDepthGradeInterface::e_TextUpdated( TextBox& sender, const String& )
 {
-   if ( GUI != nullptr && !m_updating && sender == GUI->Files_TextBox )
+   if ( GUI == nullptr || m_updating || m_busy )
+      return;
+   if ( sender == GUI->Files_TextBox )
       ReadFilesText();
 }
 
@@ -834,6 +873,10 @@ void GaiaDepthGradeInterface::e_MousePress( Control& sender, const pcl::Point& p
       return;
    if ( !m_prepared || !m_session || m_previewBmp.IsNull() )
       return;
+   // The picture is fitted inside the control (uniform scale, drawn at the origin): a click beside
+   // it picks nothing.
+   if ( pos.x < 0 || pos.y < 0 || pos.x >= m_previewBmp.Width() || pos.y >= m_previewBmp.Height() )
+      return;
    gdg::inset_center_from_click( pos.x, pos.y, m_session->width, m_previewBmp.Width(), m_insetCx, m_insetCy );
    DoPreview();
 }
@@ -848,186 +891,6 @@ void GaiaDepthGradeInterface::e_ToggleSection( SectionBar&, Control&, bool start
       SetFixedHeight();
    }
 }
-
-// ----------------------------------------------------------------------------
-
-#ifdef GDG_PROBES
-
-namespace
-{
-
-std::string J( const String& s )
-{
-   std::string out = "\"";
-   for ( char c : std::string( s.ToUTF8().c_str() ) )
-   {
-      if ( c == '"' || c == '\\' )
-         out += '\\', out += c;
-      else if ( c == '\n' )
-         out += "\\n";
-      else if ( static_cast<unsigned char>( c ) < 0x20 )
-         out += ' ';
-      else
-         out += c;
-   }
-   return out + "\"";
-}
-
-std::string Num( double v )
-{
-   char b[64];
-   std::snprintf( b, sizeof( b ), "%.10g", v );
-   return b;
-}
-
-std::string Geometry( const Control& c )
-{
-   const pcl::Point p = c.LocalToGlobal( pcl::Point( 0, 0 ) );
-   return "\"rect\":[" + std::to_string( p.x ) + "," + std::to_string( p.y ) + "," + std::to_string( c.Width() ) + "," +
-          std::to_string( c.Height() ) + "],\"enabled\":" + (c.IsEnabled() ? "true" : "false") +
-          ",\"visible\":" + (c.IsVisible() ? "true" : "false");
-}
-
-std::string Rect( const Control& c )
-{
-   const pcl::Point p = c.LocalToGlobal( pcl::Point( 0, 0 ) );
-   return "[" + std::to_string( p.x ) + "," + std::to_string( p.y ) + "," + std::to_string( c.Width() ) + "," +
-          std::to_string( c.Height() ) + "]";
-}
-
-std::string ValueFields( const NumericEdit& c )
-{
-   return "\"value\":" + Num( c.Value() ) + ",\"label\":" + J( c.label.Text() ) + ",\"text\":" + J( c.edit.Text() ) +
-          ",\"range\":[" + Num( c.LowerBound() ) + "," + Num( c.UpperBound() ) + "]," + Geometry( c ) +
-          ",\"edit\":" + Rect( c.edit );
-}
-
-std::string Value( const char* name, const NumericEdit& c )
-{
-   return std::string( "\"" ) + name + "\":{" + ValueFields( c ) + "}";
-}
-
-std::string Value( const char* name, const NumericControl& c )
-{
-   return std::string( "\"" ) + name + "\":{" + ValueFields( c ) + ",\"slider\":" + Rect( c.slider ) + "}";
-}
-
-std::string Check( const char* name, const CheckBox& c )
-{
-   return std::string( "\"" ) + name + "\":{\"checked\":" + (c.IsChecked() ? "true" : "false") + ",\"text\":" + J( c.Text() ) +
-          ",\"toolTip\":" + J( c.ToolTip() ) + "," + Geometry( c ) + "}";
-}
-
-std::string Button_( const char* name, const PushButton& c )
-{
-   return std::string( "\"" ) + name + "\":{\"text\":" + J( c.Text() ) + ",\"toolTip\":" + J( c.ToolTip() ) + "," +
-          Geometry( c ) + "}";
-}
-
-std::string Plain( const char* name, const Control& c )
-{
-   return std::string( "\"" ) + name + "\":{" + Geometry( c ) + "}";
-}
-
-uint64 BitmapSum( const Bitmap& b )
-{
-   if ( b.IsNull() )
-      return 0;
-   uint64 s = 0;
-   for ( int y = 0; y < b.Height(); ++y )
-   {
-      const RGBA* row = b.ScanLine( y );
-      for ( int x = 0; x < b.Width(); ++x )
-         s += (row[x] & 0xffffff) * uint64( 1 + (x + 7*y) % 13 );
-   }
-   return s;
-}
-
-} // namespace
-
-void GaiaDepthGradeInterface::WriteState() const
-{
-   const char* path = std::getenv( "GDG_GUI_STATE" );
-   if ( path == nullptr || *path == '\0' || GUI == nullptr )
-      return;
-   std::string j = "{";
-   j += "\"stamp\":" + Num( std::chrono::duration<double>( std::chrono::system_clock::now().time_since_epoch() ).count() );
-   j += ",\"target\":" + J( String( m_targetId ) );
-   j += ",\"targetList\":" + J( GUI->Target_ViewList.CurrentView().IsNull() ? String()
-                                                                            : String( GUI->Target_ViewList.CurrentView().Id() ) );
-   j += std::string( ",\"prepared\":" ) + (m_prepared ? "true" : "false");
-   j += std::string( ",\"previewStale\":" ) + (m_previewStale ? "true" : "false");
-   j += std::string( ",\"busy\":" ) + (m_busy ? "true" : "false");
-   j += ",\"status\":" + J( GUI->Status_Label.Text() );
-   j += ",\"statusHistory\":[";
-   for ( size_type i = m_statusLog.Length() > 80 ? m_statusLog.Length() - 80 : 0, n = 0; i < m_statusLog.Length(); ++i, ++n )
-      j += (n ? "," : "") + J( m_statusLog[i] );
-   j += "]";
-   j += ",\"statusCount\":" + std::to_string( m_statusLog.Length() );
-   j += ",\"actions\":[";
-   for ( size_type i = 0; i < m_actionLog.Length(); ++i )
-      j += (i ? "," : "") + J( m_actionLog[i] );
-   j += "]";
-   j += ",\"windowTitle\":" + J( WindowTitle() );
-   j += ",\"inset\":[" + std::to_string( m_insetCx ) + "," + std::to_string( m_insetCy ) + "]";
-   j += ",\"previewBitmap\":[" + std::to_string( m_previewBmp.IsNull() ? 0 : m_previewBmp.Width() ) + "," +
-        std::to_string( m_previewBmp.IsNull() ? 0 : m_previewBmp.Height() ) + "," + std::to_string( BitmapSum( m_previewBmp ) ) + "]";
-   j += ",\"insetBitmap\":[" + std::to_string( m_insetBmp.IsNull() ? 0 : m_insetBmp.Width() ) + "," +
-        std::to_string( m_insetBmp.IsNull() ? 0 : m_insetBmp.Height() ) + "," + std::to_string( BitmapSum( m_insetBmp ) ) + "]";
-   if ( m_session )
-   {
-      const gdg::InsetRegion r = gdg::inset_region( m_session->width, m_session->height, m_insetCx, m_insetCy, kInsetSize );
-      j += ",\"insetRegion\":[" + std::to_string( r.x ) + "," + std::to_string( r.y ) + "," + std::to_string( r.w ) + "," +
-           std::to_string( r.h ) + "]";
-   }
-   if ( m_session )
-      j += ",\"session\":{\"width\":" + std::to_string( m_session->width ) + ",\"height\":" + std::to_string( m_session->height ) +
-           ",\"nDetected\":" + std::to_string( m_session->prep.qa.n_detected ) + ",\"nMatched\":" +
-           std::to_string( m_session->prep.qa.n_matched ) + "}";
-   j += ",\"labels\":{\"live\":" + J( GUI->Live_Label.Text() ) + ",\"prep\":" + J( GUI->Prep_Label.Text() ) +
-        ",\"inset\":" + J( GUI->Inset_Label.Text() ) + ",\"target\":" + J( GUI->Target_Label.Text() ) + "}";
-   j += ",\"controls\":{";
-   j += Value( "brightness", GUI->Brightness_NumericControl ) + "," + Value( "size", GUI->Size_NumericControl ) + "," +
-        Value( "contrast", GUI->Contrast_NumericControl ) + "," + Value( "saturation", GUI->Saturation_NumericControl ) + "," +
-        Value( "haloSigma", GUI->HaloSigma_NumericControl ) + "," + Value( "pLow", GUI->PLow_NumericControl ) + "," +
-        Value( "pHigh", GUI->PHigh_NumericControl ) + "," + Check( "nebula", GUI->Nebula_CheckBox ) + "," +
-        Value( "nebulaStrength", GUI->NebulaStrength_NumericControl ) + "," +
-        Value( "nebulaAtmos", GUI->NebulaAtmos_NumericControl ) + "," +
-        Value( "nebulaStructure", GUI->NebulaStructure_NumericControl ) + "," +
-        Value( "detect", GUI->Detect_NumericEdit ) + "," + Value( "match", GUI->Match_NumericEdit ) + "," +
-        Check( "offline", GUI->Offline_CheckBox ) + "," + Value( "haloGain", GUI->HaloGain_NumericControl ) + "," +
-        Value( "detectFWHM", GUI->DetectFWHM_NumericEdit ) + "," + Value( "minMatchRate", GUI->MinMatchRate_NumericEdit ) + "," +
-        Value( "neutral", GUI->Neutral_NumericEdit ) + "," + Check( "magLimitEnabled", GUI->MagLimit_CheckBox ) + "," +
-        Value( "magLimit", GUI->MagLimit_NumericEdit ) + "," + Value( "parallaxSNR", GUI->ParallaxSNR_NumericEdit ) + "," +
-        "\"haloMinRefs\":{\"value\":" + std::to_string( GUI->HaloMinRefs_SpinBox.Value() ) + "," +
-        Geometry( GUI->HaloMinRefs_SpinBox ) + "}," + Value( "haloRadiusSigma", GUI->HaloRadius_NumericEdit ) + "," +
-        Value( "haloMoffatBeta", GUI->HaloBeta_NumericEdit ) + "," +
-        "\"splitMode\":{\"item\":" + std::to_string( GUI->Split_ComboBox.CurrentItem() ) + "," + Geometry( GUI->Split_ComboBox ) +
-        "}," + "\"outputMode\":{\"item\":" + std::to_string( GUI->Output_ComboBox.CurrentItem() ) + "," +
-        Geometry( GUI->Output_ComboBox ) + "}," + "\"advanced\":{\"expanded\":" +
-        (GUI->Advanced_Control.IsVisible() ? "true" : "false") + "," + Geometry( GUI->Advanced_SectionBar ) + "}," +
-        Button_( "prepare", GUI->Prepare_PushButton ) + "," + Button_( "preview", GUI->Preview_PushButton ) + "," +
-        Button_( "execute", GUI->Execute_PushButton ) + "," + Button_( "close", GUI->Close_PushButton ) + "," +
-        Button_( "browse", GUI->Browse_PushButton ) + "," + Plain( "previewControl", GUI->Preview_Control ) + "," +
-        Plain( "insetControl", GUI->Inset_Control ) + "," + Plain( "targetList", GUI->Target_ViewList ) + "," +
-        Plain( "status", GUI->Status_Label );
-   j += "}";
-   j += std::string( ",\"interfaceVisible\":" ) + (IsVisible() ? "true" : "false");
-   j += "}\n";
-   const std::string tmp = std::string( path ) + ".tmp";
-   {
-      std::ofstream f( tmp, std::ios::binary | std::ios::trunc );
-      f << j;
-   }
-   std::rename( tmp.c_str(), path );
-}
-
-void GaiaDepthGradeInterface::e_Timer( Timer& )
-{
-   WriteState();
-}
-
-#endif // GDG_PROBES
 
 // ----------------------------------------------------------------------------
 
@@ -1065,30 +928,33 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
    Preview_Sizer.Add( Inset_Sizer );
    Preview_Sizer.AddStretch();
 
-   // Live sliders (liveSlider: label, range, precision as the dialog).
-   const auto slider = [&]( NumericControl& c, const char* label, const GDGReal* p, int width )
+   // Sliders (the dialog's liveSlider: label, the parameter's range and precision; 200 steps).
+   const auto slider = [&]( NumericControl& c, const char* label, const GDGReal* p, int sliderSteps = 200,
+                            const char* toolTip = nullptr )
    {
       c.label.SetText( label );
-      c.label.SetMinWidth( width );
+      c.label.SetMinWidth( labelWidth );
       c.SetReal();
       c.SetRange( p->MinimumValue(), p->MaximumValue() );
       c.SetPrecision( p->Precision() );
-      c.slider.SetRange( 0, 200 );
+      c.slider.SetRange( 0, sliderSteps );
       c.slider.SetScaledMinWidth( 200 );
+      if ( toolTip != nullptr )
+         c.SetToolTip( toolTip );
       c.OnValueUpdated( (NumericEdit::value_event_handler)&GaiaDepthGradeInterface::e_ValueUpdated, w );
    };
-   slider( Brightness_NumericControl, "Brightness:", TheGDGBrightnessParameter, labelWidth );
-   slider( Size_NumericControl, "Size:", TheGDGSizeParameter, labelWidth );
-   slider( Contrast_NumericControl, "Contrast:", TheGDGContrastParameter, labelWidth );
-   slider( Saturation_NumericControl, "Saturation:", TheGDGSaturationParameter, labelWidth );
-   slider( HaloSigma_NumericControl, "Halo sigma:", TheGDGHaloSigmaParameter, labelWidth );
-   slider( PLow_NumericControl, "p_low:", TheGDGPLowParameter, labelWidth );
-   slider( PHigh_NumericControl, "p_high:", TheGDGPHighParameter, labelWidth );
+   slider( Brightness_NumericControl, "Brightness:", TheGDGBrightnessParameter );
+   slider( Size_NumericControl, "Size:", TheGDGSizeParameter );
+   slider( Contrast_NumericControl, "Contrast:", TheGDGContrastParameter );
+   slider( Saturation_NumericControl, "Saturation:", TheGDGSaturationParameter );
+   slider( HaloSigma_NumericControl, "Halo sigma:", TheGDGHaloSigmaParameter );
+   slider( PLow_NumericControl, "p_low:", TheGDGPLowParameter );
+   slider( PHigh_NumericControl, "p_high:", TheGDGPHighParameter );
    Nebula_CheckBox.SetText( "Grade the nebula too (depth from structure, scaled to Gaia)" );
    Nebula_CheckBox.OnCheck( (Button::check_event_handler)&GaiaDepthGradeInterface::e_Check, w );
-   slider( NebulaStrength_NumericControl, "Nebula depth:", TheGDGNebulaStrengthParameter, labelWidth );
-   slider( NebulaAtmos_NumericControl, "  atmospheric:", TheGDGNebulaAtmosParameter, labelWidth );
-   slider( NebulaStructure_NumericControl, "  structure:", TheGDGNebulaStructureParameter, labelWidth );
+   slider( NebulaStrength_NumericControl, "Nebula depth:", TheGDGNebulaStrengthParameter );
+   slider( NebulaAtmos_NumericControl, "  atmospheric:", TheGDGNebulaAtmosParameter );
+   slider( NebulaStructure_NumericControl, "  structure:", TheGDGNebulaStructureParameter );
 
    Live_Label.SetText( String::UTF8ToUTF16( "Look (live \xE2\x80\x94 Preview to apply)" ) );
    Live_Label.SetStyleSheet( "font-weight: bold;" );
@@ -1106,14 +972,16 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
    Live_Sizer.Add( NebulaAtmos_NumericControl );
    Live_Sizer.Add( NebulaStructure_NumericControl );
 
-   // Prepare-time fields (prepEdit).
-   const auto edit = [&]( NumericEdit& c, const char* label, const GDGReal* p, int width )
+   // Numeric fields (the dialog's prepEdit, and the Advanced engine fields).
+   const auto edit = [&]( NumericEdit& c, const char* label, const GDGReal* p, int width, const char* toolTip = nullptr )
    {
       c.label.SetText( label );
       c.label.SetMinWidth( width );
       c.SetReal();
       c.SetRange( p->MinimumValue(), p->MaximumValue() );
       c.SetPrecision( p->Precision() );
+      if ( toolTip != nullptr )
+         c.SetToolTip( toolTip );
       c.OnValueUpdated( (NumericEdit::value_event_handler)&GaiaDepthGradeInterface::e_ValueUpdated, w );
    };
    edit( Detect_NumericEdit, "detect_threshold_sigma:", TheGDGDetectSigmaParameter, prepLabelWidth );
@@ -1138,24 +1006,16 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
 
    // Advanced: the remaining engine parameters and the split/output/catalogue settings.
    const int advWidth = w.Font().Width( String( "Moffat beta:" ) + 'M' );
-   HaloGain_NumericControl.label.SetText( "Halo gain:" );
-   HaloGain_NumericControl.label.SetMinWidth( labelWidth );
-   HaloGain_NumericControl.SetReal();
-   HaloGain_NumericControl.SetRange( TheGDGHaloGainParameter->MinimumValue(), TheGDGHaloGainParameter->MaximumValue() );
-   HaloGain_NumericControl.SetPrecision( TheGDGHaloGainParameter->Precision() );
-   HaloGain_NumericControl.slider.SetRange( 0, 400 );
-   HaloGain_NumericControl.slider.SetScaledMinWidth( 200 );
-   HaloGain_NumericControl.SetToolTip( "<p>Overall intensity of the star-shine halo on enlarged stars, independent of Size "
-                                       "(the footprint). Live.</p>" );
-   HaloGain_NumericControl.OnValueUpdated( (NumericEdit::value_event_handler)&GaiaDepthGradeInterface::e_ValueUpdated, w );
+   slider( HaloGain_NumericControl, "Halo gain:", TheGDGHaloGainParameter, 400,
+           "<p>Overall intensity of the star-shine halo on enlarged stars, independent of Size (the footprint). Live.</p>" );
 
-   edit( DetectFWHM_NumericEdit, "Detect FWHM:", TheGDGDetectFWHMParameter, advWidth );
-   DetectFWHM_NumericEdit.SetToolTip( "<p>FWHM in pixels of the star detection kernel (DAOFIND). Needs re-Prepare.</p>" );
-   edit( MinMatchRate_NumericEdit, "Min match rate:", TheGDGMinMatchRateParameter, advWidth );
-   MinMatchRate_NumericEdit.SetToolTip( "<p>Below this fraction of detections matched to Gaia, the grade is flagged "
-                                        "LOW MATCH (unreliable). Needs re-Prepare.</p>" );
-   edit( Neutral_NumericEdit, "Neutral:", TheGDGNeutralStrengthParameter, advWidth );
-   Neutral_NumericEdit.SetToolTip( "<p>Depth strength given to stars without a Gaia distance (0 = no change). Live.</p>" );
+   edit( DetectFWHM_NumericEdit, "Detect FWHM:", TheGDGDetectFWHMParameter, advWidth,
+         "<p>FWHM in pixels of the star detection kernel (DAOFIND). Needs re-Prepare.</p>" );
+   edit( MinMatchRate_NumericEdit, "Min match rate:", TheGDGMinMatchRateParameter, advWidth,
+         "<p>Below this fraction of detections matched to Gaia, the grade is flagged LOW MATCH (unreliable). "
+         "Needs re-Prepare.</p>" );
+   edit( Neutral_NumericEdit, "Neutral:", TheGDGNeutralStrengthParameter, advWidth,
+         "<p>Depth strength given to stars without a Gaia distance (0 = no change). Live.</p>" );
    Engine1_Sizer.SetSpacing( 12 );
    Engine1_Sizer.Add( DetectFWHM_NumericEdit );
    Engine1_Sizer.Add( MinMatchRate_NumericEdit );
@@ -1167,9 +1027,9 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
                                  "unreliable faintward). Unchecked: no cut, full depth. Needs re-Prepare.</p>" );
    MagLimit_CheckBox.OnCheck( (Button::check_event_handler)&GaiaDepthGradeInterface::e_Check, w );
    edit( MagLimit_NumericEdit, "", TheGDGMagLimitParameter, 0 );
-   edit( ParallaxSNR_NumericEdit, "Parallax S/N:", TheGDGParallaxSNRParameter, advWidth );
-   ParallaxSNR_NumericEdit.SetToolTip( "<p>Offline only: Gaia sources whose parallax signal-to-noise is below this are "
-                                       "dropped (loudly). Needs re-Prepare.</p>" );
+   edit( ParallaxSNR_NumericEdit, "Parallax S/N:", TheGDGParallaxSNRParameter, advWidth,
+         "<p>Offline only: Gaia sources whose parallax signal-to-noise is below this are dropped (loudly). "
+         "Needs re-Prepare.</p>" );
    Engine2_Sizer.SetSpacing( 12 );
    Engine2_Sizer.Add( MagLimit_CheckBox );
    Engine2_Sizer.Add( MagLimit_NumericEdit );
@@ -1181,10 +1041,10 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
    HaloMinRefs_SpinBox.SetToolTip( "<p>The star-shine halo is measured from at least this many clean reference stars of the "
                                    "frame; with fewer, a Moffat halo is used (with a warning). Live.</p>" );
    HaloMinRefs_SpinBox.OnValueUpdated( (SpinBox::value_event_handler)&GaiaDepthGradeInterface::e_SpinValueUpdated, w );
-   edit( HaloRadius_NumericEdit, "Halo radius:", TheGDGHaloRadiusSigmaParameter, advWidth );
-   HaloRadius_NumericEdit.SetToolTip( "<p>The halo profile's extent in units of Halo sigma. Live.</p>" );
-   edit( HaloBeta_NumericEdit, "Moffat beta:", TheGDGHaloMoffatBetaParameter, advWidth );
-   HaloBeta_NumericEdit.SetToolTip( "<p>Slope of the fallback Moffat halo. Live.</p>" );
+   edit( HaloRadius_NumericEdit, "Halo radius:", TheGDGHaloRadiusSigmaParameter, advWidth,
+         "<p>The halo profile's extent in units of Halo sigma. Live.</p>" );
+   edit( HaloBeta_NumericEdit, "Moffat beta:", TheGDGHaloMoffatBetaParameter, advWidth,
+         "<p>Slope of the fallback Moffat halo. Live.</p>" );
    Engine3_Sizer.SetSpacing( 12 );
    Engine3_Sizer.Add( HaloMinRefs_Label );
    Engine3_Sizer.Add( HaloMinRefs_SpinBox );
@@ -1283,10 +1143,14 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
    Buttons_Sizer.Add( Execute_PushButton );
    Buttons_Sizer.Add( Close_PushButton );
 
-   Status_Label.SetText( "Pick a target and click Prepare." );
+   Status_Label.SetText( kPickTarget );
    Status_Label.SetStyle( FrameStyle::Box );
    Status_Label.SetTextAlignment( TextAlign::Left | TextAlign::VertCenter );
    Status_Label.SetMinHeight( 28 );
+   QA_Label.SetTextAlignment( TextAlign::Left | TextAlign::VertCenter );
+   QA_Label.SetMinHeight( 20 );
+   QA_Label.SetToolTip( "<p>The last Prepare's match: detections matched to Gaia, the match rate and the median offset. "
+                        "LOW MATCH: below the minimum match rate, the depth grade is unreliable.</p>" );
 
    Global_Sizer.SetMargin( 8 );
    Global_Sizer.SetSpacing( 8 );
@@ -1297,6 +1161,7 @@ GaiaDepthGradeInterface::GUIData::GUIData( GaiaDepthGradeInterface& w )
    Global_Sizer.Add( Advanced_Control );
    Global_Sizer.Add( Buttons_Sizer );
    Global_Sizer.Add( Status_Label );
+   Global_Sizer.Add( QA_Label );
 
    Advanced_Control.Hide();
 

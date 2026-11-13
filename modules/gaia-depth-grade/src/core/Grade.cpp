@@ -92,14 +92,18 @@ void inset_center_from_click(int px, int py, int full_width, int preview_width, 
 }
 
 PreviewPixels preview_pixels(const Image& composite, int max_width, const InsetRegion& inset) {
+    return preview_pixels(composite, max_width, 0, inset);
+}
+
+PreviewPixels preview_pixels(const Image& composite, int max_width, int max_height, const InsetRegion& inset) {
     const std::vector<uint8_t> stretched = autostretch_u8(composite);
     const int W = composite.width, H = composite.height, C = composite.channels;
     PreviewPixels p;
     p.channels = C;
-    const auto [w, h] = downscale_size(W, H, max_width);
+    const auto [w, h] = fit_size(W, H, max_width, max_height);
     p.width = w;
     p.height = h;
-    p.full = downscale_u8(stretched, W, H, C, max_width);
+    p.full = downscale_u8_to(stretched, W, H, C, w, h);
 
     // a[y:y+h, x:x+w] on the full-resolution stretch.
     const int x0 = std::clamp(inset.x, 0, W), y0 = std::clamp(inset.y, 0, H);

@@ -12,15 +12,19 @@
 //     (StarXTerminator / supplied views), the output mode of process execution, the
 //     astrometric index and Gaia database files.
 //   [Prepare] [Preview / Update]                     [Execute] [Close]
-//   status line ([GDG] console mirroring, the QA summary, ERROR: ...)
+//   status line ([GDG] console mirroring, progress, ERROR: ...)
+//   QA line (the last Prepare's summary and LOW MATCH flag, kept until the session is dropped)
 //
 // Prepare runs RunPrepare (PrepareSession.h): the PixInsight work (working copy, plate solve,
 // StarXTerminator, the Gaia database or the online catalogue -- NetworkTransfer needs the main
 // thread, plan C14) on the GUI thread; the PCL-free detection + cross-match on a pcl::Thread, with
-// a StatusMonitor on the console's standard status and paint events (no user input) pumped
-// meanwhile. Preview and Execute render on such a thread too. Preview and Execute re-validate the
-// target first (Review Focus 4): the session keeps the target's id, never a View or ImageWindow.
-// The standard Apply runs the instance's full ExecuteOn.
+// a StatusMonitor on the console's standard status. Preview and Execute render on such a thread
+// too. While any of it runs (busy) every input of the window is disabled and every handler, and
+// ImportProcess, refuses: events still get processed meanwhile (the StatusMonitor's abort check,
+// the processes Prepare runs), and a settings change then would drop the session a render reads or
+// be overwritten when Prepare ends. A Prepare whose settings changed anyway comes out stale.
+// Preview and Execute re-validate the target first (Review Focus 4): the session keeps the
+// target's id, never a View or ImageWindow. The standard Apply runs the instance's full ExecuteOn.
 #ifndef __GaiaDepthGradeInterface_h
 #define __GaiaDepthGradeInterface_h
 
@@ -72,7 +76,9 @@ public:
 private:
 
    GaiaDepthGradeInstance          instance;
-   std::unique_ptr<PrepareSession> m_session;
+   // Shared so a render holds the layers it reads even if the session is dropped meanwhile (no
+   // handler can drop it while busy; this is the second line of defence).
+   std::shared_ptr<const PrepareSession> m_session;
    bool       m_prepared = false;
    bool       m_previewStale = false; // the dialog's previewStale (true once a target is set)
    bool       m_busy = false;
@@ -82,6 +88,7 @@ private:
    Bitmap     m_previewBmp = Bitmap::Null();
    Bitmap     m_insetBmp = Bitmap::Null();
    String     m_status;
+   String     m_qaLine;              // the last Prepare's QA summary, shown under the status line
 
    struct GUIData
    {
@@ -157,6 +164,7 @@ private:
             PushButton      Execute_PushButton;
             PushButton      Close_PushButton;
          Label           Status_Label;
+         Label           QA_Label;
 #ifdef GDG_PROBES
       Timer           State_Timer;   // test builds: the GUI smoke's state file (GDG_GUI_STATE)
 #endif
@@ -178,6 +186,11 @@ private:
    bool DoExecute();
    void DoBrowse();
    void ReadFilesText();
+   /// Inside a catch block: the busy state ended and the current exception's message shown as
+   /// the error of `action`. Returns false.
+   bool FailAction( const char* action );
+   /// True when nothing is prepared or the session was prepared with the current settings.
+   bool SessionMatchesSettings() const;
 #ifdef GDG_PROBES
    void WriteState() const;
    void RecordAction( const char* action, bool ok );

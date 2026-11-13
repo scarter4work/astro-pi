@@ -10,8 +10,10 @@
 #include <pcl/NetworkTransfer.h>
 #include <pcl/Thread.h>
 
+#include <atomic>
 #include <cmath>
 #include <stdexcept>
+#include <thread>
 
 #ifdef GDG_PROBES
 #include <cstdlib>
@@ -23,6 +25,9 @@ namespace pcl
 
 namespace
 {
+
+std::atomic<bool>            s_mainRecorded{ false };
+std::thread::id              s_mainThread;
 
 // The download event handler must be a Control member (NetworkTransfer::download_event_handler).
 class TapReceiver : public Control
@@ -40,8 +45,25 @@ public:
 
 } // namespace
 
+void RecordMainThread()
+{
+   s_mainThread = std::this_thread::get_id();
+   s_mainRecorded.store( true );
+}
+
+bool OnMainThread()
+{
+   return s_mainRecorded.load() && std::this_thread::get_id() == s_mainThread && Thread::IsRootThread();
+}
+
 gdg::HttpResponse TapClient::Transfer( const std::string& url, const std::string* form )
 {
+   // Plan C14: the transfer's event receiver is a Control, a GUI-thread object, so the transfer runs
+   // on PixInsight's main thread only (RunPrepare fetches the catalogue there, never on the
+   // interface's worker thread). A call from another thread is a programming error, refused before
+   // anything is attempted (gdg::TransportMisuse: the TAP flow never retries or downgrades it).
+   if ( !OnMainThread() )
+      throw gdg::TransportMisuse( "Gaia TAP: the online catalogue must be fetched on PixInsight's main thread" );
 #ifdef GDG_PROBES
    // Test builds only: GDG_TEST_NET_LOG=<file> records every URL this transport is asked to open
    // (probes no_network / online_fallback_live); release builds never read it.
@@ -57,11 +79,6 @@ gdg::HttpResponse TapClient::Transfer( const std::string& url, const std::string
    static const std::string allowed( gdg::kGaiaArchive );
    if ( url.compare( 0, allowed.size(), allowed ) != 0 )
       throw std::runtime_error( "Gaia TAP: refusing to connect to " + url + " (only " + allowed + " is allowed)" );
-   // Plan C14: the transfer's event receiver is a Control, a GUI-thread object, so the transfer runs
-   // on PixInsight's main thread only (RunPrepare fetches the catalogue there, never on the
-   // interface's worker thread). A call from another thread is a programming error, not a retry.
-   if ( !Thread::IsRootThread() )
-      throw std::logic_error( "Gaia TAP: the online catalogue must be fetched on PixInsight's main thread" );
 
    gdg::HttpResponse r;
    try
@@ -113,7 +130,7 @@ void TapClient::sleep_seconds( double seconds )
       const unsigned slice = left < 50 ? left : 50;
       pcl::Sleep( slice );
       left -= slice;
-      if ( Thread::IsRootThread() )
+      if ( OnMainThread() )
          Module->ProcessEvents( true/*excludeUserInputEvents*/ );
    }
 }

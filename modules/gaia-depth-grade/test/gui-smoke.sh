@@ -70,7 +70,6 @@ gdg_seed_slot_modules || exit 1
 
 STEPS=( controls_and_defaults prepare_enables_preview slider_marks_preview_stale detect_edit_marks_prepare_stale
         inset_click_moves_center execute_creates_depthgraded close_target_then_execute )
-fails=0
 result(){ printf '%-34s %s\n' "$1" "$2" | tee -a "$OUT/steps.txt"; }
 
 # Every URL the module's TapClient opens (test builds only): the offline steps must open none.
@@ -104,17 +103,18 @@ ipc()
 step()
 {
    local name="$1"; shift
-   if ! kill -0 "$GDG_GUI_PI_PID" 2>/dev/null; then result "$name" "FAIL (PixInsight is gone)"; fails=$((fails + 1)); return 1; fi
+   if ! kill -0 "$GDG_GUI_PI_PID" 2>/dev/null; then result "$name" "FAIL (PixInsight is gone)"; return 1; fi
    echo "== $name"
    if python3 "$HERE/gui_drive.py" "$name" "$OUT" "$@" && kill -0 "$GDG_GUI_PI_PID" 2>/dev/null; then
       result "$name" PASS; return 0
    fi
    kill -0 "$GDG_GUI_PI_PID" 2>/dev/null || echo "        PixInsight exited (see $OUT/pi.log)"
-   result "$name" FAIL; fails=$((fails + 1)); return 1
+   result "$name" FAIL; return 1
 }
 
-# Extra shell-side checks of a step (IPC); a failure turns its PASS into FAIL.
-step_also_fails(){ echo "        $2"; sed -i "s/^\($1 *\)PASS\$/\1FAIL/" "$OUT/steps.txt"; fails=$((fails + 1)); }
+# Extra shell-side checks of a step (IPC); a failure turns its PASS into FAIL. The verdict counts
+# the FAIL rows of steps.txt, so a step that fails twice (or failed already) counts once.
+step_also_fails(){ echo "        FAIL $2"; sed -i "s/^\($1 *\)PASS\$/\1FAIL/" "$OUT/steps.txt"; }
 
 step controls_and_defaults "$MASTER"
 TARGET="$(cat "$OUT/target.txt" 2>/dev/null || true)"
@@ -155,7 +155,7 @@ if [ -n "$TARGET" ] && ipc close-target "{\"action\":\"close\",\"id\":\"$TARGET\
    echo "        closed $TARGET; windows $(jq -c '[.windows[].id]' "$OUT/close-target.json")"
    step close_target_then_execute
 else
-   result close_target_then_execute "FAIL (could not close the target '$TARGET' over IPC)"; fails=$((fails + 1))
+   result close_target_then_execute "FAIL (could not close the target '$TARGET' over IPC)"
 fi
 
 STEPS+=( close_button )
@@ -165,9 +165,10 @@ step close_button
 if ipc close-all '{"action":"windows"}'; then
    for id in $(jq -r '.windows[].id' "$OUT/close-all.json"); do ipc "close-$id" "{\"action\":\"close\",\"id\":\"$id\"}" || true; done
 fi
-if ! gdg_gui_quit "$OUT"; then result quit "FAIL"; fails=$((fails + 1)); else result quit PASS; fi
+if ! gdg_gui_quit "$OUT"; then result quit "FAIL"; else result quit PASS; fi
 
-passed="$(grep -c ' PASS$' "$OUT/steps.txt" || true)"
+passed="$(grep -cE '^[a-z_]+ +PASS$' "$OUT/steps.txt" || true)"
+fails="$(grep -cE '^[a-z_]+ +FAIL' "$OUT/steps.txt" || true)"
 if [ "$fails" -ne 0 ]; then
    echo "FAIL: GaiaDepthGrade GUI smoke ($fails failed; $passed passed; screenshots in $OUT)"; exit 1
 fi
