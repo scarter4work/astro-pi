@@ -23,7 +23,10 @@ bool StarXTerminatorInstalled()
       if ( std::strcmp( hide, "1" ) == 0 )
          return false;
 #endif
-   for ( const Process& P : Process::AllProcesses() )
+   // A const array: range-for over the temporary would call the non-const begin() (EnsureUnique),
+   // which GCC 16 flags with a false -Walloc-size-larger-than.
+   const Array<Process> processes = Process::AllProcesses();
+   for ( const Process& P : processes )
       if ( P.Id() == "StarXTerminator" )
          return true;
    return false;
