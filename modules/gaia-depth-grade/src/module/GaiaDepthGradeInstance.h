@@ -60,6 +60,14 @@ public:
 /// The process' console log: info lines as "[GDG] ...", warnings as "[GDG] ** Warning: ...".
 gdg::Log ConsoleLog();
 
+/// Set by the interface while its Prepare / Preview / Execute runs. Events are processed during
+/// that run (the StatusMonitor's abort check, the processes Prepare executes), so the standard
+/// control bar's Apply, a process icon dropped on an image or a script could start a second,
+/// nested run: CanExecuteOn and ExecuteOn refuse with InterfaceBusyMessage() meanwhile.
+void SetInterfaceBusy( bool busy );
+bool InterfaceBusy();
+String InterfaceBusyMessage();
+
 } // namespace pcl
 
 #endif // __GaiaDepthGradeInstance_h

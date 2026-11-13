@@ -98,9 +98,9 @@ void GaiaDepthGradeModule::GetReleaseDate( int& year, int& month, int& day ) con
 PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
 {
    new pcl::GaiaDepthGradeModule;
-   pcl::RecordMainThread(); // the online catalogue's main-thread guard (TapClient, plan C14)
    if ( mode == pcl::InstallMode::FullInstall )
    {
+      pcl::RecordMainThread(); // the online catalogue's main-thread guard (TapClient, plan C14)
       new pcl::GaiaDepthGradeProcess;
       new pcl::GaiaDepthGradeInterface;
    }

@@ -189,11 +189,11 @@ private:
    /// Inside a catch block: the busy state ended and the current exception's message shown as
    /// the error of `action`. Returns false.
    bool FailAction( const char* action );
-   /// True when nothing is prepared or the session was prepared with the current settings.
-   bool SessionMatchesSettings() const;
 #ifdef GDG_PROBES
    void WriteState() const;
    void RecordAction( const char* action, bool ok );
+   /// True when nothing is prepared or the session was prepared with the current settings.
+   bool SessionMatchesSettings() const;
    StringList m_statusLog; // every status line, for the GUI smoke (statusHistory)
    StringList m_actionLog; // "prepare ok", "preview error", ...: every Prepare/Preview/Execute's outcome
 #endif

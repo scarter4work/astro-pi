@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -47,8 +48,13 @@ public:
 
 void RecordMainThread()
 {
-   s_mainThread = std::this_thread::get_id();
-   s_mainRecorded.store( true );
+   // Once: the first full install names the main thread; a later call never moves it.
+   static std::once_flag once;
+   std::call_once( once, []()
+   {
+      s_mainThread = std::this_thread::get_id();
+      s_mainRecorded.store( true );
+   } );
 }
 
 bool OnMainThread()

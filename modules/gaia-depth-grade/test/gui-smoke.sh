@@ -119,13 +119,15 @@ step_also_fails(){ echo "        FAIL $2"; sed -i "s/^\($1 *\)PASS\$/\1FAIL/" "$
 step controls_and_defaults "$MASTER"
 TARGET="$(cat "$OUT/target.txt" 2>/dev/null || true)"
 
-if step prepare_enables_preview; then
-   if ipc after-prepare '{"action":"windows"}'; then
-      jq -e --arg t "$TARGET" '[.windows[].id] | (index($t) != null) and (map(select(test("_gdgwork"))) | length == 0)' \
-         "$OUT/after-prepare.json" >/dev/null && echo "        ok no _gdgwork window after Prepare; windows $(jq -c '[.windows[].id]' "$OUT/after-prepare.json")" \
-         || step_also_fails prepare_enables_preview "windows after Prepare: $(jq -c '[.windows[].id]' "$OUT/after-prepare.json")"
-   else step_also_fails prepare_enables_preview "IPC windows failed"; fi
-fi
+# After Prepare: no _gdgwork window survives it, and no _depthgraded window exists (the control
+# bar's Apply clicked while busy must not have run a nested ExecuteOn). Checked whatever the step gave.
+step prepare_enables_preview
+if kill -0 "$GDG_GUI_PI_PID" 2>/dev/null && ipc after-prepare '{"action":"windows"}'; then
+   jq -e --arg t "$TARGET" '[.windows[].id] | (index($t) != null) and (map(select(test("_gdgwork|_depthgraded"))) | length == 0)' \
+      "$OUT/after-prepare.json" >/dev/null \
+      && echo "        ok no _gdgwork / _depthgraded window after Prepare; windows $(jq -c '[.windows[].id]' "$OUT/after-prepare.json")" \
+      || step_also_fails prepare_enables_preview "windows after Prepare: $(jq -c '[.windows[].id]' "$OUT/after-prepare.json")"
+else step_also_fails prepare_enables_preview "IPC windows failed (PixInsight gone?)"; fi
 step slider_marks_preview_stale
 step detect_edit_marks_prepare_stale
 step inset_click_moves_center

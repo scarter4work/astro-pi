@@ -509,9 +509,56 @@ def busy_inputs_disabled(s):
     missing = [n for n in INPUTS if n not in s["controls"]]
     on = [n for n in INPUTS if n in s["controls"] and s["controls"][n]["enabled"]]
     expect(not on and not missing, "while busy every input is disabled (enabled: %r; not reported: %r)" % (on, missing))
-    shot("03a-busy.png", 0)
+    png = shot("03a-busy.png", 0)
+    # The interface's own control bar (outside its client area, not in the state file): its Apply
+    # executes the instance on the active window (the master). Clicked while busy, it must never
+    # start a second, nested Prepare (review round 2, item 5; the shell checks that no
+    # <target>_depthgraded window exists after this Prepare). This does NOT prove the module's
+    # busy gate: with the gate mutated off (2026-11-13) the click still did nothing, because it
+    # lands while Prepare's PixInsight processes hold the GUI. The gate itself is tested headless
+    # (run-probe.sh busy_refuses_execution).
+    ax, ay = control_bar_apply(png, s)
+    click(ax, ay)
+    park()
+    time.sleep(1.5)
+    words = [w[0] for w in ocr_words(shot("03b-apply-while-busy.png", 0))]
+    if "busy" in words:
+        note("Apply while busy: PixInsight shows the refusal (OCR: ...%s...); dismissed with Return"
+             % " ".join(words[max(0, words.index("busy") - 3):words.index("busy") + 6]))
+        key("Return")
+        park()
+    else:
+        note("Apply while busy: no message box on screen")
     # An edit attempted now must not reach a prepared session (typed into the disabled field).
     edit_value("detect", "9")
+
+
+def control_bar_apply(png, s):
+    """Centre of the interface control bar's Apply button (the filled blue square right of the
+    New Instance triangle, bottom left of the interface, below the QA line): the right one of the
+    two blue icon blobs in that strip of the screenshot."""
+    a = rgb(png)
+    qx, qy, qw, qh = ctl(s, "qaLabel")["rect"]
+    y0, y1 = qy + qh, qy + qh + 45
+    x0, x1 = max(0, qx - 20), qx + 80
+    strip = a[y0:y1, x0:x1]
+    blue = (strip[:, :, 2] >= 150) & (strip[:, :, 0] <= 80) & (strip[:, :, 1] <= 150)
+    cols = np.where(blue.any(axis=0))[0]
+    if len(cols) == 0:
+        raise SystemExit("FAIL: no control bar icons below the QA line (strip x %d..%d, y %d..%d)" % (x0, x1, y0, y1))
+    blobs, start = [], cols[0]
+    for p, c in zip(cols, cols[1:]):
+        if c != p + 1:
+            blobs.append((start, p))
+            start = c
+    blobs.append((start, cols[-1]))
+    if len(blobs) < 2:
+        raise SystemExit("FAIL: expected the New Instance and Apply icons, found %d blob(s): %r" % (len(blobs), blobs))
+    bx0, bx1 = blobs[1]
+    rows = np.where(blue[:, bx0:bx1 + 1].any(axis=1))[0]
+    cx, cy = x0 + (bx0 + bx1) // 2, y0 + (rows[0] + rows[-1]) // 2
+    note("control bar Apply at %d,%d (icon blobs %r)" % (cx, cy, [(x0 + b0, x0 + b1) for b0, b1 in blobs]))
+    return cx, cy
 
 
 def step_prepare_enables_preview():

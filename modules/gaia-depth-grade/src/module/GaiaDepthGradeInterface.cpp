@@ -48,14 +48,6 @@ StringList NonEmptyLines( const String& text )
    return out;
 }
 
-/// The prepare-time options differ (the fields a Prepare depends on).
-bool PrepareOptionsDiffer( const GradeOptions& a, const GradeOptions& b )
-{
-   return gdg::prepare_settings_differ( a.settings, b.settings ) || a.suppliedViews != b.suppliedViews ||
-          a.starsViewId != b.starsViewId || a.starlessViewId != b.starlessViewId || a.solveIndexFile != b.solveIndexFile ||
-          a.gaiaDatabaseFiles != b.gaiaDatabaseFiles;
-}
-
 String MessageOf( std::exception_ptr e )
 {
    try
@@ -227,6 +219,13 @@ ProcessImplementation* GaiaDepthGradeInterface::NewProcess() const
 
 bool GaiaDepthGradeInterface::ValidateProcess( const ProcessImplementation& p, String& whyNot ) const
 {
+   // The core's import hook (an instance about to be imported): refused while busy, with the
+   // reason, as ImportProcess refuses.
+   if ( m_busy )
+   {
+      whyNot = InterfaceBusyMessage();
+      return false;
+   }
    if ( dynamic_cast<const GaiaDepthGradeInstance*>( &p ) != nullptr )
       return true;
    whyNot = "Not a GaiaDepthGrade instance.";
@@ -397,15 +396,11 @@ void GaiaDepthGradeInterface::MarkPreviewStale()
 void GaiaDepthGradeInterface::SetBusy( bool busy )
 {
    m_busy = busy;
+   SetInterfaceBusy( busy ); // no instance executes meanwhile (Apply, process icons, scripts)
    if ( GUI != nullptr )
       SetCursor( pcl::Cursor( busy ? StdCursor::Wait : StdCursor::Arrow ) );
    UpdateControls();
    GDG_WRITE_STATE();
-}
-
-bool GaiaDepthGradeInterface::SessionMatchesSettings() const
-{
-   return !m_prepared || (m_session && !PrepareOptionsDiffer( m_session->options, instance.Options() ));
 }
 
 gdg::Log GaiaDepthGradeInterface::GuiLog()

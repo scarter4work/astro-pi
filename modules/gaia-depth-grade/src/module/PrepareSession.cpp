@@ -72,6 +72,13 @@ WorkRunner RunInline( const gdg::Log& log )
    return [log]( const std::function<void( const gdg::Log& )>& work ) { work( log ); };
 }
 
+bool PrepareOptionsDiffer( const GradeOptions& a, const GradeOptions& b )
+{
+   return gdg::prepare_settings_differ( a.settings, b.settings ) || a.suppliedViews != b.suppliedViews ||
+          a.starsViewId != b.starsViewId || a.starlessViewId != b.starlessViewId || a.solveIndexFile != b.solveIndexFile ||
+          a.gaiaDatabaseFiles != b.gaiaDatabaseFiles;
+}
+
 String TargetClosedMessage( const IsoString& id )
 {
    return "The target image '" + String( id ) + "' was closed after Prepare. Select a target and Prepare again.";

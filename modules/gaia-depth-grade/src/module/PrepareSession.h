@@ -45,6 +45,10 @@ struct GradeOptions
    StringList gaiaDatabaseFiles;      // empty: DiscoverGaiaDatabases()
 };
 
+/// True when `a` and `b` differ in anything a Prepare depends on (the prepare-time engine
+/// settings, the split, the solver index, the Gaia database files).
+bool PrepareOptionsDiffer( const GradeOptions& a, const GradeOptions& b );
+
 /// Runs a PCL-free stage. The stage logs through the Log it is given, which the runner makes
 /// safe for its thread. RunInline() runs it on the calling thread with `log`.
 using WorkRunner = std::function<void( const std::function<void( const gdg::Log& )>& )>;

@@ -6,6 +6,7 @@
 #include <pcl/Console.h>
 #include <pcl/ErrorHandler.h>
 
+#include <atomic>
 #include <cmath>
 #include <exception>
 
@@ -18,6 +19,47 @@
 
 namespace pcl
 {
+
+namespace
+{
+std::atomic<bool> s_interfaceBusy{ false };
+#ifdef GDG_PROBES
+void TestWrite( const char* var, const std::string& text ); // below
+#endif
+
+/// The busy refusal (test builds also record it as the run's last error, GDG_TEST_LAST_ERROR).
+String BusyRefusal()
+{
+   const String why = InterfaceBusyMessage();
+#ifdef GDG_PROBES
+   TestWrite( "GDG_TEST_LAST_ERROR", std::string( why.ToUTF8().c_str() ) );
+#endif
+   return why;
+}
+} // namespace
+
+void SetInterfaceBusy( bool busy )
+{
+   s_interfaceBusy.store( busy );
+}
+
+bool InterfaceBusy()
+{
+#ifdef GDG_PROBES
+   // Test builds only: GDG_TEST_INTERFACE_BUSY=1 stands for the interface mid-run (probe
+   // busy_refuses_execution; the GUI cannot time a click into that window reliably).
+   if ( const char* busy = std::getenv( "GDG_TEST_INTERFACE_BUSY" ) )
+      if ( std::string( busy ) == "1" )
+         return true;
+#endif
+   return s_interfaceBusy.load();
+}
+
+String InterfaceBusyMessage()
+{
+   return "GaiaDepthGrade is busy (Prepare/Preview/Execute running in its window). "
+          "Execute it again when that has finished.";
+}
 
 gdg::Log ConsoleLog()
 {
@@ -183,6 +225,11 @@ UndoFlags GaiaDepthGradeInstance::UndoMode( const View& ) const
 
 bool GaiaDepthGradeInstance::CanExecuteOn( const View& view, String& whyNot ) const
 {
+   if ( InterfaceBusy() )
+   {
+      whyNot = BusyRefusal();
+      return false;
+   }
    if ( view.IsPreview() )
    {
       whyNot = "GaiaDepthGrade works on a whole image (it plate-solves the frame); it cannot be executed on previews.";
@@ -259,6 +306,9 @@ void DumpSettings( const GradeOptions& o )
 
 bool GaiaDepthGradeInstance::ExecuteOn( View& view )
 {
+   // Not nested inside the interface's run, whatever the caller checked (no QA outputs touched).
+   if ( InterfaceBusy() )
+      throw Error( BusyRefusal() );
    const gdg::Log log = ConsoleLog();
    Console console;
    // A failed run must not leave the previous run's QA in the outputs: back to the defaults.

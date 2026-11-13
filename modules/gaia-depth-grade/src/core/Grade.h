@@ -90,19 +90,20 @@ void default_inset_center(int width, int height, int& cx, int& cy);
 /// scale = full_width / preview_width (the dialog's onMousePress; one scale for both axes).
 void inset_center_from_click(int px, int py, int full_width, int preview_width, int& cx, int& cy);
 
-/// The sidecar's preview command: autostretch_u8(composite) (target 0.25, shadows -2.8), then
-/// the full view downscaled to at most max_width wide, and the inset cropped 1:1 from the
-/// full-resolution stretch.
+/// The preview pixels: autostretch_u8(composite) (target 0.25, shadows -2.8), the full view
+/// downscaled to fit inside max_width x max_height (fit_size: aspect kept, never upscaled; with
+/// max_height < 1 only the width is bounded, which is the sidecar's preview command), and the
+/// inset cropped 1:1 from the full-resolution stretch. Throws std::invalid_argument on an empty
+/// composite.
 struct PreviewPixels {
     int width = 0, height = 0, channels = 1;  // the downscaled full view
     std::vector<uint8_t> full;
     int inset_width = 0, inset_height = 0;
     std::vector<uint8_t> inset;
 };
-PreviewPixels preview_pixels(const Image& composite, int max_width, const InsetRegion& inset);
-/// The same with the full view fitted inside max_width x max_height (fit_size; the interface's
-/// 760 x 420 control); max_height < 1: no height bound.
 PreviewPixels preview_pixels(const Image& composite, int max_width, int max_height, const InsetRegion& inset);
+/// preview_pixels with no height bound (the sidecar's --max-width only).
+PreviewPixels preview_pixels(const Image& composite, int max_width, const InsetRegion& inset);
 
 /// The dialog's QA status line, verbatim: "Prepared: %d/%d matched (rate %.2f, offset %.1f px)",
 /// plus "  ⚠ LOW MATCH — depth grade unreliable" when the rate is below min_match_rate.

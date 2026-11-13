@@ -38,6 +38,8 @@
 #   output_naming_and_tag    <id>_depthgraded, 32-bit float, the target's geometry, DEPTHTAG and
 #                            HISTORY = the honesty text, the solution; no work window left (F8, F42).
 #   master_never_modified    the target's pixels and keywords are unchanged (F3).
+#   busy_refuses_execution   the interface mid-run (GDG_TEST_INTERFACE_BUSY=1): executeOn refused with
+#                            the busy message, nothing made, the target untouched (Task 17 round 2).
 #   split_requires_sxt_message  StarXTerminator hidden (GDG_TEST_HIDE_SXT=1): the exact message,
 #                            nothing made (Review Focus 5, F31).
 #   supplied_views_mode      StarXTerminator hidden, its layers supplied as views: the same output
@@ -68,7 +70,7 @@ ALL_CASES=( sky_adapter_convention local_gaia_equals_gaia_process online_live ta
             solve_seeded_matches_imagesolver solve_spline_residuals solve_blind_no_metadata
             solve_fails_loudly_without_seed_or_index
             process_category params_reach_core execute_on_offline output_naming_and_tag master_never_modified
-            split_requires_sxt_message supplied_views_mode replace_target_mode mono_execute
+            split_requires_sxt_message busy_refuses_execution supplied_views_mode replace_target_mode mono_execute
             offline_without_local_db_fails online_fallback_live )
 CASES=( "$@" )
 [ ${#CASES[@]} -eq 0 ] && CASES=( "${ALL_CASES[@]}" )
@@ -567,6 +569,23 @@ case_split_requires_sxt_message()
       ok "executeOn false: \"$SXT_MISSING\""
    else bad "executed=$(jq -r .executed "$c"), error \"$(jq -r .error "$c")\""; fi
    jq -e '(.newWindows | length) == 0 and .targetMaxDiff == 0' "$c" >/dev/null && ok "nothing made, the target untouched" \
+      || bad "windows $(jq -c '[.newWindows[].id]' "$c"), target max |d| $(num .targetMaxDiff "$c")"
+}
+
+case_busy_refuses_execution()
+{
+   proc_ready busy_refuses_execution || return 0
+   ran=$((ran + 1))
+   local want="GaiaDepthGrade is busy (Prepare/Preview/Execute running in its window). Execute it again when that has finished."
+   run_proc busy "{\"master\":\"$PROC_MASTER\",\"params\":{\"gaiaDatabaseFiles\":$(gaia_json)}}" GDG_TEST_INTERFACE_BUSY=1 || return 0
+   local c="$OUT"
+   # CanExecuteOn refuses first: the core's executeOn throws with the reason (ExecuteOn's own check
+   # stays for callers that skip CanExecuteOn).
+   if [ "$(jq -r .executed "$c")" = false ] && [ "$(jq -r .error "$c")" = "$want" ] \
+      && jq -e --arg w "$want" '.executeThrew | contains("Reason: " + $w)' "$c" >/dev/null; then
+      ok "executeOn refused while the interface runs: \"$want\""
+   else bad "executed=$(jq -r .executed "$c"), error \"$(jq -r .error "$c")\", threw \"$(jq -r .executeThrew "$c")\""; fi
+   jq -e '(.newWindows | length) == 0 and .targetMaxDiff == 0' "$c" >/dev/null && ok "nothing made (no nested Prepare), the target untouched" \
       || bad "windows $(jq -c '[.newWindows[].id]' "$c"), target max |d| $(num .targetMaxDiff "$c")"
 }
 

@@ -117,6 +117,11 @@ std::string BitmapInfo( const Bitmap& b )
 
 } // namespace
 
+bool GaiaDepthGradeInterface::SessionMatchesSettings() const
+{
+   return !m_prepared || (m_session && !PrepareOptionsDiffer( m_session->options, instance.Options() ));
+}
+
 void GaiaDepthGradeInterface::RecordAction( const char* action, bool ok )
 {
    m_actionLog << String( action ) + (ok ? " ok" : " error");

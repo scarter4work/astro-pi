@@ -146,6 +146,20 @@ TEST_CASE("fit_size_bounds_both_sides", "[display]") {
     CHECK_THROWS_AS(gdg::downscale_u8_to(px, 8, 6, 3, 9, 6), std::invalid_argument);  // never upscaled
 }
 
+TEST_CASE("fit_size_refuses_empty_images", "[display]") {
+    // No picture to fit: never a made-up 1 px side (which would be an upscale of nothing).
+    CHECK_THROWS_AS(gdg::fit_size(0, 1000, 760, 420), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::fit_size(1000, 0, 760, 420), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::fit_size(-4, 10, 760, 420), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::fit_size(0, 1000, 760, 0), std::invalid_argument);
+    // downscale_u8_to the same: a source or a target with no pixels is refused.
+    const std::vector<uint8_t> none;
+    CHECK_THROWS_AS(gdg::downscale_u8_to(none, 0, 0, 3, 0, 0), std::invalid_argument);
+    const std::vector<uint8_t> px(size_t(4) * 2 * 3, 7);
+    CHECK_THROWS_AS(gdg::downscale_u8_to(px, 4, 2, 3, 0, 1), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::downscale_u8_to(px, 4, 2, 3, 2, 0), std::invalid_argument);
+}
+
 TEST_CASE("downscale_keeps_aspect_760", "[display]") {
     // The dialog's preview: <= 760 px wide, aspect kept (PIL: max(1, round(h * 760 / w))).
     CHECK(gdg::downscale_size(6024, 4024, 760) == std::pair<int, int>{760, 508});  // 507.67 -> 508

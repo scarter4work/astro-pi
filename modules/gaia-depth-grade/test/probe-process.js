@@ -177,7 +177,18 @@ try
          P[key] = A.params[key];
    }
    var t0 = Date.now();
-   result.executed = P.executeOn( target.mainView );
+   // A CanExecuteOn refusal throws here (the core's "Cannot execute instance on view ... Reason: ..."),
+   // where a failed ExecuteOn returns false: both are recorded as not executed.
+   result.executeThrew = "";
+   try
+   {
+      result.executed = P.executeOn( target.mainView );
+   }
+   catch ( e )
+   {
+      result.executed = false;
+      result.executeThrew = String( e );
+   }
    result.seconds = (Date.now() - t0) / 1000;
    result.error = ERRF ? readText( ERRF ) : "";
    result.settings = DUMPF && File.exists( DUMPF ) ? JSON.parse( readText( DUMPF ) ) : null;
