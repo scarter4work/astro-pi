@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace gdg {
 
@@ -31,6 +32,21 @@ long csv_row_count(const std::string& csv);
 /// `Gaia result missing columns: ['a', 'b']` (Python's sorted list repr) or
 /// `Gaia query returned zero rows for this field`.
 Catalog parse_tap_csv(const std::string& csv, const Log& log);
+
+/// One row of the plate solver's online catalogue (build_positions_adql).
+struct GaiaPosition {
+    double ra = 0, dec = 0;      // degrees, ICRS, epoch J2016.0
+    double pmra = 0, pmdec = 0;  // mas/yr (pmra includes cos dec)
+    double parallax = 0;         // mas; 0 when the archive has none
+    double g = 0;                // G magnitude
+};
+
+/// The positions CSV (columns ra, dec, pmra, pmdec, parallax, phot_g_mean_mag, any order). ra,
+/// dec, pmra, pmdec and parallax are DOUBLE in the archive, phot_g_mean_mag REAL. Rows lacking a
+/// position, proper motion or G are skipped; a missing parallax is 0. Throws std::runtime_error
+/// `Gaia result missing columns: [...]`, and `Gaia query returned zero rows for this field` for a
+/// table with no rows (an error, never an empty success; as parse_tap_csv).
+std::vector<GaiaPosition> parse_positions_csv(const std::string& csv);
 
 /// SHA-1 of a byte string, lowercase hex (FIPS 180-4; for the cache file name only).
 std::string sha1_hex(const std::string& bytes);

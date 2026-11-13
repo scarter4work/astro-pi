@@ -36,8 +36,27 @@ IsoString Describe( const ProcessParameter& p )
    IsoString s = "{" + Field( "id", Str( String( p.Id() ) ) ) + "," + Field( "type", Str( String( TypeName( p ) ) ) ) +
                  "," + Field( "dataType", IsoString( int( p.Type() ) ) ) + "," +
                  Field( "readOnly", p.IsReadOnly() ? "true" : "false" );
+   // Defaults and ranges (for the module's own GaiaDepthGrade parameter table).
+   if ( p.IsNumeric() )
+      s += "," + Field( "default", Num( p.DefaultValue().ToDouble() ) ) + "," + Field( "min", Num( p.MinimumValue() ) ) +
+           "," + Field( "max", Num( p.MaximumValue() ) ) +
+           (p.IsReal() ? "," + Field( "precision", IsoString( p.Precision() ) ) : IsoString());
+   else if ( p.IsBoolean() )
+      s += "," + Field( "default", p.DefaultValue().ToBool() ? "true" : "false" );
+   else if ( p.IsEnumeration() )
+      s += "," + Field( "default", IsoString( p.DefaultValue().ToInt() ) );
    if ( p.IsString() )
-      s += "," + Field( "allowedCharacters", Str( p.AllowedCharacters() ) );
+   {
+      // Some third-party processes (StarXTerminator) fail this API call: record that.
+      try
+      {
+         s += "," + Field( "allowedCharacters", Str( p.AllowedCharacters() ) );
+      }
+      catch ( const Exception& x )
+      {
+         s += "," + Field( "allowedCharacters", Str( "unavailable: " + x.Message() ) );
+      }
+   }
    if ( p.IsEnumeration() )
    {
       // Some core processes do not publish element identifiers (the API call fails): record that.
@@ -58,7 +77,8 @@ IsoString Describe( const ProcessParameter& p )
    {
       IsoString c = "[";
       int n = 0;
-      for ( const ProcessParameter& col : p.TableColumns() )
+      const ProcessParameter::parameter_list columns = p.TableColumns(); // const: see Parameters() below
+      for ( const ProcessParameter& col : columns )
          c += (n++ ? "," : "") + Describe( col );
       s += "," + Field( "columns", c + "]" );
    }
@@ -80,9 +100,17 @@ IsoString ProbeIntrospect( const String& args )
       Process P{ IsoString( id ) }; // throws Error when no such process is installed
       IsoString list = "[";
       int n = 0;
-      for ( const ProcessParameter& p : P.Parameters() )
+      // Const arrays: range-for over a temporary calls the non-const begin() (EnsureUnique), which
+      // GCC 16 flags with a false -Walloc-size-larger-than.
+      const Process::parameter_list params = P.Parameters();
+      for ( const ProcessParameter& p : params )
          list += (n++ ? "," : "") + Describe( p );
       out += (np++ ? "," : "") + Str( id ) + ":" + list + "]";
+      IsoString cats = "[";
+      int nc = 0;
+      for ( const IsoString& c : P.Categories() )
+         cats += (nc++ ? "," : "") + Str( String( c ) );
+      out += "," + Str( id + ".categories" ) + ":" + cats + "]";
    }
    return out + "}";
 }

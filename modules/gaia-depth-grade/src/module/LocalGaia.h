@@ -48,10 +48,13 @@ private:
    gdg::Log              m_log;
 };
 
+/// queryLocalGaiaDR3's error, verbatim: no local Gaia DR3 database is configured.
+extern const char* const kNoLocalGaiaMessage;
+
 /// The Gaia database files to use: the module setting GaiaDatabaseFiles (one path per line) when
 /// set; otherwise the DR3, then DR3SP, files configured for PixInsight's Gaia process in
 /// ~/.PixInsight/core-NNN-pxi.settings (the first settings file, in name order, that has any;
-/// port of discoverGaiaDbPaths). Throws pcl::Error, verbatim from queryLocalGaiaDR3, when none.
+/// port of discoverGaiaDbPaths). Throws pcl::Error(kNoLocalGaiaMessage) when none.
 StringList DiscoverGaiaDatabases();
 
 } // namespace pcl

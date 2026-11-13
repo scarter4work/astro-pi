@@ -12,6 +12,9 @@
 #define MODULE_VERSION_LANGUAGE  eng
 
 #include "GaiaDepthGradeModule.h"
+#include "GaiaDepthGradeInterface.h"
+#include "GaiaDepthGradeProcess.h"
+#include "TapClient.h"
 
 #ifdef GDG_PROBES
 #include "probe/ProbeProcess.h"
@@ -95,7 +98,12 @@ void GaiaDepthGradeModule::GetReleaseDate( int& year, int& month, int& day ) con
 PCL_MODULE_EXPORT int InstallPixInsightModule( int mode )
 {
    new pcl::GaiaDepthGradeModule;
-   // No processes yet (plan Task 2): GaiaDepthGrade arrives in Task 16.
+   if ( mode == pcl::InstallMode::FullInstall )
+   {
+      pcl::RecordMainThread(); // the online catalogue's main-thread guard (TapClient, plan C14)
+      new pcl::GaiaDepthGradeProcess;
+      new pcl::GaiaDepthGradeInterface;
+   }
 #ifdef GDG_PROBES
    // Test-only probe process; compiled only into host test builds (GDG_BUILD_PROBES).
    if ( mode == pcl::InstallMode::FullInstall )

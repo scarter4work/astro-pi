@@ -17,6 +17,7 @@
 #include <cmath>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pcl
@@ -99,6 +100,64 @@ IsoString ProbeOnline( const String& args )
           Field( "cachedWarnings", List( secondWarnings ) ) + "," +
           Field( "warnings", List( std::vector<std::string>( warning.begin(), warning.begin() + warningsBefore ) ) ) + "," +
           Field( "infos", List( info ) );
+}
+
+// TEST-ONLY probe case `tap_thread` (plan C14, run by `tap_off_main_thread`; no network): the
+// module's TapClient called from a std::thread must refuse with gdg::TransportMisuse before any
+// request, both directly and through the TAP flow (no retry, no "after 3 attempts" wrapping).
+IsoString ProbeTapThread( const String& )
+{
+   std::string direct, flow;
+   bool directMisuse = false, flowMisuse = false;
+   size_t warnings = 0;
+   std::thread a( [&]()
+   {
+      try
+      {
+         TapClient c;
+         c.get( gdg::kGaiaNotices );
+         direct = "no exception";
+      }
+      catch ( const gdg::TransportMisuse& e )
+      {
+         directMisuse = true;
+         direct = e.what();
+      }
+      catch ( const std::exception& e )
+      {
+         direct = std::string( "other exception: " ) + e.what();
+      }
+   } );
+   a.join();
+   std::thread b( [&]()
+   {
+      const gdg::Log log{ []( const std::string& ) {}, [&warnings]( const std::string& ) { ++warnings; } };
+      try
+      {
+         TapClient c;
+         gdg::Footprint fp;
+         fp.center_ra = 350.1671987228608;
+         fp.center_dec = 61.22006490843979;
+         fp.radius_deg = 0.02;
+         gdg::online_gaia_distances( c, nullptr, fp, 18.0, log );
+         flow = "no exception";
+      }
+      catch ( const gdg::TransportMisuse& e )
+      {
+         flowMisuse = true;
+         flow = e.what();
+      }
+      catch ( const std::exception& e )
+      {
+         flow = std::string( "other exception: " ) + e.what();
+      }
+   } );
+   b.join();
+   return Field( "directMisuse", directMisuse ? "true" : "false" ) + "," +
+          Field( "direct", Str( String::UTF8ToUTF16( direct.c_str() ) ) ) + "," +
+          Field( "flowMisuse", flowMisuse ? "true" : "false" ) + "," +
+          Field( "flow", Str( String::UTF8ToUTF16( flow.c_str() ) ) ) + "," +
+          Field( "flowWarnings", Num( double( warnings ) ) );
 }
 
 } // namespace pcl

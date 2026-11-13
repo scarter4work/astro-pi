@@ -9,6 +9,7 @@
 #include <pcl/Settings.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +20,10 @@
 namespace pcl
 {
 
+const char* const kNoLocalGaiaMessage =
+   "No local Gaia DR3 database is configured in PixInsight (the one plate-solving uses). Configure it, or uncheck "
+   "'Offline' to use the online catalogue.";
+
 LocalGaiaSource::LocalGaiaSource( const StringList& xpsdPaths, std::optional<double> magLimit, double snrMin,
                                   const gdg::Log& log )
    : m_paths( xpsdPaths )
@@ -27,8 +32,7 @@ LocalGaiaSource::LocalGaiaSource( const StringList& xpsdPaths, std::optional<dou
    , m_log( log )
 {
    if ( m_paths.IsEmpty() )
-      throw Error( "No local Gaia DR3 database is configured in PixInsight (the one plate-solving uses). "
-                   "Configure it, or uncheck 'Offline' to use the online catalogue." );
+      throw Error( kNoLocalGaiaMessage );
 }
 
 double LocalGaiaSource::BPRP( const LocalGaiaStar& s )
@@ -95,6 +99,13 @@ gdg::Catalog LocalGaiaSource::distances_for( const gdg::Footprint& fp )
 
 StringList DiscoverGaiaDatabases()
 {
+#ifdef GDG_PROBES
+   // Test builds only: GDG_TEST_NO_LOCAL_GAIA=1 stands for a machine with no local database
+   // (discovery reads every settings slot, so a test slot alone cannot hide the user's).
+   if ( const char* none = std::getenv( "GDG_TEST_NO_LOCAL_GAIA" ) )
+      if ( std::string( none ) == "1" )
+         throw Error( kNoLocalGaiaMessage );
+#endif
    StringList paths;
    String setting;
    if ( Settings::Read( "GaiaDatabaseFiles", setting ) )
@@ -133,8 +144,7 @@ StringList DiscoverGaiaDatabases()
          return paths;
       }
    }
-   throw Error( "No local Gaia DR3 database is configured in PixInsight (the one plate-solving uses). "
-                "Configure it, or uncheck 'Offline' to use the online catalogue." );
+   throw Error( kNoLocalGaiaMessage );
 }
 
 } // namespace pcl

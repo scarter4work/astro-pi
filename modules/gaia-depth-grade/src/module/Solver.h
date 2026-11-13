@@ -38,6 +38,10 @@ struct SolverParams
    bool       distortion = true;       // spline distortion model (ImageSolver's default)
    BlindMode  blind = BlindMode::Automatic;
    bool       useExistingSolution = true; // seed from an astrometric solution the image already has
+   /// With no database files given and none configured: plate-solve with the ESA archive's Gaia
+   /// DR3 positions (plan C21) instead of failing with DiscoverGaiaDatabases' error. Only the
+   /// online catalogue mode allows it: offline mode makes no network connection.
+   bool       onlineCatalogFallback = false;
 };
 
 struct SolveReport
@@ -49,6 +53,7 @@ struct SolveReport
    double rmsPx = 0;           // RMS of the final matching, pixels
    double limitMagnitude = 0;
    int    catalogStars = 0;
+   String catalog;             // the solver catalogue's name: "Gaia DR3 (XPSD)" or "Gaia DR3 (ESA archive)"
    int    iterations = 0;
    double seconds = 0;
    double blindSeconds = 0;

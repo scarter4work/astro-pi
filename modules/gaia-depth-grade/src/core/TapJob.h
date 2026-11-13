@@ -8,11 +8,21 @@
 #include "Footprint.h"
 #include "Log.h"
 #include "OnlineCache.h"
+#include "TapText.h"
 
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace gdg {
+
+/// A transport used where it must not be (the module's TapClient off PixInsight's main thread,
+/// plan C14): a programming error, not a network failure. The TAP flow never retries it, never
+/// downgrades it to a warning, and lets it propagate unchanged.
+struct TransportMisuse : std::logic_error {
+    using std::logic_error::logic_error;
+};
 
 struct HttpResponse {
     int status = 0;            // HTTP status; 0 when no answer arrived
@@ -55,5 +65,19 @@ void log_gaia_notices(HttpTransport& http, const Log& log);
 /// the cache write. `cache` may be null (no cache).
 Catalog online_gaia_distances(HttpTransport& http, const OnlineCache* cache, const Footprint& fp,
                               std::optional<double> mag_limit, const Log& log, const TapOptions& opt = {});
+
+/// The cache key of online_gaia_positions: "pos" + the first 16 hex characters of SHA-1 over
+/// "pos_%.6f_%.6f_%.6f_mag%.2f" (ra, dec, radius, mag_high).
+std::string positions_cache_key(double ra, double dec, double radius, double mag_high);
+
+/// The plate solver's online catalogue (plan C21, for a machine without a local Gaia DR3
+/// database): Gaia DR3 positions about (ra, dec) within `radius` degrees, G <= mag_high
+/// (build_positions_adql, row cap opt.top). The cache first (warning `using cached Gaia result
+/// <path>`); otherwise the notices, then up to `attempts` async jobs (each failure warns `Gaia
+/// async attempt %d/%d failed: %s`; then std::runtime_error `Gaia TAP query failed: Gaia async
+/// query failed after %d attempts: <last>`), the row-cap warning, and the cache write.
+std::vector<GaiaPosition> online_gaia_positions(HttpTransport& http, const OnlineCache* cache, double ra, double dec,
+                                                double radius, double mag_high, const Log& log,
+                                                const TapOptions& opt = {});
 
 }  // namespace gdg

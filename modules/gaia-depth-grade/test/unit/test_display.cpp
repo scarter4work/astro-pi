@@ -173,6 +173,38 @@ TEST_CASE("autostretch_split_is_identical", "[display]") {
     CHECK_THROWS_AS(gdg::stf_params(Image()), std::invalid_argument);
 }
 
+TEST_CASE("fit_size_bounds_both_sides", "[display]") {
+    // The interface's preview control is 760 x 420: the picture fits inside it, aspect kept, the
+    // limiting side exact and the other rounded as downscale_size rounds (nearest, ties to even).
+    CHECK(gdg::fit_size(3840, 2160, 760, 420) == std::pair<int, int>{747, 420});   // 746.67 -> 747, height-bound
+    CHECK(gdg::fit_size(6024, 4024, 760, 420) == std::pair<int, int>{629, 420});   // 628.77 -> 629
+    CHECK(gdg::fit_size(2160, 3840, 760, 420) == std::pair<int, int>{236, 420});   // portrait: 236.25 -> 236
+    CHECK(gdg::fit_size(7600, 1000, 760, 420) == std::pair<int, int>{760, 100});   // width-bound = downscale_size
+    CHECK(gdg::fit_size(700, 400, 760, 420) == std::pair<int, int>{700, 400});     // never upscaled
+    CHECK(gdg::fit_size(1, 100000, 760, 420) == std::pair<int, int>{1, 420});      // at least 1 px
+    CHECK(gdg::fit_size(3840, 2160, 760, 0) == gdg::downscale_size(3840, 2160, 760)); // no height bound
+    // downscale_u8_to is downscale_u8 for downscale_size's geometry.
+    std::vector<uint8_t> px(size_t(8) * 6 * 3);
+    for (size_t i = 0; i < px.size(); ++i) px[i] = static_cast<uint8_t>(i * 7);
+    CHECK(gdg::downscale_u8_to(px, 8, 6, 3, 4, 3) == gdg::downscale_u8(px, 8, 6, 3, 4));
+    CHECK(gdg::downscale_u8_to(px, 8, 6, 3, 8, 6) == px);
+    CHECK_THROWS_AS(gdg::downscale_u8_to(px, 8, 6, 3, 9, 6), std::invalid_argument);  // never upscaled
+}
+
+TEST_CASE("fit_size_refuses_empty_images", "[display]") {
+    // No picture to fit: never a made-up 1 px side (which would be an upscale of nothing).
+    CHECK_THROWS_AS(gdg::fit_size(0, 1000, 760, 420), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::fit_size(1000, 0, 760, 420), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::fit_size(-4, 10, 760, 420), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::fit_size(0, 1000, 760, 0), std::invalid_argument);
+    // downscale_u8_to the same: a source or a target with no pixels is refused.
+    const std::vector<uint8_t> none;
+    CHECK_THROWS_AS(gdg::downscale_u8_to(none, 0, 0, 3, 0, 0), std::invalid_argument);
+    const std::vector<uint8_t> px(size_t(4) * 2 * 3, 7);
+    CHECK_THROWS_AS(gdg::downscale_u8_to(px, 4, 2, 3, 0, 1), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::downscale_u8_to(px, 4, 2, 3, 2, 0), std::invalid_argument);
+}
+
 TEST_CASE("downscale_keeps_aspect_760", "[display]") {
     // The dialog's preview: <= 760 px wide, aspect kept (PIL: max(1, round(h * 760 / w))).
     CHECK(gdg::downscale_size(6024, 4024, 760) == std::pair<int, int>{760, 508});  // 507.67 -> 508

@@ -306,6 +306,44 @@ TEST_CASE("tap_notices_failure_does_not_stop_the_query", "[tap][flow]") {
     CHECK(cap2.warned("Gaia archive notices unavailable (TLS handshake failed)"));
 }
 
+TEST_CASE("tap_transport_misuse_is_never_retried_or_downgraded", "[tap][flow]") {
+    // A transport used where it must not be (TapClient off PixInsight's main thread, plan C14) is a
+    // programming error: it propagates as is from the notices request, with no retry and no
+    // "notices unavailable" warning, and never becomes "after 3 attempts".
+    class Misused : public FakeTransport {
+    public:
+        int calls = 0;
+        gdg::HttpResponse get(const std::string&) override {
+            ++calls;
+            throw gdg::TransportMisuse("Gaia TAP: wrong thread");
+        }
+        gdg::HttpResponse post_form(const std::string&, const std::string&) override {
+            ++calls;
+            throw gdg::TransportMisuse("Gaia TAP: wrong thread");
+        }
+    } t;
+    Captured cap;
+    CHECK_THROWS_MATCHES(gdg::online_gaia_distances(t, nullptr, kFp, 18.0, cap.log()), gdg::TransportMisuse,
+                         Catch::Matchers::Message("Gaia TAP: wrong thread"));
+    CHECK(t.calls == 1);
+    CHECK_FALSE(cap.warned("Gaia archive notices unavailable"));
+
+    // The same from the job's POST, past healthy notices: one call, no retry.
+    class MisusedPost : public FakeTransport {
+    public:
+        int posts = 0;
+        gdg::HttpResponse post_form(const std::string&, const std::string&) override {
+            ++posts;
+            throw gdg::TransportMisuse("Gaia TAP: wrong thread");
+        }
+    } u;
+    u.expect("GET", kNotices, 200, "text/plain", "");
+    Captured cap2;
+    CHECK_THROWS_AS(gdg::online_gaia_distances(u, nullptr, kFp, 18.0, cap2.log()), gdg::TransportMisuse);
+    CHECK(u.posts == 1);
+    CHECK_FALSE(cap2.warned("Gaia async attempt"));
+}
+
 TEST_CASE("tap_no_magnitude_cut_no_warning", "[tap][flow]") {
     FakeTransport t;
     t.expect("GET", kNotices, 200, "text/plain", "");
@@ -502,4 +540,103 @@ TEST_CASE("tap_csv_parses_subnormal_values", "[tap]") {
                       Catch::Matchers::ContainsSubstring("column ra: not a number: '1e999'"));
     CHECK_THROWS_WITH(gdg::parse_tap_csv(head + "1.0,1.0,500.5,1e39,600.5,42,13.0,0.5\n", cap2.log()),
                       Catch::Matchers::ContainsSubstring("column r_lo_geo: not a number: '1e39'"));
+}
+
+// ---- The plate solver's online catalogue (plan C21: no local Gaia DR3 database) -------------
+
+namespace {
+
+// The archive's CSV for build_positions_adql's columns (DOUBLE columns at full precision, the
+// REAL G at float precision, an empty field for a null), as result.csv prints them.
+const std::string kPositionsCsv =
+    "ra,dec,pmra,pmdec,parallax,phot_g_mean_mag\n"
+    "350.1591429149622,61.236126273547846,-3.0712394536742,-1.8471220164301,1.7155318471265,13.051971\n"
+    "350.1647882760023,61.231248783371974,0.512,-0.25,,13.741496\n"
+    "350.17594764358256,61.20490120420759,,,,13.825976\n"
+    "350.1612498865761,61.23721220323264,2.5,1.25,3.25,\n";
+
+}  // namespace
+
+TEST_CASE("positions_adql_text", "[tap][solver]") {
+    CHECK(gdg::build_positions_adql(350.25, 61.5, 0.75, 14.5, 600000) ==
+          "SELECT TOP 600000 ra, dec, pmra, pmdec, parallax, phot_g_mean_mag FROM gaiadr3.gaia_source "
+          "WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', 350.25, 61.5, 0.75)) "
+          "AND pmra IS NOT NULL AND pmdec IS NOT NULL AND phot_g_mean_mag IS NOT NULL "
+          "AND phot_g_mean_mag >= -1.5 AND phot_g_mean_mag <= 14.5 ORDER BY phot_g_mean_mag ASC");
+}
+
+TEST_CASE("positions_csv_parses_and_skips_unusable_rows", "[tap][solver]") {
+    const auto rows = gdg::parse_positions_csv(kPositionsCsv);
+    // Row 3 has no proper motion (NoPM, excluded as the local search excludes it), row 4 no G.
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].ra == 350.1591429149622);
+    CHECK(rows[0].dec == 61.236126273547846);
+    CHECK(rows[0].pmra == -3.0712394536742);
+    CHECK(rows[0].pmdec == -1.8471220164301);
+    CHECK(rows[0].parallax == 1.7155318471265);
+    CHECK(rows[0].g == static_cast<double>(13.051971f));  // REAL: float, widened
+    CHECK(rows[1].parallax == 0.0);                         // null parallax: 0
+    // A header and no rows is an error, never an empty success (as parse_tap_csv).
+    CHECK_THROWS_WITH(gdg::parse_positions_csv("ra,dec,pmra,pmdec,parallax,phot_g_mean_mag\n"),
+                      "Gaia query returned zero rows for this field");
+    CHECK_THROWS_WITH(gdg::parse_positions_csv("ra,dec,parallax\n1,2,3\n"),
+                      "Gaia result missing columns: ['phot_g_mean_mag', 'pmdec', 'pmra']");
+}
+
+TEST_CASE("positions_job_cache_and_retries", "[tap][solver][flow]") {
+    TempDir tmp;
+    const gdg::OnlineCache cache(tmp.path + "/c");
+    {
+        FakeTransport t;
+        t.expect("GET", kNotices, 200, "text/plain", "");
+        t.expect("POST", kAsync, 500, "text/html", "busy");  // attempt 1: not 303
+        script_success(t, kPositionsCsv);                       // attempt 2
+        Captured cap;
+        const auto rows = gdg::online_gaia_positions(t, &cache, 350.25, 61.5, 0.75, 14.5, cap.log());
+        CHECK(rows.size() == 2);
+        CHECK(t.script.empty());
+        CHECK(cap.warned("Gaia async attempt 1/3 failed: Gaia TAP: job submission answered HTTP 500 (expected 303)"));
+        REQUIRE(t.forms.size() == 2);
+        CHECK(t.forms[1] == "REQUEST=doQuery&LANG=ADQL&FORMAT=csv&PHASE=RUN&QUERY=" +
+                                gdg::form_encode(gdg::build_positions_adql(350.25, 61.5, 0.75, 14.5, 600000)));
+    }
+    {
+        // The second call is answered by the cache: no request at all.
+        FakeTransport t;
+        Captured cap;
+        CHECK(gdg::online_gaia_positions(t, &cache, 350.25, 61.5, 0.75, 14.5, cap.log()).size() == 2);
+        CHECK(t.requests.empty());
+        const std::string key = gdg::positions_cache_key(350.25, 61.5, 0.75, 14.5);
+        CHECK(key.rfind("pos", 0) == 0);
+        CHECK(key.size() == 19);
+        CHECK(key == "pos" + gdg::sha1_hex("pos_350.250000_61.500000_0.750000_mag14.50").substr(0, 16));
+        CHECK(cap.warned("using cached Gaia result " + cache.path_for(key)));
+        CHECK(gdg::positions_cache_key(350.25, 61.5, 0.8, 14.5) != key);  // another cone, another key
+    }
+    {
+        // Three failures: the Review Focus 3 error text.
+        FakeTransport t;
+        t.expect("GET", kNotices, 404, "text/html", "");
+        for (int i = 0; i < 3; ++i) {
+            t.expect("POST", kAsync, 303, "text/plain", fixture("post-303.body"));
+            t.expect("GET", kJob + "/phase", 200, "text/plain", "ERROR");
+        }
+        Captured cap;
+        CHECK_THROWS_WITH(gdg::online_gaia_positions(t, nullptr, 1.0, 2.0, 0.5, 12.0, cap.log()),
+                          "Gaia TAP query failed: Gaia async query failed after 3 attempts: Gaia TAP: job " + kJob +
+                              " ended in phase ERROR");
+    }
+}
+
+TEST_CASE("positions_empty_table_is_an_error_not_success", "[tap][solver][flow]") {
+    TempDir tmp;
+    const gdg::OnlineCache cache(tmp.path);
+    FakeTransport t;
+    t.expect("GET", kNotices, 404, "text/html", "");
+    script_success(t, "ra,dec,pmra,pmdec,parallax,phot_g_mean_mag\n");
+    Captured cap;
+    CHECK_THROWS_WITH(gdg::online_gaia_positions(t, &cache, 350.25, 61.5, 0.75, 14.5, cap.log()),
+                      "Gaia query returned zero rows for this field");
+    CHECK(t.script.empty());  // one job: an empty table is not retried
+    CHECK(!cache.read(gdg::positions_cache_key(350.25, 61.5, 0.75, 14.5)));  // nothing cached
 }

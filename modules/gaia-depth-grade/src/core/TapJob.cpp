@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <stdexcept>
 
 namespace gdg {
@@ -80,6 +81,8 @@ void log_gaia_notices(HttpTransport& http, const Log& log) {
     HttpResponse r;
     try {
         r = http.get(kGaiaNotices);
+    } catch (const TransportMisuse&) {
+        throw;  // a programming error, never "notices unavailable"
     } catch (const std::exception& e) {  // only the notices are skipped; the query still runs
         log_warning(log, std::string("Gaia archive notices unavailable (") + e.what() + ")");
         return;
@@ -92,37 +95,46 @@ void log_gaia_notices(HttpTransport& http, const Log& log) {
     if (!text.empty()) log_info(log, "Gaia archive notices: " + text);
 }
 
-Catalog online_gaia_distances(HttpTransport& http, const OnlineCache* cache, const Footprint& fp,
-                              std::optional<double> mag_limit, const Log& log, const TapOptions& opt) {
-    const std::string key = cache_key(fp, mag_limit);
+namespace {
+
+/// What differs between the archive's two queries (Bailer-Jones distances, solver positions).
+struct TapQuery {
+    std::string key;          // the cache key
+    std::string adql;
+    std::string cap_warning;  // logged when the result reaches the row cap
+    std::string count_label;  // "<label>: %ld sources"
+};
+
+/// The one cache + retry flow (GaiaStarSource.distances_for): the cache (warning `using cached Gaia
+/// result <path>`), else the notices, `after_notices`, up to opt.attempts async jobs (each failure
+/// warns `Gaia async attempt %d/%d failed: %s`; then std::runtime_error `Gaia TAP query failed:
+/// Gaia async query failed after %d attempts: <last>`), the row-cap warning and count, `parse`
+/// (which refuses missing columns and zero rows: an error is never cached), and the cache write.
+template <class Parse>
+auto cached_tap_query(HttpTransport& http, const OnlineCache* cache, const TapQuery& q, const Log& log,
+                      const TapOptions& opt, const std::function<void()>& after_notices, Parse parse)
+    -> decltype(parse(std::string())) {
     if (cache) {
-        if (const std::optional<std::string> hit = cache->read(key)) {
-            log_warning(log, "using cached Gaia result " + cache->path_for(key));
-            return parse_tap_csv(*hit, log);
+        if (const std::optional<std::string> hit = cache->read(q.key)) {
+            log_warning(log, "using cached Gaia result " + cache->path_for(q.key));
+            return parse(*hit);
         }
     }
 
     log_gaia_notices(http, log);
-    // LOUD about the cut (no silent cap): the limit in effect, stated up front.
-    if (mag_limit)
-        log_warning(log, strformat("Gaia: magnitude cut G<%.1f in effect \xE2\x80\x94 fainter sources excluded by design "
-                                   "(Bailer-Jones distances unreliable faintward). Set gaia_mag_limit=None to include "
-                                   "them.",
-                                   *mag_limit));
-    const std::string adql = build_adql(fp, opt.top, std::nullopt, mag_limit);
+    if (after_notices) after_notices();
     std::string csv, last;
     bool ok = false;
     for (int attempt = 1; attempt <= opt.attempts; ++attempt) {
         try {
-            csv = run_async_job(http, adql, opt);
+            csv = run_async_job(http, q.adql, opt);
             const long rows = csv_row_count(csv);
-            if (rows >= opt.top)
-                log_warning(log, strformat("Gaia returned the %ld-row safety cap; field may be undersampled "
-                                           "\xE2\x80\x94 lower gaia_mag_limit.",
-                                           opt.top));
-            log_info(log, strformat("Gaia (async): %ld sources", rows));
+            if (rows >= opt.top) log_warning(log, q.cap_warning);
+            log_info(log, strformat("%s: %ld sources", q.count_label.c_str(), rows));
             ok = true;
             break;
+        } catch (const TransportMisuse&) {
+            throw;  // a programming error: no retry, no wrapping
         } catch (const std::exception& e) {  // retry, then surface the real error
             last = e.what();
             log_warning(log, strformat("Gaia async attempt %d/%d failed: %s", attempt, opt.attempts, last.c_str()));
@@ -131,9 +143,46 @@ Catalog online_gaia_distances(HttpTransport& http, const OnlineCache* cache, con
     if (!ok)
         throw std::runtime_error(strformat("Gaia TAP query failed: Gaia async query failed after %d attempts: %s",
                                            opt.attempts, last.c_str()));
-    Catalog cat = parse_tap_csv(csv, log);  // missing columns / zero rows are errors, never success
-    if (cache) cache->write(key, csv);
-    return cat;
+    auto result = parse(csv);  // missing columns / zero rows are errors, never success
+    if (cache) cache->write(q.key, csv);
+    return result;
+}
+
+}  // namespace
+
+Catalog online_gaia_distances(HttpTransport& http, const OnlineCache* cache, const Footprint& fp,
+                              std::optional<double> mag_limit, const Log& log, const TapOptions& opt) {
+    const TapQuery q{cache_key(fp, mag_limit), build_adql(fp, opt.top, std::nullopt, mag_limit),
+                     strformat("Gaia returned the %ld-row safety cap; field may be undersampled "
+                               "\xE2\x80\x94 lower gaia_mag_limit.",
+                               opt.top),
+                     "Gaia (async)"};
+    // LOUD about the cut (no silent cap): the limit in effect, stated up front.
+    const auto cut_warning = [&] {
+        if (mag_limit)
+            log_warning(log, strformat("Gaia: magnitude cut G<%.1f in effect \xE2\x80\x94 fainter sources excluded by "
+                                       "design (Bailer-Jones distances unreliable faintward). Set gaia_mag_limit=None "
+                                       "to include them.",
+                                       *mag_limit));
+    };
+    return cached_tap_query(http, cache, q, log, opt, cut_warning,
+                            [&](const std::string& csv) { return parse_tap_csv(csv, log); });
+}
+
+std::string positions_cache_key(double ra, double dec, double radius, double mag_high) {
+    return "pos" + sha1_hex(strformat("pos_%.6f_%.6f_%.6f_mag%.2f", ra, dec, radius, mag_high)).substr(0, 16);
+}
+
+std::vector<GaiaPosition> online_gaia_positions(HttpTransport& http, const OnlineCache* cache, double ra, double dec,
+                                                double radius, double mag_high, const Log& log,
+                                                const TapOptions& opt) {
+    const TapQuery q{positions_cache_key(ra, dec, radius, mag_high),
+                     build_positions_adql(ra, dec, radius, mag_high, opt.top),
+                     strformat("Gaia returned the %ld-row safety cap; the plate solver's catalogue may be incomplete.",
+                               opt.top),
+                     "Gaia DR3 positions (async)"};
+    return cached_tap_query(http, cache, q, log, opt, nullptr,
+                            [](const std::string& csv) { return parse_positions_csv(csv); });
 }
 
 }  // namespace gdg

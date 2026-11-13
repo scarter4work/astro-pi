@@ -17,4 +17,9 @@ std::string py_float_repr(double v);
 /// cone, r_med_geo and G not null, optional G > mag_gt and G < mag_lt, ordered by G.
 std::string build_adql(const Footprint& fp, long top, std::optional<double> mag_gt, std::optional<double> mag_lt);
 
+/// The plate solver's online catalogue (plan C21: no local Gaia DR3 database): Gaia DR3 positions
+/// with proper motions and parallax (sources without proper motions excluded, as the local XPSD
+/// search excludes NoPM), G in [-1.5, mag_high], within `radius` degrees of (ra, dec), by G.
+std::string build_positions_adql(double ra, double dec, double radius, double mag_high, long top);
+
 }  // namespace gdg
