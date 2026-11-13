@@ -9,8 +9,6 @@
 
 namespace ac {
 
-namespace {
-
 // Source index for an out-of-range position i on a line of length n (periodic bounce, so any distance works).
 long extend_index(long i, long n, EdgeMode mode)
 {
@@ -29,8 +27,6 @@ long extend_index(long i, long n, EdgeMode mode)
       m += period;
    return m < n ? m : period - 1 - m;
 }
-
-} // namespace
 
 Plane correlate1d(const Plane& in, const std::vector<double>& weights, int axis, EdgeMode mode, unsigned threads)
 {

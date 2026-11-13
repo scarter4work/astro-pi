@@ -12,6 +12,10 @@ enum class EdgeMode {
    Reflect    // scipy mode='reflect': d c b a | a b c d | d c b a (ndimage default)
 };
 
+// Source index for position i (any distance outside [0, n)) on a line of length n >= 1 under `mode`, bouncing
+// periodically as scipy's line extension does for kernels wider than the line.
+long extend_index(long i, long n, EdgeMode mode);
+
 // scipy.ndimage.correlate1d(plane, weights, axis, mode=mode), odd weights.size() (throws otherwise).
 // axis 0 runs down the rows (y), axis 1 along x. Tap summation order and the symmetric / anti-symmetric
 // shortcuts (|w[i] -/+ w[-i]| <= DBL_EPSILON) follow ni_filters.c::NI_Correlate1D, so results match scipy

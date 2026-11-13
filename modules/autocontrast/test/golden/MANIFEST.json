@@ -570,8 +570,8 @@
    "sha256": "6865562fd0a516c75d218c6d6790f446974ac261db42d3523831b13e969debe3"
   },
   "synthetic/bandlimit/cases.json": {
-   "bytes": 6775,
-   "sha256": "f1bf480dc892b1e2d591435a5e2b0bc543af012974fbbdeda4371f4f31ad1101"
+   "bytes": 10786,
+   "sha256": "b58e931f63b28d29f18202d9d5d97f8e695203eceb371962ba51777c8857b136"
   },
   "synthetic/color/primaries_lab.npy": {
    "bytes": 320,
@@ -1281,6 +1281,18 @@
    "bytes": 2176,
    "sha256": "d541758bb5ff2a6d9b4d3eb764fac9abc166671e0eacd6bb5a7c0f3d5c45607a"
   },
+  "synthetic/np_sum/offsets.npy": {
+   "bytes": 2576,
+   "sha256": "5011022e222cc3e99851e0c098022c152657bd3d918e6637a95ba2c52c05dbb6"
+  },
+  "synthetic/np_sum/sums.npy": {
+   "bytes": 2568,
+   "sha256": "b771f788fe76e8c6697d17ebc7f5ebd7fe4b7843213f4223dcb701cb3eb31b08"
+  },
+  "synthetic/np_sum/values.npy": {
+   "bytes": 725936,
+   "sha256": "c1825a25c519f176b31b912fb9ad3ea12a65941043d9995acd0bb81ddbe6bea5"
+  },
   "synthetic/npy_selftest_b1.npy": {
    "bytes": 134,
    "sha256": "2d9cbf0b53a22340d3c8d559e2f973abd85e9dad576aabad804590d545539c26"
@@ -1693,6 +1705,26 @@
    "bytes": 5482,
    "sha256": "3d9ecc6b61dd92fddd0b1bbf55138c8205d3a99098c299a8d26dfcbd8e7b509a"
   },
+  "synthetic/starlet/img_130x3.npy": {
+   "bytes": 3248,
+   "sha256": "5aac316a1d0218a3ee9763323364ae2e624238a5ce374c3fa8c81ac128f37d67"
+  },
+  "synthetic/starlet/img_1x9.npy": {
+   "bytes": 200,
+   "sha256": "ac3e8a001984e997d9ea86c2bff9de9d44f9dd8c8d3c43b05d5c262ac6c39e5e"
+  },
+  "synthetic/starlet/img_2x3.npy": {
+   "bytes": 176,
+   "sha256": "10918decb626bf1fd09edda13a2c8412595cd7f632957755a29ecceab604c554"
+  },
+  "synthetic/starlet/img_33x17.npy": {
+   "bytes": 4616,
+   "sha256": "8f3d8d18726e8e5cf75fdc272900a3ae8901eb6d95df352ab1988d9788d29384"
+  },
+  "synthetic/starlet/img_3x130.npy": {
+   "bytes": 3248,
+   "sha256": "8eeececfc4ea1e717a6ae7e1aa2115bb2f64889f603dd631275251e5fbfb3dda"
+  },
   "synthetic/starlet/img_64x48.npy": {
    "bytes": 24704,
    "sha256": "6a17d3ffc4a5fd0a39c615c9312512e7f366782654607a7f080424900abf83f4"
@@ -1705,9 +1737,65 @@
    "bytes": 61568,
    "sha256": "5089ffd0f3ca5bb1614869ff088b9955781f95129c42d0116673d8de1bf68fb4"
   },
+  "synthetic/starlet/img_9x1.npy": {
+   "bytes": 200,
+   "sha256": "01af4bcc5fbd9865a8220b3c3769bbe8151a6c1a9c65c40c2c791379ec6ed4dd"
+  },
   "synthetic/starlet/index.json": {
-   "bytes": 497,
-   "sha256": "aa797b75dec660918693d58d53426344c6475d46fee136bb59cb2fdb6d998744"
+   "bytes": 1247,
+   "sha256": "e8c4f71bb00801d623722a169d9fc30944eb8a921f34cb7396a981652e446887"
+  },
+  "synthetic/starlet/planes_130x3_n7.npy": {
+   "bytes": 21968,
+   "sha256": "234b2ff3fc750afcd215b4f148afa51d0f96eb2844714a7bead4d16591a9232d"
+  },
+  "synthetic/starlet/planes_1x9_n1.npy": {
+   "bytes": 200,
+   "sha256": "8698d722669c1c3ab0db46f27d3e7cef9e54cf2c67bed0eb6aebaad7f6c86694"
+  },
+  "synthetic/starlet/planes_1x9_n7.npy": {
+   "bytes": 632,
+   "sha256": "8ef8438e509aa6c6bc1d4043307139aae5a22b169b5d8bf9232e080723bbc262"
+  },
+  "synthetic/starlet/planes_2x3_n7.npy": {
+   "bytes": 464,
+   "sha256": "eb4572823a7731e513d4e5d8757850b5699cabe6e0467a23ebb72a51cc5cf1b4"
+  },
+  "synthetic/starlet/planes_33x17_n1.npy": {
+   "bytes": 4616,
+   "sha256": "1d1b0fdf93cab743031c4d1cf2d4f69a7787e3a8377b0421a32c92ac54cebfa6"
+  },
+  "synthetic/starlet/planes_33x17_n2.npy": {
+   "bytes": 9104,
+   "sha256": "56ee895ac1a85766ee0b1588c660d3bfbca3e0e620cca2fb77c6053f17537257"
+  },
+  "synthetic/starlet/planes_33x17_n3.npy": {
+   "bytes": 13592,
+   "sha256": "f9be535705cbe2e27c9361ac5290ade98b74458e65f3df0a525022b4205ed2dd"
+  },
+  "synthetic/starlet/planes_33x17_n4.npy": {
+   "bytes": 18080,
+   "sha256": "45084c5978614d00437f2729d4afbc6f2c6fda084bc5fef7e73336a0fea0e3dd"
+  },
+  "synthetic/starlet/planes_33x17_n5.npy": {
+   "bytes": 22568,
+   "sha256": "03b02f136393499f6ce65bbe454c09f86525aaa61a2c2ef0c231343b03fed493"
+  },
+  "synthetic/starlet/planes_33x17_n6.npy": {
+   "bytes": 27056,
+   "sha256": "14feb7b837cec5030d376c3f6d69f30f03db9472d0e2614d08ff6999443bce05"
+  },
+  "synthetic/starlet/planes_33x17_n7.npy": {
+   "bytes": 31544,
+   "sha256": "24600f8c6f71b2fc2306e8fac222f8f92e4c043de1d2944631ed6575abc5ee94"
+  },
+  "synthetic/starlet/planes_33x17_n8.npy": {
+   "bytes": 36032,
+   "sha256": "f2a4e6421227f15b45528dc65b854155e7d5a618561f8b6e4ca634faed41ff5c"
+  },
+  "synthetic/starlet/planes_3x130_n7.npy": {
+   "bytes": 21968,
+   "sha256": "5cee3d6f07b7532385bfa27bc0bf077ff609cadef4fcdc008fb168793fbf8bc7"
   },
   "synthetic/starlet/planes_64x48_n1.npy": {
    "bytes": 24704,
@@ -1745,6 +1833,62 @@
    "bytes": 430208,
    "sha256": "272923e9a7117752df93a1d14b31e6c4b8a36ed9e0b9af7bd6a8ba04432d7b8f"
   },
+  "synthetic/starlet/planes_9x1_n7.npy": {
+   "bytes": 632,
+   "sha256": "b4104ca790764cf97d528b313109cd3d5b0b1830199e01f768c66e0c2995ad68"
+  },
+  "synthetic/starlet/residual_130x3_n7.npy": {
+   "bytes": 3248,
+   "sha256": "984b0465bb2eb1ce9b405109af865c15d9c114f477462db29a0d2c78ebd726c1"
+  },
+  "synthetic/starlet/residual_1x9_n1.npy": {
+   "bytes": 200,
+   "sha256": "79c0dc902e78f1767f6b51f850bf26665279bd8a87787897a5f9fad797de4416"
+  },
+  "synthetic/starlet/residual_1x9_n7.npy": {
+   "bytes": 200,
+   "sha256": "3c90238c389abed4afe08b16823b12f3733d3b6703ae1898c33e016e2ff9aa0a"
+  },
+  "synthetic/starlet/residual_2x3_n7.npy": {
+   "bytes": 176,
+   "sha256": "d8b5d6b55f33e341adf5db0a79f6fc58396454c51b58c2e222f26eaca073eae3"
+  },
+  "synthetic/starlet/residual_33x17_n1.npy": {
+   "bytes": 4616,
+   "sha256": "208a5312b36d2aaeaacda10d1067c065a95307792688f83a7784fd20cd662f3c"
+  },
+  "synthetic/starlet/residual_33x17_n2.npy": {
+   "bytes": 4616,
+   "sha256": "531e00ab837c1b7ff2d91a03dff143d4248831e4a3d4e50c784daddf54d881f6"
+  },
+  "synthetic/starlet/residual_33x17_n3.npy": {
+   "bytes": 4616,
+   "sha256": "079d758a8c5f66c94dc0c12a3838bba02fcd71d6e92e826cece41ae96ce1f685"
+  },
+  "synthetic/starlet/residual_33x17_n4.npy": {
+   "bytes": 4616,
+   "sha256": "c9f3216a30bdb119448b5d4dada4f7cda259837bb79c2dc07fc9b77e8964aee4"
+  },
+  "synthetic/starlet/residual_33x17_n5.npy": {
+   "bytes": 4616,
+   "sha256": "58e6c4623b5032aff59aad3d0500630bb3cd64968f5307e1cedf54a1e8237ea2"
+  },
+  "synthetic/starlet/residual_33x17_n6.npy": {
+   "bytes": 4616,
+   "sha256": "deaf43853d92385c2efcee81ae5b5f4c0c68081b32578af15f6f939f3eba4c0a"
+  },
+  "synthetic/starlet/residual_33x17_n7.npy": {
+   "bytes": 4616,
+   "sha256": "deaf43853d92385c2efcee81ae5b5f4c0c68081b32578af15f6f939f3eba4c0a"
+  },
+  "synthetic/starlet/residual_33x17_n8.npy": {
+   "bytes": 4616,
+   "sha256": "deaf43853d92385c2efcee81ae5b5f4c0c68081b32578af15f6f939f3eba4c0a"
+  },
+  "synthetic/starlet/residual_3x130_n7.npy": {
+   "bytes": 3248,
+   "sha256": "5781aa2831a64ef24648b98184dd2b1ff85a235b838bc85d5821c0d9c6dae6b2"
+  },
   "synthetic/starlet/residual_64x48_n1.npy": {
    "bytes": 24704,
    "sha256": "eb1c251e60542c12a81944a7561a7a33b8988475e8f0897d359dbcea6bc96a3b"
@@ -1780,6 +1924,10 @@
   "synthetic/starlet/residual_96x80_n7.npy": {
    "bytes": 61568,
    "sha256": "5dd80750ca5dce442fc2d5149b82fad34291fb9fa2564dfa4e7c7ba8aa52ca38"
+  },
+  "synthetic/starlet/residual_9x1_n7.npy": {
+   "bytes": 200,
+   "sha256": "6bce1de5ae594491dca4dfadc5888cf3a055c08f129d90057debbfab8da23fff"
   },
   "synthetic/wcs/geometry.json": {
    "bytes": 1593,
@@ -2351,7 +2499,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 6280214,
+ "total_bytes": 7280399,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",

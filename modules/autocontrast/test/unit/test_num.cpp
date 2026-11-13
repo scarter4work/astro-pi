@@ -9,6 +9,7 @@
 #include "core/num/Interp.h"
 #include "core/num/Label.h"
 #include "core/num/Percentile.h"
+#include "core/num/Sum.h"
 
 #include <algorithm>
 #include <cmath>
@@ -283,5 +284,17 @@ TEST_CASE("reductions_thread_invariant")
    for (unsigned t : {3u, 32u}) {
       const auto got = ac::gaussian_filter(in, 2.355, t);
       REQUIRE(std::memcmp(got.data.data(), gref.data.data(), gref.data.size() * sizeof(double)) == 0);
+   }
+}
+
+TEST_CASE("pairwise_sum_matches_np_sum_bitwise")
+{
+   // every length 1..300 (all pairwise branch edges: <8, 8..128, recursion) plus long ones around 8192
+   const auto vals = npy("../np_sum/values.npy"), offs = npy("../np_sum/offsets.npy"), sums = npy("../np_sum/sums.npy");
+   REQUIRE(offs.size() == sums.size() + 1);
+   for (size_t k = 0; k < sums.size(); ++k) {
+      const size_t lo = static_cast<size_t>(offs[k]), n = static_cast<size_t>(offs[k + 1]) - lo;
+      INFO("n=" << n);
+      REQUIRE(bits(ac::pairwise_sum(vals.data() + lo, n)) == bits(sums[k]));
    }
 }

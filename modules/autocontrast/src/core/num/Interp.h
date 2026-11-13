@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <vector>
 #include <algorithm>

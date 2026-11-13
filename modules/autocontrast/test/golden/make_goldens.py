@@ -9,6 +9,7 @@ C++ stage can be tested against it without Python at test time.
     tools/autocontrast/.venv/bin/python -I make_goldens.py manifest  <golden-root>
     tools/autocontrast/.venv/bin/python -I make_goldens.py all       <golden-root> [--data-dir DIR]
     tools/autocontrast/.venv/bin/python -I make_goldens.py json_float_repr <golden-root>   (that one file + its MANIFEST entry)
+    tools/autocontrast/.venv/bin/python -I make_goldens.py stage <golden-root> --name <stage>   (one synthetic stage + its MANIFEST entries)
 
 ``synthetic`` needs nothing but the venv.  ``real`` reads (never copies) the renders under
 the data dir (``--data-dir`` or env ``AC_DATA_DIR``; default tools/autocontrast/data) and
@@ -369,6 +370,20 @@ def stage_starlet_energy_bandlimit(out: Out):
             recon = planes.sum(axis=0) + resid
             meta.append({"h": h, "w": w, "n": n, "max_recon_err": float(np.abs(recon - img).max())})
             kept[(h, w, n)] = planes
+    # Degenerate and lopsided shapes (single row/column, 2-wide, kernel wider than one axis only),
+    # every scale count 1..8 on one of them.  A fresh generator, so every draw above (and the
+    # band-limit spectra below) is unchanged.
+    rng_x = rng0()
+    for (h, w), ns in (((1, 9), (1, 7)), ((9, 1), (7,)), ((2, 3), (7,)), ((3, 130), (7,)),
+                       ((130, 3), (7,)), ((33, 17), (1, 2, 3, 4, 5, 6, 7, 8))):
+        img = _test_image(rng_x, h, w)
+        out.npy(f"starlet/img_{h}x{w}.npy", img)
+        for n in ns:
+            planes, resid = starlet_transform(img, n)
+            out.npy(f"starlet/planes_{h}x{w}_n{n}.npy", planes)
+            out.npy(f"starlet/residual_{h}x{w}_n{n}.npy", resid)
+            recon = planes.sum(axis=0) + resid
+            meta.append({"h": h, "w": w, "n": n, "max_recon_err": float(np.abs(recon - img).max())})
     out.json("starlet/index.json", {"cases": meta})
 
     # energy ------------------------------------------------------------------------------
@@ -402,6 +417,24 @@ def stage_starlet_energy_bandlimit(out: Out):
         ("zero_energy_target", spec(7, 1.0, decaying(7, 1e3)), spec(7, 1.0, np.zeros(7)), 2.0, 2.0, 3),
         ("coarse_ref_fine_target", spec(6, 4.0, decaying(6, 1e3)), spec(8, 0.25, decaying(8, 1e3)), 6.0, 0.6, 3),
     ]
+    # Usable cases where the reference really is interpolated in log-arcsec (its centres fall
+    # between the target's), plus 3-significant-digit reason formatting of awkward values.  Drawn
+    # from a fresh generator so the cases above keep their exact values.
+    rng_b = rng0()
+
+    def decaying_b(n, scale):
+        return np.sort(rng_b.uniform(1, 100, n))[::-1] * scale
+
+    bl_cases += [
+        ("usable_cross_scale", spec(8, 0.5, decaying_b(8, 1e3)), spec(7, 1.01, decaying_b(7, 5e2)), 1.0, 1.5, 3),
+        ("usable_cross_scale_fine_ref", spec(9, 0.123, decaying_b(9, 1e4)), spec(8, 0.777, decaying_b(8, 1e2)),
+         0.31, 0.9876, 3),
+        ("usable_ref_extrapolated", spec(5, 2.0, decaying_b(5, 1e3)), spec(8, 0.6, decaying_b(8, 1e3)), 1.0, 1.0, 3),
+        ("no_overlap_awkward_digits", spec(6, 1.0, decaying_b(6, 1e3)), spec(6, 1.0, decaying_b(6, 1e3)),
+         123456.789, 2.0, 3),
+        ("few_bins_awkward_digits", spec(7, 0.0123456, decaying_b(7, 1e3)), spec(7, 0.0123456, decaying_b(7, 1e3)),
+         0.09995, 0.0001234, 9),
+    ]
     res = []
     for name, ref, tgt, rp, tp, mb in bl_cases:
         r = band_limit(ref, tgt, rp, tp, min_bins=mb)
@@ -415,6 +448,22 @@ def stage_starlet_energy_bandlimit(out: Out):
                        "grid": r.grid_arcsec, "ref_shape": r.ref_shape, "target_shape": r.target_shape},
         })
     out.json("bandlimit/cases.json", {"cases": res})
+
+
+def stage_np_sum(out: Out):
+    """np.sum over 1-D contiguous float64 vectors of every length 1..300 plus a few long ones: the
+    reduction order every ported np.sum / phi.sum() / np.sum(x**2, axis=...) must reproduce."""
+    rng = rng0()
+    lengths = list(range(1, 301)) + [1000, 8191, 8192, 8193, 20000]
+    vals, sums, offs = [], [], [0]
+    for n in lengths:
+        v = rng.standard_normal(n) * 10.0 ** rng.uniform(-3, 3, n)
+        vals.append(v)
+        sums.append(np.sum(v))
+        offs.append(offs[-1] + n)
+    out.npy("np_sum/values.npy", np.concatenate(vals))
+    out.npy("np_sum/offsets.npy", np.asarray(offs, dtype=np.int64))
+    out.npy("np_sum/sums.npy", np.asarray(sums, dtype=np.float64))
 
 
 def stage_color_metrics(out: Out):
@@ -1270,6 +1319,7 @@ SYNTHETIC_STAGES = [
     ("loop", stage_loop),
     ("json_float_repr", stage_json_float_repr),
     ("json_string_escape", stage_json_string_escape),
+    ("np_sum", stage_np_sum),
 ]
 
 
@@ -1543,14 +1593,38 @@ def write_json_float_repr_only(root: Path):
     man_path.write_text(json.dumps(enc(man), sort_keys=True, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def write_stage_only(root: Path, stage: str):
+    """Regenerate one synthetic stage's files and refresh exactly their MANIFEST entries; every other
+    golden and manifest field is left untouched.  Files the stage no longer writes are not pruned
+    (run ``all`` for that)."""
+    fns = dict(SYNTHETIC_STAGES)
+    if stage not in fns:
+        raise SystemExit(f"unknown stage {stage!r}; one of {sorted(fns)}")
+    out = Out(root / "synthetic")
+    fns[stage](out)
+    man_path = root / "MANIFEST.json"
+    man = json.loads(man_path.read_text())
+    for rel in out.written:
+        p = root / "synthetic" / rel
+        man["files"][f"synthetic/{rel}"] = {"bytes": p.stat().st_size, "sha256": sha256_file(p)}
+    man["files"] = dict(sorted(man["files"].items()))
+    man["total_bytes"] = sum(v["bytes"] for v in man["files"].values())
+    man_path.write_text(json.dumps(enc(man), sort_keys=True, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["synthetic", "real", "manifest", "all", "json_float_repr"])
+    ap.add_argument("mode", choices=["synthetic", "real", "manifest", "all", "json_float_repr", "stage"])
     ap.add_argument("outdir", type=Path)
     ap.add_argument("--data-dir", default=None)
+    ap.add_argument("--name", default=None, help="stage mode: the synthetic stage to regenerate")
     args = ap.parse_args(argv)
 
-    if args.mode == "synthetic":
+    if args.mode == "stage":
+        if not args.name:
+            raise SystemExit("stage mode needs --name <stage>")
+        write_stage_only(args.outdir, args.name)
+    elif args.mode == "synthetic":
         run_synthetic(args.outdir)
     elif args.mode == "real":
         run_real(args.outdir, resolve_data_dir(args.data_dir))
