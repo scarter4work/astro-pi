@@ -1165,6 +1165,10 @@
    "bytes": 8115,
    "sha256": "79e9413497a28e90f84c4bd98d18fb68a0fce8de81c75f2130c64a8f0ce20c0a"
   },
+  "synthetic/json_string_escape.json": {
+   "bytes": 163,
+   "sha256": "f864ea74e2fcb59826e9a35c332cfae72514f5e7deee402bfc8c0f9168473107"
+  },
   "synthetic/loop/a_decline.json": {
    "bytes": 22567,
    "sha256": "ab8882ded9315ae05297334be4c7f8f8c390ac74c1895d49da0889b4820a0e35"
@@ -2347,7 +2351,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 6280051,
+ "total_bytes": 6280214,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",

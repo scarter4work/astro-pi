@@ -1247,6 +1247,12 @@ def stage_json_float_repr(out: Out):
     out._path("json_float_repr.json").write_text(json.dumps(table) + "\n", encoding="utf-8")
 
 
+def stage_json_string_escape(out: Out):
+    """Python-dumped string table (json.dumps defaults: ensure_ascii escapes, DEL included)."""
+    table = ["", "plain", "q\"b\\s/", "\n\r\t\b\f", "\x00\x01\x1f", "\x7f", "a\x7fb", " ~", "caf\u00e9", "\u20ac", "\U0001f600", "\u007f\u0080\u07ff\u0800\uffff"]
+    out._path("json_string_escape.json").write_text(json.dumps(table) + "\n", encoding="utf-8")
+
+
 SYNTHETIC_STAGES = [
     ("images", stage_images),
     ("npy_selftest", stage_npy_selftest),
@@ -1263,6 +1269,7 @@ SYNTHETIC_STAGES = [
     ("guardrails", stage_guardrails),
     ("loop", stage_loop),
     ("json_float_repr", stage_json_float_repr),
+    ("json_string_escape", stage_json_string_escape),
 ]
 
 
@@ -1521,14 +1528,16 @@ def write_manifest(root: Path, extra: dict | None = None):
 # --------------------------------------------------------------------------------------
 
 def write_json_float_repr_only(root: Path):
-    """Regenerate only synthetic/json_float_repr.json and add/refresh its MANIFEST entry, leaving every
+    """Regenerate only synthetic/json_float_repr.json + json_string_escape.json and add/refresh its MANIFEST entry, leaving every
     other golden and manifest field untouched (the reference commit stays the one that made them)."""
     out = Out(root / "synthetic")
     stage_json_float_repr(out)
+    stage_json_string_escape(out)
     man_path = root / "MANIFEST.json"
     man = json.loads(man_path.read_text())
-    p = root / "synthetic" / "json_float_repr.json"
-    man["files"]["synthetic/json_float_repr.json"] = {"bytes": p.stat().st_size, "sha256": sha256_file(p)}
+    for name in ("json_float_repr.json", "json_string_escape.json"):
+        p = root / "synthetic" / name
+        man["files"][f"synthetic/{name}"] = {"bytes": p.stat().st_size, "sha256": sha256_file(p)}
     man["files"] = dict(sorted(man["files"].items()))
     man["total_bytes"] = sum(v["bytes"] for v in man["files"].values())
     man_path.write_text(json.dumps(enc(man), sort_keys=True, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")

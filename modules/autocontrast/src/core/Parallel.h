@@ -68,8 +68,7 @@ void parallel_for(size_t n, F&& body, unsigned threads = 0)
       try {
          for (unsigned t = 1; t < workers; ++t)
             pool.emplace_back(work);
-      } catch (...) {                       // could not start a thread: finish on the threads we have
-         failed.store(false);
+      } catch (...) {                       // could not start a thread: carry on with the ones started
       }
       work();
       for (auto& th : pool)

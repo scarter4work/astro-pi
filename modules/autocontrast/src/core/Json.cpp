@@ -82,7 +82,7 @@ void append_string(std::string& out, const std::string& s)
             case '\b': out += "\\b"; break;
             case '\f': out += "\\f"; break;
             default:
-               if (c < 0x20) append_u16(out, c);
+               if (c < 0x20 || c == 0x7f) append_u16(out, c);   // Python escapes DEL too
                else out += static_cast<char>(c);
          }
          ++i;
