@@ -6,7 +6,7 @@ add_library(ac_core STATIC Json.cpp
    PyFormat.cpp fingerprint/Starlet.cpp fingerprint/Energy.cpp fingerprint/BandLimit.cpp
    fingerprint/Color.cpp fingerprint/Metrics.cpp fingerprint/Palette.cpp fingerprint/Extract.cpp
    fingerprint/Emd.cpp fingerprint/Distance.cpp
-   optimize/Actions.cpp optimize/Recipe.cpp optimize/Propose.cpp)
+   optimize/Actions.cpp optimize/Recipe.cpp optimize/Propose.cpp optimize/Guardrails.cpp)
 target_include_directories(ac_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")   # "core/Image.h"
 target_link_libraries(ac_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 set_target_properties(ac_core PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
