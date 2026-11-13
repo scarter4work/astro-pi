@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(AutoContrast VERSION 0.1.0 LANGUAGES C CXX)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # clangd: compile_commands.json lands in the build dir
 
 # PCL 2.13 is C++20 (its headers use <bit>, <compare>, concepts).
 set(CMAKE_CXX_STANDARD 20)

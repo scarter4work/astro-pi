@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.24)
 # pulled in by FetchContent (cfitsio) declare their own project() and are
 # unaffected either way.
 project(NukeX VERSION 5.2.0 LANGUAGES CXX C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # clangd: compile_commands.json lands in the build dir
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
