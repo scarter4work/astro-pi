@@ -483,9 +483,38 @@ WorkRunner GaiaDepthGradeInterface::GuiRunner( const String& what )
 
 // ----------------------------------------------------------------------------
 
-bool GaiaDepthGradeInterface::FailAction( const char* action )
+GaiaDepthGradeInterface::BusyScope::BusyScope( GaiaDepthGradeInterface& w )
+   : m_w( w )
 {
-   SetBusy( false );
+   m_w.SetBusy( true );
+}
+
+GaiaDepthGradeInterface::BusyScope::~BusyScope()
+{
+   try
+   {
+      End();
+   }
+   catch ( ... )
+   {
+      // A destructor must not throw (it may run during unwinding). SetBusy only writes the busy
+      // flags and the controls' enabled states; m_busy and the module-wide flag are already false
+      // by the time anything in it could throw.
+   }
+}
+
+void GaiaDepthGradeInterface::BusyScope::End()
+{
+   if ( m_on )
+   {
+      m_on = false;
+      m_w.SetBusy( false );
+   }
+}
+
+bool GaiaDepthGradeInterface::FailAction( const char* action, BusyScope& busy )
+{
+   busy.End();
    SetError( MessageOf( std::current_exception() ) );
    GDG_RECORD( action, false );
    return false;
@@ -503,28 +532,32 @@ bool GaiaDepthGradeInterface::DoPrepare()
    MarkPrepareStale();
    const IsoString targetId = m_targetId;
    const GradeOptions options = instance.Options();
-   SetBusy( true );
-   std::shared_ptr<const PrepareSession> session;
+   BusyScope busy( *this );
    try
    {
       SetStatus( String::UTF8ToUTF16( "Preparing: solving + StarXTerminator + Gaia match (~50s)\xE2\x80\xA6" ) );
-      session = std::make_shared<const PrepareSession>(
+      const std::shared_ptr<const PrepareSession> session = std::make_shared<const PrepareSession>(
          RunPrepare( target, options, GuiLog(), GuiRunner( "Prepare (detection + Gaia cross-match)" ) ) );
       // The settings or the target cannot change while busy; if they did anyway, this session
       // describes neither and is dropped.
       if ( m_targetId != targetId || PrepareOptionsDiffer( options, instance.Options() ) )
          throw Error( "The settings or the target changed while Prepare ran. Prepare again." );
+      int cx, cy;
+      gdg::default_inset_center( session->width, session->height, cx, cy );
+      const String qaLine = S( gdg::qa_summary( session->prep.qa ) );
+      instance.SetQA( session->prep.qa );
+      // Nothing below throws: the session is taken whole or not at all.
+      m_session = session;
+      m_insetCx = cx;
+      m_insetCy = cy;
+      m_qaLine = qaLine;
+      m_prepared = true;
    }
    catch ( ... )
    {
-      return FailAction( "prepare" );
+      return FailAction( "prepare", busy );
    }
-   m_session = session;
-   gdg::default_inset_center( m_session->width, m_session->height, m_insetCx, m_insetCy );
-   instance.SetQA( m_session->prep.qa );
-   m_qaLine = S( gdg::qa_summary( m_session->prep.qa ) );
-   m_prepared = true;
-   SetBusy( false );
+   busy.End();
    SetStatus( m_qaLine );
    GDG_RECORD( "prepare", true );
    DoPreview();
@@ -547,7 +580,7 @@ bool GaiaDepthGradeInterface::DoPreview()
       GDG_RECORD( "preview", false );
       return false;
    }
-   SetBusy( true );
+   BusyScope busy( *this );
    try
    {
       SetStatus( String::UTF8ToUTF16( "Rendering preview\xE2\x80\xA6" ) );
@@ -566,9 +599,9 @@ bool GaiaDepthGradeInterface::DoPreview()
    }
    catch ( ... )
    {
-      return FailAction( "preview" );
+      return FailAction( "preview", busy );
    }
-   SetBusy( false );
+   busy.End();
    GUI->Preview_Control.Update();
    GUI->Inset_Control.Update();
    SetStatus( "Preview updated. Adjust the look, Preview again, or Execute." );
@@ -592,22 +625,23 @@ bool GaiaDepthGradeInterface::DoExecute()
       GDG_RECORD( "execute", false );
       return false;
    }
-   SetBusy( true );
-   ImageWindow result;
+   BusyScope busy( *this );
+   String id;
    try
    {
       SetStatus( String::UTF8ToUTF16( "Executing: full-res render + recombine\xE2\x80\xA6" ) );
       const std::shared_ptr<const PrepareSession> session = m_session; // held for the render
-      const gdg::Image comp = RenderComposite( *session, instance.Settings(), GuiRunner( "Execute (full-resolution render)" ) );
-      result = CreateOutputWindow( *session, comp );
+      const gdg::Image comp =
+         RenderComposite( *session, instance.Settings(), GuiRunner( "Execute (full-resolution render)" ) );
+      ImageWindow result = CreateOutputWindow( *session, comp );
+      id = result.MainView().Id();
+      result.Show();
    }
    catch ( ... )
    {
-      return FailAction( "execute" );
+      return FailAction( "execute", busy );
    }
-   SetBusy( false );
-   const String id = result.MainView().Id();
-   result.Show();
+   busy.End();
    SetStatus( "Done: created " + id );
    GDG_RECORD( "execute", true );
    return true;

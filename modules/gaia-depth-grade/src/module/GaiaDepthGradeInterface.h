@@ -186,9 +186,25 @@ private:
    bool DoExecute();
    void DoBrowse();
    void ReadFilesText();
-   /// Inside a catch block: the busy state ended and the current exception's message shown as
-   /// the error of `action`. Returns false.
-   bool FailAction( const char* action );
+   /// Busy for its lifetime: SetBusy( true ) on construction; End(), or the destructor on any
+   /// exit (return, exception), sets it false exactly once. Prepare / Preview / Execute hold one,
+   /// so no path can leave the interface stuck busy.
+   class BusyScope
+   {
+   public:
+      explicit BusyScope( GaiaDepthGradeInterface& w );
+      ~BusyScope();
+      void End();
+      BusyScope( const BusyScope& ) = delete;
+      BusyScope& operator =( const BusyScope& ) = delete;
+   private:
+      GaiaDepthGradeInterface& m_w;
+      bool                     m_on = true;
+   };
+
+   /// Inside a catch block: `busy` ended, then the current exception's message shown as the error
+   /// of `action`. Returns false.
+   bool FailAction( const char* action, BusyScope& busy );
 #ifdef GDG_PROBES
    void WriteState() const;
    void RecordAction( const char* action, bool ok );

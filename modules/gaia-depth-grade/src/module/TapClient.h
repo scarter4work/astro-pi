@@ -13,9 +13,9 @@ namespace pcl
 {
 
 /// Records the calling thread as PixInsight's main thread, once (later calls change nothing).
-/// InstallPixInsightModule calls it on a full install (the core loads modules on its main thread). pcl::Thread::IsRootThread() alone cannot be the test:
-/// it knows only pcl::Thread objects and answers true on any std::thread (measured, probe
-/// tap_off_main_thread, 2026-11-13).
+/// InstallPixInsightModule calls it on a full install (the core loads modules on its main
+/// thread). pcl::Thread::IsRootThread() alone cannot be the test: it knows only pcl::Thread
+/// objects and answers true on any std::thread (measured, probe tap_off_main_thread, 2026-11-13).
 void RecordMainThread();
 
 /// True on the thread RecordMainThread() recorded (false before it ran).
