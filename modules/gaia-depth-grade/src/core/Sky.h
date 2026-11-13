@@ -1,9 +1,10 @@
 // The celestial <-> pixel transform the core works through (plan Task 11).
 //
 // Coordinates are core-frame pixels: the Python core's numpy frame, x = column, y = row with
-// y = 0 the FITS bottom row, pixel centres on integers (astropy's origin-0 convention). The
-// module's PclSky adapts a PixInsight astrometric solution to this frame; tests use TanSky
-// (astropy's linear TAN WCS) or a lookup table.
+// y = 0 PixInsight's top row (frame contract C1), pixel centres on integers (astropy's origin-0
+// convention). The module's PclSky adapts a PixInsight astrometric solution to this frame as
+// x_pi = x + 0.5, y_pi = y + 0.5 (no vertical flip); tests use TanSky (astropy's linear TAN WCS)
+// or a lookup table.
 #pragma once
 
 namespace gdg {

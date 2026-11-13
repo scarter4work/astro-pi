@@ -4,6 +4,7 @@
 #include <catch_amalgamated.hpp>
 
 #include "Blister.h"
+#include "core/Numerics.h"
 #include "core/recon/Cavity.h"
 #include "core/recon/Channels.h"
 #include "core/recon/Extinction.h"
@@ -59,6 +60,25 @@ double mean_transfer(const Image& out, const Image& e, const gdg::test::BlisterT
     return s / static_cast<double>(n);
 }
 
+/// The limb term's g, computed independently of Render2D.cpp: |np.gradient(gaussian_filter(z, 1))|
+/// written out with numpy's index arithmetic (central inside, one-sided at the edges).
+Image gradient_magnitude(const Image& z) {
+    const Image s = gdg::gaussian_filter(z, 1.0);
+    const int nx = s.width, ny = s.height;
+    Image g(nx, ny);
+    for (int y = 0; y < ny; ++y)
+        for (int x = 0; x < nx; ++x) {
+            const double gx = x == 0        ? s.at(1, y) - s.at(0, y)
+                              : x == nx - 1 ? s.at(nx - 1, y) - s.at(nx - 2, y)
+                                            : (s.at(x + 1, y) - s.at(x - 1, y)) / 2.0;
+            const double gy = y == 0        ? s.at(x, 1) - s.at(x, 0)
+                              : y == ny - 1 ? s.at(x, ny - 1) - s.at(x, ny - 2)
+                                            : (s.at(x, y + 1) - s.at(x, y - 1)) / 2.0;
+            g.at(x, y) = std::sqrt(gx * gx + gy * gy);
+        }
+    return g;
+}
+
 }  // namespace
 
 TEST_CASE("blister_is_deterministic", "[recon][render2d][blister]") {
@@ -98,7 +118,7 @@ TEST_CASE("blister_is_deterministic", "[recon][render2d][blister]") {
     const int lane_y = static_cast<int>(t.lane_y0) + 1, lane_x = static_cast<int>(std::lround(t.apex_x - 0.75 * t.radius_px));
     const double open = a.ha.at(lane_x, ay), lane = a.ha.at(lane_x, lane_y);
     CHECK(lane < 0.3 * open);
-    CHECK(a.ha.at(0, 0) == Catch::Approx(0.002).margin(0.003));
+    CHECK(a.ha.at(0, 0) == Catch::Approx(0.002).margin(0.0025));  // 5 sigma of the 0.0005 noise
 }
 
 TEST_CASE("render2d_output_registered_linear_rgb", "[recon][render2d]") {
@@ -163,6 +183,45 @@ TEST_CASE("render2d_dust_occludes", "[recon][render2d]") {
                 lit += oc.data[3 * i + c];
             }
     CHECK(dim < 0.5 * lit + 1e-12);
+}
+
+TEST_CASE("render2d_limb_brightens_depth_edges", "[recon][render2d]") {
+    const Blister b = make_blister();
+    const CavityModel m = blister_model(b);
+    ReconConfig off;
+    off.render_limb_gain = 0.0;
+    ReconConfig on;
+    on.render_limb_gain = 0.5;
+    const Image o0 = render_cavity_2d(m, off), o5 = render_cavity_2d(m, on);
+    const Image g = gradient_magnitude(m.z);
+    const auto& t = b.truth;
+
+    // Ceiling of the factor: 1 + gain, plus one float32 rounding of each output.
+    const double ceiling = (1.0 + on.render_limb_gain) * (1.0 + 2.0 * 0x1p-23);
+    size_t flat = 0, edge = 0;
+    for (int y = 0; y < m.z.height; ++y)
+        for (int x = 0; x < m.z.width; ++x) {
+            const double rho = std::hypot(x - t.apex_x, y - t.apex_y) / t.radius_px;
+            const bool at_edge = g.at(x, y) > 0.0 && rho >= 0.9 && rho <= 1.1;
+            if (g.at(x, y) == 0.0) ++flat;
+            for (int c = 0; c < 3; ++c) {
+                const double a = o0.at(x, y, c), v = o5.at(x, y, c);
+                if (g.at(x, y) == 0.0) {
+                    REQUIRE(v == a);  // no gradient: the limb term is exactly 1
+                    continue;
+                }
+                REQUIRE(v >= a);  // the limb factor never darkens
+                if (a > 0.0) REQUIRE(v <= ceiling * a);
+                if (at_edge && m.emissivity.at(x, y, c) > 1e-6) {
+                    REQUIRE(a < 1.0);  // unclipped, so the factor is visible
+                    REQUIRE(v > a);
+                    ++edge;
+                }
+            }
+        }
+    INFO("flat px " << flat << ", edge samples " << edge);
+    CHECK(flat > 0);  // the sky beyond the smoothed footprint edge has g == 0
+    CHECK(edge > 0);
 }
 
 TEST_CASE("render2d_degenerate_is_identity", "[recon][render2d]") {

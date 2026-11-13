@@ -1,8 +1,9 @@
 // gdg::Image -- the core's image buffer, in the Python core's own frame (PCL-free).
 //
-// data[(y*width + x)*channels + c], y = 0 is the FITS bottom row: exactly the C-order numpy
-// array the Python core sees, shape (H, W) for mono or (H, W, C) for colour. ImageBridge (module
-// side) flips vertically on the way in and out.
+// data[(y*width + x)*channels + c], y = 0 is PixInsight's top row (frame contract C1): exactly the
+// C-order numpy array the Python core sees, shape (H, W) for mono or (H, W, C) for colour, since
+// PixInsight writes FITS with ROWORDER = 'TOP-DOWN' and astropy's data[0] is that top row.
+// ImageBridge (module side) copies rows in PixInsight order, with no flip in either direction.
 #pragma once
 
 #include <cstddef>
