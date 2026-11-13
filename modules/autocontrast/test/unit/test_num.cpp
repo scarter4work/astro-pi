@@ -191,8 +191,9 @@ TEST_CASE("histogram2d_matches_numpy")
    REQUIRE(rel <= 1e-12);
    const auto gu = ac::histogram2d(pa, pb, ac::Plane(), 16, 100.0);   // empty weight plane: counts
    REQUIRE(max_abs_diff(gu, want_u) == 0.0);
-   // bit-exact: same sequential bincount order as numpy
-   for (size_t i = 0; i < 256; ++i) REQUIRE(bits(gw[i]) == bits(want_w[i]));
+   // The weights are hypot(a, b), a libm transcendental that differs by 1 ulp between glibc 2.34 (container) and
+   // 2.43 (host), so the weighted bins are not bit-portable (spec 6.4); the 1e-12 relative bound above is the contract.
+   // The unweighted counts above stay exact: they are libm-free.
 }
 
 TEST_CASE("convolve1d_mirror_kernel_wider_than_axis")
