@@ -258,9 +258,12 @@ TEST_CASE("guardrails_thread_invariant", "[guardrails]")
 {
    for (const auto& c : cases().at("cases")) {
       const auto L = limits_from(c.at("limits_kw"));
-      const auto& cand = img(c.at("candidate"));
-      const auto& base = img(c.at("baseline"));
-      const auto& src = img(c.at("source"));
+      // named strings: img() returns into its static cache, but GCC's -Wdangling-reference cannot see that
+      // through a temporary std::string argument
+      const std::string cand_name = c.at("candidate"), base_name = c.at("baseline"), src_name = c.at("source");
+      const auto& cand = img(cand_name);
+      const auto& base = img(base_name);
+      const auto& src = img(src_name);
       const auto a = ac::evaluate_guardrails(cand, base, src, L, 1);
       const auto b = ac::evaluate_guardrails(cand, base, src, L, 7);
       REQUIRE(a.size() == b.size());

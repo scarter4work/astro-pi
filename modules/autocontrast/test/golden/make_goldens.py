@@ -1430,6 +1430,294 @@ def stage_json_string_escape(out: Out):
     out._path("json_string_escape.json").write_text(json.dumps(table) + "\n", encoding="utf-8")
 
 
+# --------------------------------------------------------------------------------------
+# Raster I/O (Task 10): decode, load_raster, Pillow resampling
+# --------------------------------------------------------------------------------------
+
+def _png_bytes(width, height, bitdepth, color_type, raw_rows: bytes, extra_chunks=()) -> bytes:
+    """A PNG built by hand (no imaging library): IHDR, any extra chunks, one IDAT, IEND.
+    ``raw_rows`` is the filtered scanline stream (filter byte 0 + big-endian samples per row)."""
+    import struct
+    import zlib
+
+    def chunk(tag, body):
+        crc = zlib.crc32(tag + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, bitdepth, color_type, 0, 0, 0)
+    body = b"".join(chunk(t, b) for t, b in extra_chunks)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + body
+            + chunk(b"IDAT", zlib.compress(raw_rows, 9)) + chunk(b"IEND", b""))
+
+
+def _png16_bytes(arr: np.ndarray, extra_chunks=()) -> bytes:
+    """test_raster_highdepth._write_png16, plus optional ancillary chunks (tRNS, sBIT) before IDAT.
+    ``arr`` is (H, W) gray, (H, W, 2) gray+alpha, (H, W, 3) RGB or (H, W, 4) RGBA uint16."""
+    height, width = arr.shape[:2]
+    planes = 1 if arr.ndim == 2 else arr.shape[2]
+    color_type = {1: 0, 2: 4, 3: 2, 4: 6}[planes]
+    raw = b"".join(b"\x00" + arr[y].astype(">u2").tobytes() for y in range(height))
+    return _png_bytes(width, height, 16, color_type, raw, extra_chunks)
+
+
+def stage_raster(out: Out):
+    """Fixtures + Python answers for the native decoders and the Pillow-exact resampler (Task 10).
+
+    Every fixture is written into raster/files/ and decoded by the SAME library the Python loader uses
+    for it (Pillow for 8-bit PNG/JPEG, pypng asDirect for 16-bit PNG, tifffile for TIFF), so the
+    ``.decode.npy`` golden is the array as that library presents it.  ``.load*.npy`` are
+    ``load_raster(path[, max_dim])`` (float64).  resize/ holds Image.resize answers for raw arrays."""
+    import struct
+    import png
+    import tifffile
+    from PIL import Image
+    from autocontrast.io.loaders import load_raster, image_dimensions, supported_suffixes, _require_supported
+
+    rng = rng0()
+    cases = []
+
+    def write(name: str, data: bytes):
+        p = out._path(f"raster/files/{name}")
+        p.write_bytes(data)
+        return p
+
+    def record(name: str, p: Path, kind: str, max_dims=(None,), decode=None, mode=None, load_from=None, note=None):
+        """``load_from``: load_raster runs on that file instead (a lossless twin Python can read, for a
+        compression tifffile cannot decode without imagecodecs); the native decoder reads ``p``."""
+        rec = {"name": name, "file": f"files/{p.name}", "kind": kind, "dims": list(image_dimensions(p)),
+               "loads": []}
+        if note:
+            rec["note"] = note
+        if decode is not None:
+            arr = np.asarray(decode)
+            if arr.dtype not in (np.bool_, np.uint8, np.uint16, np.float32):
+                raise TypeError(f"{name}: decode dtype {arr.dtype}")
+            out.npy(f"raster/{name}.decode.npy", arr)
+            rec["decode"] = {"dtype": str(arr.dtype), "shape": list(arr.shape), "npy": f"{name}.decode.npy", "mode": mode}
+        for md in max_dims:
+            arr = np.ascontiguousarray(load_raster(load_from or p, max_dim=md))
+            assert arr.dtype == np.float64
+            tag = "load" if md is None else f"load_md{md}"
+            ent = {"max_dim": md, "shape": list(arr.shape), "sha256_float64": hashlib.sha256(arr.tobytes()).hexdigest()}
+            if arr.nbytes <= 160_000:                   # small enough to keep: a mismatch can report max |d|
+                out.npy(f"raster/{name}.{tag}.npy", arr)
+                ent["npy"] = f"{name}.{tag}.npy"
+            rec["loads"].append(ent)
+        cases.append(rec)
+
+    def pil_decode(p):
+        with Image.open(p) as im:
+            return np.asarray(im), im.mode
+
+    def pypng_decode(p):
+        w, h, rows, info = png.Reader(filename=str(p)).asDirect()
+        a = np.vstack([np.asarray(r, dtype=np.uint16) for r in rows]).reshape(h, w, int(info["planes"]))
+        return a
+
+    # ---- 16-bit PNG (pypng path) -----------------------------------------------------------------------------
+    a = np.zeros((4, 6, 3), np.uint16); a[1, 1] = (65535, 40000, 257)
+    p = write("png16_rgb.png", _png16_bytes(a)); record("png16_rgb", p, "png16", decode=pypng_decode(p))
+    a = np.zeros((4, 6), np.uint16); a[2, 3] = 40000; a[0, 0] = 257
+    p = write("png16_gray.png", _png16_bytes(a)); record("png16_gray", p, "png16", decode=pypng_decode(p))
+    p = write("png16_dark_rgb.png", _png16_bytes(np.full((4, 4, 3), 200, np.uint16)))
+    record("png16_dark_rgb", p, "png16", decode=pypng_decode(p))
+    p = write("png16_dark_gray.png", _png16_bytes(np.full((4, 4), 200, np.uint16)))
+    record("png16_dark_gray", p, "png16", decode=pypng_decode(p))
+    p = write("png16_big.png", _png16_bytes(np.full((100, 200, 3), 40000, np.uint16)))
+    record("png16_big", p, "png16", max_dims=(None, 50))
+    p = write("png16_darkbig.png", _png16_bytes(np.full((100, 200, 3), 200, np.uint16)))
+    record("png16_darkbig", p, "png16", max_dims=(None, 50))
+    a = rng.integers(0, 65536, (53, 37, 3), dtype=np.uint16)
+    p = out._path("raster/files/png16_rand_interlaced.png")
+    with open(p, "wb") as fh:
+        png.Writer(37, 53, greyscale=False, bitdepth=16, interlace=True).write(fh, a.reshape(53, -1).tolist())
+    record("png16_rand_interlaced", p, "png16", max_dims=(None, 20), decode=pypng_decode(p))
+    a = rng.integers(0, 65536, (17, 23, 3), dtype=np.uint16); a[3, 4] = (1000, 2000, 3000)
+    p = write("png16_trns_rgb.png", _png16_bytes(a, [(b"tRNS", struct.pack(">HHH", 1000, 2000, 3000))]))
+    record("png16_trns_rgb", p, "png16", max_dims=(None, 9), decode=pypng_decode(p))
+    a = rng.integers(0, 65536, (19, 21), dtype=np.uint16)
+    p = write("png16_sbit12_gray.png", _png16_bytes(a, [(b"sBIT", bytes([12]))]))
+    record("png16_sbit12_gray", p, "png16", max_dims=(None, 10), decode=pypng_decode(p))
+    a = rng.integers(0, 65536, (15, 22, 2), dtype=np.uint16)
+    p = write("png16_gray_alpha.png", _png16_bytes(a)); record("png16_gray_alpha", p, "png16", max_dims=(None, 11), decode=pypng_decode(p))
+    a = rng.integers(0, 65536, (22, 15, 4), dtype=np.uint16)
+    p = write("png16_rgba.png", _png16_bytes(a)); record("png16_rgba", p, "png16", max_dims=(None, 11), decode=pypng_decode(p))
+
+    # ---- 8-bit PNG (Pillow path) -----------------------------------------------------------------------------
+    def smooth_u8(h, w, c):
+        planes = [np.clip(0.5 + 0.45 * smooth_noise(rng, h, w, 3.0) + 0.05 * rng.standard_normal((h, w)), 0, 1)
+                  for _ in range(c)]
+        return to_u8(np.stack(planes, axis=-1))
+
+    rgb = smooth_u8(47, 61, 3)
+    p = out._path("raster/files/png8_rgb.png"); Image.fromarray(rgb, "RGB").save(p)
+    record("png8_rgb", p, "png8", max_dims=(None, 23), decode=pil_decode(p)[0], mode="RGB")
+    rgba = np.concatenate([smooth_u8(47, 61, 3), rng.integers(0, 256, (47, 61, 1), dtype=np.uint8)], axis=-1)
+    rgba[0, :8, 3] = [0, 255, 1, 254, 128, 0, 255, 2]
+    p = out._path("raster/files/png8_rgba.png"); Image.fromarray(rgba, "RGBA").save(p)
+    record("png8_rgba", p, "png8", max_dims=(None, 23), decode=pil_decode(p)[0], mode="RGBA")
+    p = out._path("raster/files/png8_l.png"); Image.fromarray(smooth_u8(61, 47, 1)[..., 0], "L").save(p)
+    record("png8_l", p, "png8", max_dims=(None, 23), decode=pil_decode(p)[0], mode="L")
+    la = np.concatenate([smooth_u8(61, 47, 1), rng.integers(0, 256, (61, 47, 1), dtype=np.uint8)], axis=-1)
+    p = out._path("raster/files/png8_la.png"); Image.fromarray(la, "LA").save(p)
+    record("png8_la", p, "png8", max_dims=(None, 23), decode=pil_decode(p)[0], mode="LA")
+    pal = Image.fromarray(smooth_u8(40, 52, 3), "RGB").quantize(colors=200, dither=Image.Dither.NONE)
+    p = out._path("raster/files/png8_p.png"); pal.save(p)
+    record("png8_p", p, "png8", max_dims=(None, 17), decode=pil_decode(p)[0], mode="P")
+    pal4 = Image.fromarray(smooth_u8(40, 52, 3), "RGB").quantize(colors=16, dither=Image.Dither.NONE)
+    p = out._path("raster/files/png8_p4.png"); pal4.save(p, bits=4)
+    record("png8_p4", p, "png8", max_dims=(None, 17), decode=pil_decode(p)[0], mode="P")
+    bw = Image.fromarray((smooth_u8(33, 45, 1)[..., 0] > 127).astype(np.uint8) * 255, "L").convert("1", dither=Image.Dither.NONE)
+    p = out._path("raster/files/png8_1bit.png"); bw.save(p)
+    record("png8_1bit", p, "png8", max_dims=(None, 16), decode=pil_decode(p)[0], mode="1")
+    for bits in (2, 4):
+        g = rng.integers(0, 2 ** bits, (29, 35), dtype=np.uint8)
+        p = out._path(f"raster/files/png8_l{bits}.png")
+        with open(p, "wb") as fh:
+            png.Writer(35, 29, greyscale=True, bitdepth=bits).write(fh, g.tolist())
+        record(f"png8_l{bits}", p, "png8", max_dims=(None, 14), decode=pil_decode(p)[0], mode="L")
+    a = smooth_u8(41, 39, 3)
+    p = out._path("raster/files/png8_rgb_interlaced.png")
+    with open(p, "wb") as fh:
+        png.Writer(39, 41, greyscale=False, bitdepth=8, interlace=True).write(fh, a.reshape(41, -1).tolist())
+    record("png8_rgb_interlaced", p, "png8", max_dims=(None, 20), decode=pil_decode(p)[0], mode="RGB")
+    # tall: height > 100 * width takes Image.resize's two-step (vertical first) path
+    tall = smooth_u8(303, 2, 3)
+    p = out._path("raster/files/png8_tall.png"); Image.fromarray(tall, "RGB").save(p)
+    record("png8_tall", p, "png8", max_dims=(None, 101), decode=pil_decode(p)[0], mode="RGB")
+    tall_rgba = np.concatenate([smooth_u8(305, 3, 3), rng.integers(0, 256, (305, 3, 1), dtype=np.uint8)], axis=-1)
+    p = out._path("raster/files/png8_tall_rgba.png"); Image.fromarray(tall_rgba, "RGBA").save(p)
+    record("png8_tall_rgba", p, "png8", max_dims=(None, 100), decode=pil_decode(p)[0], mode="RGBA")
+
+    # ---- JPEG (Pillow path) ---------------------------------------------------------------------------------
+    jp = smooth_u8(45, 67, 3)
+    for name, kw in [("jpeg_444", dict(quality=92, subsampling=0)), ("jpeg_422", dict(quality=88, subsampling=1)),
+                     ("jpeg_420", dict(quality=85, subsampling=2)),
+                     ("jpeg_420_prog", dict(quality=85, subsampling=2, progressive=True))]:
+        p = out._path(f"raster/files/{name}.jpg"); Image.fromarray(jp, "RGB").save(p, **kw)
+        record(name, p, "jpeg", max_dims=(None, 30), decode=pil_decode(p)[0], mode="RGB")
+    p = out._path("raster/files/jpeg_gray.jpg"); Image.fromarray(jp[..., 1], "L").save(p, quality=90)
+    record("jpeg_gray", p, "jpeg", max_dims=(None, 30), decode=pil_decode(p)[0], mode="L")
+    p = out._path("raster/files/jpeg_cmyk.jpg"); Image.fromarray(jp, "RGB").convert("CMYK").save(p, quality=90)
+    record("jpeg_cmyk", p, "jpeg", max_dims=(None, 30), decode=pil_decode(p)[0], mode="CMYK")
+    # mid-size: the streamed load_raster path vs decode + resize_u8 (and vs Pillow)
+    mid = smooth_u8(700, 900, 3)
+    p = out._path("raster/files/jpeg_mid.jpg"); Image.fromarray(mid, "RGB").save(p, quality=90, subsampling=2)
+    record("jpeg_mid", p, "jpeg", max_dims=(256, 601), decode=None, mode="RGB")
+
+    # ---- TIFF (tifffile path) -------------------------------------------------------------------------------
+    def tif(name, arr, **kw):
+        p = out._path(f"raster/files/{name}.tif")
+        tifffile.imwrite(p, arr, **kw)
+        return p
+
+    a = np.zeros((4, 6, 3), np.uint16); a[1, 1] = (65535, 40000, 257)
+    p = tif("tiff16_rgb", a); record("tiff16_rgb", p, "tiff", decode=tifffile.imread(p))
+    a = np.zeros((4, 6), np.uint16); a[2, 3] = 40000; a[0, 0] = 257
+    p = tif("tiff16_gray", a); record("tiff16_gray", p, "tiff", decode=tifffile.imread(p))
+    p = tif("tiff16_dark_rgb", np.full((4, 4, 3), 200, np.uint16)); record("tiff16_dark_rgb", p, "tiff", decode=tifffile.imread(p))
+    p = tif("tiff16_big", np.full((100, 200, 3), 40000, np.uint16)); record("tiff16_big", p, "tiff", max_dims=(None, 50))
+    p = tif("tiff16_darkbig", np.full((100, 200, 3), 200, np.uint16)); record("tiff16_darkbig", p, "tiff", max_dims=(None, 50))
+    a = rng.integers(0, 65536, (29, 41, 3), dtype=np.uint16)
+    p = tif("tiff16_deflate_pred", a, compression="zlib", predictor=True)
+    record("tiff16_deflate_pred", p, "tiff", max_dims=(None, 17), decode=tifffile.imread(p))
+    p = tif("tiff16_strips3", a, rowsperstrip=3)
+    record("tiff16_strips3", p, "tiff", max_dims=(None, 17), decode=tifffile.imread(p))
+    # LZW and PackBits: tifffile cannot decode them without imagecodecs (absent from the reference venv), so
+    # Python's loader refuses such files; the native decoder reads them. Written by Pillow (libtiff); the
+    # golden is the source array and load_raster of its uncompressed twin.
+    a8 = rng.integers(0, 256, (31, 26, 3), dtype=np.uint8)
+    twin = tif("tiff8_twin_raw", a8)
+    for comp, tag in (("tiff_lzw", "lzw"), ("packbits", "packbits")):
+        p = out._path(f"raster/files/tiff8_{tag}.tif"); Image.fromarray(a8, "RGB").save(p, compression=comp)
+        record(f"tiff8_{tag}", p, "tiff", max_dims=(None, 13), decode=a8, load_from=twin,
+               note="tifffile needs imagecodecs for this compression; golden = source array / uncompressed twin")
+    a = rng.integers(0, 65536, (40, 50, 3), dtype=np.uint16)
+    p = tif("tiff16_tiled", a, tile=(16, 16), compression="zlib")
+    record("tiff16_tiled", p, "tiff", max_dims=(None, 21), decode=tifffile.imread(p))
+    a = rng.integers(0, 65536, (24, 18, 4), dtype=np.uint16)
+    p = tif("tiff16_rgba", a, photometric="rgb", extrasamples=["unassalpha"])
+    record("tiff16_rgba", p, "tiff", max_dims=(None, 9), decode=tifffile.imread(p))
+    f = (rng.random((27, 33, 3)) * 300.0).astype(np.float32)
+    p = tif("tiff_f32_wide", f); record("tiff_f32_wide", p, "tiff", max_dims=(None, 16), decode=tifffile.imread(p))
+    f = rng.random((27, 33, 3)).astype(np.float32)
+    p = tif("tiff_f32_unit", f, compression="zlib")
+    record("tiff_f32_unit", p, "tiff", max_dims=(None, 16), decode=tifffile.imread(p))
+    f = (rng.random((20, 25)) * 200.0).astype(np.float32)
+    p = tif("tiff_f32_gray200", f); record("tiff_f32_gray200", p, "tiff", max_dims=(None, 10), decode=tifffile.imread(p))
+    # non-finite and signed-zero samples: NaN makes max() NaN (no rescale), clip keeps NaN and maps -0.0 to +0.0
+    f = np.array([[np.nan, -0.0, -1.0, 0.5], [np.inf, -np.inf, 1e-45, 1.0]], np.float32)
+    p = tif("tiff_f32_specials", f); record("tiff_f32_specials", p, "tiff", decode=tifffile.imread(p))
+    # refused: two RGB pages (Python: 4-D series), planar-separate RGB (the native decoder refuses it)
+    p = out._path("raster/files/tiff16_twopage.tif")
+    tifffile.imwrite(p, np.zeros((2, 8, 9, 3), np.uint16), photometric="rgb")
+    try:
+        load_raster(p)
+        raise RuntimeError("two-page TIFF loaded")
+    except ValueError as exc:
+        cases.append({"name": "tiff16_twopage", "file": "files/tiff16_twopage.tif", "kind": "tiff",
+                      "dims": list(image_dimensions(p)), "python_error": str(exc), "loads": []})
+    p = tif("tiff16_planar", np.zeros((3, 8, 9), np.uint16), photometric="rgb", planarconfig="separate")
+    cases.append({"name": "tiff16_planar", "file": "files/tiff16_planar.tif", "kind": "tiff",
+                  "dims": list(image_dimensions(p)), "python_shape": list(tifffile.imread(p).shape), "loads": []})
+
+    # ---- WebP: header dimensions only (the native port has no WebP pixel decoder) ---------------------------
+    for name, kw in [("webp_lossy", dict(quality=80)), ("webp_lossless", dict(lossless=True))]:
+        p = out._path(f"raster/files/{name}.webp"); Image.fromarray(smooth_u8(23, 31, 3), "RGB").save(p, **kw)
+        cases.append({"name": name, "file": f"files/{name}.webp", "kind": "webp", "dims": list(image_dimensions(p)),
+                      "loads": []})
+    p = out._path("raster/files/webp_alpha.webp")
+    Image.fromarray(np.concatenate([smooth_u8(23, 31, 3), np.full((23, 31, 1), 128, np.uint8)], axis=-1), "RGBA").save(p, quality=80)
+    cases.append({"name": "webp_alpha", "file": "files/webp_alpha.webp", "kind": "webp", "dims": list(image_dimensions(p)),
+                  "loads": []})
+
+    # ---- FITS: header dimensions only (pixels open through PixInsight) --------------------------------------
+    from astropy.io import fits as _fits
+    p = out._path("raster/files/fits_cube.fits")
+    _fits.PrimaryHDU(np.zeros((3, 11, 13), np.float32)).writeto(p, overwrite=True)
+    cases.append({"name": "fits_cube", "file": "files/fits_cube.fits", "kind": "fits", "dims": list(image_dimensions(p)),
+                  "loads": []})
+
+    out.json("raster/cases.json", {"cases": cases})
+
+    # ---- unsupported-suffix messages ------------------------------------------------------------------------
+    msgs = []
+    for name in ["wide.ppm", "WIDE.PGM", "pic.xisf", "noext", "a.", ".hidden", "x.tar.gz", "layered.psd"]:
+        try:
+            _require_supported(Path("/nonexistent") / name)
+            raise RuntimeError(f"{name} accepted")
+        except ValueError as exc:
+            msgs.append({"name": name, "message": str(exc)})
+    out.json("raster/messages.json", {"supported": sorted(supported_suffixes()), "refused": msgs})
+
+    # ---- raw Image.resize answers ---------------------------------------------------------------------------
+    rcases = []
+    for i, (h, w, nh, nw) in enumerate([(61, 97, 25, 40), (97, 61, 40, 25), (50, 50, 17, 31), (7, 1000, 3, 160),
+                                        (303, 2, 101, 1), (40, 30, 40, 13), (40, 30, 11, 30), (5, 5, 1, 1)]):
+        f = (rng.standard_normal((h, w)) * 1000.0).astype(np.float32)
+        f[0, 0] = 1e30; f[-1, -1] = -1e-30
+        res = np.asarray(Image.fromarray(f, "F").resize((nw, nh)))
+        out.npy(f"raster/resize/f32_{i}_in.npy", f); out.npy(f"raster/resize/f32_{i}_out.npy", res)
+        rcases.append({"kind": "f32", "in": f"resize/f32_{i}_in.npy", "out": f"resize/f32_{i}_out.npy",
+                       "w": w, "h": h, "nw": nw, "nh": nh})
+    for i, (h, w, c, nh, nw) in enumerate([(61, 97, 3, 25, 40), (97, 61, 1, 40, 25), (50, 50, 4, 17, 31),
+                                           (7, 1000, 3, 3, 160), (303, 2, 3, 101, 1), (40, 30, 3, 40, 13),
+                                           (40, 30, 1, 11, 30), (64, 48, 3, 1, 1)]):
+        u = rng.integers(0, 256, (h, w, c), dtype=np.uint8)
+        u[: h // 2, : w // 2] = 255; u[h // 2:, w // 2:] = 0          # hard edges: overshoot -> clip8
+        mode = {1: "L", 3: "RGB", 4: "RGBX"}[c]
+        src = Image.fromarray(u[..., 0] if c == 1 else u, "L" if c == 1 else ("RGB" if c == 3 else "RGBA"))
+        if c == 4:
+            src = Image.frombuffer("RGBX", (w, h), u.tobytes(), "raw", "RGBX", 0, 1)
+        res = np.asarray(src.resize((nw, nh)))
+        if res.ndim == 2:
+            res = res[..., None]
+        out.npy(f"raster/resize/u8_{i}_in.npy", u); out.npy(f"raster/resize/u8_{i}_out.npy", res)
+        rcases.append({"kind": "u8", "mode": mode, "in": f"resize/u8_{i}_in.npy", "out": f"resize/u8_{i}_out.npy",
+                       "w": w, "h": h, "c": c, "nw": nw, "nh": nh})
+    out.json("raster/resize.json", {"cases": rcases})
+
+
 SYNTHETIC_STAGES = [
     ("images", stage_images),
     ("npy_selftest", stage_npy_selftest),
@@ -1449,6 +1737,7 @@ SYNTHETIC_STAGES = [
     ("json_float_repr", stage_json_float_repr),
     ("json_string_escape", stage_json_string_escape),
     ("np_sum", stage_np_sum),
+    ("raster", stage_raster),
 ]
 
 

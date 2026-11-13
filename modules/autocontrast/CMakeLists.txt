@@ -26,11 +26,14 @@ option(AC_BUILD_TESTS  "Build the AutoContrast ctest suite" ON)
 option(AC_BUILD_MODULE "Build the AutoContrast PCL module (requires PCL 2.13)" OFF)
 option(AC_BUILD_PROBES "Compile the test-only AutoContrastProbe process into the module (never shipped)" OFF)
 
+# PCLConfig before Deps: a module build links the raster decoders against PCL's zlib-pxi (cmake/Deps.cmake).
+if(AC_BUILD_MODULE)
+    include(PCLConfig)
+endif()
 include(Deps)
 add_subdirectory(src/core)
 
 if(AC_BUILD_MODULE)
-    include(PCLConfig)
     add_subdirectory(src/module)
 elseif(AC_BUILD_PROBES)
     message(FATAL_ERROR "AC_BUILD_PROBES needs AC_BUILD_MODULE=ON")
