@@ -686,8 +686,8 @@
    "sha256": "bfd2945f874a163ae1663cf35995d3e99091ef4ceeba25d9b6816826b0fe18e3"
   },
   "synthetic/energy/cases.json": {
-   "bytes": 729,
-   "sha256": "ea966664d81b3067b1ca47e47724a878346fadb5448df3623d464173da415365"
+   "bytes": 951,
+   "sha256": "c59f2a685a9d38308b9bfecbb889ad31fc0a816722842dfe006dbb4a34ff6eda"
   },
   "synthetic/extract/cast_u8.npy": {
    "bytes": 9344,
@@ -1285,6 +1285,18 @@
    "bytes": 2576,
    "sha256": "5011022e222cc3e99851e0c098022c152657bd3d918e6637a95ba2c52c05dbb6"
   },
+  "synthetic/np_sum/signed_zero_offsets.npy": {
+   "bytes": 232,
+   "sha256": "6179dc582d18d07a715ce1a4cc2ac2febb5a20b4632e01f3e5b0346575d08607"
+  },
+  "synthetic/np_sum/signed_zero_sums.npy": {
+   "bytes": 224,
+   "sha256": "0e006750af371b4f7f6a1a4076723bd4202f75963ac75e3a3f2258599cb816ca"
+  },
+  "synthetic/np_sum/signed_zero_values.npy": {
+   "bytes": 166888,
+   "sha256": "ce1912b8b0cd42b3f905d3765a4d9966ee8b37454ab77e36b2ae01fb03d83fdc"
+  },
   "synthetic/np_sum/sums.npy": {
    "bytes": 2568,
    "sha256": "b771f788fe76e8c6697d17ebc7f5ebd7fe4b7843213f4223dcb701cb3eb31b08"
@@ -1705,6 +1717,10 @@
    "bytes": 5482,
    "sha256": "3d9ecc6b61dd92fddd0b1bbf55138c8205d3a99098c299a8d26dfcbd8e7b509a"
   },
+  "synthetic/starlet/img_130x130.npy": {
+   "bytes": 135328,
+   "sha256": "ae0df788af4f8970b69dfd9a894f5267d53279b000ac7d3b5068b9debe7dc525"
+  },
   "synthetic/starlet/img_130x3.npy": {
    "bytes": 3248,
    "sha256": "5aac316a1d0218a3ee9763323364ae2e624238a5ce374c3fa8c81ac128f37d67"
@@ -1742,8 +1758,12 @@
    "sha256": "01af4bcc5fbd9865a8220b3c3769bbe8151a6c1a9c65c40c2c791379ec6ed4dd"
   },
   "synthetic/starlet/index.json": {
-   "bytes": 1247,
-   "sha256": "e8c4f71bb00801d623722a169d9fc30944eb8a921f34cb7396a981652e446887"
+   "bytes": 1309,
+   "sha256": "cd8a5cdd13d4c3d1ab02ed8df21f5fca78a0521dff401f2883cf3b2415383897"
+  },
+  "synthetic/starlet/planes_130x130_n7.npy": {
+   "bytes": 946528,
+   "sha256": "40ee074a65bbbe806299dfd444529c65a5e7949f749be6ef11f20488eb8a9701"
   },
   "synthetic/starlet/planes_130x3_n7.npy": {
    "bytes": 21968,
@@ -1836,6 +1856,10 @@
   "synthetic/starlet/planes_9x1_n7.npy": {
    "bytes": 632,
    "sha256": "b4104ca790764cf97d528b313109cd3d5b0b1830199e01f768c66e0c2995ad68"
+  },
+  "synthetic/starlet/residual_130x130_n7.npy": {
+   "bytes": 135328,
+   "sha256": "6ab1128320d10144e2f95ca8cb02c3bee5abf3437ef4984cf23e213013964e45"
   },
   "synthetic/starlet/residual_130x3_n7.npy": {
    "bytes": 3248,
@@ -2499,7 +2523,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 7280399,
+ "total_bytes": 8665211,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",

@@ -298,3 +298,17 @@ TEST_CASE("pairwise_sum_matches_np_sum_bitwise")
       REQUIRE(bits(ac::pairwise_sum(vals.data() + lo, n)) == bits(sums[k]));
    }
 }
+
+TEST_CASE("pairwise_sum_signed_zeros_match_np_sum")
+{
+   // add.reduce starts from the identity +0.0: all -0.0 sums to +0.0 for every n (incl. the 8-accumulator branch)
+   const auto vals = npy("../np_sum/signed_zero_values.npy"), offs = npy("../np_sum/signed_zero_offsets.npy"),
+              sums = npy("../np_sum/signed_zero_sums.npy");
+   REQUIRE(offs.size() == sums.size() + 1);
+   for (size_t k = 0; k < sums.size(); ++k) {
+      const size_t lo = static_cast<size_t>(offs[k]), n = static_cast<size_t>(offs[k + 1]) - lo;
+      INFO("n=" << n << " k=" << k);
+      REQUIRE(bits(ac::pairwise_sum(vals.data() + lo, n)) == bits(sums[k]));
+      REQUIRE(bits(ac::pairwise_sum(0, n, [&](size_t i) { return vals[lo + i]; })) == bits(sums[k]));
+   }
+}

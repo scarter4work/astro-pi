@@ -154,6 +154,23 @@ TEST_CASE("starlet_kernel_wider_than_image")
 TEST_CASE("starlet_rejects_bad_scale_count")
 {
    const ac::Plane p(4, 4);
+   // the upper bound is explicit and says why (Python has none; see kMaxStarletScales)
+   try {
+      (void)ac::starlet_transform(p, ac::kMaxStarletScales + 1);
+      FAIL("no throw above kMaxStarletScales");
+   } catch (const std::invalid_argument& e) {
+      CHECK(std::string(e.what()).rfind("n_scales must be <= 25, got 26: ", 0) == 0);
+   }
+   // and the bound itself runs, without buffers that grow with the kernel, and still reconstructs
+   const auto small = random_plane(3, 2, 5);
+   const auto st = ac::starlet_transform(small, ac::kMaxStarletScales);
+   REQUIRE(st.planes.size() == static_cast<size_t>(ac::kMaxStarletScales));
+   for (size_t i = 0; i < small.data.size(); ++i) {
+      double sum = 0.0;
+      for (const auto& pl : st.planes)
+         sum += pl.data[i];
+      CHECK(std::fabs(sum + st.residual.data[i] - small.data[i]) <= 1e-12);
+   }
    for (int n : {0, -3}) {
       try {
          (void)ac::starlet_transform(p, n);
@@ -189,7 +206,7 @@ TEST_CASE("b3_fast_pass_matches_convolve1d_bitwise")
 
    struct Fill { const char* name; int kind; };
    const Fill fills[] = {{"normal", 0}, {"signed-zeros", 1}, {"zeros+cancelling", 2}, {"with-inf", 3},
-                         {"with-nan", 4}, {"huge", 5}, {"subnormal", 6}};
+                         {"with-nan", 4}, {"huge", 5}, {"subnormal", 6}, {"near-bound", 7}};
    const std::pair<int, int> shapes[] = {{1, 1}, {1, 9}, {9, 1}, {2, 3}, {3, 2}, {5, 7}, {17, 33}, {64, 3}, {40, 129}};
    size_t compared = 0, neg_zero_outputs = 0;
    for (const auto& f : fills)
@@ -204,7 +221,10 @@ TEST_CASE("b3_fast_pass_matches_convolve1d_bitwise")
             case 3: v = r == 0 ? ((g() & 1) ? inf : -inf) : nd(g); break;
             case 4: v = r == 0 ? nan : nd(g); break;
             case 5: v = r < 3 ? std::numeric_limits<double>::max() * (r == 1 ? -1.0 : 1.0) : nd(g) * 1e307; break;
-            default: v = nd(g) * 1e-310; break;
+            case 6: v = nd(g) * 1e-310; break;
+            default:   // just inside the fast path's |x| <= 1e300 bound: the fast pass, not the fallback
+               v = r == 0 ? ((g() & 1) ? 1e300 : -1e300) : std::clamp(nd(g) * 4e299, -1e300, 1e300);
+               break;
             }
          }
          for (int scale = 0; scale <= 7; ++scale)
@@ -225,6 +245,20 @@ TEST_CASE("b3_fast_pass_matches_convolve1d_bitwise")
    std::printf("[bits] b3 fast pass == convolve1d_mirror on %zu plane/scale/axis combos (%zu -0.0 outputs)\n",
                compared, neg_zero_outputs);
    CHECK(neg_zero_outputs > 0);   // the signed-zero repair path really was exercised
+
+   // very wide kernels (2**20 * 4 + 1 taps) on tiny planes: border-only, every tap bounces
+   for (const auto& wh : {std::pair<int, int>{1, 9}, {2, 3}, {5, 7}}) {
+      ac::Plane in(wh.first, wh.second);
+      for (double& v : in.data)
+         v = nd(g);
+      for (int scale : {9, 12, 20})
+         for (int axis : {0, 1}) {
+            INFO("wide " << wh.first << "x" << wh.second << " scale " << scale << " axis " << axis);
+            const auto want = ac::convolve1d_mirror(in, ac::b3_dilated_kernel(scale), axis, 1);
+            const auto got = ac::b3_smooth_axis(in, scale, axis, 1);
+            REQUIRE(same_bits(got.data, want.data));
+         }
+   }
 }
 
 TEST_CASE("b3_dilated_kernel_is_pythons")
@@ -243,10 +277,12 @@ TEST_CASE("b3_dilated_kernel_is_pythons")
 TEST_CASE("energy_matches_numpy")
 {
    const auto ec = ac::test::load_json(golden("energy/cases.json"));
-   REQUIRE(ec["cases"].size() == 4);
+   REQUIRE(ec["cases"].size() == 5);
+   bool beyond_bufsize = false;   // a plane larger than np.BUFSIZE pins "no 8192-element blocking"
    for (const auto& c : ec["cases"]) {
       const int h = c["h"].get<int>(), w = c["w"].get<int>(), n = c["n"].get<int>();
       const double px = c["pixel_scale"].get<double>();
+      beyond_bufsize |= h * w > 8192;
       const auto planes_npy = ac::test::load_npy(golden("starlet/planes_" + tag(h, w) + "_n" + std::to_string(n) + ".npy"));
       std::vector<ac::Plane> planes;
       for (int s = 0; s < n; ++s) {
@@ -271,6 +307,7 @@ TEST_CASE("energy_matches_numpy")
       for (size_t i = 0; i < want_e.size(); ++i)
          REQUIRE(std::fabs(direct.energy[i] - want_e[i]) <= 1e-9 * want_e[i]);
    }
+   REQUIRE(beyond_bufsize);
 }
 
 TEST_CASE("energy_centers_are_2pow_i_times_scale")

@@ -375,7 +375,8 @@ def stage_starlet_energy_bandlimit(out: Out):
     # band-limit spectra below) is unchanged.
     rng_x = rng0()
     for (h, w), ns in (((1, 9), (1, 7)), ((9, 1), (7,)), ((2, 3), (7,)), ((3, 130), (7,)),
-                       ((130, 3), (7,)), ((33, 17), (1, 2, 3, 4, 5, 6, 7, 8))):
+                       ((130, 3), (7,)), ((33, 17), (1, 2, 3, 4, 5, 6, 7, 8)),
+                       ((130, 130), (7,))):  # H*W = 16900 > np.BUFSIZE; planes 3-5 tell pure pairwise from 8192-blocked
         img = _test_image(rng_x, h, w)
         out.npy(f"starlet/img_{h}x{w}.npy", img)
         for n in ns:
@@ -384,11 +385,13 @@ def stage_starlet_energy_bandlimit(out: Out):
             out.npy(f"starlet/residual_{h}x{w}_n{n}.npy", resid)
             recon = planes.sum(axis=0) + resid
             meta.append({"h": h, "w": w, "n": n, "max_recon_err": float(np.abs(recon - img).max())})
+            kept[(h, w, n)] = planes
     out.json("starlet/index.json", {"cases": meta})
 
     # energy ------------------------------------------------------------------------------
     ecases = []
-    for (h, w, n), px in (((96, 80, 5), 1.0), ((96, 80, 7), 0.05), ((64, 48, 7), 2.5), ((7, 5, 1), 1.01)):
+    for (h, w, n), px in (((96, 80, 5), 1.0), ((96, 80, 7), 0.05), ((64, 48, 7), 2.5), ((7, 5, 1), 1.01),
+                          ((130, 130, 7), 0.8)):
         planes = kept[(h, w, n)]
         spec = energy_spectrum_from_planes(planes, px)
         ecases.append({"h": h, "w": w, "n": n, "pixel_scale": px,
@@ -464,6 +467,18 @@ def stage_np_sum(out: Out):
     out.npy("np_sum/values.npy", np.concatenate(vals))
     out.npy("np_sum/offsets.npy", np.asarray(offs, dtype=np.int64))
     out.npy("np_sum/sums.npy", np.asarray(sums, dtype=np.float64))
+    # Signed zeros: add.reduce starts from its identity +0.0, so an all -0.0 input sums to +0.0 (both the
+    # n < 8 serial branch and the 8-accumulator branch, which would otherwise keep -0.0).
+    zvals, zsums, zoffs = [], [], [0]
+    for n, kind in ((1, "neg"), (3, "neg"), (7, "neg"), (8, "neg"), (9, "neg"), (16, "neg"), (129, "neg"),
+                    (300, "neg"), (20000, "neg"), (8, "mixed"), (64, "mixed"), (300, "mixed")):
+        v = np.full(n, -0.0) if kind == "neg" else np.where(rng.uniform(size=n) < 0.5, -0.0, 0.0)
+        zvals.append(v)
+        zsums.append(np.sum(v))
+        zoffs.append(zoffs[-1] + n)
+    out.npy("np_sum/signed_zero_values.npy", np.concatenate(zvals))
+    out.npy("np_sum/signed_zero_offsets.npy", np.asarray(zoffs, dtype=np.int64))
+    out.npy("np_sum/signed_zero_sums.npy", np.asarray(zsums, dtype=np.float64))
 
 
 def stage_color_metrics(out: Out):

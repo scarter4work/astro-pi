@@ -7,6 +7,11 @@
 
 namespace ac {
 
+// Largest n_scales starlet_transform accepts (scales 0..24). Python has no bound but materialises the dilated
+// kernel (4 * 2**scale + 1 doubles), so it exhausts memory not far above this; here the bound keeps the
+// error loud instead of a silent divergence or a pathological run.
+constexpr int kMaxStarletScales = 25;
+
 struct Starlet {
    std::vector<Plane> planes;   // detail at each scale, finest first
    Plane residual;              // the coarse approximation left over
@@ -24,7 +29,8 @@ Plane b3_smooth_axis(const Plane& in, int scale, int axis, unsigned threads = 0)
 // starlet_transform(image, n_scales): for scale in 0..n-1: smoothed = smooth axis 0 then axis 1 with the
 // dilated B3 kernel (mirror borders); planes[scale] = current - smoothed; current = smoothed. The residual
 // is the final `current`, so sum(planes) + residual reconstructs the image. Throws std::invalid_argument
-// "n_scales must be >= 1, got <n>" as Python's ValueError. Bit-identical at any thread count.
+// "n_scales must be >= 1, got <n>" as Python's ValueError, and std::invalid_argument above kMaxStarletScales
+// (a message that says why). Bit-identical at any thread count.
 Starlet starlet_transform(const Plane& image, int n_scales, unsigned threads = 0);
 
 } // namespace ac

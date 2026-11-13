@@ -72,30 +72,39 @@ double exact_tap_loop(long s, const Get& get)
 
 constexpr size_t kRowsPerTask = 8;
 
-// axis 1: along x, one row at a time through a mirror-extended copy of the row.
+// axis 1: along x, one row at a time. Interior samples (all taps inside the row) read the row directly;
+// the border samples resolve each tap through extend_index, so no buffer grows with the kernel width.
 void smooth_rows(const Plane& in, Plane& out, long s, unsigned threads)
 {
    const long W = in.width, r = 2 * s;
    const size_t H = static_cast<size_t>(in.height);
    const size_t tasks = (H + kRowsPerTask - 1) / kRowsPerTask;
+   const long inner0 = std::min(r, W), inner1 = std::max(inner0, W - r);   // [inner0, inner1): no tap leaves the row
    parallel_for(tasks, [&](size_t t) {
-      std::vector<double> ext(static_cast<size_t>(W + 2 * r));
       const size_t y1 = std::min(H, (t + 1) * kRowsPerTask);
       for (size_t y = t * kRowsPerTask; y < y1; ++y) {
          const double* row = in.data.data() + y * static_cast<size_t>(W);
          double* o = out.data.data() + y * static_cast<size_t>(W);
-         for (long k = -r; k < W + r; ++k)
-            ext[static_cast<size_t>(k + r)] = row[(k >= 0 && k < W) ? k : extend_index(k, W, EdgeMode::Mirror)];
-         const double* c = ext.data() + r;
-         for (long p = 0; p < W; ++p) {
-            double acc = c[p] * kW0;
-            acc += (c[p - r] + c[p + r]) * kW2;
-            acc += (c[p - s] + c[p + s]) * kW1;
+         auto at = [&](long i) { return row[(i >= 0 && i < W) ? i : extend_index(i, W, EdgeMode::Mirror)]; };
+         auto border = [&](long p) {
+            double acc = row[p] * kW0;
+            acc += (at(p - r) + at(p + r)) * kW2;
+            acc += (at(p - s) + at(p + s)) * kW1;
+            o[p] = acc;
+         };
+         for (long p = 0; p < inner0; ++p)
+            border(p);
+         for (long p = inner0; p < inner1; ++p) {
+            double acc = row[p] * kW0;
+            acc += (row[p - r] + row[p + r]) * kW2;
+            acc += (row[p - s] + row[p + s]) * kW1;
             o[p] = acc;
          }
+         for (long p = inner1; p < W; ++p)
+            border(p);
          for (long p = 0; p < W; ++p)
             if (is_negative_zero(o[p]))
-               o[p] = exact_tap_loop(s, [&](long k) { return c[p + k]; });
+               o[p] = exact_tap_loop(s, [&](long k) { return at(p + k); });
       }
    }, threads);
 }
@@ -171,6 +180,12 @@ Starlet starlet_transform(const Plane& image, int n_scales, unsigned threads)
 {
    if (n_scales < 1)
       throw std::invalid_argument("n_scales must be >= 1, got " + std::to_string(n_scales));
+   if (n_scales > kMaxStarletScales)
+      throw std::invalid_argument(
+         "n_scales must be <= " + std::to_string(kMaxStarletScales) + ", got " + std::to_string(n_scales) +
+         ": the last scale's B3 kernel would be 4 * 2^" + std::to_string(n_scales - 1) +
+         " + 1 px wide, and one wider than 2^26 px only mirror-bounces any image PixInsight can hold "
+         "(Python accepts it but builds that kernel explicitly and runs out of memory a few scales later)");
    Starlet st;
    st.planes.reserve(static_cast<size_t>(n_scales));
    Plane current = image;
