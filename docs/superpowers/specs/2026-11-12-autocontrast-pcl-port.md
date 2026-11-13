@@ -133,7 +133,8 @@ PCL's `ATrousWaveletTransform` works on float32 `Image`s with PCL's boundary han
 - `FingerprintData` JSON is **byte-compatible** with Python's `to_dict()` + `json.dumps` field names, so stores written by either side are readable by the other (section 6.8).
 - Palette from a PI view: `palette_class_from_filters` over every `FILTER` keyword value (stripped). A view with no FITS keywords → `unknown` (the Python rule for non-FITS files); a view with keywords but no `FILTER` → `RGB` (the Python rule for a FITS header without the keyword) [A1].
 - Distance: option (b) weight redistribution, spectrum dropped when band-limiting is unusable, chroma gated by `palette_chroma_compatible` in code.
-- Parity: every fingerprint component ≤ 1e-9 relative; D ≤ 1e-9 absolute on synthetic and on the 10 Phase 0 renders.
+- Parity: every fingerprint component ≤ 1e-9 · max(|v|, 1) (relative above 1, absolute below — a pure relative bound is unreachable for tiny components such as a 4.4e-6 saturation quantile, because L*a*b* agrees with numpy only to the ulp; measured in Task 10); D ≤ 1e-9 absolute on synthetic and on the 10 Phase 0 renders.
+- **libm is not bit-portable** (measured, Task 10): the Rocky 9 container's glibc 2.34 and the host's 2.43 differ by 1 ulp in transcendental functions, so bit-exact assertions are made only on libm-free arithmetic (selection, histograms, convolution, sums, labelling); anything through `exp`/`pow`/`cbrt`/`log`/`atan2` asserts the tolerances above. Every test runs in the container as well as on the host.
 
 ### 6.5 Multi-dimensional EMD — **exact network simplex**
 - `wasserstein_distance_nd(coords, coords, u, v)` on the 16×16 grid is the optimal-transport LP between two 256-point distributions with Euclidean ground cost; scipy normalises each weight vector to sum 1 and solves it with HiGHS (`linprog`) [V source].
