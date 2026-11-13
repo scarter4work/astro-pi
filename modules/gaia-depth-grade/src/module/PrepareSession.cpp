@@ -51,9 +51,17 @@ ImageWindow Duplicate( const View& target, const IsoString& id )
                   src.IsColor(), false/*initialProcessing*/, id );
    if ( w.IsNull() )
       throw Error( "Could not create the working window " + String( id ) );
-   ImageVariant dst = w.MainView().Image();
-   dst.CopyImage( src );
-   w.SetKeywords( target.Window().Keywords() );
+   try
+   {
+      ImageVariant dst = w.MainView().Image();
+      dst.CopyImage( src );
+      w.SetKeywords( target.Window().Keywords() );
+   }
+   catch ( ... )
+   {
+      w.ForceClose(); // never leave a half-made working window behind
+      throw;
+   }
    return w;
 }
 
@@ -108,12 +116,12 @@ PrepareSession RunPrepare( const View& target, const GradeOptions& options, cons
    s.keywords = target.Window().Keywords();
    s.options = options;
 
-   // The supplied layers are checked before a minute of solving.
-   View suppliedStars, suppliedStarless;
+   // The supplied layers are checked before a minute of solving (no View handle is kept across
+   // the solve: a window may be closed meanwhile; they are resolved again for the split).
    if ( options.suppliedViews )
    {
-      suppliedStars = SuppliedLayer( options.starsViewId, "stars", s.width, s.height, s.channels );
-      suppliedStarless = SuppliedLayer( options.starlessViewId, "starless", s.width, s.height, s.channels );
+      SuppliedLayer( options.starsViewId, "stars", s.width, s.height, s.channels );
+      SuppliedLayer( options.starlessViewId, "starless", s.width, s.height, s.channels );
    }
    else if ( !StarXTerminatorInstalled() )
       throw Error( kStarXTerminatorRequired );
@@ -147,8 +155,10 @@ PrepareSession RunPrepare( const View& target, const GradeOptions& options, cons
    // 3. The split.
    if ( options.suppliedViews )
    {
-      s.stars = ImageBridge::ToCore( suppliedStars.Image() );
-      s.starless = ImageBridge::ToCore( suppliedStarless.Image() );
+      // Resolved again by id, with the geometry checked again (pcl-view-handle-use-after-free).
+      s.stars = ImageBridge::ToCore( SuppliedLayer( options.starsViewId, "stars", s.width, s.height, s.channels ).Image() );
+      s.starless = ImageBridge::ToCore(
+         SuppliedLayer( options.starlessViewId, "starless", s.width, s.height, s.channels ).Image() );
    }
    else
    {

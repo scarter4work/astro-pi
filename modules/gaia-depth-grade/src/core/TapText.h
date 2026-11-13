@@ -43,9 +43,9 @@ struct GaiaPosition {
 
 /// The positions CSV (columns ra, dec, pmra, pmdec, parallax, phot_g_mean_mag, any order). ra,
 /// dec, pmra, pmdec and parallax are DOUBLE in the archive, phot_g_mean_mag REAL. Rows lacking a
-/// position, proper motion or G are skipped; a missing parallax is 0. Zero rows is an empty
-/// result (the solver then reports too few catalogue stars). Throws std::runtime_error
-/// `Gaia result missing columns: [...]`.
+/// position, proper motion or G are skipped; a missing parallax is 0. Throws std::runtime_error
+/// `Gaia result missing columns: [...]`, and `Gaia query returned zero rows for this field` for a
+/// table with no rows (an error, never an empty success; as parse_tap_csv).
 std::vector<GaiaPosition> parse_positions_csv(const std::string& csv);
 
 /// SHA-1 of a byte string, lowercase hex (FIPS 180-4; for the cache file name only).

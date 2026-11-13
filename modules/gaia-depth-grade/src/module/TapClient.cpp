@@ -12,6 +12,11 @@
 #include <cmath>
 #include <stdexcept>
 
+#ifdef GDG_PROBES
+#include <cstdlib>
+#include <fstream>
+#endif
+
 namespace pcl
 {
 
@@ -36,6 +41,16 @@ public:
 
 gdg::HttpResponse TapClient::Transfer( const std::string& url, const std::string* form )
 {
+#ifdef GDG_PROBES
+   // Test builds only: GDG_TEST_NET_LOG=<file> records every URL this transport is asked to open
+   // (probes no_network / online_fallback_live); release builds never read it.
+   if ( const char* netLog = std::getenv( "GDG_TEST_NET_LOG" ) )
+      if ( *netLog != '\0' )
+      {
+         std::ofstream f( netLog, std::ios::binary | std::ios::app );
+         f << url << '\n';
+      }
+#endif
    // Only the Gaia archive, only over HTTPS (the core never builds another URL; this is the
    // transport's own guard).
    static const std::string allowed( gdg::kGaiaArchive );

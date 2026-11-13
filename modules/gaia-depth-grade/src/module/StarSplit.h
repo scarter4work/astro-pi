@@ -23,7 +23,8 @@ bool StarXTerminatorInstalled();
 /// stars image a screen blend recombines), which leaves the starless image in `work`, and
 /// returns the new stars window, found by diffing the open windows (not by its name). Throws
 /// pcl::Error: kStarXTerminatorRequired when it is not installed, "StarXTerminator failed on
-/// <id>", or "StarXTerminator produced no new stars window" (any other new window is closed).
+/// <id>" (every window it opened before failing is closed), or "StarXTerminator produced no new
+/// stars window". Any new window other than the stars image is closed.
 ImageWindow SplitWithStarXTerminator( ImageWindow& work, const gdg::Log& log );
 
 /// The view `id` as a supplied layer (`what`: "stars" or "starless"): it must exist and have

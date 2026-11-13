@@ -371,8 +371,18 @@ run_proc()
 {
    local name="$1" req="$2"; shift 2
    printf '%s\n' "$req" > "$GDG_RUN_DIR/$name.req.json"
+   NETLOG="$GDG_RUN_DIR/$name.net.log"   # every URL the module's TapClient opened (test builds only)
+   rm -f "$NETLOG"
    run_pi "$name" "$HERE/probe-process.js" GDG_PROC_REQ="$GDG_RUN_DIR/$name.req.json" \
-      GDG_TEST_LAST_ERROR="$GDG_RUN_DIR/$name.err" GDG_TEST_DUMP_SETTINGS="$GDG_RUN_DIR/$name.settings.json" "$@"
+      GDG_TEST_LAST_ERROR="$GDG_RUN_DIR/$name.err" GDG_TEST_DUMP_SETTINGS="$GDG_RUN_DIR/$name.settings.json" \
+      GDG_TEST_NET_LOG="$NETLOG" "$@"
+}
+
+# no_network <netlog> <cache dir>: ok when the run opened no connection and wrote no Gaia cache.
+no_network()
+{
+   if [ ! -s "$1" ] && [ ! -e "$2/GaiaDepthGrade" ]; then ok "no network connection, no Gaia cache written"
+   else bad "network: $(cat "$1" 2>/dev/null | head -3 | tr '\n' ' ') cache: $(ls -R "$2" 2>/dev/null | head -5 | tr '\n' ' ')"; fi
 }
 
 # The offline StarXTerminator run on the master, shared by the cases that read it (once per run).
@@ -380,9 +390,10 @@ offline_run()
 {
    PROC="$GDG_RUN_DIR/offline-result.json"
    [ -s "$PROC" ] && return 0
-   run_proc offline "{\"master\":\"$PROC_MASTER\",\"params\":{\"gaiaDatabaseFiles\":$(gaia_json)},\"saveOutput\":\"$GDG_RUN_DIR/offline-out.xisf\"}" \
-      || return 1
+   run_proc offline "{\"master\":\"$PROC_MASTER\",\"params\":{\"gaiaDatabaseFiles\":$(gaia_json)},\"saveOutput\":\"$GDG_RUN_DIR/offline-out.xisf\",\"thenFail\":true}" \
+      XDG_CACHE_HOME="$GDG_RUN_DIR/xdg-offline" || return 1
    cp "$OUT" "$PROC"
+   OFFLINE_NETLOG="$NETLOG"
    echo "  info  offline run: $(jq -r '.seconds' "$PROC") s; QA $(jq -c .qa "$PROC")"
 }
 
@@ -486,6 +497,13 @@ case_execute_on_offline()
    if [ "$nd" -gt 1000 ] && le 0.3 "$rate" && [ "$(jq -r .qa.lowMatch "$c")" = false ]; then
       ok "QA in the read-only parameters: $nm/$nd matched (rate $rate, offset $(num .qa.medianOffset "$c") px), not LOW"
    else bad "QA: $(jq -c .qa "$c")"; fi
+   # The same instance run again so that it fails: no stale QA from the run before.
+   if [ "$(jq -r .failExecuted "$c")" = false ] \
+      && jq -e '.failQA == {"nDetected":0,"nMatched":0,"matchRate":0,"medianOffset":0,"lowMatch":false}' "$c" >/dev/null; then
+      ok "a failed run leaves no stale QA (\"$(jq -r .failError "$c")\")"
+   else bad "failed run: executed $(jq -r .failExecuted "$c"), QA $(jq -c .failQA "$c")"; fi
+   # The offline default makes no network connection (Global Constraints).
+   no_network "$OFFLINE_NETLOG" "$GDG_RUN_DIR/xdg-offline"
 }
 
 case_output_naming_and_tag()
@@ -612,12 +630,14 @@ case_offline_without_local_db_fails()
 {
    proc_ready offline_without_local_db_fails || return 0
    ran=$((ran + 1))
-   run_proc nolocal "{\"master\":\"$PROC_MASTER\",\"params\":{}}" GDG_TEST_NO_LOCAL_GAIA=1 || return 0
+   run_proc nolocal "{\"master\":\"$PROC_MASTER\",\"params\":{}}" GDG_TEST_NO_LOCAL_GAIA=1 \
+      XDG_CACHE_HOME="$GDG_RUN_DIR/xdg-nolocal" || return 0
    local c="$OUT"
    # queryLocalGaiaDR3's text verbatim, not wrapped in the solver's "plate solve failed for ..." prefix.
    if [ "$(jq -r .executed "$c")" = false ] && [ "$(jq -r .error "$c")" = "$NO_LOCAL_DB" ]; then
       ok "offline, no local database: \"$(jq -r .error "$c")\""
    else bad "executed=$(jq -r .executed "$c"), error \"$(jq -r .error "$c")\""; fi
+   no_network "$NETLOG" "$GDG_RUN_DIR/xdg-nolocal"
 }
 
 case_online_fallback_live()
@@ -637,6 +657,10 @@ case_online_fallback_live()
    ls "$GDG_RUN_DIR"/xdg-cache/GaiaDepthGrade/gaia/gaia_pos*.csv >/dev/null 2>&1 \
       && ok "plate solved against the archive (positions cached: $(basename "$(ls "$GDG_RUN_DIR"/xdg-cache/GaiaDepthGrade/gaia/gaia_pos*.csv | head -1)"))" \
       || bad "no cached archive positions: the solve did not use the online catalogue"
+   # The network log sees the connections (the positive control for no_network), all to the archive.
+   if [ -s "$NETLOG" ] && ! grep -qv '^https://gea\.esac\.esa\.int/' "$NETLOG"; then
+      ok "network log: $(wc -l < "$NETLOG") requests, every one to https://gea.esac.esa.int/"
+   else bad "network log $NETLOG: $(head -3 "$NETLOG" 2>/dev/null | tr '\n' ' ')"; fi
    # G < 15 matches only the bright stars (the rate is low by design here); the match itself must be
    # as tight as offline's (the archive-solved WCS): many matches at a sub-pixel median offset.
    if [ "$(num .qa.nMatched "$c")" -ge 500 ] && le "$(num .qa.medianOffset "$c")" 0.3; then

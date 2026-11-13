@@ -8,6 +8,7 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace pcl
 {
@@ -38,9 +39,34 @@ namespace
 std::set<IsoString> OpenWindowIds()
 {
    std::set<IsoString> ids;
-   for ( const ImageWindow& w : ImageWindow::AllWindows() )
+   const Array<ImageWindow> windows = ImageWindow::AllWindows();
+   for ( const ImageWindow& w : windows )
       ids.insert( w.MainView().Id() );
    return ids;
+}
+
+/// The windows opened since `before` (the window diff).
+std::vector<ImageWindow> NewWindows( const std::set<IsoString>& before )
+{
+   std::vector<ImageWindow> made;
+   const Array<ImageWindow> windows = ImageWindow::AllWindows();
+   for ( const ImageWindow& w : windows )
+      if ( before.count( w.MainView().Id() ) == 0 )
+         made.push_back( w );
+   return made;
+}
+
+void ForceCloseAll( std::vector<ImageWindow>& windows )
+{
+   for ( ImageWindow& w : windows )
+      try
+      {
+         w.ForceClose();
+      }
+      catch ( ... )
+      {
+      }
+   windows.clear();
 }
 
 } // namespace
@@ -62,29 +88,31 @@ ImageWindow SplitWithStarXTerminator( ImageWindow& work, const gdg::Log& log )
 
    View view = work.MainView();
    const IsoString id = view.Id();
-   if ( !sxt.ExecuteOn( view, false/*swapFile*/ ) ) // modifies the view in place -> starless
-      throw Error( "StarXTerminator failed on " + String( id ) );
-
-   ImageWindow stars;
-   for ( const ImageWindow& w : ImageWindow::AllWindows() )
+   bool ok = false;
+   try
    {
-      const IsoString wid = w.MainView().Id();
-      if ( before.count( wid ) == 0 )
-      {
-         if ( stars.IsNull() )
-         {
-            stars = w;
-            gdg::log_info( log, std::string( "stars window: " ) + wid.c_str() );
-         }
-         else
-         {
-            ImageWindow extra = w;
-            extra.ForceClose();
-         }
-      }
+      ok = sxt.ExecuteOn( view, false/*swapFile*/ ); // modifies the view in place -> starless
    }
-   if ( stars.IsNull() )
+   catch ( ... )
+   {
+      std::vector<ImageWindow> made = NewWindows( before ); // whatever it opened before failing
+      ForceCloseAll( made );
+      throw;
+   }
+   std::vector<ImageWindow> made = NewWindows( before );
+   if ( !ok )
+   {
+      ForceCloseAll( made );
+      throw Error( "StarXTerminator failed on " + String( id ) );
+   }
+   if ( made.empty() )
       throw Error( "StarXTerminator produced no new stars window" );
+
+   // The first new window is the stars image; any other is closed.
+   ImageWindow stars = made.front();
+   gdg::log_info( log, std::string( "stars window: " ) + stars.MainView().Id().c_str() );
+   made.erase( made.begin() );
+   ForceCloseAll( made );
    return stars;
 }
 

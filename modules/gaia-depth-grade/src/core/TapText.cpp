@@ -208,6 +208,7 @@ std::vector<GaiaPosition> parse_positions_csv(const std::string& csv) {
         for (const std::string& s : missing) m += (m.size() > 1 ? ", '" : "'") + s + "'";
         throw std::runtime_error("Gaia result missing columns: " + m + "]");
     }
+    if (lines.size() < 2) throw std::runtime_error("Gaia query returned zero rows for this field");
     std::vector<GaiaPosition> out;
     out.reserve(lines.empty() ? 0 : lines.size() - 1);
     for (size_t li = 1; li < lines.size(); ++li) {

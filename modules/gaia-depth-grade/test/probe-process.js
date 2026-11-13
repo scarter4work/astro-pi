@@ -15,6 +15,7 @@
 //   repeat     run the instance a second time: its output vs the first (determinism)
 //   thenReplace run it again with outputMode ReplaceTarget: the target vs the first output
 //   sxtNoise   run StarXTerminator twice on the target here: its own run-to-run max |d|
+//   thenFail   run the same instance once more so that it fails: its QA outputs afterwards
 // The module's test hooks write the run's last error ($GDG_TEST_LAST_ERROR) and its engine
 // settings ($GDG_TEST_DUMP_SETTINGS); this script reads them back.
 //
@@ -258,6 +259,20 @@ try
       s2.executeOn( nb.mainView );
       result.sxtNoise = maxAbsDiff( ImageWindow.windowById( "noise_a_stars" ).mainView.image,
                                     ImageWindow.windowById( "noise_b_stars" ).mainView.image );
+   }
+   // thenFail: the same instance (QA of a successful run in its read-only outputs) executed again
+   // so that it fails (supplied views that do not exist): the QA outputs must not keep the earlier
+   // run's values.
+   if ( A.thenFail && result.executed )
+   {
+      P.outputMode = 0;
+      P.splitMode = 1; // SuppliedViews
+      P.starsViewId = "gdg_no_such_view";
+      P.starlessViewId = "gdg_no_such_view";
+      result.failExecuted = P.executeOn( target.mainView );
+      result.failError = ERRF ? readText( ERRF ) : "";
+      result.failQA = { nDetected: P.outNDetected, nMatched: P.outNMatched, matchRate: P.outMatchRate,
+                        medianOffset: P.outMedianOffset, lowMatch: P.outLowMatch };
    }
    reference.forceClose();
 }

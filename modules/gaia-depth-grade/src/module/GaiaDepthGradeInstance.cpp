@@ -261,6 +261,10 @@ bool GaiaDepthGradeInstance::ExecuteOn( View& view )
 {
    const gdg::Log log = ConsoleLog();
    Console console;
+   // A failed run must not leave the previous run's QA in the outputs: back to the defaults.
+   o_nDetected = o_nMatched = 0;
+   o_matchRate = o_medianOffset = 0;
+   o_lowMatch = false;
    try
    {
       const GradeOptions opt = Options();
@@ -293,7 +297,6 @@ bool GaiaDepthGradeInstance::ExecuteOn( View& view )
    }
    catch ( const Exception& e )
    {
-      console.CriticalLn( "<end><cbr>[GDG] ERROR: " + e.Message().EncodedHTMLSpecialChars() );
 #ifdef GDG_PROBES
       TestWrite( "GDG_TEST_LAST_ERROR", std::string( e.Message().ToUTF8().c_str() ) );
 #endif
@@ -302,7 +305,6 @@ bool GaiaDepthGradeInstance::ExecuteOn( View& view )
    catch ( const std::exception& e )
    {
       const String msg = String::UTF8ToUTF16( e.what() );
-      console.CriticalLn( "<end><cbr>[GDG] ERROR: " + msg.EncodedHTMLSpecialChars() );
 #ifdef GDG_PROBES
       TestWrite( "GDG_TEST_LAST_ERROR", e.what() );
 #endif

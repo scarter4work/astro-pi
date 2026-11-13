@@ -519,7 +519,9 @@ TEST_CASE("positions_csv_parses_and_skips_unusable_rows", "[tap][solver]") {
     CHECK(rows[0].parallax == 1.7155318471265);
     CHECK(rows[0].g == static_cast<double>(13.051971f));  // REAL: float, widened
     CHECK(rows[1].parallax == 0.0);                         // null parallax: 0
-    CHECK(gdg::parse_positions_csv("ra,dec,pmra,pmdec,parallax,phot_g_mean_mag\n").empty());
+    // A header and no rows is an error, never an empty success (as parse_tap_csv).
+    CHECK_THROWS_WITH(gdg::parse_positions_csv("ra,dec,pmra,pmdec,parallax,phot_g_mean_mag\n"),
+                      "Gaia query returned zero rows for this field");
     CHECK_THROWS_WITH(gdg::parse_positions_csv("ra,dec,parallax\n1,2,3\n"),
                       "Gaia result missing columns: ['phot_g_mean_mag', 'pmdec', 'pmra']");
 }
@@ -567,4 +569,17 @@ TEST_CASE("positions_job_cache_and_retries", "[tap][solver][flow]") {
                           "Gaia TAP query failed: Gaia async query failed after 3 attempts: Gaia TAP: job " + kJob +
                               " ended in phase ERROR");
     }
+}
+
+TEST_CASE("positions_empty_table_is_an_error_not_success", "[tap][solver][flow]") {
+    TempDir tmp;
+    const gdg::OnlineCache cache(tmp.path);
+    FakeTransport t;
+    t.expect("GET", kNotices, 404, "text/html", "");
+    script_success(t, "ra,dec,pmra,pmdec,parallax,phot_g_mean_mag\n");
+    Captured cap;
+    CHECK_THROWS_WITH(gdg::online_gaia_positions(t, &cache, 350.25, 61.5, 0.75, 14.5, cap.log()),
+                      "Gaia query returned zero rows for this field");
+    CHECK(t.script.empty());  // one job: an empty table is not retried
+    CHECK(!cache.read(gdg::positions_cache_key(350.25, 61.5, 0.75, 14.5)));  // nothing cached
 }
