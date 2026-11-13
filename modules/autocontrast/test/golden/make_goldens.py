@@ -872,6 +872,15 @@ def stage_actions_propose(out: Out):
     except ValueError as e:
         unmapped = str(e)
     out.json("recipe/recipes.json", {"snapshots": snaps, "unmapped_kind_message": unmapped})
+    # recipes.json is key-sorted like every golden; json.dumps of the live dicts keeps INSERTION order, which is
+    # what session.json and the batched protocol carry. Recorded as strings so the C++ port can be byte-checked.
+    from autocontrast.optimize.recipe import action_to_dict
+    out.json("recipe/dumps.json", {
+        "snapshots": [{"dict": json.dumps(s["dict"]), "steps": json.dumps(s["steps"])} for s in snaps],
+        "menu": [json.dumps(action_to_dict(a)) for a in
+                 A.available_actions(pixel_scale_arcsec=1.0, psf_fwhm_arcsec=2.0, n_scales=6,
+                                     palette_compatible=True, applied_kinds=frozenset())],
+    })
 
 
 def stage_degrade(out: Out):

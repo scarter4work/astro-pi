@@ -1817,6 +1817,10 @@
    "bytes": 39197,
    "sha256": "9b41887c2eaa968edf22b7670ea44d0b15d1c35b8fb523b5811c796c1fa69bd9"
   },
+  "synthetic/recipe/dumps.json": {
+   "bytes": 13702,
+   "sha256": "1857d988443a4918cadb8252b9d0f80f3bed5e8197741790645e39194bd9d4ce"
+  },
   "synthetic/recipe/recipes.json": {
    "bytes": 8972,
    "sha256": "bb6e75e760c245e132917408e3d658b77fd7f811fadd9683243a5a81b84b3c57"
@@ -2631,7 +2635,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 8728295,
+ "total_bytes": 8741997,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",
