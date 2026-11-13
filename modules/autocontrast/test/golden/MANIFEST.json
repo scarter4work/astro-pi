@@ -729,6 +729,42 @@
    "bytes": 9344,
    "sha256": "4de796bf011504a4441d528ef23c684f613cc324762510cca84f9fe8e5a16e7f"
   },
+  "synthetic/extract/pydumps_cast.txt": {
+   "bytes": 2553,
+   "sha256": "ddc6ecd66a5b62ef8f9aa42af66a48b616987c31cd24c00f745e6cc4b1f52a6d"
+  },
+  "synthetic/extract/pydumps_flat06.txt": {
+   "bytes": 2378,
+   "sha256": "037f32530c5e63f590a2bd7029a2e1fa1d975ed5f11e88eab8fcda91f682bb55"
+  },
+  "synthetic/extract/pydumps_gray.txt": {
+   "bytes": 2093,
+   "sha256": "5f9794382b68a68a4ef73a0e0d30595b7e92e0d464823c7115b30656c51cf53b"
+  },
+  "synthetic/extract/pydumps_nebula.txt": {
+   "bytes": 2602,
+   "sha256": "d393efcd395610536868efbf07c25029105e3c49560b9acc12caace6248318d2"
+  },
+  "synthetic/extract/pydumps_nebula_fine.txt": {
+   "bytes": 2629,
+   "sha256": "70051814289283092b8d8073ea4b96b99872d48ab2ff237d4c2bc24e7c6d9cf4"
+  },
+  "synthetic/extract/pydumps_nebula_inf.txt": {
+   "bytes": 2593,
+   "sha256": "843fa93aa73d80a172d1f7cd389a57ead21311eee0bf9a1eb1ae05737f590c95"
+  },
+  "synthetic/extract/pydumps_nebula_inf_indent2.txt": {
+   "bytes": 4535,
+   "sha256": "82564b116f07e1c6ba8acc11b5970d6347fda9bbb575de4aba7e1c94385d403a"
+  },
+  "synthetic/extract/pydumps_noise.txt": {
+   "bytes": 4830,
+   "sha256": "a83110a7bc53e0adaa881931a43e4d1cba95a2bd3181af599f345c3b5a6f668f"
+  },
+  "synthetic/extract/pydumps_tiny.txt": {
+   "bytes": 2620,
+   "sha256": "2b70cc3f9d06beca5840a8d1c9a4c1f4b491632ffbe821bf5bab3d9296de9e8c"
+  },
   "synthetic/extract/tiny_u8.npy": {
    "bytes": 233,
    "sha256": "925aea9cce01874e2e5b6be89989f45e00d202fa4e8dc261bd527d5fac305fd9"
@@ -2523,7 +2559,7 @@
  },
  "schema": 1,
  "seed": 20261112,
- "total_bytes": 8665211,
+ "total_bytes": 8692044,
  "versions": {
   "Pillow": "12.3.0",
   "astropy": "8.0.1",

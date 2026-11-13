@@ -572,6 +572,13 @@ def stage_extract(out: Out):
         fp = extract(rgb, **kw)
         out.json(f"extract/fingerprint_{name}.json",
                  {"input": src[name], "params": kw, "fingerprint": fp_dict(fp)})
+        # the exact text of json.dumps(fp.to_dict()): the C++ FingerprintData::to_json -> dump_python must equal it
+        out._path(f"extract/pydumps_{name}.txt").write_text(json.dumps(fp.to_dict()), encoding="utf-8")
+    # structure_to_gradient_ratio = inf (zero gradient energy) serialises as the bare token Infinity
+    inf_fp = extract(nebf, pixel_scale_arcsec=1.0, n_scales=6, psf_fwhm_arcsec=2.0, palette_class="RGB")
+    inf_fp.background["structure_to_gradient_ratio"] = float("inf")
+    out._path("extract/pydumps_nebula_inf.txt").write_text(json.dumps(inf_fp.to_dict()), encoding="utf-8")
+    out._path("extract/pydumps_nebula_inf_indent2.txt").write_text(json.dumps(inf_fp.to_dict(), indent=2), encoding="utf-8")
 
 
 def _fp_set(rng):
