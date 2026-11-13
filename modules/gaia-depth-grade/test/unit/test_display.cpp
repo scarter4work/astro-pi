@@ -128,6 +128,51 @@ TEST_CASE("autostretch_matches_golden", "[display][golden]") {
     CHECK_THROWS_AS(gdg::autostretch_u8(nan), std::invalid_argument);
 }
 
+TEST_CASE("autostretch_split_is_identical", "[display]") {
+    // autostretch_u8 == apply_stf_u8(x, stf_params(x)), byte for byte, on the golden fields (RGB
+    // and mono) and on hand-made fields reaching the clip branches, at default and other settings.
+    std::vector<Image> fields;
+    for (const Case& c : cases()) fields.push_back(blend_of(c));
+    Image lit(9, 1, 1);
+    lit.data = {-0.5, -0.1, 0.0, 0.05, 0.1, 0.2, 0.4, 0.8, 1.2};
+    fields.push_back(lit);
+    fields.push_back(Image(4, 3, 1, 0.2));
+    Image ramp(31, 17, 3);
+    for (size_t i = 0; i < ramp.data.size(); ++i) ramp.data[i] = 0.01 + 0.9 * std::pow(std::sin(0.37 * i), 2.0);
+    fields.push_back(ramp);
+    for (const Image& f : fields) {
+        for (const auto& [bg, clip] : {std::pair{0.25, -2.8}, std::pair{0.1, -1.0}, std::pair{0.5, 0.0}}) {
+            const gdg::StfParams p = gdg::stf_params(f, bg, clip);
+            REQUIRE(p.c0.size() == static_cast<size_t>(f.channels));
+            REQUIRE(p.m.size() == static_cast<size_t>(f.channels));
+            for (int c = 1; c < f.channels; ++c) {  // linked channels: one set of parameters
+                CHECK(p.c0[static_cast<size_t>(c)] == p.c0[0]);
+                CHECK(p.m[static_cast<size_t>(c)] == p.m[0]);
+            }
+            CHECK(gdg::apply_stf_u8(f, p) == gdg::autostretch_u8(f, bg, clip));
+        }
+    }
+    // Per-channel parameters are honoured: channel 1 with m = 0.5 and c0 = 0 is the identity.
+    Image two(3, 1, 2);
+    two.data = {0.2, 0.2, 0.4, 0.4, 0.8, 0.8};
+    const gdg::StfParams per{{0.0, 0.0}, {0.25, 0.5}};
+    const auto out = gdg::apply_stf_u8(two, per);
+    CHECK(out[1] == 51);   // 0.2 * 255 + 0.5
+    CHECK(out[3] == 102);
+    CHECK(out[5] == 204);
+    CHECK(out[0] > out[1]);  // m = 0.25 brightens
+    // Malformed parameters and pixels are refused.
+    CHECK_THROWS_AS(gdg::apply_stf_u8(two, gdg::StfParams{{0.0}, {0.5}}), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::apply_stf_u8(two, gdg::StfParams{{0.0, NAN}, {0.5, 0.5}}), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::apply_stf_u8(two, gdg::StfParams{{0.0, 0.0}, {0.5, 1.0}}), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::apply_stf_u8(two, gdg::StfParams{{-0.1, 0.0}, {0.5, 0.5}}), std::invalid_argument);
+    Image nan(2, 2, 1, 0.1);
+    nan.data[3] = NAN;
+    CHECK_THROWS_AS(gdg::apply_stf_u8(nan, gdg::StfParams{{0.0}, {0.5}}), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::stf_params(nan), std::invalid_argument);
+    CHECK_THROWS_AS(gdg::stf_params(Image()), std::invalid_argument);
+}
+
 TEST_CASE("downscale_keeps_aspect_760", "[display]") {
     // The dialog's preview: <= 760 px wide, aspect kept (PIL: max(1, round(h * 760 / w))).
     CHECK(gdg::downscale_size(6024, 4024, 760) == std::pair<int, int>{760, 508});  // 507.67 -> 508

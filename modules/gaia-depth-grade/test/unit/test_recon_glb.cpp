@@ -5,6 +5,7 @@
 
 #include "Blister.h"
 #include "GlbRead.h"
+#include "TestFs.h"
 #include "core/Format.h"
 #include "core/recon/Glb.h"
 #include "core/recon/Reconstruct.h"
@@ -32,7 +33,10 @@ using gdg::Image;
 using gdg::test::GlbFile;
 using gdg::test::Json;
 using gdg::test::parse_glb;
+using gdg::test::no_temps;
 using gdg::test::read_accessor;
+using gdg::test::TempDir;
+using gdg::test::thrown_message;
 
 namespace {
 
@@ -97,43 +101,6 @@ double depth_scale(const CavityModel& m, double depth_ratio) {
     return depth_ratio * r;
 }
 
-/// A fresh private directory for one test.
-struct TempDir {
-    fs::path path;
-    TempDir() {
-        std::string tmpl = (fs::temp_directory_path() / "gdg_glb_XXXXXX").string();
-        std::vector<char> buf(tmpl.begin(), tmpl.end());
-        buf.push_back('\0');
-        REQUIRE(mkdtemp(buf.data()) != nullptr);
-        path = buf.data();
-    }
-    ~TempDir() {
-        std::error_code ec;
-        for (const auto& e : fs::recursive_directory_iterator(path, ec))
-            fs::permissions(e.path(), fs::perms::owner_all, fs::perm_options::add, ec);
-        fs::remove_all(path, ec);
-    }
-};
-
-/// True when the directory of `path` holds no `<name>.tmp*` entry (the atomic writer's temporaries).
-bool no_temps(const std::string& path) {
-    const fs::path p(path);
-    const std::string prefix = p.filename().string() + ".tmp";
-    std::error_code ec;
-    if (!fs::exists(p.parent_path(), ec)) return true;
-    for (const auto& e : fs::directory_iterator(p.parent_path()))
-        if (e.path().filename().string().rfind(prefix, 0) == 0) return false;
-    return true;
-}
-
-std::string thrown_message(const std::function<void()>& f) {
-    try {
-        f();
-    } catch (const std::exception& e) {
-        return e.what();
-    }
-    return "";
-}
 
 }  // namespace
 
@@ -543,4 +510,29 @@ TEST_CASE("glb_concurrent_calls_identical", "[recon][glb]") {
         CHECK(a == build_glb(m, cfg));
         CHECK(parse_glb(a).json["accessors"].arr.size() == 5);
     }
+}
+
+TEST_CASE("glb_cavity_radius_px_is_the_contract_R", "[recon][glb]") {
+    // R of the layout contract (Ruling R11: one definition, shared by the GLB and the orbit).
+    const CavityModel b = blister_model();
+    CHECK(cavity_radius_px(b) == depth_scale(b, 1.0));
+    const CavityModel g = model_9x7();
+    CHECK(cavity_radius_px(g) == depth_scale(g, 1.0));
+    CHECK(cavity_radius_px(g) == std::hypot(8.0 - 4.0, 6.0 - 3.0));  // farthest z > 0 pixel: (8, 6)
+    // No pixel with z > 0: the farthest pixel of any depth, (0, 0) from the apex (4, 3).
+    const CavityModel flat = grid_model(9, 7, std::nullopt, [](int, int) { return 0.0; }, no_dust);
+    CHECK(cavity_radius_px(flat) == 5.0);
+    // The GLB's depth scale is depth_ratio * cavity_radius_px: the deepest vertex sits at -z D.
+    ExportConfig cfg = with_decimate(1);
+    cfg.depth_ratio = 0.75;
+    const GlbFile glb = parse_glb(build_glb(g, cfg));
+    const double z_far = -g.z.at(8, 6) * cfg.depth_ratio * cavity_radius_px(g);
+    CHECK(glb.json["accessors"][size_t{0}]["min"][size_t{2}].num == static_cast<double>(static_cast<float>(z_far)));
+
+    CavityModel bad = model_9x7();
+    bad.apex_xy.first = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS_AS(cavity_radius_px(bad), std::invalid_argument);
+    CavityModel rgb_z = model_9x7();
+    rgb_z.z = Image(9, 7, 3);
+    CHECK_THROWS_AS(cavity_radius_px(rgb_z), std::invalid_argument);
 }

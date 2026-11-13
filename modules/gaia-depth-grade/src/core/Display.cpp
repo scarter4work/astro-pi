@@ -1,6 +1,7 @@
 #include "Display.h"
 
 #include "Numerics.h"
+#include "Parallel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -21,11 +22,11 @@ Image screen_blend(const Image& a, const Image& b) {
     return out;
 }
 
-std::vector<uint8_t> autostretch_u8(const Image& rgb, double target_bg, double shadows_clip) {
-    if (rgb.data.empty()) throw std::invalid_argument("autostretch_u8: empty image");
+StfParams stf_params(const Image& rgb, double target_bg, double shadows_clip) {
+    if (rgb.data.empty()) throw std::invalid_argument("stf_params: empty image");
     std::vector<double> x(rgb.data.size());
     for (size_t i = 0; i < x.size(); ++i) {
-        if (!std::isfinite(rgb.data[i])) throw std::invalid_argument("autostretch_u8: non-finite pixel");
+        if (!std::isfinite(rgb.data[i])) throw std::invalid_argument("stf_params: non-finite pixel");
         x[i] = std::max(rgb.data[i], 0.0);  // np.clip(rgb, 0, None)
     }
     const double med = median(x);
@@ -37,14 +38,41 @@ std::vector<uint8_t> autostretch_u8(const Image& rgb, double target_bg, double s
     const double sden = (2.0 * B * r - B - r);
     double m = std::fabs(sden) < 1e-12 ? 0.5 : (r * (B - 1.0)) / sden;
     m = clip(m, 1e-3, 1.0 - 1e-3);
-    std::vector<uint8_t> out(x.size());
-    for (size_t i = 0; i < x.size(); ++i) {
-        const double y = clip((x[i] - shadows) / denom, 0.0, 1.0);
-        const double den = (2.0 * m - 1.0) * y - m;  // PixInsight MTF
-        const double v = clip(den == 0.0 ? y : ((m - 1.0) * y) / den, 0.0, 1.0);
-        out[i] = static_cast<uint8_t>(v * 255.0 + 0.5);  // astype(uint8): truncation
-    }
+    const size_t nc = static_cast<size_t>(rgb.channels);
+    return StfParams{std::vector<double>(nc, shadows), std::vector<double>(nc, m)};
+}
+
+std::vector<uint8_t> apply_stf_u8(const Image& rgb, const StfParams& params) {
+    const size_t nc = static_cast<size_t>(rgb.channels);
+    if (params.c0.size() != nc || params.m.size() != nc)
+        throw std::invalid_argument("apply_stf_u8: the STF parameters must hold one entry per channel");
+    for (size_t c = 0; c < nc; ++c)
+        if (!(std::isfinite(params.c0[c]) && params.c0[c] >= 0.0 && params.c0[c] <= 1.0 && std::isfinite(params.m[c]) &&
+              params.m[c] > 0.0 && params.m[c] < 1.0))
+            throw std::invalid_argument("apply_stf_u8: STF parameters out of range (c0 in [0, 1], m in (0, 1))");
+    std::vector<uint8_t> out(rgb.data.size());
+    const size_t row = static_cast<size_t>(rgb.width) * nc;
+    // Elementwise: rows in parallel give the serial bytes. The first non-finite pixel's exception
+    // is rethrown by parallel_for_if (every message is the same).
+    parallel_for_if(static_cast<long long>(rgb.data.size()) * 8, rgb.height, [&](int y) {
+        const size_t begin = static_cast<size_t>(y) * row;
+        for (size_t i = begin; i < begin + row; ++i) {
+            const size_t c = (i - begin) % nc;
+            const double shadows = params.c0[c], m = params.m[c];
+            const double denom = std::max(1e-8, 1.0 - shadows);
+            if (!std::isfinite(rgb.data[i])) throw std::invalid_argument("apply_stf_u8: non-finite pixel");
+            const double xv = std::max(rgb.data[i], 0.0);  // np.clip(rgb, 0, None)
+            const double yv = clip((xv - shadows) / denom, 0.0, 1.0);
+            const double den = (2.0 * m - 1.0) * yv - m;  // PixInsight MTF
+            const double v = clip(den == 0.0 ? yv : ((m - 1.0) * yv) / den, 0.0, 1.0);
+            out[i] = static_cast<uint8_t>(v * 255.0 + 0.5);  // astype(uint8): truncation
+        }
+    });
     return out;
+}
+
+std::vector<uint8_t> autostretch_u8(const Image& rgb, double target_bg, double shadows_clip) {
+    return apply_stf_u8(rgb, stf_params(rgb, target_bg, shadows_clip));
 }
 
 Image crop(const Image& img, int x, int y, int w, int h) {

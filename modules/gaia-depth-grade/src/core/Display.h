@@ -14,10 +14,28 @@ namespace gdg {
 /// std::invalid_argument when the shapes differ.
 Image screen_blend(const Image& a, const Image& b);
 
-/// display.autostretch: STF-style stretch to 8 bits, same layout as `rgb`. Shadows at
-/// median + shadows_clip * 1.4826 * MAD (clipped to [0, 1]), midtones solved so the median maps
-/// to target_bg, PixInsight's MTF, then uint8(out * 255 + 0.5). Throws std::invalid_argument on
-/// empty or non-finite input (numpy would return NaN-derived garbage).
+/// Screen-transfer-function parameters, one entry per channel: c0 = the shadows clip, m = the
+/// midtones balance of PixInsight's MTF.
+struct StfParams {
+    std::vector<double> c0, m;
+};
+
+/// display.autostretch's parameters. The channels are linked, as display.autostretch: one median
+/// and MAD over every sample of max(rgb, 0), c0 = clip(median + shadows_clip * 1.4826 * MAD, 0, 1),
+/// m solved so the median maps to target_bg (0.5 when that is singular) and clipped to
+/// [1e-3, 1 - 1e-3]; so every channel's entry is equal. Throws std::invalid_argument on empty or
+/// non-finite input (numpy would return NaN-derived garbage).
+StfParams stf_params(const Image& rgb, double target_bg = 0.25, double shadows_clip = -2.8);
+
+/// The STF to 8 bits, same layout as `rgb`: per sample of channel c, y = clip((max(v, 0) - c0) /
+/// max(1e-8, 1 - c0), 0, 1), PixInsight's MTF with m, then uint8(out * 255 + 0.5). Elementwise and
+/// parallel by rows (output identical to a serial pass). Throws std::invalid_argument when the
+/// parameters do not hold one entry per channel or are non-finite or out of range (c0 in [0, 1],
+/// m in (0, 1)), or a pixel is non-finite.
+std::vector<uint8_t> apply_stf_u8(const Image& rgb, const StfParams& params);
+
+/// display.autostretch: STF-style stretch to 8 bits, same layout as `rgb`; exactly
+/// apply_stf_u8(rgb, stf_params(rgb, target_bg, shadows_clip)).
 std::vector<uint8_t> autostretch_u8(const Image& rgb, double target_bg = 0.25, double shadows_clip = -2.8);
 
 /// numpy a[y:y+h, x:x+w] (bounds clamped as slicing clamps them; may be empty).

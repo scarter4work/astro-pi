@@ -4,8 +4,8 @@
 // - Grid: columns x = i*d for i = 0 .. (nx - 1)/d, rows y = j*d likewise (integer division);
 //   vertex index = row*cols + col. Row 0 is the image's top row (frame C1).
 // - POSITION float32 VEC3 (accessor min/max set): X = (x - ax) u, Y = -(y - ay) u, Z = -z D u, with
-//   (ax, ay) = apex_xy, D = depth_ratio * R, R = the largest apex distance of a pixel with z > 0 (of
-//   any pixel when none), u = pc_per_px (1 when absent). +Y is up, the viewer looks down -Z.
+//   (ax, ay) = apex_xy, D = depth_ratio * R, R = cavity_radius_px(): the largest apex distance of a
+//   pixel with z > 0 (of any pixel when none), u = pc_per_px (1 when absent). +Y is up, the viewer looks down -Z.
 // - COLOR_0 float32 VEC3 = clip(emissivity, 0, 1) (linear, as glTF vertex colours are).
 // - Indices uint32, two triangles per cell, counter-clockwise seen from +Z.
 // - Material 0: KHR_materials_unlit, doubleSided.
@@ -59,6 +59,12 @@ std::uint64_t glb_size_bytes(int nx, int ny, int decimate, bool has_dust,
 /// twice: right after validation as a lower bound (no dust, no JSON) before allocating anything,
 /// then with the exact JSON length before allocating the file.
 void glb_check_size(int nx, int ny, int decimate, bool has_dust, std::uint64_t json_bytes = GLB_JSON_RESERVE);
+
+/// The cavity radius R of the layout contract: the largest distance from apex_xy of a pixel with
+/// z > 0, or of any pixel when none has one (0 for an empty model). The depth scale of the GLB and
+/// of the orbit animation (Orbit.h) is D = depth_ratio * R. Throws std::invalid_argument unless z
+/// is a plane and the apex is finite. Reentrant: parallel by rows, exact (a max reduction).
+double cavity_radius_px(const CavityModel& model);
 
 /// The cavity model as GLB bytes (layout above). Throws std::invalid_argument for decimate < 1, a
 /// grid under 2 x 2 vertices, non-finite config or model values, a pc_per_px <= 0, or planes of the

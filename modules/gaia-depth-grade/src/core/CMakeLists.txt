@@ -23,6 +23,7 @@ add_library(gdg_core STATIC
     OnlineCache.cpp
     SolveMath.cpp
     AtomicFile.cpp
+    Gif.cpp
 )
 # Consumers include "core/<Header>.h".
 target_include_directories(gdg_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
@@ -43,4 +44,5 @@ target_sources(gdg_core PRIVATE
     recon/Render2D.cpp
     recon/Reconstruct.cpp
     recon/Glb.cpp
+    recon/Orbit.cpp
 )

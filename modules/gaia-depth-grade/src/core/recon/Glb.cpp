@@ -67,10 +67,8 @@ struct Bounds {
     }
 };
 
-/// One full-resolution row of the model: what R, has_dust and the finiteness check need.
+/// One full-resolution row of the model: what has_dust and the finiteness check need.
 struct RowScan {
-    double r_pos = -1.0;  ///< largest apex distance of a pixel with z > 0 (-1: none)
-    double r_all = 0.0;   ///< largest apex distance of any pixel
     double dust_max = -std::numeric_limits<double>::infinity();
     int bad_x = -1;       ///< first column holding a non-finite z / emissivity / dust value
 };
@@ -102,6 +100,34 @@ std::uint64_t glb_size_bytes(int nx, int ny, int decimate, bool has_dust, std::u
 void glb_check_size(int nx, int ny, int decimate, bool has_dust, std::uint64_t json_bytes) {
     if (glb_size_bytes(nx, ny, decimate, has_dust, json_bytes) > GLB_MAX_BYTES)
         throw std::length_error("GLB would exceed 4 GiB; raise glbDecimate (now " + std::to_string(decimate) + ")");
+}
+
+double cavity_radius_px(const CavityModel& model) {
+    const Image& zi = model.z;
+    if (zi.channels != 1) throw std::invalid_argument("cavity_radius_px: z must be a plane");
+    const double ax = model.apex_xy.first, ay = model.apex_xy.second;
+    if (!(std::isfinite(ax) && std::isfinite(ay))) throw std::invalid_argument("cavity_radius_px: the apex must be finite");
+    const int nx = zi.width, ny = zi.height;
+    struct RowR {
+        double pos = -1.0;  ///< largest apex distance of a pixel with z > 0 (-1: none)
+        double all = 0.0;   ///< largest apex distance of any pixel
+    };
+    std::vector<RowR> rows(static_cast<size_t>(ny));
+    gdg::parallel_for_dynamic(ny, std::max(1, 65536 / std::max(nx, 1)), [&](int y, int) {
+        RowR s;
+        for (int x = 0; x < nx; ++x) {
+            const double r = std::hypot(x - ax, y - ay);
+            s.all = std::max(s.all, r);
+            if (zi.at(x, y) > 0.0) s.pos = std::max(s.pos, r);
+        }
+        rows[static_cast<size_t>(y)] = s;
+    });
+    double pos = -1.0, all = 0.0;
+    for (const RowR& s : rows) {
+        pos = std::max(pos, s.pos);
+        all = std::max(all, s.all);
+    }
+    return pos >= 0.0 ? pos : all;
 }
 
 std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig& cfg) {
@@ -140,24 +166,18 @@ std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig
             if (s.bad_x < 0 && !(std::isfinite(zv) && std::isfinite(dv) && std::isfinite(ei.at(x, y, 0)) &&
                                  std::isfinite(ei.at(x, y, 1)) && std::isfinite(ei.at(x, y, 2))))
                 s.bad_x = x;
-            const double r = std::hypot(x - ax, y - ay);
-            s.r_all = std::max(s.r_all, r);
-            if (zv > 0.0) s.r_pos = std::max(s.r_pos, r);
             s.dust_max = std::max(s.dust_max, dv);
         }
         scan[static_cast<size_t>(y)] = s;
     });
-    double r_pos = -1.0, r_all = 0.0, dust_max = -std::numeric_limits<double>::infinity();
+    double dust_max = -std::numeric_limits<double>::infinity();
     for (int y = 0; y < ny; ++y) {
         const RowScan& s = scan[static_cast<size_t>(y)];
         require(s.bad_x < 0, "the cavity model holds a non-finite value at (" + std::to_string(s.bad_x) + ", " +
                                  std::to_string(y) + ")");
-        r_pos = std::max(r_pos, s.r_pos);
-        r_all = std::max(r_all, s.r_all);
         dust_max = std::max(dust_max, s.dust_max);
     }
-    const double R = r_pos >= 0.0 ? r_pos : r_all;
-    const double D = cfg.depth_ratio * R;
+    const double D = cfg.depth_ratio * cavity_radius_px(model);
     const double u = model.pc_per_px ? *model.pc_per_px : 1.0;
     const double dust_off = cfg.dust_offset_frac * D * u;
     const bool has_dust = dust_max >= cfg.dust_min;
