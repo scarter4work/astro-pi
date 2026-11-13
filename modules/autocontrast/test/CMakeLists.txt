@@ -20,3 +20,6 @@ function(ac_add_test test_name test_source)
 endfunction()
 
 ac_add_test(test_npy unit/test_npy.cpp)
+ac_add_test(test_version  unit/test_version.cpp)
+ac_add_test(test_parallel unit/test_parallel.cpp ac_core Threads::Threads)
+ac_add_test(test_json_python unit/test_json_python.cpp ac_core)

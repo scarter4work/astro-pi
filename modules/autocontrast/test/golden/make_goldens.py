@@ -8,6 +8,7 @@ C++ stage can be tested against it without Python at test time.
     tools/autocontrast/.venv/bin/python -I make_goldens.py real      <outdir> [--data-dir DIR]
     tools/autocontrast/.venv/bin/python -I make_goldens.py manifest  <golden-root>
     tools/autocontrast/.venv/bin/python -I make_goldens.py all       <golden-root> [--data-dir DIR]
+    tools/autocontrast/.venv/bin/python -I make_goldens.py json_float_repr <golden-root>   (that one file + its MANIFEST entry)
 
 ``synthetic`` needs nothing but the venv.  ``real`` reads (never copies) the renders under
 the data dir (``--data-dir`` or env ``AC_DATA_DIR``; default tools/autocontrast/data) and
@@ -1215,6 +1216,37 @@ def stage_loop(out: Out):
                                      epsilon_improve=5e-3))
 
 
+def _float_repr_table() -> list:
+    """Floats whose Python repr the C++ dump_python must reproduce: edge cases plus a seeded draw
+    over the whole exponent range (random 64-bit patterns) and over ordinary magnitudes."""
+    import struct
+    edge = [0.0, -0.0, 1.0, -1.0, 0.1, 0.2, 0.3, 0.5, 1.5, 2.5, 100.0, 1234.5678, 1.0 / 3.0, 2.0 / 3.0,
+            math.pi, math.e, math.sqrt(2.0), 0.1 + 0.2, 1e-3, 1e-4, 9.999e-5, 1.0001e-4, 1e-5, 1.5e-5, 1.5e-7,
+            1e-10, 1e-100, 1e-300, 5e-324, 2.2250738585072014e-308, 2.225073858507201e-308,
+            1e15, 9.999999999999998e15, 1e16, 1.5e16, 1.2345678901234567e16, 123456789012345678.0, 1e17,
+            1e21, 1e22, 1e23, 1e100, 1e300, 1.7976931348623157e308, 4.35, 0.07, 8.41, 5e-5, 123456.789e3,
+            9007199254740992.0, 9007199254740993.0, 0.30000000000000004, 1.0000000000000002, 0.9999999999999999,
+            float(2 ** 53), float(2 ** 63), float(-2 ** 63), 65536.0, 1e5, 1e6, 1e7]
+    rng = np.random.default_rng(SEED)
+    wide = []
+    while len(wide) < 150:                      # random bit patterns: every exponent, 17-digit mantissas
+        bits = int(rng.integers(0, 2 ** 63, dtype=np.uint64)) | (int(rng.integers(0, 2)) << 63)
+        v = struct.unpack("<d", struct.pack("<Q", bits))[0]
+        if math.isfinite(v):
+            wide.append(v)
+    ordinary = ([float(x) for x in rng.normal(0.0, 1.0, 60)] + [float(x) for x in rng.uniform(0.0, 1.0, 60)]
+                + [float(x) * 10.0 ** int(k) for x, k in zip(rng.uniform(1.0, 10.0, 60), rng.integers(-8, 9, 60))])
+    return edge + wide + ordinary
+
+
+def stage_json_float_repr(out: Out):
+    """Python-dumped float table (json.dumps defaults, so repr() is the oracle) for test_json_python."""
+    table = _float_repr_table()
+    if any(not isinstance(v, float) for v in table):
+        raise RuntimeError("float table holds a non-float")
+    out._path("json_float_repr.json").write_text(json.dumps(table) + "\n", encoding="utf-8")
+
+
 SYNTHETIC_STAGES = [
     ("images", stage_images),
     ("npy_selftest", stage_npy_selftest),
@@ -1230,6 +1262,7 @@ SYNTHETIC_STAGES = [
     ("skymath_wcs", stage_skymath_wcs),
     ("guardrails", stage_guardrails),
     ("loop", stage_loop),
+    ("json_float_repr", stage_json_float_repr),
 ]
 
 
@@ -1487,9 +1520,23 @@ def write_manifest(root: Path, extra: dict | None = None):
 
 # --------------------------------------------------------------------------------------
 
+def write_json_float_repr_only(root: Path):
+    """Regenerate only synthetic/json_float_repr.json and add/refresh its MANIFEST entry, leaving every
+    other golden and manifest field untouched (the reference commit stays the one that made them)."""
+    out = Out(root / "synthetic")
+    stage_json_float_repr(out)
+    man_path = root / "MANIFEST.json"
+    man = json.loads(man_path.read_text())
+    p = root / "synthetic" / "json_float_repr.json"
+    man["files"]["synthetic/json_float_repr.json"] = {"bytes": p.stat().st_size, "sha256": sha256_file(p)}
+    man["files"] = dict(sorted(man["files"].items()))
+    man["total_bytes"] = sum(v["bytes"] for v in man["files"].values())
+    man_path.write_text(json.dumps(enc(man), sort_keys=True, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["synthetic", "real", "manifest", "all"])
+    ap.add_argument("mode", choices=["synthetic", "real", "manifest", "all", "json_float_repr"])
     ap.add_argument("outdir", type=Path)
     ap.add_argument("--data-dir", default=None)
     args = ap.parse_args(argv)
@@ -1498,6 +1545,8 @@ def main(argv=None) -> int:
         run_synthetic(args.outdir)
     elif args.mode == "real":
         run_real(args.outdir, resolve_data_dir(args.data_dir))
+    elif args.mode == "json_float_repr":
+        write_json_float_repr_only(args.outdir)
     elif args.mode == "manifest":
         write_manifest(args.outdir)
     else:

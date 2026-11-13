@@ -9,6 +9,9 @@
 # carry an RPATH/RUNPATH (it would point into the build machine).
 #
 # Usage: tools/build-env/verify-portable.sh <module.so>...
+#   Module-agnostic: NukeX-pxm.so, PICopilot-pxm.so, Planetary-pxm.so, GaiaDepthGrade-pxm.so and
+#   AutoContrast-pxm.so (the modules/autocontrast/build-portable build; the build-portable-probes
+#   build is the same code plus the test-only AutoContrastProbe and is never shipped) all pass here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$ROOT/tools/build-env/image-tag.sh"
