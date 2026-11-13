@@ -77,7 +77,8 @@ IsoString Describe( const ProcessParameter& p )
    {
       IsoString c = "[";
       int n = 0;
-      for ( const ProcessParameter& col : p.TableColumns() )
+      const ProcessParameter::parameter_list columns = p.TableColumns(); // const: see Parameters() below
+      for ( const ProcessParameter& col : columns )
          c += (n++ ? "," : "") + Describe( col );
       s += "," + Field( "columns", c + "]" );
    }
@@ -99,7 +100,10 @@ IsoString ProbeIntrospect( const String& args )
       Process P{ IsoString( id ) }; // throws Error when no such process is installed
       IsoString list = "[";
       int n = 0;
-      for ( const ProcessParameter& p : P.Parameters() )
+      // Const arrays: range-for over a temporary calls the non-const begin() (EnsureUnique), which
+      // GCC 16 flags with a false -Walloc-size-larger-than.
+      const Process::parameter_list params = P.Parameters();
+      for ( const ProcessParameter& p : params )
          list += (n++ ? "," : "") + Describe( p );
       out += (np++ ? "," : "") + Str( id ) + ":" + list + "]";
       IsoString cats = "[";
