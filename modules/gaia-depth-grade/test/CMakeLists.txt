@@ -44,3 +44,6 @@ gdg_add_test(test_recon_ionizer unit/test_recon_ionizer.cpp gdg_core)
 gdg_add_test(test_recon_extinction unit/test_recon_extinction.cpp gdg_core)
 gdg_add_test(test_recon_cavity_terms unit/test_recon_cavity_terms.cpp gdg_core)
 gdg_add_test(test_recon_cavity unit/test_recon_cavity.cpp gdg_core)
+
+# Recon Part 2, native (Phase G2)
+gdg_add_test(test_recon_render2d unit/test_recon_render2d.cpp gdg_core)

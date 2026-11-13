@@ -6,7 +6,8 @@
 // - `emissivity` is (ny, nx, 3), linear.
 // - `dust` is (ny, nx), opacity in [0, 1].
 // - `z` is pixel-relative depth: observer at -inf, 0 = nearest, 1 = farthest.
-// - Pixel coordinates are the Python core's: x = column, y = row, row 0 = FITS bottom row.
+// - Pixel coordinates are the Python core's: x = column, y = row, row 0 = PixInsight's top row
+//   (frame contract C1: PixInsight writes FITS TOP-DOWN, so astropy's data[0] is the top row).
 #pragma once
 
 #include "core/Image.h"
@@ -115,11 +116,12 @@ struct ReconConfig {
     double footprint_frac = 0.05;   ///< footprint = lum > floor + frac * (peak - floor)
     double geometry_power = 2.0;    ///< paraboloid steepness for geometry_prior
     double ionization_gamma = 1.0;  ///< shaping exponent for ionization_depth
-    // --- 2D render parameters (render_cavity_2d, plan tasks 9/10; carried, not used here) ---
-    double render_gamma = 1.0;
-    double render_ambient = 0.05;
-    double render_depth_shading = 0.5;
-    double render_dust_strength = 1.0;
+    // --- 2D render parameters (render_cavity_2d, Render2D.h; not part of the cavity meta) ---
+    double render_gamma = 1.0;          ///< exponent on the depth shading only
+    double render_ambient = 0.05;       ///< shading floor: the farthest depth keeps this fraction
+    double render_depth_shading = 0.5;  ///< shading loss per unit of relative depth
+    double render_dust_strength = 1.0;  ///< opacity scale of the near-side dust occlusion
+    double render_limb_gain = 0.5;      ///< limb brightening at the steepest depth gradient
 };
 
 /// reconstruct_cavity's meta dict. Field names are the Python keys verbatim; cavity_meta_json()

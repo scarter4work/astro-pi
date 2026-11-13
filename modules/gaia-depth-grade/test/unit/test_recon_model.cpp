@@ -59,6 +59,7 @@ TEST_CASE("reconconfig_defaults_verbatim", "[recon][model]") {
     CHECK(c.render_ambient == 0.05);
     CHECK(c.render_depth_shading == 0.5);
     CHECK(c.render_dust_strength == 1.0);
+    CHECK(c.render_limb_gain == 0.5);
 }
 
 TEST_CASE("numpy_scalar_helpers", "[recon][model]") {
