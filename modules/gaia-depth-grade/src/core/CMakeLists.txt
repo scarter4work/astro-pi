@@ -45,4 +45,5 @@ target_sources(gdg_core PRIVATE
     recon/Reconstruct.cpp
     recon/Glb.cpp
     recon/Orbit.cpp
+    recon/Validate.cpp
 )

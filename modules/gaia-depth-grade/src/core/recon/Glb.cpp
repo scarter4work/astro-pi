@@ -2,6 +2,7 @@
 
 #include "Cavity.h"
 #include "Reconstruct.h"
+#include "Validate.h"
 #include "core/Adql.h"
 #include "core/AtomicFile.h"
 #include "core/Format.h"
@@ -65,12 +66,6 @@ struct Bounds {
         return "\"min\":[" + num(double{lo[0]}) + "," + num(double{lo[1]}) + "," + num(double{lo[2]}) + "],\"max\":[" +
                num(double{hi[0]}) + "," + num(double{hi[1]}) + "," + num(double{hi[2]}) + "]";
     }
-};
-
-/// One full-resolution row of the model: what has_dust and the finiteness check need.
-struct RowScan {
-    double dust_max = -std::numeric_limits<double>::infinity();
-    int bad_x = -1;       ///< first column holding a non-finite z / emissivity / dust value
 };
 
 void require(bool ok, const std::string& what) {
@@ -158,26 +153,17 @@ std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig
     // Even without the dust mesh and the JSON the file cannot fit: fail before any allocation.
     glb_check_size(nx, ny, d, false, 0);
 
-    // ---- full-resolution scan: R, max(dust), finiteness (parallel by rows) ----
-    std::vector<RowScan> scan(static_cast<size_t>(ny));
+    // ---- full-resolution scan: finiteness, max(dust) (parallel by rows) ----
+    require_apex_in_grid(model, "GLB");
+    require_finite_model(model, "GLB");
+    std::vector<double> row_dust_max(static_cast<size_t>(ny), -std::numeric_limits<double>::infinity());
     gdg::parallel_for_dynamic(ny, std::max(1, 65536 / std::max(nx, 1)), [&](int y, int) {
-        RowScan s;
-        for (int x = 0; x < nx; ++x) {
-            const double zv = zi.at(x, y), dv = di.at(x, y);
-            if (s.bad_x < 0 && !(std::isfinite(zv) && std::isfinite(dv) && std::isfinite(ei.at(x, y, 0)) &&
-                                 std::isfinite(ei.at(x, y, 1)) && std::isfinite(ei.at(x, y, 2))))
-                s.bad_x = x;
-            s.dust_max = std::max(s.dust_max, dv);
-        }
-        scan[static_cast<size_t>(y)] = s;
+        double m = -std::numeric_limits<double>::infinity();
+        for (int x = 0; x < nx; ++x) m = std::max(m, di.at(x, y));
+        row_dust_max[static_cast<size_t>(y)] = m;
     });
     double dust_max = -std::numeric_limits<double>::infinity();
-    for (int y = 0; y < ny; ++y) {
-        const RowScan& s = scan[static_cast<size_t>(y)];
-        require(s.bad_x < 0, "the cavity model holds a non-finite value at (" + std::to_string(s.bad_x) + ", " +
-                                 std::to_string(y) + ")");
-        dust_max = std::max(dust_max, s.dust_max);
-    }
+    for (double m : row_dust_max) dust_max = std::max(dust_max, m);
     const double D = cfg.depth_ratio * cavity_radius_px(model);
     const double u = model.pc_per_px ? *model.pc_per_px : 1.0;
     const double dust_off = cfg.dust_offset_frac * D * u;

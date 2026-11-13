@@ -31,8 +31,11 @@ struct OrbitConfig {
 /// std::invalid_argument for frames < 1, a non-finite or |amplitude_deg| >= 90, max_width < 1,
 /// delay_cs outside [0, 65535], a non-finite or negative depth_ratio, an empty model, planes of the
 /// wrong channel count, a non-finite apex or z / emissivity / dust value (the message names the
-/// first such pixel). Rows run in parallel; reentrant.
-/// Memory: n full-size frames; write_orbit_gif() holds one at a time.
+/// first such pixel), or an apex more than its own size outside the grid (Validate.h). Rows run in
+/// parallel; reentrant.
+/// Memory: every frame is held at full resolution at once, n * nx * ny * 3 doubles (about 21 GB
+/// for 36 frames of a 6072x4042 master). For tests and small models only; production callers use
+/// write_orbit_gif(), which streams one frame at a time.
 std::vector<Image> orbit_views(const CavityModel& model, const ReconConfig& cfg, const ExportConfig& ecfg,
                                const OrbitConfig& ocfg);
 

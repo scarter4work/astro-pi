@@ -22,7 +22,8 @@ inline constexpr double RENDER_LIMB_SIGMA_PX = 1.0;
 ///   limb  = 1 + render_limb_gain clip(g / q, 0, 1)
 ///   T     = 1 - clip(render_dust_strength dust, 0, 1)
 ///   out_c = clip(f32(E_c shade limb T), 0, 1)
-/// Throws std::invalid_argument unless emissivity has 3 channels and z and dust are planes.
+/// Throws std::invalid_argument unless emissivity has 3 channels, z and dust are planes of one shape
+/// and every z / emissivity / dust value is finite (the message names the plane and the pixel).
 Image render_cavity_2d(const CavityModel& model, const ReconConfig& cfg);
 
 }  // namespace gdg::recon

@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -22,10 +24,43 @@ std::string parent_dir(const std::string& path) {
 
 }  // namespace
 
+std::optional<unsigned> umask_from_proc_status(const std::string& text) {
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find('\n', pos);
+        if (end == std::string::npos) end = text.size();
+        const std::string line = text.substr(pos, end - pos);
+        pos = end + 1;
+        if (line.rfind("Umask:", 0) != 0) continue;
+        size_t i = 6;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+        if (i == line.size()) return std::nullopt;
+        unsigned v = 0;
+        for (; i < line.size(); ++i) {
+            if (line[i] < '0' || line[i] > '7') return std::nullopt;
+            v = v * 8 + static_cast<unsigned>(line[i] - '0');
+            if (v > 0777) return std::nullopt;
+        }
+        return v;
+    }
+    return std::nullopt;
+}
+
+std::optional<unsigned> process_umask() {
+    std::ifstream in("/proc/self/status");
+    if (!in) return std::nullopt;
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return umask_from_proc_status(text);
+}
+
 void write_file_atomic(const std::string& path, const void* data, std::size_t size) {
     auto fail = [&](int err) -> void {
         throw std::runtime_error("cannot write " + path + ": " + std::strerror(err));
     };
+
+    // The published mode is 0666 & ~umask; with no readable umask nothing is written.
+    const std::optional<unsigned> um = process_umask();
+    if (!um) throw std::runtime_error("cannot write " + path + ": cannot determine the process umask");
 
     // A unique temporary beside the target (same filesystem, so the rename is atomic). mkostemp
     // opens it O_EXCL, mode 0600: never another writer's file, never through a symlink. O_CLOEXEC:
@@ -53,7 +88,7 @@ void write_file_atomic(const std::string& path, const void* data, std::size_t si
         if (n == 0) abandon(EIO, true);  // no progress on a non-empty remainder: never spin
         done += static_cast<std::size_t>(n);
     }
-    if (::fchmod(fd, 0644) != 0) abandon(errno, true);
+    if (::fchmod(fd, static_cast<mode_t>(0666 & ~*um)) != 0) abandon(errno, true);
     if (::fsync(fd) != 0) abandon(errno, true);
     if (::close(fd) != 0) abandon(errno, false);
     if (::rename(tmp.c_str(), path.c_str()) != 0) abandon(errno, false);

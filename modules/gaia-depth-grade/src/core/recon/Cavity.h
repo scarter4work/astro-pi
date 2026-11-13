@@ -72,4 +72,14 @@ CavityModel reconstruct_cavity(const ChannelSet& channels, const IonizationMap& 
 /// round-trip form, as Python's json.dumps writes them).
 std::string cavity_meta_json(const CavityMeta& meta);
 
+/// The strict inverse of cavity_meta_json: exactly its 14 keys, each once, in any order, with
+/// JSON whitespace allowed between tokens. A missing, unknown or duplicate key, a value of the
+/// wrong type (numbers are JSON numbers, never NaN / Infinity; footprint_px an integer in
+/// long long range; booleans true / false; strings as json_quote writes them: \" \\ \b \f \n \r \t
+/// and \u00xx for the other control bytes, no raw control byte), a number that overflows a double,
+/// or anything after the closing brace throws std::invalid_argument("cavity meta: ...") naming the
+/// key or the problem. Doubles parse losslessly from the shortest round-trip text (bit-identical,
+/// -0.0 included). Reentrant.
+CavityMeta cavity_meta_from_json(const std::string& json);
+
 }  // namespace gdg::recon

@@ -2,6 +2,7 @@
 // concurrent writers to one path never publish a partial file.
 #include <catch_amalgamated.hpp>
 
+#include "TestFs.h"
 #include "core/AtomicFile.h"
 
 #include <atomic>
@@ -101,9 +102,27 @@ TEST_CASE("atomic_file_concurrent_writers_never_partial", "[atomic]") {
     REQUIRE(exists);
     CHECK((final_bytes == a || final_bytes == b));
     CHECK(temp_entries(tmp.path, "shared.bin") == 0);
-    // The published file is world-readable, not mkstemp's 0600.
+    // The published file gets 0666 & ~umask, not mkstemp's 0600.
     struct stat st {};
     REQUIRE(stat(path.c_str(), &st) == 0);
-    CHECK((st.st_mode & 0777) == 0644);
+    CHECK((st.st_mode & 0777) == gdg::test::expected_published_mode());
     CHECK(reads.load() > 0);
+}
+
+TEST_CASE("atomic_file_umask_from_proc_status", "[atomic]") {
+    // The text of /proc/self/status around the Umask: line (octal, as the kernel prints it).
+    CHECK(gdg::umask_from_proc_status("Name:\tx\nUmask:\t0022\nState:\tR\n") == std::optional<unsigned>(022));
+    CHECK(gdg::umask_from_proc_status("Umask:\t0077\n") == std::optional<unsigned>(077));
+    CHECK(gdg::umask_from_proc_status("Umask:\t0\n") == std::optional<unsigned>(0));
+    CHECK(gdg::umask_from_proc_status("Umask:\t0777") == std::optional<unsigned>(0777));
+    // No line, an empty or non-octal value, trailing text or a value beyond 0777: undetermined.
+    for (const char* bad : {"", "Name:\tx\n", "Umask:\n", "Umask:\t\n", "Umask:\t0089\n", "Umask:\tzz\n",
+                            "Umask:\t0022 x\n", "Umask:\t01000\n", "Umask:\t-1\n", "xUmask:\t0022\n"}) {
+        INFO("status text: " << bad);
+        CHECK_FALSE(gdg::umask_from_proc_status(bad).has_value());
+    }
+    // The running process: the library and the test agree.
+    const auto live = gdg::process_umask();
+    REQUIRE(live.has_value());
+    CHECK(static_cast<mode_t>(0666 & ~*live) == gdg::test::expected_published_mode());
 }

@@ -258,7 +258,7 @@ TEST_CASE("gif_write_errors", "[gif]") {
         CHECK(no_temps(path));
         struct stat st {};
         REQUIRE(stat(path.c_str(), &st) == 0);
-        CHECK((st.st_mode & 0777) == 0644);
+        CHECK((st.st_mode & 0777) == gdg::test::expected_published_mode());
     }
     SECTION("an existing file is replaced") {
         const std::string path = (tmp.path / "orbit.gif").string();

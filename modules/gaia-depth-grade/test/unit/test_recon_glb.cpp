@@ -548,3 +548,22 @@ TEST_CASE("glb_rejects_mismatched_plane_shapes", "[recon][glb]") {
         CHECK_THROWS_WITH(build_glb(e, with_decimate(1)), Catch::Matchers::ContainsSubstring("shape mismatch"));
     }
 }
+
+TEST_CASE("glb_apex_bound", "[recon][glb]") {
+    // The apex may lie up to its own size outside the grid: -nx <= x <= 2 nx, -ny <= y <= 2 ny.
+    for (const std::pair<double, double> apex : {std::pair<double, double>{-9.0, 14.0}, {18.0, -7.0}}) {
+        CavityModel m = model_9x7();
+        m.apex_xy = apex;
+        CHECK_NOTHROW(build_glb(m, with_decimate(1)));
+    }
+    for (const std::pair<double, double> apex :
+         {std::pair<double, double>{-9.5, 3.0}, {3.0, 14.5}, {18.5, 3.0}, {3.0, -7.5}, {1e300, -1e300}}) {
+        CavityModel m = model_9x7();
+        m.apex_xy = apex;
+        CHECK_THROWS_AS(build_glb(m, with_decimate(1)), std::invalid_argument);
+    }
+    CavityModel m = model_9x7();
+    m.apex_xy = {-9.5, 3.0};
+    CHECK(thrown_message([&] { build_glb(m, with_decimate(1)); }) ==
+          "apex (-9.5, 3) is outside the model grid (9x7) by more than its size");
+}

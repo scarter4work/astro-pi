@@ -13,6 +13,8 @@
 #include "core/recon/Render2D.h"
 
 #include <cmath>
+#include <limits>
+#include <string>
 #include <stdexcept>
 #include <thread>
 
@@ -287,4 +289,30 @@ TEST_CASE("render2d_rejects_mismatched_plane_shapes", "[recon][render2d]") {
         e.emissivity = Image(bad.width, bad.height, 3);
         CHECK_THROWS_WITH(render_cavity_2d(e, ReconConfig{}), Catch::Matchers::ContainsSubstring("shape mismatch"));
     }
+}
+
+TEST_CASE("render2d_rejects_non_finite_planes", "[recon][render2d]") {
+    // A NaN would reach the shading arithmetic and the percentile sort: refused, naming the plane
+    // and the pixel (same wording as the GLB and orbit guards).
+    const Image z(8, 6), dust(8, 6), rgb(8, 6, 3);
+    const CavityModel ok(z, rgb, dust, std::nullopt, {4.0, 3.0}, CavityMeta{});
+    CHECK_NOTHROW(render_cavity_2d(ok, ReconConfig{}));
+    const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    auto message = [](const CavityModel& m) {
+        try {
+            render_cavity_2d(m, ReconConfig{});
+        } catch (const std::invalid_argument& e) {
+            return std::string(e.what());
+        }
+        return std::string();
+    };
+    CavityModel bad_z = ok;
+    bad_z.z.at(3, 2) = nan;
+    CHECK(message(bad_z) == "render_cavity_2d: the cavity model holds a non-finite z value at (3, 2)");
+    CavityModel bad_e = ok;
+    bad_e.emissivity.at(7, 5, 2) = -inf;
+    CHECK(message(bad_e) == "render_cavity_2d: the cavity model holds a non-finite emissivity value at (7, 5)");
+    CavityModel bad_d = ok;
+    bad_d.dust.at(0, 4) = inf;
+    CHECK(message(bad_d) == "render_cavity_2d: the cavity model holds a non-finite dust value at (0, 4)");
 }

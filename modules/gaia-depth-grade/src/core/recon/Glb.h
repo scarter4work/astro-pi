@@ -68,7 +68,8 @@ double cavity_radius_px(const CavityModel& model);
 
 /// The cavity model as GLB bytes (layout above). Throws std::invalid_argument for decimate < 1, a
 /// grid under 2 x 2 vertices, non-finite config or model values, a pc_per_px <= 0, or planes of the
-/// wrong channel count; std::length_error (glb_check_size) when the file would exceed 4 GiB.
+/// wrong channel count, or an apex more than its own size outside the grid (Validate.h);
+/// std::length_error (glb_check_size) when the file would exceed 4 GiB.
 /// Reentrant: the BIN chunk is filled in parallel by rows, with bit-identical output.
 std::vector<std::uint8_t> build_glb(const CavityModel& model, const ExportConfig& cfg);
 

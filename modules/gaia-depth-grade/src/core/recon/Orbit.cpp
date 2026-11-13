@@ -1,6 +1,7 @@
 #include "Orbit.h"
 
 #include "Render2D.h"
+#include "Validate.h"
 #include "core/Display.h"
 #include "core/Gif.h"
 #include "core/Parallel.h"
@@ -44,24 +45,12 @@ Orbit prepare(const CavityModel& model, const ReconConfig& cfg, const ExportConf
     require(z.channels == 1, "z must be a plane");
     require(nx >= 1 && ny >= 1, "the model is empty");
     const double ax = model.apex_xy.first, ay = model.apex_xy.second;
-    require(std::isfinite(ax) && std::isfinite(ay), "the apex must be finite");
     const Image& e = model.emissivity;
     const Image& d = model.dust;
     require(e.channels == 3 && d.channels == 1, "emissivity must be 3-channel and dust a plane");
     validate_shapes({&z, &e, &d});  // planes replaced after construction: never read past an end
-    std::vector<int> bad_x(static_cast<size_t>(ny), -1);
-    gdg::parallel_for_dynamic(ny, std::max(1, 65536 / nx), [&](int y, int) {
-        for (int x = 0; x < nx; ++x)
-            if (!(std::isfinite(z.at(x, y)) && std::isfinite(d.at(x, y)) && std::isfinite(e.at(x, y, 0)) &&
-                  std::isfinite(e.at(x, y, 1)) && std::isfinite(e.at(x, y, 2)))) {
-                bad_x[static_cast<size_t>(y)] = x;
-                return;
-            }
-    });
-    for (int y = 0; y < ny; ++y)
-        require(bad_x[static_cast<size_t>(y)] < 0, "the cavity model holds a non-finite value at (" +
-                                                       std::to_string(bad_x[static_cast<size_t>(y)]) + ", " +
-                                                       std::to_string(y) + ")");
+    require_apex_in_grid(model, "orbit");
+    require_finite_model(model, "orbit");
 
     Orbit orb;
     orb.base = render_cavity_2d(model, cfg);

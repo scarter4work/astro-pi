@@ -6,9 +6,11 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <system_error>
+#include <sys/types.h>
 #include <vector>
 
 namespace gdg::test {
@@ -45,6 +47,17 @@ inline bool no_temps(const std::string& path) {
     return true;
 }
 
+
+/// The mode write_file_atomic must publish: 0666 & ~umask, the umask read from the `Umask:` line
+/// of /proc/self/status (the library reads the same source; umask(2) itself would mutate the process).
+inline mode_t expected_published_mode() {
+    std::ifstream in("/proc/self/status");
+    std::string line;
+    while (std::getline(in, line))
+        if (line.rfind("Umask:", 0) == 0) return static_cast<mode_t>(0666 & ~std::stoul(line.substr(6), nullptr, 8));
+    FAIL("no Umask: line in /proc/self/status");
+    return 0;
+}
 /// The what() of the exception `f` throws, "" when it throws nothing.
 inline std::string thrown_message(const std::function<void()>& f) {
     try {

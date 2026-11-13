@@ -310,10 +310,43 @@ TEST_CASE("orbit_errors", "[recon][orbit]") {
     refused(nan_apex, e, OrbitConfig{});
     refused(plain_model(0, 0, {0.0, 0.0}, [](int, int) { return 0.0; }), e, OrbitConfig{});
 
-    // A far-off apex is clamped to the grid; negative amplitudes are a mirrored orbit.
+    // The apex may lie up to its own size outside the grid (-nx <= x <= 2 nx, -ny <= y <= 2 ny).
+    // At the bound the frames still render real content: frame 0 is the base, the others move.
+    for (const std::pair<double, double> apex : {std::pair<double, double>{-12.0, 18.0}, {24.0, -9.0}}) {
+        INFO("apex (" << apex.first << ", " << apex.second << ")");
+        CavityModel edge = m;
+        edge.apex_xy = apex;
+        const Image base = render_cavity_2d(edge, ReconConfig{});
+        ExportConfig deep;
+        deep.depth_ratio = 3.0;  // a shift of several pixels on this small model
+        const std::vector<Image> views = orbit_views(edge, ReconConfig{}, deep, OrbitConfig{});
+        REQUIRE(views.size() == 36);
+        CHECK(views[0].data == base.data);
+        double max0 = 0.0;
+        for (double v : views[0].data) max0 = std::max(max0, v);
+        CHECK(max0 > 0.0);
+        for (const Image& v : views) {
+            double mx = 0.0;
+            for (double d : v.data) mx = std::max(mx, d);
+            CHECK(mx > 0.0);  // no frame is black
+        }
+        CHECK(views[9].data != views[0].data);
+        CHECK(mean_abs_diff(views[9], views[0]) > 0.0);
+    }
+    // Beyond it the apex is refused (the radius D would swallow every shift), with the size named.
+    for (const std::pair<double, double> apex :
+         {std::pair<double, double>{-12.5, 4.0}, {4.0, 18.5}, {24.5, 4.0}, {4.0, -9.5}, {1e300, -1e300}}) {
+        CavityModel far = m;
+        far.apex_xy = apex;
+        refused(far, e, OrbitConfig{});
+    }
     CavityModel far = m;
-    far.apex_xy = {1e300, -1e300};
-    CHECK(orbit_views(far, ReconConfig{}, e, OrbitConfig{}).size() == 36);
+    far.apex_xy = {-12.5, 4.0};
+    CHECK(thrown_message([&] { orbit_views(far, ReconConfig{}, e, OrbitConfig{}); }) ==
+          "apex (-12.5, 4) is outside the model grid (12x9) by more than its size");
+    CHECK(thrown_message([&] { write_orbit_gif(path, far, ReconConfig{}, e, OrbitConfig{}); }) ==
+          "apex (-12.5, 4) is outside the model grid (12x9) by more than its size");
+    // Negative amplitudes are a mirrored orbit.
     CHECK(orbit_views(m, ReconConfig{}, e, with([](OrbitConfig& o) { o.amplitude_deg = -30.0; })).size() == 36);
 
     // An unwritable destination fails loudly, naming the path, with no partial file.
