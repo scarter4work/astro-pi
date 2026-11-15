@@ -5,6 +5,7 @@
 #include <exception>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace nukex {
@@ -28,14 +29,19 @@ namespace nukex {
 /// PixInsight down), the first exception thrown by any body stops further
 /// chunks from being claimed and is rethrown to the caller after all workers
 /// have joined.
+///
+/// `max_workers` (> 0) caps the thread count below hardware_concurrency, for
+/// bodies whose per-worker memory is large -- a 24 MP frame being read,
+/// debayered and star-detected holds about a gigabyte. <= 0 means no cap.
 template <typename Body>
-void parallel_for_dynamic(int count, int chunk, Body&& body) {
+void parallel_for_dynamic(int count, int chunk, int max_workers, Body&& body) {
     if (count <= 0) return;
     if (chunk < 1) chunk = 1;
 
     const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
     const int chunks = (count + chunk - 1) / chunk;
-    const int workers = std::min(hw, chunks);
+    const int cap = max_workers > 0 ? std::min(hw, max_workers) : hw;
+    const int workers = std::min(cap, chunks);
 
     std::atomic<int> next{0};
     std::atomic<bool> failed{false};
@@ -80,6 +86,12 @@ void parallel_for_dynamic(int count, int chunk, Body&& body) {
     for (auto& t : pool) t.join();
 
     if (error) std::rethrow_exception(error);
+}
+
+/// Uncapped: one worker per hardware thread.
+template <typename Body>
+void parallel_for_dynamic(int count, int chunk, Body&& body) {
+    parallel_for_dynamic(count, chunk, 0, std::forward<Body>(body));
 }
 
 } // namespace nukex

@@ -3,7 +3,7 @@
 #include "nukex/stacker/cache_sig.hpp"
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/core/progress_observer.hpp"
-#include "nukex/gpu/parallel_for.hpp"
+#include "nukex/core/parallel_for.hpp"
 
 #if NUKEX_HAS_OPENCL
 #define CL_TARGET_OPENCL_VERSION 300
@@ -422,10 +422,12 @@ void GPUExecutor::execute_select_gpu(
 
 void GPUExecutor::execute_spatial_gpu(
     const Image& stacked,
-    float* gradient_mag, float* local_background, float* local_rms) {
+    float* gradient_mag, float* local_background, float* local_rms,
+    LuminanceSpec luminance) {
     GPUCPUFallback::spatial_context(stacked.data(), stacked.width(),
         stacked.height(), stacked.n_channels(),
-        gradient_mag, local_background, local_rms);
+        gradient_mag, local_background, local_rms,
+        luminance.resolved(stacked.n_channels()));
 }
 
 #endif
@@ -451,6 +453,9 @@ void GPUExecutor::execute_phase_b(
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
 
     int total_voxels = cube.total_pixels();
+    // Checked between every step of a batch and inside the fit loop, so a
+    // cancel lands within one step rather than at the end of the batch.
+    CancelPoll cancel(obs);
     const bool want_halves = half_fn && half_even && half_odd
                           && !half_even->empty() && !half_odd->empty();
     int n_channels = cube.at(0, 0).n_channels;
@@ -491,6 +496,7 @@ void GPUExecutor::execute_phase_b(
 
         // Step 1: Extract voxel data into SoA buffers
         buf.extract_from_cube(cube, slot_refs, processed, count, n_channels);
+        if (cancel.check()) break;
 
         // Steps 2-3: Weight computation + robust stats (GPU or CPU)
         obs.advance(0, "  kernel 1: weight classification" + backend_tag);
@@ -505,6 +511,7 @@ void GPUExecutor::execute_phase_b(
 
         // Step 4: Writeback classification + robust stats
         buf.writeback_classification(cube, processed, count, n_channels);
+        if (cancel.check()) break;
 
         // Step 5: CPU fitting (Ceres — cannot run on GPU).
         //
@@ -529,6 +536,7 @@ void GPUExecutor::execute_phase_b(
         // single-batch fit (otherwise silent between kernel 2 and kernel 3).
         FitHeartbeat hb(count, 2000);
         parallel_for_dynamic(count, 256, [&](int vi, int worker) {
+            if (cancel.poll(worker)) return;
             int voxel_idx = processed + vi;
             int px = voxel_idx % w;
             int py = voxel_idx / w;
@@ -582,6 +590,8 @@ void GPUExecutor::execute_phase_b(
             hb.tick(worker, obs);
         });
 
+        if (cancel.check()) break;
+
         // Step 6: Extract fitted distributions for select_pixels
         buf.extract_distributions(cube, processed, count, n_channels);
 
@@ -602,7 +612,7 @@ void GPUExecutor::execute_phase_b(
         obs.advance(1);  // batch complete, advance progress bar
 
         // Cancellation check
-        if (obs.is_cancelled()) {
+        if (cancel.check()) {
             obs.message("Cancelled during batch " + std::to_string(batch_idx)
                         + "/" + std::to_string(total_batches));
             break;
@@ -622,22 +632,13 @@ void GPUExecutor::execute_spatial_context(
     ProgressObserver* progress,
     LuminanceSpec luminance) {
 
-    ProgressObserver& obs = progress ? *progress : null_progress_observer();
+    (void)progress;
 
     int w = stacked.width();
     int h = stacked.height();
-    int nc = stacked.n_channels();
-    const LuminanceSpec lum = luminance.resolved(nc);
 
-    std::vector<float> grad(w * h), bg(w * h), rms(w * h);
-
-    bool use_gpu = context_.is_gpu_available() && kernels_.is_compiled();
-    if (use_gpu) {
-        execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum);
-    } else {
-        GPUCPUFallback::spatial_context(stacked.data(), w, h, nc,
-                                         grad.data(), bg.data(), rms.data(), lum);
-    }
+    std::vector<float> grad, bg, rms;
+    compute_spatial_context(stacked, luminance, grad, bg, rms);
 
     // Write back to voxels
     for (int y = 0; y < h; y++) {
@@ -648,6 +649,29 @@ void GPUExecutor::execute_spatial_context(
             voxel.local_background = bg[pi];
             voxel.local_rms = rms[pi];
         }
+    }
+}
+
+void GPUExecutor::compute_spatial_context(const Image& stacked, LuminanceSpec luminance,
+                                          std::vector<float>& grad,
+                                          std::vector<float>& bg,
+                                          std::vector<float>& rms,
+                                          CancelPoll* cancel) {
+    const int w = stacked.width();
+    const int h = stacked.height();
+    const int nc = stacked.n_channels();
+    const LuminanceSpec lum = luminance.resolved(nc);
+    const std::size_t npix = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    grad.assign(npix, 0.0f);
+    bg.assign(npix, 0.0f);
+    rms.assign(npix, 0.0f);
+
+    bool use_gpu = context_.is_gpu_available() && kernels_.is_compiled();
+    if (use_gpu) {
+        execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum);
+    } else {
+        GPUCPUFallback::spatial_context(stacked.data(), w, h, nc,
+                                         grad.data(), bg.data(), rms.data(), lum, cancel);
     }
 }
 

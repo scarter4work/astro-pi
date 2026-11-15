@@ -37,6 +37,26 @@ endfunction()
 # Core library tests — each added when implemented (Tasks 4-10)
 nukex_add_test(test_image         unit/io/test_image.cpp           nukex4_io)
 nukex_add_test(test_fits_reader   unit/io/test_fits_reader.cpp     nukex4_io cfitsio)
+nukex_add_test(test_fits_concurrent unit/io/test_fits_concurrent.cpp nukex4_io cfitsio)
+# The same concurrency test against src/lib/io built WITHOUT this tree's root
+# definitions (as an embedding application builds it): the root's global
+# _REENTRANT once made CFITSIO thread-safe here by accident while the bridge
+# got a non-reentrant CFITSIO. Vendored CFITSIO only (it reuses its source).
+if(NOT NUKEX_USE_SYSTEM_CFITSIO)
+    FetchContent_GetProperties(cfitsio)
+    FetchContent_GetProperties(nlohmann_json)
+    add_test(NAME test_fits_concurrent_standalone
+             COMMAND ${CMAKE_COMMAND}
+                 -DNUKEX_ROOT=${CMAKE_SOURCE_DIR}
+                 -DBIN=${CMAKE_BINARY_DIR}/standalone_io
+                 -DC_COMPILER=${CMAKE_C_COMPILER}
+                 -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+                 -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+                 -DCFITSIO_SRC=${cfitsio_SOURCE_DIR}
+                 -DJSON_SRC=${nlohmann_json_SOURCE_DIR}
+                 -P ${CMAKE_SOURCE_DIR}/test/standalone_io/run.cmake)
+    set_tests_properties(test_fits_concurrent_standalone PROPERTIES TIMEOUT 600)
+endif()
 nukex_add_test(test_debayer       unit/io/test_debayer.cpp         nukex4_io)
 nukex_add_test(test_filter        unit/io/test_filter.cpp          nukex4_io)
 nukex_add_test(test_filter_classifier_io unit/io/test_filter_classifier.cpp nukex4_io nukex4_core)
@@ -57,6 +77,7 @@ nukex_add_test(test_fits_time      unit/core/test_fits_time.cpp      nukex4_core
 nukex_add_test(test_flat          unit/io/test_flat_calibration.cpp nukex4_io)
 nukex_add_test(test_star_detector unit/alignment/test_star_detector.cpp nukex4_alignment)
 nukex_add_test(test_homography     unit/alignment/test_homography.cpp     nukex4_alignment)
+nukex_add_test(test_alignment_parallel unit/alignment/test_alignment_parallel.cpp nukex4_alignment Eigen3::Eigen)
 nukex_add_test(test_frame_aligner unit/alignment/test_frame_aligner.cpp nukex4_alignment)
 nukex_add_test(test_alignment_diag unit/alignment/test_alignment_diag.cpp nukex4_alignment)
 nukex_add_test(test_reference_selector unit/alignment/test_reference_selector.cpp nukex4_alignment)
@@ -85,6 +106,8 @@ nukex_add_test(test_color_composer unit/compose/test_color_composer.cpp nukex4_c
 nukex_add_test(test_compose_image  unit/compose/test_compose_image.cpp  nukex4_compose nukex4_core nukex4_io)
 nukex_add_test(test_frame_cache unit/stacker/test_frame_cache.cpp nukex4_stacker)
 nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4_stacker)
+nukex_add_test(test_phase_a_accumulate unit/stacker/test_phase_a_accumulate.cpp nukex4_stacker nukex4_io nukex4_core)
+nukex_add_test(test_post_process unit/stacker/test_post_process.cpp nukex4_stacker nukex4_io nukex4_core)
 nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp nukex4_stacker nukex4_core nukex4_io)
 
@@ -106,6 +129,7 @@ nukex_add_test(test_png_writer util/test_png_writer.cpp nukex4_io test_util)
 
 nukex_add_test(test_stretch_pipeline unit/stretch/test_stretch_pipeline.cpp nukex4_stretch)
 nukex_add_test(test_mtf unit/stretch/test_mtf.cpp nukex4_stretch test_util)
+nukex_add_test(test_mtf_batch unit/stretch/test_mtf_batch.cpp nukex4_stretch)
 nukex_add_test(test_arcsinh unit/stretch/test_arcsinh.cpp nukex4_stretch test_util)
 nukex_add_test(test_log unit/stretch/test_log.cpp nukex4_stretch test_util)
 nukex_add_test(test_rnc unit/stretch/test_rnc.cpp nukex4_stretch test_util)
@@ -116,6 +140,7 @@ nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
 nukex_add_test(test_calibrate unit/stretch/test_calibrate.cpp nukex4_stretch test_util)
 nukex_add_test(test_param_bounds unit/stretch/test_param_bounds.cpp nukex4_stretch)
 nukex_add_test(test_image_stats unit/stretch/test_image_stats.cpp nukex4_stretch test_util)
+nukex_add_test(test_image_stats_exact unit/stretch/test_image_stats_exact.cpp nukex4_stretch nukex4_io)
 nukex_add_test(test_param_model unit/stretch/test_param_model.cpp nukex4_stretch test_util)
 nukex_add_test(test_layer_loader unit/stretch/test_layer_loader.cpp nukex4_stretch test_util)
 

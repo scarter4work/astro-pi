@@ -21,12 +21,15 @@ float MTFStretch::apply_scalar(float x) const {
 }
 
 void MTFStretch::apply(Image& img) const {
-    auto fn = [this](float x) { return apply_scalar(x); };
-
+    // Both paths go through the batched apply(in, out, n): bit-identical to
+    // apply_scalar() per sample, but vectorisable (test_mtf_batch).
     if (luminance_only) {
-        apply_luminance_only(img, fn);
+        apply_luminance_only_span(img, [this](const float* in, float* out, std::size_t n) {
+            apply(in, out, n);
+        });
     } else {
-        apply_per_channel(img, fn);
+        // Channels are contiguous ([ch][y][x]), so one span covers them all.
+        apply(img.data(), img.data(), img.data_size());
     }
     clamp_image(img);
 }

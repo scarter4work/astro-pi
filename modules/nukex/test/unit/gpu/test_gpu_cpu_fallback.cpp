@@ -4,6 +4,7 @@
 #include "nukex/core/frame_stats.hpp"
 #include "nukex/classify/weight_computer.hpp"
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <random>
 #include <iostream>
@@ -678,4 +679,157 @@ TEST_CASE("ShadowBuffers: coverage bits use the batch's own stride, not the "
                 if (buf.sample_valid(ch, fi, vi, alloc_B) != want(ch, fi, vi))
                     ++disagreements;
     REQUIRE(disagreements > 0);
+}
+
+// ── The CPU fallback kernels run voxel- and row-parallel ─────────────────
+//
+// They are parallel_for_dynamic loops now (1024-voxel and 4-row chunks).
+// These cases use batches and images large enough to span many chunks --
+// the batch-size case above is smaller than one chunk -- and compare against
+// evaluations that cannot be parallel: one voxel per batch, and a brute-force
+// recomputation of every pixel.
+
+TEST_CASE("CPU Fallback: kernels 1-3 over many chunks equal one-voxel batches exactly",
+          "[gpu][fallback][parallel]") {
+    const int B = 5000, C = 3, N = 9;   // 5 chunks of 1024
+    auto fs = make_frame_stats(N);
+    WeightConfig wc;
+    std::mt19937 rng(424242u);
+    ShadowBuffers full;
+    full.allocate(B, C, N);
+    fill_synthetic(full, B, C, N, rng);
+    fill_dist_inputs(full, B, C);
+    // Vary the per-channel counts so some voxels take the early-outs.
+    for (int vi = 0; vi < B; vi += 17) full.n_frames[1 * B + vi] = 1;
+    for (int vi = 0; vi < B; vi += 101)
+        for (int ch = 0; ch < C; ch++) full.n_frames[ch * B + vi] = 0;
+
+    GPUCPUFallback::classify_weights(full, fs.data(), wc, B, C, N);
+    GPUCPUFallback::robust_stats(full, B, C, N);
+    GPUCPUFallback::select_pixels(full, fs.data(), B, C, N);
+
+    long mismatches = 0;
+    for (int si = 0; si < B; si++) {
+        ShadowBuffers one;
+        one.allocate(1, C, N);
+        copy_voxel_inputs(full, B, si, one, 1, 0, C, N);
+        GPUCPUFallback::classify_weights(one, fs.data(), wc, 1, C, N);
+        GPUCPUFallback::robust_stats(one, 1, C, N);
+        GPUCPUFallback::select_pixels(one, fs.data(), 1, C, N);
+        auto ne = [&](float a, float b) { if (std::memcmp(&a, &b, sizeof a) != 0) ++mismatches; };
+        if (one.cloud_frame_count[0] != full.cloud_frame_count[si]) ++mismatches;
+        ne(one.worst_sigma_score[0], full.worst_sigma_score[si]);
+        ne(one.best_sigma_score[0],  full.best_sigma_score[si]);
+        ne(one.mean_weight_out[0],   full.mean_weight_out[si]);
+        ne(one.total_exposure_out[0], full.total_exposure_out[si]);
+        for (int ch = 0; ch < C; ch++) {
+            ne(one.mad_out[ch], full.mad_out[ch * B + si]);
+            ne(one.biweight_midvar_out[ch], full.biweight_midvar_out[ch * B + si]);
+            ne(one.iqr_out[ch], full.iqr_out[ch * B + si]);
+            ne(one.output_value[ch], full.output_value[ch * B + si]);
+            ne(one.noise_sigma[ch], full.noise_sigma[ch * B + si]);
+            ne(one.snr_out[ch], full.snr_out[ch * B + si]);
+            for (int fi = 0; fi < N; fi++)
+                ne(one.pixel_weights[ch * N + fi], full.pixel_weights[ch * N * B + fi * B + si]);
+        }
+    }
+    REQUIRE(mismatches == 0);
+    // A voxel with no frames in any channel is skipped outright: its
+    // summaries keep the zeros allocate() gave them.
+    for (int vi = 0; vi < B; vi += 101) {
+        INFO("empty voxel " << vi);
+        REQUIRE(full.mean_weight_out[vi] == 0.0f);
+        REQUIRE(full.total_exposure_out[vi] == 0.0f);
+        REQUIRE(full.cloud_frame_count[vi] == 0);
+        REQUIRE(full.worst_sigma_score[vi] == 0.0f);
+    }
+}
+
+TEST_CASE("CPU Fallback: spatial_context over many row chunks equals a brute-force "
+          "evaluation of every pixel", "[gpu][fallback][parallel]") {
+    const int W = 53, H = 61, C = 3;   // 16 row chunks; odd sizes
+    std::mt19937 rng(9001);
+    std::normal_distribution<float> gauss(0.0f, 0.02f);
+    std::vector<float> img(static_cast<std::size_t>(C) * W * H);
+    for (int ch = 0; ch < C; ch++)
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                float v = 0.2f + 0.05f * ch + 0.003f * x - 0.002f * y + gauss(rng);
+                if ((x - 20) * (x - 20) + (y - 30) * (y - 30) < 16) v += 0.5f;   // a star
+                img[(static_cast<std::size_t>(ch) * H + y) * W + x] = v;
+            }
+    std::vector<float> grad(W * H), bg(W * H), rms(W * H);
+    const LuminanceSpec lum = LuminanceSpec{}.resolved(C);
+    GPUCPUFallback::spatial_context(img.data(), W, H, C, grad.data(), bg.data(), rms.data(), lum);
+
+    auto at = [&](int ch, int y, int x) { return img[(static_cast<std::size_t>(ch) * H + y) * W + x]; };
+    auto sorted_median = [](std::vector<float> v) {
+        std::sort(v.begin(), v.end());
+        const int n = static_cast<int>(v.size());
+        return (n % 2 == 1) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+    };
+    const int R = 7, LAG = 8;
+    long mismatches = 0;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            // Sobel, max across channels.
+            float g_exp = 0.0f;
+            const int xm = std::max(0, x - 1), xp = std::min(W - 1, x + 1);
+            const int ym = std::max(0, y - 1), yp = std::min(H - 1, y + 1);
+            for (int ch = 0; ch < C; ch++) {
+                float gx = -at(ch, ym, xm) + at(ch, ym, xp) - 2.0f * at(ch, y, xm)
+                         + 2.0f * at(ch, y, xp) - at(ch, yp, xm) + at(ch, yp, xp);
+                float gy = -at(ch, ym, xm) - 2.0f * at(ch, ym, x) - at(ch, ym, xp)
+                         + at(ch, yp, xm) + 2.0f * at(ch, yp, x) + at(ch, yp, xp);
+                g_exp = std::max(g_exp, std::sqrt(gx * gx + gy * gy));
+            }
+            // Window of luminance, row-major.
+            const int y0 = std::max(0, y - R), y1 = std::min(H - 1, y + R);
+            const int x0 = std::max(0, x - R), x1 = std::min(W - 1, x + R);
+            const int ww = x1 - x0 + 1, wh = y1 - y0 + 1;
+            std::vector<float> win;
+            for (int wy = y0; wy <= y1; wy++)
+                for (int wx = x0; wx <= x1; wx++)
+                    win.push_back(lum.mode == LuminanceSpec::REC709
+                        ? 0.2126f * at(lum.c0, wy, wx) + 0.7152f * at(lum.c1, wy, wx)
+                          + 0.0722f * at(lum.c2, wy, wx)
+                        : at(lum.c0, wy, wx));
+            // Biweight location seeded at the median, scale from the MAD.
+            float loc = sorted_median(win);
+            std::vector<float> ad;
+            for (float v : win) ad.push_back(std::fabs(v - loc));
+            const float mad = sorted_median(ad);
+            if (mad > 1e-30f) {
+                const float scale = mad * 1.4826f;
+                for (int it = 0; it < 10; it++) {
+                    double num = 0.0, den = 0.0;
+                    for (float v : win) {
+                        const float u = (v - loc) / (6.0f * scale);
+                        if (std::fabs(u) < 1.0f) {
+                            const float u2 = u * u, w = (1.0f - u2) * (1.0f - u2);
+                            num += w * v; den += w;
+                        }
+                    }
+                    if (den < 1e-30) break;
+                    const float nl = static_cast<float>(num / den);
+                    if (std::fabs(nl - loc) < 1e-7f * scale) { loc = nl; break; }
+                    loc = nl;
+                }
+            }
+            // Lag-8 differences, each direction centred on its own median.
+            std::vector<float> dh, dv, dev;
+            for (int ry = 0; ry < wh; ry++)
+                for (int rx = 0; rx + LAG < ww; rx++) dh.push_back(win[ry * ww + rx + LAG] - win[ry * ww + rx]);
+            for (int rx = 0; rx < ww; rx++)
+                for (int ry = 0; ry + LAG < wh; ry++) dv.push_back(win[(ry + LAG) * ww + rx] - win[ry * ww + rx]);
+            if (!dh.empty()) { const float m = sorted_median(dh); for (float d : dh) dev.push_back(std::fabs(d - m)); }
+            if (!dv.empty()) { const float m = sorted_median(dv); for (float d : dv) dev.push_back(std::fabs(d - m)); }
+            const float r_exp = (dev.size() > 1) ? sorted_median(dev) * 1.4826f * 0.70710678f : 0.0f;
+
+            const int pi = y * W + x;
+            if (grad[pi] != g_exp) ++mismatches;
+            if (bg[pi] != loc) ++mismatches;
+            if (rms[pi] != r_exp) ++mismatches;
+        }
+    REQUIRE(mismatches == 0);
 }

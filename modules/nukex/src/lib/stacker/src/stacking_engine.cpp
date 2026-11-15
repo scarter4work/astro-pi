@@ -3,6 +3,11 @@
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/stacker/cache_sig.hpp"
 #include "nukex/core/cube.hpp"
+#include "nukex/core/cancel_poll.hpp"
+#include "nukex/core/parallel_for.hpp"
+#include "nukex/core/running_accumulators.hpp"
+#include "nukex/stacker/phase_a_accumulate.hpp"
+#include "nukex/stacker/post_process.hpp"
 #include "nukex/core/coverage_trim.hpp"
 #include "nukex/core/channel_config.hpp"
 #include "nukex/core/frame_stats.hpp"
@@ -41,12 +46,16 @@
 #include "nukex/gpu/gpu_context.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
 #include <map>
 #include <numeric>
+#include <future>
 #include <set>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -147,20 +156,6 @@ float compute_median_fwhm(const StarCatalog& catalog) {
     return median_inplace(fwhms.data(), static_cast<int>(fwhms.size()));
 }
 
-/// Compute dominant shape across channels for a voxel.
-void compute_dominant_shape(SubcubeVoxel& voxel, int n_ch) {
-    int counts[7] = {};
-    for (int ch = 0; ch < n_ch; ch++) {
-        int s = static_cast<int>(voxel.channel(ch).distribution.shape);
-        if (s >= 0 && s < 7) counts[s]++;
-    }
-    int best = 0;
-    for (int i = 1; i < 7; i++) {
-        if (counts[i] > counts[best]) best = i;
-    }
-    voxel.dominant_shape = static_cast<DistributionShape>(best);
-}
-
 } // anonymous namespace
 
 StackingEngine::ExecuteResult StackingEngine::execute(
@@ -169,6 +164,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     ProgressObserver* progress)
 {
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
+    CancelPoll cancel(obs);   // checked between and inside every long step
 
     // Empty-input shortcut runs BEFORE the QE-error surface so callers
     // probing the engine with no work (e.g. UI initial state) don't
@@ -301,8 +297,12 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     //    half weight, so a bad reference corrupts the result rather than just
     //    shrinking it.
     //
-    // Cost is one extra read plus one star detection per frame, a few percent
-    // of Phase A on these corpora.
+    // The pass runs frames in parallel, and what it computes is not thrown
+    // away: each frame's star catalogue goes to the aligner, which would
+    // otherwise detect the same stars on the same image again in Phase A
+    // (about a second per 24 MP frame), and as many debayered,
+    // flat-corrected frames as a memory budget allows are handed to Phase A
+    // in place of a second read and debayer.
     int ref_index = 0;
     std::vector<FrameQuality> frame_quality(n_frames);
 
@@ -315,88 +315,205 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         frame_sky(n_frames);
     bool saw_bayer_frame = false;
     bool saw_mono_frame  = false;
+
+    // What the pass learned about one frame. Written by exactly one worker,
+    // read after the pass joins.
+    struct MeasuredFrame {
+        enum class Outcome { NOT_RUN, READ_FAILED, UNKNOWN_ON_BAYER, BLOWN_OUT, MEASURED };
+        Outcome     outcome = Outcome::NOT_RUN;
+        Filter      filter;
+        bool        is_bayer = false;
+        int         width = 0, height = 0;    ///< post-debayer geometry
+        bool        has_stars = false;
+        StarCatalog stars;                    ///< detect(image, star_config)
+        Image       kept;                     ///< debayered + flat-corrected, or empty
+        FrameMetadata meta;                   ///< valid when `kept` is not empty
+        bool        prefetched = false;       ///< `kept` was loaded ahead by Phase A, not kept by the pass
+    };
+    std::vector<MeasuredFrame> measured(n_frames);
     {
-        obs.begin_phase("Measuring frames", n_frames);
-        for (int f = 0; f < n_frames; f++) {
-            auto rr = FITSReader::read(light_paths[f]);
-            if (!rr.success) {
-                frame_quality[f].usable = false;
-                obs.advance(1, "  frame " + std::to_string(f + 1) + ": read failed");
-                continue;
-            }
+        // Worker count and the kept-frame budget, from the memory free now.
+        // One worker holds the raw plane, the debayered planes and the star
+        // detector's working set. Measured at 24 MP (M8, 7 workers): 0.32 GB
+        // of transient RSS per worker beside the kept frames, 3.3 float planes
+        // of the raw size; six planes are budgeted, for margin.
+        const std::size_t plane = static_cast<std::size_t>(raw_width)
+                                * static_cast<std::size_t>(raw_height) * sizeof(float);
+        const std::size_t avail = GPUContext::host_available_bytes();
+        const std::size_t per_worker = 6 * plane;
+        int max_workers = 0;   // uncapped when memory cannot be read
+        std::size_t keep_budget = 0;
+        if (avail > 0) {
+            max_workers = static_cast<int>(std::max<std::size_t>(1, (avail / 4) / per_worker));
+            keep_budget = static_cast<std::size_t>(
+                std::max(0.0, config_.keep_calibrated_fraction) * static_cast<double>(avail));
+        }
+        std::atomic<std::size_t> kept_bytes{0};
+        std::mutex classify_mutex;   // FilterClassifier keeps last_warning() state
 
-            // Mirror the main loop's per-frame accept/reject exactly, so the
-            // slot union here is the one Phase A will actually route into.
-            Filter ff = filter_classifier_->classify(rr.metadata);
-            const BayerPattern f_bayer = parse_bayer_pattern(rr.metadata.bayer_pattern);
-            bool f_is_bayer = f_bayer != BayerPattern::NONE;
-            if (ff.cls == FilterClass::UNKNOWN && f_is_bayer) {
-                frame_quality[f].usable = false;
-                if (result.unknown_filter.empty()) result.unknown_filter = ff.name;
-                obs.advance(1, "  frame " + std::to_string(f + 1)
-                               + ": unknown FILTER on Bayer -- will be skipped");
-                continue;
-            }
-            ch_config = ChannelConfig::merge(ch_config, ChannelConfig::from_filter(ff));
-            (f_is_bayer ? saw_bayer_frame : saw_mono_frame) = true;
+        std::vector<std::atomic<bool>> done(static_cast<std::size_t>(n_frames));
+        for (auto& d : done) d.store(false);
+        int next_report = 0;   // touched only by the calling thread (worker 0)
 
-            Image img = std::move(rr.image);
-            if (f_bayer != BayerPattern::NONE) {
-                img = DebayerEngine::debayer(img, f_bayer);
-            }
-            if (!master_flat.empty()) {
-                FlatCalibration::apply(img, master_flat);
-            }
-
-            float sat = StarDetector::saturation_fraction(
-                img, config_.aligner_config.star_config.saturation_level);
-            if (sat >= config_.aligner_config.star_config.saturation_reject_fraction) {
-                frame_quality[f].usable = false;
-                obs.advance(1, "  frame " + std::to_string(f + 1) + ": blown out");
-                continue;
-            }
-
-            // Sky, measured on exactly the image Phase A will accumulate:
-            // debayered and flat-corrected, before any warp mixes in the
-            // zeros the alignment leaves outside the source.
-            {
-                const ChannelConfig fcfg = ChannelConfig::from_filter(ff);
-                // from_filter may declare more slots than the frame has
-                // planes -- BROADBAND_OSC names R,G,B and a synthesized L for
-                // a 3-plane image. Only the planes that exist are measured;
-                // the synthesized slot inherits its inputs' correction.
-                const int nmeas = std::min<int>(img.n_channels(), fcfg.n_channels);
-                for (int c = 0; c < nmeas; ++c) {
-                    if (fcfg.channel_names[c].empty()) continue;
-                    frame_sky[f].emplace_back(
-                        fcfg.channel_names[c],
-                        measure_channel_sky(img.channel_data(c),
-                                            img.width(), img.height()));
+        // Progress lines in frame order, from the calling thread only: the
+        // observer is PixInsight's console and is not ours to call from
+        // workers. Reports every finished frame up to the first unfinished.
+        auto report = [&]() {
+            while (next_report < n_frames
+                   && done[static_cast<std::size_t>(next_report)].load(std::memory_order_acquire)) {
+                const int f = next_report++;
+                const MeasuredFrame& m = measured[static_cast<std::size_t>(f)];
+                using O = MeasuredFrame::Outcome;
+                switch (m.outcome) {
+                    case O::READ_FAILED:
+                        obs.advance(1, "  frame " + std::to_string(f + 1) + ": read failed"); break;
+                    case O::UNKNOWN_ON_BAYER:
+                        obs.advance(1, "  frame " + std::to_string(f + 1)
+                                       + ": unknown FILTER on Bayer -- will be skipped"); break;
+                    case O::BLOWN_OUT:
+                        obs.advance(1, "  frame " + std::to_string(f + 1) + ": blown out"); break;
+                    case O::MEASURED: {
+                        char detail[96];
+                        std::snprintf(detail, sizeof(detail),
+                                      "  frame %d: %d stars, FWHM %.2f px",
+                                      f + 1, frame_quality[f].star_count,
+                                      frame_quality[f].median_fwhm);
+                        obs.advance(1, detail);
+                        break;
+                    }
+                    case O::NOT_RUN: break;
                 }
             }
+        };
 
-            StarCatalog cat =
-                StarDetector::detect(img, config_.aligner_config.star_config);
-            frame_quality[f].star_count  = static_cast<int>(cat.stars.size());
-            frame_quality[f].median_fwhm = compute_median_fwhm(cat);
+        obs.begin_phase("Measuring frames", n_frames);
+        parallel_for_dynamic(n_frames, 1, max_workers, [&](int f, int worker) {
+            MeasuredFrame& m = measured[static_cast<std::size_t>(f)];
+            // Cancel checkpoints between the steps: a frame interrupted
+            // part-way is left NOT_RUN, and every step is well under a second
+            // even at 24 MP.
+            [&] {
+                if (cancel.poll(worker)) return;
+                auto rr = FITSReader::read(light_paths[f]);
+                if (cancel.poll(worker)) return;
+                if (!rr.success) {
+                    m.outcome = MeasuredFrame::Outcome::READ_FAILED;
+                    frame_quality[f].usable = false;
+                } else {
+                    // Mirror the main loop's per-frame accept/reject exactly,
+                    // so the slot union is the one Phase A will route into.
+                    {
+                        std::lock_guard<std::mutex> lk(classify_mutex);
+                        m.filter = filter_classifier_->classify(rr.metadata);
+                    }
+                    const BayerPattern f_bayer = parse_bayer_pattern(rr.metadata.bayer_pattern);
+                    m.is_bayer = f_bayer != BayerPattern::NONE;
+                    if (m.filter.cls == FilterClass::UNKNOWN && m.is_bayer) {
+                        m.outcome = MeasuredFrame::Outcome::UNKNOWN_ON_BAYER;
+                        frame_quality[f].usable = false;
+                    } else {
+                        Image img = std::move(rr.image);
+                        if (f_bayer != BayerPattern::NONE)
+                            img = DebayerEngine::debayer(img, f_bayer);
+                        if (!master_flat.empty())
+                            FlatCalibration::apply(img, master_flat);
+                        if (cancel.poll(worker)) return;
+                        m.width  = img.width();
+                        m.height = img.height();
 
-            char detail[96];
-            std::snprintf(detail, sizeof(detail),
-                          "  frame %d: %d stars, FWHM %.2f px",
-                          f + 1, frame_quality[f].star_count,
-                          frame_quality[f].median_fwhm);
-            obs.advance(1, detail);
+                        const float sat = StarDetector::saturation_fraction(
+                            img, config_.aligner_config.star_config.saturation_level);
+                        if (sat >= config_.aligner_config.star_config.saturation_reject_fraction) {
+                            m.outcome = MeasuredFrame::Outcome::BLOWN_OUT;
+                            frame_quality[f].usable = false;
+                        } else {
+                            // Sky, measured on exactly the image Phase A will
+                            // accumulate: debayered and flat-corrected, before
+                            // any warp mixes in the zeros the alignment leaves
+                            // outside the source.
+                            //
+                            // from_filter may declare more slots than the
+                            // frame has planes -- BROADBAND_OSC names R,G,B
+                            // and a synthesized L for a 3-plane image. Only
+                            // the planes that exist are measured; the
+                            // synthesized slot inherits its inputs' correction.
+                            const ChannelConfig fcfg = ChannelConfig::from_filter(m.filter);
+                            const int nmeas = std::min<int>(img.n_channels(), fcfg.n_channels);
+                            for (int c = 0; c < nmeas; ++c) {
+                                if (fcfg.channel_names[c].empty()) continue;
+                                frame_sky[f].emplace_back(
+                                    fcfg.channel_names[c],
+                                    measure_channel_sky(img.channel_data(c),
+                                                        img.width(), img.height()));
+                            }
+                            if (cancel.poll(worker)) return;
 
-            if (obs.is_cancelled()) {
-                obs.message("Cancelled while measuring frames.");
-                obs.end_phase();
-                return result;
+                            m.stars = StarDetector::detect(img, config_.aligner_config.star_config);
+                            m.has_stars = config_.reuse_measured_stars;
+                            frame_quality[f].star_count  = static_cast<int>(m.stars.stars.size());
+                            frame_quality[f].median_fwhm = compute_median_fwhm(m.stars);
+                            if (!m.has_stars) m.stars = StarCatalog{};
+                            m.outcome = MeasuredFrame::Outcome::MEASURED;
+
+                            // Keep the calibrated frame for Phase A while the
+                            // budget lasts. Claimed with a CAS so concurrent
+                            // workers can never overrun it.
+                            const std::size_t bytes = static_cast<std::size_t>(img.width())
+                                * img.height() * img.n_channels() * sizeof(float);
+                            std::size_t cur = kept_bytes.load(std::memory_order_relaxed);
+                            while (cur + bytes <= keep_budget &&
+                                   !kept_bytes.compare_exchange_weak(cur, cur + bytes,
+                                                                     std::memory_order_relaxed)) {}
+                            if (cur + bytes <= keep_budget) {
+                                m.kept = std::move(img);
+                                m.meta = std::move(rr.metadata);
+                            }
+                        }
+                    }
+                }
+            }();
+            done[static_cast<std::size_t>(f)].store(true, std::memory_order_release);
+            if (worker == 0) {
+                report();
+                cancel.poll(worker);
             }
+        });
+        report();
+        if (cancel.check()) {
+            obs.message("Cancelled while measuring frames.");
+            obs.end_phase();
+            return result;
         }
         obs.end_phase();
 
+        // The slot union and the batch's Bayer/mono mix, in frame order, as
+        // the serial pass built them.
+        for (int f = 0; f < n_frames; f++) {
+            const MeasuredFrame& m = measured[static_cast<std::size_t>(f)];
+            using O = MeasuredFrame::Outcome;
+            if (m.outcome == O::UNKNOWN_ON_BAYER) {
+                if (result.unknown_filter.empty()) result.unknown_filter = m.filter.name;
+                continue;
+            }
+            if (m.outcome != O::BLOWN_OUT && m.outcome != O::MEASURED) continue;
+            ch_config = ChannelConfig::merge(ch_config, ChannelConfig::from_filter(m.filter));
+            (m.is_bayer ? saw_bayer_frame : saw_mono_frame) = true;
+        }
+
         int chosen = select_reference_frame(frame_quality);
         ref_index = (chosen >= 0) ? chosen : 0;
+
+        int n_kept = 0;
+        for (const auto& m : measured) if (!m.kept.empty()) ++n_kept;
+        const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+        const int workers = std::min({hw, max_workers > 0 ? max_workers : hw, n_frames});
+        char msg[200];
+        std::snprintf(msg, sizeof(msg),
+                      "Measuring pass: %d worker%s; %d of %d calibrated frames kept "
+                      "for Phase A (%.2f GB), the rest are read again",
+                      workers, workers == 1 ? "" : "s", n_kept, n_frames,
+                      static_cast<double>(kept_bytes.load()) / 1e9);
+        obs.message(msg);
     }
 
     // ─── Solve per-frame normalisation, one group per cube slot ──────────
@@ -513,7 +630,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             static_cast<double>(need) > config_.file_backed_cube_fraction * static_cast<double>(avail);
         if (config_.file_backed_cube && crowds) {
             try {
-                cube = Cube(out_width, out_height, ch_config, config_.cache_dir);
+                // Constructed later, in the pass that stores Phase A's RAM
+                // accumulators (or below, if those cannot be allocated).
+                cube = Cube(out_width, out_height, ch_config, config_.cache_dir,
+                            Cube::Construction::DEFERRED);
                 char why[160];
                 std::snprintf(why, sizeof(why),
                               "file-backed in %s (%.0f%% of the %.1f GB available)",
@@ -600,9 +720,21 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // Initialize aligner, seeded with the reference the measurement pass chose.
     FrameAligner aligner(config_.aligner_config);
     if (n_frames > 1) {
-        Image ref_image;
-        if (load_calibrated(ref_index, ref_image)) {
-            aligner.set_reference(ref_image, ref_index);
+        // The measuring pass detected the reference's stars on this very
+        // calibrated image; only when it could not is the frame loaded again.
+        const MeasuredFrame& rm = measured[static_cast<std::size_t>(ref_index)];
+        bool have_ref = false;
+        if (rm.has_stars) {
+            aligner.set_reference(rm.stars, rm.width, rm.height, ref_index);
+            have_ref = true;
+        } else {
+            Image ref_image;
+            if (load_calibrated(ref_index, ref_image)) {
+                aligner.set_reference(ref_image, ref_index);
+                have_ref = true;
+            }
+        }
+        if (have_ref) {
             std::string ref_name = light_paths[ref_index];
             auto slash = ref_name.rfind('/');
             if (slash != std::string::npos) ref_name = ref_name.substr(slash + 1);
@@ -628,51 +760,161 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 + (flat_paths.empty() ? "" : ", " + std::to_string(flat_paths.size()) + " flat"));
     obs.begin_phase("Phase A: Loading frames", n_frames);
 
-    // Helper: route one pre-resolved-index sample into a voxel slot.
-    // Initializes the histogram range on the very first sample for the
-    // slot and then performs the standard Welford + histogram update.
+    // Where Phase A's running accumulators live.
     //
-    // Index-keyed variant is the *only* variant we ship — name→index
-    // resolution is hoisted to once-per-frame at each per-frame switch
-    // case below. Pre-fix this was a string-keyed lookup hit per pixel
-    // per slot (96M lookups/frame at 6000×4000 OSC, ~600ms/stack
-    // overhead). Caller is expected to bounds-check the index up-front
-    // (the per-frame switch does this and std::abort()s on missing
-    // slots — that is a programmer error in the dispatch table /
-    // ChannelConfig::merge(), not a runtime input failure).
-    auto route_sample_idx = [&](SubcubeVoxel& voxel,
-                                int idx,
-                                float value,
-                                bool covered) {
-        // An uncovered pixel is not a measurement of darkness, it is the
-        // absence of a measurement. warp leaves 0 outside the source and 0
-        // is a legal pixel value, so without this guard every frame's
-        // dither excursion was averaged in as black: measured on a 53-frame
-        // M3 stack, a rim at 48.6% of interior brightness reaching 48 px
-        // deep, and 268,802 exactly-zero pixels.
-        if (!covered) return;
-        voxel.channel(idx).welford.update(value);
-        if (voxel.channel(idx).welford.count() == 1) {
-            voxel.channel(idx).histogram.initialize_range(value - 0.1f, value + 0.1f);
+    // An in-memory record takes them directly. A file-backed one must not:
+    // each voxel's Welford state and histogram are a few bytes inside a
+    // ~600-byte record, so folding in one frame dirtied every page of the
+    // file and the kernel wrote all of it back. Measured on a 59-frame
+    // 24 MP OSC stack: 953 GB written to the NVMe and 696 s of a 1062 s run
+    // in that loop. Those accumulators are held in RAM instead (a fraction
+    // of the record: they are only the Phase A fields) and copied into the
+    // record once when Phase A ends.
+    int n_stars_reused = 0, n_precalibrated = 0, n_prefetched = 0;
+    RunningAccumulators running;
+    if (cube.file_backed() && config_.ram_accumulators) {
+        try {
+            running = RunningAccumulators(out_width, out_height, cube.allocated_channels());
+            char msg[200];
+            std::snprintf(msg, sizeof(msg),
+                          "Phase A accumulators: %.2f GB in memory beside the "
+                          "file-backed record, copied into it once after the last frame",
+                          static_cast<double>(running.bytes_allocated()) / 1e9);
+            obs.message(msg);
+        } catch (const std::bad_alloc&) {
+            running = RunningAccumulators();
+            char msg[200];
+            std::snprintf(msg, sizeof(msg),
+                          "Phase A accumulators: could not allocate %.2f GB beside the "
+                          "file-backed record; accumulating into the file instead, "
+                          "which rewrites it once per frame and is much slower.",
+                          static_cast<double>(RunningAccumulators::bytes_for(
+                              out_width, out_height, cube.allocated_channels())) / 1e9);
+            obs.message(msg);
         }
-        voxel.channel(idx).histogram.update(value);
-    };
+    }
+    // No RAM accumulators (switched off, or not allocatable): Phase A
+    // accumulates into the record directly, so it must be constructed now.
+    if (running.empty()) cube.construct();
 
-    // An empty mask means the frame was cloned rather than warped, so it
-    // covers itself completely.
-    auto covered_at = [](const CoverageMask& cov, int c, int y, int x) {
-        return cov.empty() || cov.covered(c, y, x);
+
+    // Frames the measuring pass did not keep are loaded AHEAD, in parallel.
+    //
+    // Reading, debayering and flat-correcting a frame needs nothing from the
+    // frames before it, so a window of them is prepared at once with
+    // parallel_for_dynamic -- the same steps, on the same pixels, as the
+    // measuring pass -- while alignment, which chains through earlier frames,
+    // and the accumulation stay strictly in frame order. Windows are double
+    // buffered: the next one loads on a background thread while this one is
+    // aligned and accumulated, so loading leaves the critical path. Memory is
+    // bounded like the measuring pass's workers -- a quarter of what is
+    // available now, six float planes of the raw frame per frame held -- and
+    // split between the two windows. Config::load_ahead off: Phase A reads
+    // each frame itself.
+    int load_budget = 1;
+    if (config_.load_ahead) {
+        const std::size_t plane = static_cast<std::size_t>(raw_width)
+                                * static_cast<std::size_t>(raw_height) * sizeof(float);
+        const std::size_t avail = GPUContext::host_available_bytes();
+        const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+        load_budget = hw;
+        if (avail > 0)
+            load_budget = static_cast<int>(std::clamp<double>(
+                (static_cast<double>(avail) / 4.0) / static_cast<double>(6 * plane), 1.0, static_cast<double>(hw)));
+    }
+    const int load_window = std::max(1, load_budget / 2);
+    auto load_range = [&](int f0, int f1) {
+        parallel_for_dynamic(f1 - f0, 1, load_window, [&](int k, int) {
+            const int g = f0 + k;
+            MeasuredFrame& m = measured[static_cast<std::size_t>(g)];
+            using O = MeasuredFrame::Outcome;
+            // A thread of its own: read the flag, never ask the observer.
+            if (cancel.cancelled()) return;
+            if (!m.kept.empty()) return;
+            if (m.outcome != O::MEASURED && m.outcome != O::BLOWN_OUT) return;
+            FITSReadResult rr = (g == 0 && first.success) ? std::move(first)
+                                                          : FITSReader::read(light_paths[g]);
+            if (!rr.success) return;   // Phase A's own read reports it
+            if (cancel.cancelled()) return;
+            Image img = std::move(rr.image);
+            const BayerPattern gb = parse_bayer_pattern(rr.metadata.bayer_pattern);
+            if (gb != BayerPattern::NONE) img = DebayerEngine::debayer(img, gb);
+            if (!master_flat.empty()) FlatCalibration::apply(img, master_flat);
+            m.kept = std::move(img);
+            m.meta = std::move(rr.metadata);
+            m.prefetched = true;
+        });
+    };
+    int loaded_until = 0, pending_until = 0;
+    std::future<void> pending;
+    // Declared after everything the background load touches, so it is
+    // destroyed first: no return from the loop below can leave a load running
+    // against freed frames.
+    struct JoinPending {
+        std::future<void>& f;
+        ~JoinPending() { if (f.valid()) f.wait(); }
+    } join_pending{pending};
+    auto ensure_loaded = [&](int f) {
+        if (f < loaded_until) return;
+        if (pending.valid()) { pending.get(); loaded_until = pending_until; }
+        if (f >= loaded_until) {             // the first window: nothing to overlap with
+            loaded_until = std::min(n_frames, f + load_window);
+            load_range(f, loaded_until);
+        }
+        if (loaded_until < n_frames) {
+            pending_until = std::min(n_frames, loaded_until + load_window);
+            pending = std::async(std::launch::async,
+                                 [&load_range, a = loaded_until, b = pending_until] { load_range(a, b); });
+        }
+    };
+    if (config_.load_ahead) {
+        char msg[200];
+        std::snprintf(msg, sizeof(msg),
+                      "Phase A: loading %d frames at a time in parallel, the next %d "
+                      "in the background (%.2f GB of calibrated frames at most)",
+                      load_window, load_window,
+                      2.0 * static_cast<double>(load_window) * raw_width * raw_height
+                          * (bayer != BayerPattern::NONE ? 3 : 1) * sizeof(float) / 1e9);
+        obs.message(msg);
+    }
+
+    // Checked between every step of a frame, so a cancel lands within one
+    // step (each well under a second at 24 MP) rather than one frame.
+    auto cancelled_loading = [&]() {
+        if (!cancel.check()) return false;
+        obs.message("Cancelled during frame loading.");
+        obs.end_phase();
+        return true;
     };
 
     for (int f = 0; f < n_frames; f++) {
+        if (config_.load_ahead) ensure_loaded(f);
         std::string filename = light_paths[f];
         auto slash = filename.rfind('/');
         if (slash != std::string::npos) filename = filename.substr(slash + 1);
         obs.advance(0, "Frame " + std::to_string(f + 1) + "/" + std::to_string(n_frames)
                        + ": " + filename);
 
-        // 1. Load
-        auto read_result = (f == 0) ? std::move(first) : FITSReader::read(light_paths[f]);
+        // 1. Load -- or take the calibrated frame the measuring pass kept,
+        // which is already debayered and flat-corrected.
+        MeasuredFrame& mf = measured[static_cast<std::size_t>(f)];
+        const bool precalibrated = !mf.kept.empty();
+        FITSReadResult read_result;
+        if (precalibrated) {
+            read_result.success  = true;
+            read_result.image    = std::move(mf.kept);
+            read_result.metadata = std::move(mf.meta);
+            if (f == 0) first = FITSReadResult{};
+            if (mf.prefetched) {
+                ++n_prefetched;
+                obs.advance(0, "  loaded ahead");
+            } else {
+                ++n_precalibrated;
+                obs.advance(0, "  calibrated in the measuring pass");
+            }
+        } else {
+            read_result = (f == 0) ? std::move(first) : FITSReader::read(light_paths[f]);
+        }
         if (!read_result.success) {
             obs.advance(1, "  skipped (read failed)");
             continue;
@@ -680,6 +922,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
         Image image = std::move(read_result.image);
         auto& meta = read_result.metadata;
+        if (cancelled_loading()) return result;
 
         // 1b. Per-frame filter classification — drives Phase A routing.
         Filter frame_filter = filter_classifier_->classify(meta);
@@ -762,13 +1005,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         cube.channel_config = merged;
 
         // 2. Debayer -- THIS frame's pattern (frame_bayer), not frame 0's.
-        if (frame_bayer != BayerPattern::NONE) {
+        if (!precalibrated && frame_bayer != BayerPattern::NONE) {
             obs.advance(0, "  debayering (" + meta.bayer_pattern + ")");
             image = DebayerEngine::debayer(image, frame_bayer);
         }
 
         // 3. Flat correct
-        if (!master_flat.empty()) {
+        if (!precalibrated && !master_flat.empty()) {
             obs.advance(0, "  flat correcting");
             FlatCalibration::apply(image, master_flat);
         }
@@ -785,7 +1028,14 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             sat_frac >= config_.aligner_config.star_config.saturation_reject_fraction;
 
         obs.advance(0, "  aligning");
-        auto aligned = aligner.align(image, f, parse_fits_datetime(meta.date_obs));
+        // Stars the measuring pass already found on this same image are
+        // handed over rather than detected again.
+        const double obs_time = parse_fits_datetime(meta.date_obs);
+        if (mf.has_stars) ++n_stars_reused;
+        auto aligned = mf.has_stars
+            ? aligner.align(image, f, obs_time, std::move(mf.stars))
+            : aligner.align(image, f, obs_time);
+        if (cancelled_loading()) return result;
         // Surface the alignment outcome including the actual inlier / RMS
         // numbers so a user reading the Process Console can tell which
         // frames genuinely aligned from which were weight-penalised.
@@ -889,7 +1139,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 const float b = static_cast<float>(it->second.offset);
                 if (a == 1.0f && b == 0.0f) continue;   // exact identity
                 float* d = aligned.image.channel_data(c);
-                for (std::size_t i = 0; i < npx; ++i) d[i] = a * d[i] + b;
+                apply_normalization(d, npx, a, b);
             }
         }
 
@@ -975,7 +1225,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         // BROADBAND_OSC additionally synthesises an "L" slot via rec709
         // luminance (0.299 R + 0.587 G + 0.114 B) — that's how we get the
         // "OSC-as-LRGB" effect that the spec promises.
+        if (cancelled_loading()) return result;
         obs.advance(0, "  accumulating");
+        AccumulateKind kind = AccumulateKind::MONO;
+        int slots[4] = {-1, -1, -1, -1};
         switch (frame_filter.cls) {
             case FilterClass::BROADBAND_OSC: {
                 // Pre-resolve once per frame — not inside the pixel loop.
@@ -986,60 +1239,28 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // table — that is a programmer error, so we std::abort()
                 // before entering the loop rather than silently routing into
                 // a garbage index.
-                int r_idx = cube.channel_config.slot_index("R");
-                int g_idx = cube.channel_config.slot_index("G");
-                int b_idx = cube.channel_config.slot_index("B");
-                int l_idx = cube.channel_config.slot_index("L");
-                if (r_idx < 0 || g_idx < 0 || b_idx < 0 || l_idx < 0) {
+                slots[0] = cube.channel_config.slot_index("R");
+                slots[1] = cube.channel_config.slot_index("G");
+                slots[2] = cube.channel_config.slot_index("B");
+                slots[3] = cube.channel_config.slot_index("L");
+                if (slots[0] < 0 || slots[1] < 0 || slots[2] < 0 || slots[3] < 0) {
                     std::abort(); // missing BROADBAND_OSC slot — dispatch-table bug
                 }
-                for (int y = 0; y < out_height; y++) {
-                    for (int x = 0; x < out_width; x++) {
-                        auto& voxel = cube.at(x, y);
-                        float r = aligned.image.at(x, y, 0);
-                        float g = aligned.image.at(x, y, 1);
-                        float b = aligned.image.at(x, y, 2);
-                        float l = 0.299f * r + 0.587f * g + 0.114f * b;
-                        const bool cr = covered_at(aligned.coverage, 0, y, x);
-                        const bool cg = covered_at(aligned.coverage, 1, y, x);
-                        const bool cb = covered_at(aligned.coverage, 2, y, x);
-                        route_sample_idx(voxel, r_idx, r, cr);
-                        route_sample_idx(voxel, g_idx, g, cg);
-                        route_sample_idx(voxel, b_idx, b, cb);
-                        // Synthetic luminance mixes all three planes, so it
-                        // is only a measurement where all three are.
-                        route_sample_idx(voxel, l_idx, l, cr && cg && cb);
-                        if (cr || cg || cb) voxel.n_frames++;
-                    }
-                }
+                kind = AccumulateKind::OSC_WITH_LUMA;
                 break;
             }
             case FilterClass::DUAL_NB_OSC: {
-                std::string r_slot = "R_" + frame_filter.name;
-                std::string g_slot = "G_" + frame_filter.name;
-                std::string b_slot = "B_" + frame_filter.name;
                 // Same once-per-frame hoist as BROADBAND_OSC: 3 lookups
                 // instead of 3 × width × height per-pixel string lookups.
                 // Abort on -1 — a missing dual-NB slot is a merge() bug,
                 // not a recoverable runtime condition.
-                int r_idx = cube.channel_config.slot_index(r_slot);
-                int g_idx = cube.channel_config.slot_index(g_slot);
-                int b_idx = cube.channel_config.slot_index(b_slot);
-                if (r_idx < 0 || g_idx < 0 || b_idx < 0) {
+                slots[0] = cube.channel_config.slot_index("R_" + frame_filter.name);
+                slots[1] = cube.channel_config.slot_index("G_" + frame_filter.name);
+                slots[2] = cube.channel_config.slot_index("B_" + frame_filter.name);
+                if (slots[0] < 0 || slots[1] < 0 || slots[2] < 0) {
                     std::abort(); // missing DUAL_NB_OSC slot — dispatch-table bug
                 }
-                for (int y = 0; y < out_height; y++) {
-                    for (int x = 0; x < out_width; x++) {
-                        auto& voxel = cube.at(x, y);
-                        const bool cr = covered_at(aligned.coverage, 0, y, x);
-                        const bool cg = covered_at(aligned.coverage, 1, y, x);
-                        const bool cb = covered_at(aligned.coverage, 2, y, x);
-                        route_sample_idx(voxel, r_idx, aligned.image.at(x, y, 0), cr);
-                        route_sample_idx(voxel, g_idx, aligned.image.at(x, y, 1), cg);
-                        route_sample_idx(voxel, b_idx, aligned.image.at(x, y, 2), cb);
-                        if (cr || cg || cb) voxel.n_frames++;
-                    }
-                }
+                kind = AccumulateKind::THREE_PLANE;
                 break;
             }
             case FilterClass::BROADBAND_L:
@@ -1056,23 +1277,14 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // and R/G/B or Ha/OIII/SII to the name itself. Looking up
                 // frame_filter.name directly aborted on every mono frame
                 // whose FILTER was not literally "L".
-                const std::string& slot_name = per_frame_cfg.channel_names[0];
-                // One lookup per frame instead of one per pixel — same
-                // rationale as the OSC cases above. Abort if the slot is
-                // absent: it means merge() didn't register this filter's
-                // slot, which is a dispatch-table programmer error.
-                int slot_idx = cube.channel_config.slot_index(slot_name);
-                if (slot_idx < 0) {
+                // One lookup per frame instead of one per pixel. Abort if the
+                // slot is absent: it means merge() didn't register this
+                // filter's slot, which is a dispatch-table programmer error.
+                slots[0] = cube.channel_config.slot_index(per_frame_cfg.channel_names[0]);
+                if (slots[0] < 0) {
                     std::abort(); // missing mono slot — dispatch-table bug
                 }
-                for (int y = 0; y < out_height; y++) {
-                    for (int x = 0; x < out_width; x++) {
-                        auto& voxel = cube.at(x, y);
-                        const bool c0 = covered_at(aligned.coverage, 0, y, x);
-                        route_sample_idx(voxel, slot_idx, aligned.image.at(x, y, 0), c0);
-                        if (c0) voxel.n_frames++;
-                    }
-                }
+                kind = AccumulateKind::MONO;
                 break;
             }
             case FilterClass::UNKNOWN:
@@ -1080,16 +1292,18 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // reaching here means the upstream gate is broken.
                 std::abort();
         }
+        if (!running.empty())
+            accumulate_frame(RamSink{running}, aligned.image, aligned.coverage,
+                             out_width, out_height, kind, slots);
+        else
+            accumulate_frame(CubeSink{cube}, aligned.image, aligned.coverage,
+                             out_width, out_height, kind, slots);
 
         cube.n_frames_loaded++;
         result.n_frames_processed++;
         obs.advance(1);
 
-        if (obs.is_cancelled()) {
-            obs.message("Cancelled during frame loading.");
-            obs.end_phase();
-            return result;
-        }
+        if (cancelled_loading()) return result;
     }
 
     // Phase A is done writing. Schedule the last writeback now, so the
@@ -1097,6 +1311,23 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // write_frame() only syncs every 8th frame -- see the note there on the
     // 26x write amplification a per-frame sync costs.
     for (auto& [sig, cache] : caches) cache.flush();
+
+    {
+        char msg[200];
+        std::snprintf(msg, sizeof(msg),
+                      "Phase A: %d of %d frames aligned on the measuring pass's star "
+                      "catalogues; %d arrived already calibrated, %d were loaded ahead",
+                      n_stars_reused, n_frames, n_precalibrated, n_prefetched);
+        obs.message(msg);
+    }
+
+    // The record gets its Phase A fields once, here, in one pass, rather
+    // than once per frame.
+    if (!running.empty()) {
+        running.store_into(cube, &cancel);
+        running.release();
+        if (cancelled_loading()) return result;
+    }
 
     obs.end_phase();
 
@@ -1318,7 +1549,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                           phase_b_end - phase_b_start ).count();
     obs.message("Phase B: " + std::to_string(phase_b_ms) + " ms");
 
-    if (obs.is_cancelled()) {
+    if (cancel.check()) {
         obs.message("Cancelled during distribution fitting.");
         return result;
     }
@@ -1391,52 +1622,48 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     }
 
-    // Post-processing: dominant shape + quality scores + spatial context
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
+    }
+
+    // Post-processing: spatial context, then ONE pass over the record.
+    //
+    // Dominant shape, quality score, the spatial-context writeback, the
+    // quality map and the measured-noise map were five separate sweeps of
+    // the voxel record. File-backed, each sweep re-read and re-wrote the
+    // whole file: 44 GB written and 53 s on a 59-frame 24 MP stack. Every one
+    // of them is per-voxel and none reads another voxel, so they run as one
+    // row-parallel pass. Spatial context reads only `stacked`, so it is
+    // computed first, into arrays.
     obs.begin_phase("Phase C: Post-processing", 3);
 
-    obs.advance(1, "dominant shape computation");
-    for (int y = 0; y < out_height; y++) {
-        for (int x = 0; x < out_width; x++) {
-            auto& voxel = cube.at(x, y);
-            compute_dominant_shape(voxel, n_ch);
-        }
-    }
-
-    obs.advance(1, "quality scores");
-    for (int y = 0; y < out_height; y++) {
-        for (int x = 0; x < out_width; x++) {
-            auto& voxel = cube.at(x, y);
-            float avg_snr = 0.0f;
-            for (int ch = 0; ch < n_ch; ch++) avg_snr += voxel.channel(ch).snr;
-            avg_snr /= n_ch;
-            float cloud_fraction = (voxel.n_frames > 0) ?
-                static_cast<float>(voxel.cloud_frame_count) / voxel.n_frames : 0.0f;
-            voxel.quality_score = voxel.channel(0).distribution.confidence
-                * (1.0f - cloud_fraction)
-                * std::min(1.0f, avg_snr / 50.0f);
-            voxel.confidence = voxel.channel(0).distribution.confidence;
-        }
-    }
-
-    // Spatial context (GPU kernel 4)
+    // Spatial context (GPU kernel 4, or the row-parallel CPU fallback).
     obs.advance(0, "spatial context");
     // The luminance the spatial kernel measures noise on, by slot NAME: the
     // L plane when there is one, else R, G, B by name, else positional.
     const LuminanceSpec noise_luminance =
         LuminanceSpec::for_config(cube.channel_config, stacked.n_channels());
-    gpu.execute_spatial_context(stacked, cube, &obs, noise_luminance);
+    std::vector<float> sc_grad, sc_bg, sc_rms;
+    gpu.compute_spatial_context(stacked, noise_luminance, sc_grad, sc_bg, sc_rms, &cancel);
+    obs.advance(1);
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        obs.end_phase();
+        return result;
+    }
+
+    obs.advance(1, "dominant shape, quality scores, quality and noise maps (one pass)");
+    Image quality_map, measured_noise;
+    post_process_record(cube, n_ch, sc_grad, sc_bg, sc_rms, quality_map, measured_noise, &cancel);
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        obs.end_phase();
+        return result;
+    }
     obs.advance(1);
 
     obs.end_phase();
-
-    // Quality map
-    Image quality_map = OutputAssembler::assemble_quality_map(cube);
-
-    // Measured noise: the stack's realised pixel-to-pixel scatter, beside the
-    // predicted noise_map. They answer different questions, and until now only
-    // the prediction existed -- which is why an estimator that adds noise of
-    // its own was invisible to NukeX's own diagnostics.
-    Image measured_noise = OutputAssembler::assemble_measured_noise(cube);
 
     // ═══ PHASE B FOLLOW-UP — Q-solve derived semantic slots ═══════════
     //
@@ -1670,6 +1897,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 obs.message(buf);
             }
         }
+    }
+
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
     }
 
     // Match the chroma slots' sky levels before anything downstream sees them.
