@@ -1,5 +1,17 @@
 # NukeX — Changelog
 
+## Unreleased
+
+- **FITS reading is thread-safe in every build.** The bundled CFITSIO is now built with its thread-safe
+  option. It used to get that only from a build setting meant for PixInsight's own headers, so software
+  that builds the NukeX library on its own got an unsafe CFITSIO and crashed when two files were opened at once.
+- **Image statistics ignore NaN and infinite pixels.** One NaN pixel used to make the statistics step behave
+  unpredictably (it could crash). Each channel's statistics now use only its finite pixels. A channel with no
+  finite pixel reports its statistics as "not available", and the stretch then keeps its default settings.
+- **Image statistics are about 12 times faster** (10.5 s to 0.83 s on a 25-megapixel RGB stack). The median,
+  MAD and percentiles are exactly the same values as before.
+- **The MTF stretch is 2.4 to 5.4 times faster**, with output identical to before, bit for bit.
+
 ## v5.2.0.4 — 2026-11-10
 
 Third-party notices corrected to PCL 2.13.
