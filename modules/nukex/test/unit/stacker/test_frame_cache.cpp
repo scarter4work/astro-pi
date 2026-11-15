@@ -3,6 +3,8 @@
 #include "nukex/io/image.hpp"
 #include <cmath>
 #include <filesystem>
+#include <random>
+#include <vector>
 
 using namespace nukex;
 
@@ -340,4 +342,47 @@ TEST_CASE("FrameCache::read_frame_range refuses ranges it cannot serve",
     REQUIRE_FALSE(cache.read_frame_range(0, -1, 2, 0, row.data(), nullptr));
     REQUIRE_FALSE(cache.read_frame_range(0, 0, 2, 1, row.data(), nullptr));  // no ch 1
     for (float v : row) REQUIRE(v == -1.0f);   // nothing was written
+}
+
+TEST_CASE("FrameCache: a parallel write_frame round-trips every value and coverage bit, "
+          "frames straddling coverage bytes", "[frame_cache][parallel]") {
+    // 37 x 29 x 3 = 3219 entries a frame: not a multiple of 8, so every frame
+    // after the first starts mid-byte of the coverage plane, and the 8-row
+    // blocks at each end of a frame share bytes with its neighbours.
+    const int W = 37, H = 29, C = 3, F = 5;
+    const auto dir = std::filesystem::temp_directory_path();
+    FrameCache cache(W, H, C, F, dir.string());
+    std::mt19937 rng(4242);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    std::bernoulli_distribution keep(0.7);
+    std::vector<Image> frames;
+    std::vector<CoverageMask> covs;
+    for (int f = 0; f < F; f++) {
+        Image img(W, H, C);
+        CoverageMask cov(W, H, C);
+        for (int c = 0; c < C; c++)
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++) {
+                    img.at(x, y, c) = u(rng);
+                    cov.set_covered(c, y, x, keep(rng));
+                }
+        REQUIRE(cache.write_frame(img, 10 + f, cov) == f);
+        frames.push_back(std::move(img));
+        covs.push_back(std::move(cov));
+    }
+    // Read back AFTER all writes, so a write that clobbered a neighbouring
+    // frame's bits shows up.
+    long bad = 0;
+    std::vector<float> v(W);
+    std::vector<std::uint8_t> ok(W);
+    for (int f = 0; f < F; f++)
+        for (int c = 0; c < C; c++)
+            for (int y = 0; y < H; y++) {
+                REQUIRE(cache.read_frame_range(f, y * W, W, c, v.data(), ok.data()));
+                for (int x = 0; x < W; x++) {
+                    if (v[x] != FrameCache::decode(FrameCache::encode(frames[f].at(x, y, c)))) ++bad;
+                    if ((ok[x] != 0) != covs[f].covered(c, y, x)) ++bad;
+                }
+            }
+    REQUIRE(bad == 0);
 }

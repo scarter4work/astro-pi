@@ -1111,7 +1111,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 const float b = static_cast<float>(it->second.offset);
                 if (a == 1.0f && b == 0.0f) continue;   // exact identity
                 float* d = aligned.image.channel_data(c);
-                for (std::size_t i = 0; i < npx; ++i) d[i] = a * d[i] + b;
+                apply_normalization(d, npx, a, b);
             }
         }
 

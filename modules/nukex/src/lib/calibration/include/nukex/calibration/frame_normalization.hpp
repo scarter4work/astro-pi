@@ -71,6 +71,11 @@ solve_frame_normalization(const std::vector<FrameSky>& frames);
 /// into "divide by noise".
 FrameSky measure_channel_sky(const float* data, int width, int height);
 
+/// Apply a frame's normalisation to one plane in place: d[i] = a * d[i] + b,
+/// for i in [0, n). Parallel over 64 Ki-sample chunks (parallel_for_dynamic);
+/// each sample is the same single multiply-add the serial loop did.
+void apply_normalization(float* d, std::size_t n, float a, float b);
+
 /// The effective map for a slot SYNTHESIZED from already-normalised planes.
 ///
 /// OSC's L slot is 0.299R + 0.587G + 0.114B, and Phase A builds it from

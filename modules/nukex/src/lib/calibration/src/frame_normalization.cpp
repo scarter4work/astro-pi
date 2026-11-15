@@ -1,4 +1,5 @@
 #include "nukex/calibration/frame_normalization.hpp"
+#include "nukex/core/parallel_for.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -138,6 +139,20 @@ mix_coefficients(const NormalizationCoefficients* c, const double* w, int n) {
         m.offset += w[i] * c[i].offset;
     }
     return m;
+}
+
+} // namespace nukex
+
+namespace nukex {
+
+void apply_normalization(float* d, std::size_t n, float a, float b) {
+    constexpr std::size_t kChunk = 65536;
+    const int n_chunks = static_cast<int>((n + kChunk - 1) / kChunk);
+    parallel_for_dynamic(n_chunks, 4, [&](int k, int) {
+        const std::size_t i1 = std::min(n, static_cast<std::size_t>(k + 1) * kChunk);
+        for (std::size_t i = static_cast<std::size_t>(k) * kChunk; i < i1; ++i)
+            d[i] = a * d[i] + b;
+    });
 }
 
 } // namespace nukex
