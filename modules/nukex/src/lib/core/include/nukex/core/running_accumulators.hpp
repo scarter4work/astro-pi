@@ -4,11 +4,15 @@
 #include "nukex/core/welford.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <new>
+#include <type_traits>
 #include <vector>
 
 namespace nukex {
 
 class Cube;
+class CancelPoll;
 
 /// Fold one sample into a channel's running accumulators.
 ///
@@ -62,14 +66,14 @@ public:
     int width() const      { return width_; }
     int height() const     { return height_; }
     int n_channels() const { return n_channels_; }
-    bool empty() const     { return channels_.empty(); }
+    bool empty() const     { return !channels_; }
 
     /// Channel `c` of pixel `pixel` (raster index y * width + x).
     Channel& channel(std::size_t pixel, int c) {
-        return channels_[pixel * static_cast<std::size_t>(n_channels_) + static_cast<std::size_t>(c)];
+        return base()[pixel * static_cast<std::size_t>(n_channels_) + static_cast<std::size_t>(c)];
     }
     const Channel& channel(std::size_t pixel, int c) const {
-        return channels_[pixel * static_cast<std::size_t>(n_channels_) + static_cast<std::size_t>(c)];
+        return const_cast<RunningAccumulators*>(this)->channel(pixel, c);
     }
     std::uint16_t& n_frames(std::size_t pixel)       { return n_frames_[pixel]; }
     std::uint16_t  n_frames(std::size_t pixel) const { return n_frames_[pixel]; }
@@ -77,14 +81,21 @@ public:
     /// Copy every accumulator into the matching voxel of `cube`: its welford,
     /// histogram and n_frames. Pixel-parallel, one pass over the record.
     /// The cube must have this geometry and at least this many channels.
-    void store_into(Cube& cube) const;
+    /// With `cancel`, rows stop being copied once it reads cancelled; the
+    /// record is then incomplete and the caller must abandon it.
+    void store_into(Cube& cube, CancelPoll* cancel = nullptr) const;
 
     /// Release the array (after store_into, before Phase B allocates).
     void release();
 
 private:
+    Channel* base() { return std::launder(reinterpret_cast<Channel*>(channels_.get())); }
+
     int width_ = 0, height_ = 0, n_channels_ = 0;
-    std::vector<Channel>       channels_;
+    // Raw storage, constructed in place in parallel (a std::vector would
+    // value-initialise 5.9 GB on one thread: 1.8 s at 24 MP x 4 channels).
+    // Channel is trivially destructible, so releasing the bytes is enough.
+    std::unique_ptr<std::byte[]> channels_;
     std::vector<std::uint16_t> n_frames_;
 };
 

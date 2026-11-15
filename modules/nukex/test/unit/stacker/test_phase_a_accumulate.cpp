@@ -12,6 +12,8 @@
 #include "nukex/core/cube.hpp"
 #include "nukex/core/filter.hpp"
 #include "nukex/core/running_accumulators.hpp"
+#include "nukex/core/cancel_poll.hpp"
+#include "nukex/core/progress_observer.hpp"
 #include "nukex/io/image.hpp"
 
 #include <cstring>
@@ -238,4 +240,78 @@ TEST_CASE("RunningAccumulators::store_into refuses a cube of another shape",
     Cube too_few_channels(8, 6, mono);
     REQUIRE_THROWS_AS(ram.store_into(wrong_size), std::invalid_argument);
     REQUIRE_THROWS_AS(ram.store_into(too_few_channels), std::invalid_argument);
+}
+
+namespace {
+struct FlagObserver : ProgressObserver {
+    bool flag = false;
+    void begin_phase(const std::string&, int) override {}
+    void advance(int, const std::string&) override {}
+    void end_phase() override {}
+    void message(const std::string&) override {}
+    bool is_cancelled() const override { return flag; }
+};
+} // namespace
+
+TEST_CASE("store_into constructs a DEFERRED file-backed record in the same pass, exactly",
+          "[phase_a][accumulate][file_backed]") {
+#if defined(_WIN32)
+    SKIP("Cube file backing is not implemented on Windows");
+#else
+    const int w = 43, h = 31;
+    const ChannelConfig cfg = cfg_for(FilterClass::BROADBAND_OSC, "OSC");
+    const int s[4] = {cfg.slot_index("R"), cfg.slot_index("G"),
+                      cfg.slot_index("B"), cfg.slot_index("L")};
+    Cube ref(w, h, cfg);   // constructed now, accumulated the old way
+    Cube deferred(w, h, cfg, fs::temp_directory_path().string(), Cube::Construction::DEFERRED);
+    REQUIRE(deferred.file_backed());
+    REQUIRE_FALSE(deferred.constructed());
+    RunningAccumulators ram(w, h, cfg.n_channels);
+    std::mt19937 rng(17);
+    for (int f = 0; f < 5; f++) {
+        Frame fr = random_frame(w, h, 3, rng, false);
+        reference_accumulate(ref, fr.img, fr.cov, AccumulateKind::OSC_WITH_LUMA, s);
+        accumulate_frame(RamSink{ram}, fr.img, fr.cov, w, h, AccumulateKind::OSC_WITH_LUMA, s);
+    }
+    ram.store_into(deferred);
+    REQUIRE(deferred.constructed());
+    require_same_accumulators(ref, deferred, cfg.n_channels);
+    // Everything Phase A does not write is exactly what construction gives.
+    long bad = 0;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            const auto& a = ref.at(x, y);
+            const auto& b = deferred.at(x, y);
+            if (b.n_channels != a.n_channels || b.flags != a.flags
+                || b.dominant_shape != a.dominant_shape
+                || b.quality_score != a.quality_score || b.local_rms != a.local_rms
+                || b.cloud_frame_count != a.cloud_frame_count) ++bad;
+            for (int c = 0; c < cfg.n_channels; c++)
+                if (b.channel(c).distribution.shape != a.channel(c).distribution.shape
+                    || b.channel(c).snr != a.channel(c).snr
+                    || b.channel(c).mad != a.channel(c).mad) ++bad;
+        }
+    REQUIRE(bad == 0);
+#endif
+}
+
+TEST_CASE("store_into stops when cancelled, leaving a DEFERRED record unconstructed",
+          "[phase_a][accumulate][cancel]") {
+#if defined(_WIN32)
+    SKIP("Cube file backing is not implemented on Windows");
+#else
+    const ChannelConfig cfg = cfg_for(FilterClass::BROADBAND_L, "L");
+    Cube deferred(64, 600, cfg, fs::temp_directory_path().string(), Cube::Construction::DEFERRED);
+    RunningAccumulators ram(64, 600, cfg.n_channels);
+    FlagObserver obs;
+    obs.flag = true;
+    CancelPoll cancel(obs);
+    ram.store_into(deferred, &cancel);
+    REQUIRE(cancel.cancelled());
+    REQUIRE_FALSE(deferred.constructed());
+    // Construct now and the record is whole, so nothing was half-built.
+    deferred.construct();
+    REQUIRE(deferred.constructed());
+    REQUIRE(deferred.at(10, 500).n_channels == 1);
+#endif
 }

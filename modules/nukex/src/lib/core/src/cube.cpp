@@ -1,4 +1,5 @@
 #include "nukex/core/cube.hpp"
+#include "nukex/core/parallel_for.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -38,7 +39,8 @@ Cube::Cube(int w, int h, const ChannelConfig& config)
     construct_all();
 }
 
-Cube::Cube(int w, int h, const ChannelConfig& config, const std::string& backing_dir)
+Cube::Cube(int w, int h, const ChannelConfig& config, const std::string& backing_dir,
+           Construction construction)
     : width(w)
     , height(h)
     , channel_config(config)
@@ -73,14 +75,30 @@ Cube::Cube(int w, int h, const ChannelConfig& config, const std::string& backing
         throw std::runtime_error("Cube: mmap of the backing file failed");
     }
     storage_ = static_cast<std::byte*>(m);
-    construct_all();
+    if (construction == Construction::NOW) construct_all();
+    else constructed_ = false;
 #endif
 }
 
+void Cube::construct() {
+    if (constructed_) return;
+    construct_all();
+    constructed_ = true;
+}
+
+void Cube::construct_row(int y) {
+    const int nc = channel_config.n_channels;
+    const std::size_t w = static_cast<std::size_t>(width);
+    const std::size_t row = static_cast<std::size_t>(y) * w;
+    for (std::size_t x = 0; x < w; x++)
+        construct_voxel(storage_ + (row + x) * stride_, nc);
+}
+
 void Cube::construct_all() {
-    const std::size_t n = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    for (std::size_t i = 0; i < n; i++)
-        construct_voxel(storage_ + i * stride_, channel_config.n_channels);
+    // Row-parallel: every record is constructed in place, independently. At
+    // 24 MP x 4 channels a file-backed record took 5.5 s serially, all of it
+    // page faults on the mapping, which proceed concurrently.
+    parallel_for_dynamic(height, 8, [&](int y, int) { construct_row(y); });
 }
 
 void Cube::release() noexcept {
@@ -111,6 +129,7 @@ Cube::Cube(Cube&& other) noexcept
     , bytes_(other.bytes_)
     , storage_(other.storage_)
     , fd_(other.fd_)
+    , constructed_(other.constructed_)
 {
     other.storage_ = nullptr;
     other.fd_ = -1;
@@ -127,6 +146,7 @@ Cube& Cube::operator=(Cube&& other) noexcept {
         allocated_channels_ = other.allocated_channels_;
         stride_ = other.stride_; bytes_ = other.bytes_;
         storage_ = other.storage_; fd_ = other.fd_;
+        constructed_ = other.constructed_;
         other.storage_ = nullptr; other.fd_ = -1; other.bytes_ = 0;
         other.width = other.height = 0;
     }

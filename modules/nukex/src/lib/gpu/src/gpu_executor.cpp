@@ -453,6 +453,9 @@ void GPUExecutor::execute_phase_b(
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
 
     int total_voxels = cube.total_pixels();
+    // Checked between every step of a batch and inside the fit loop, so a
+    // cancel lands within one step rather than at the end of the batch.
+    CancelPoll cancel(obs);
     const bool want_halves = half_fn && half_even && half_odd
                           && !half_even->empty() && !half_odd->empty();
     int n_channels = cube.at(0, 0).n_channels;
@@ -493,6 +496,7 @@ void GPUExecutor::execute_phase_b(
 
         // Step 1: Extract voxel data into SoA buffers
         buf.extract_from_cube(cube, slot_refs, processed, count, n_channels);
+        if (cancel.check()) break;
 
         // Steps 2-3: Weight computation + robust stats (GPU or CPU)
         obs.advance(0, "  kernel 1: weight classification" + backend_tag);
@@ -507,6 +511,7 @@ void GPUExecutor::execute_phase_b(
 
         // Step 4: Writeback classification + robust stats
         buf.writeback_classification(cube, processed, count, n_channels);
+        if (cancel.check()) break;
 
         // Step 5: CPU fitting (Ceres — cannot run on GPU).
         //
@@ -531,6 +536,7 @@ void GPUExecutor::execute_phase_b(
         // single-batch fit (otherwise silent between kernel 2 and kernel 3).
         FitHeartbeat hb(count, 2000);
         parallel_for_dynamic(count, 256, [&](int vi, int worker) {
+            if (cancel.poll(worker)) return;
             int voxel_idx = processed + vi;
             int px = voxel_idx % w;
             int py = voxel_idx / w;
@@ -584,6 +590,8 @@ void GPUExecutor::execute_phase_b(
             hb.tick(worker, obs);
         });
 
+        if (cancel.check()) break;
+
         // Step 6: Extract fitted distributions for select_pixels
         buf.extract_distributions(cube, processed, count, n_channels);
 
@@ -604,7 +612,7 @@ void GPUExecutor::execute_phase_b(
         obs.advance(1);  // batch complete, advance progress bar
 
         // Cancellation check
-        if (obs.is_cancelled()) {
+        if (cancel.check()) {
             obs.message("Cancelled during batch " + std::to_string(batch_idx)
                         + "/" + std::to_string(total_batches));
             break;
@@ -647,7 +655,8 @@ void GPUExecutor::execute_spatial_context(
 void GPUExecutor::compute_spatial_context(const Image& stacked, LuminanceSpec luminance,
                                           std::vector<float>& grad,
                                           std::vector<float>& bg,
-                                          std::vector<float>& rms) {
+                                          std::vector<float>& rms,
+                                          CancelPoll* cancel) {
     const int w = stacked.width();
     const int h = stacked.height();
     const int nc = stacked.n_channels();
@@ -662,7 +671,7 @@ void GPUExecutor::compute_spatial_context(const Image& stacked, LuminanceSpec lu
         execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum);
     } else {
         GPUCPUFallback::spatial_context(stacked.data(), w, h, nc,
-                                         grad.data(), bg.data(), rms.data(), lum);
+                                         grad.data(), bg.data(), rms.data(), lum, cancel);
     }
 }
 

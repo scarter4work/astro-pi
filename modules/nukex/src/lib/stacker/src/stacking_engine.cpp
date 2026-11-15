@@ -3,6 +3,7 @@
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/stacker/cache_sig.hpp"
 #include "nukex/core/cube.hpp"
+#include "nukex/core/cancel_poll.hpp"
 #include "nukex/core/parallel_for.hpp"
 #include "nukex/core/running_accumulators.hpp"
 #include "nukex/stacker/phase_a_accumulate.hpp"
@@ -163,6 +164,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     ProgressObserver* progress)
 {
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
+    CancelPoll cancel(obs);   // checked between and inside every long step
 
     // Empty-input shortcut runs BEFORE the QE-error surface so callers
     // probing the engine with no work (e.g. UI initial state) don't
@@ -349,7 +351,6 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         std::atomic<std::size_t> kept_bytes{0};
         std::mutex classify_mutex;   // FilterClassifier keeps last_warning() state
 
-        std::atomic<bool> cancelled{false};
         std::vector<std::atomic<bool>> done(static_cast<std::size_t>(n_frames));
         for (auto& d : done) d.store(false);
         int next_report = 0;   // touched only by the calling thread (worker 0)
@@ -388,8 +389,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         obs.begin_phase("Measuring frames", n_frames);
         parallel_for_dynamic(n_frames, 1, max_workers, [&](int f, int worker) {
             MeasuredFrame& m = measured[static_cast<std::size_t>(f)];
-            if (!cancelled.load(std::memory_order_relaxed)) {
+            // Cancel checkpoints between the steps: a frame interrupted
+            // part-way is left NOT_RUN, and every step is well under a second
+            // even at 24 MP.
+            [&] {
+                if (cancel.poll(worker)) return;
                 auto rr = FITSReader::read(light_paths[f]);
+                if (cancel.poll(worker)) return;
                 if (!rr.success) {
                     m.outcome = MeasuredFrame::Outcome::READ_FAILED;
                     frame_quality[f].usable = false;
@@ -411,6 +417,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                             img = DebayerEngine::debayer(img, f_bayer);
                         if (!master_flat.empty())
                             FlatCalibration::apply(img, master_flat);
+                        if (cancel.poll(worker)) return;
                         m.width  = img.width();
                         m.height = img.height();
 
@@ -439,6 +446,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                                     measure_channel_sky(img.channel_data(c),
                                                         img.width(), img.height()));
                             }
+                            if (cancel.poll(worker)) return;
 
                             m.stars = StarDetector::detect(img, config_.aligner_config.star_config);
                             m.has_stars = config_.reuse_measured_stars;
@@ -463,15 +471,15 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                         }
                     }
                 }
-            }
+            }();
             done[static_cast<std::size_t>(f)].store(true, std::memory_order_release);
             if (worker == 0) {
                 report();
-                if (obs.is_cancelled()) cancelled.store(true, std::memory_order_relaxed);
+                cancel.poll(worker);
             }
         });
         report();
-        if (cancelled.load() || obs.is_cancelled()) {
+        if (cancel.check()) {
             obs.message("Cancelled while measuring frames.");
             obs.end_phase();
             return result;
@@ -622,7 +630,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             static_cast<double>(need) > config_.file_backed_cube_fraction * static_cast<double>(avail);
         if (config_.file_backed_cube && crowds) {
             try {
-                cube = Cube(out_width, out_height, ch_config, config_.cache_dir);
+                // Constructed later, in the pass that stores Phase A's RAM
+                // accumulators (or below, if those cannot be allocated).
+                cube = Cube(out_width, out_height, ch_config, config_.cache_dir,
+                            Cube::Construction::DEFERRED);
                 char why[160];
                 std::snprintf(why, sizeof(why),
                               "file-backed in %s (%.0f%% of the %.1f GB available)",
@@ -761,7 +772,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // record once when Phase A ends.
     int n_stars_reused = 0, n_precalibrated = 0, n_prefetched = 0;
     RunningAccumulators running;
-    if (cube.file_backed()) {
+    if (cube.file_backed() && config_.ram_accumulators) {
         try {
             running = RunningAccumulators(out_width, out_height, cube.allocated_channels());
             char msg[200];
@@ -782,6 +793,9 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             obs.message(msg);
         }
     }
+    // No RAM accumulators (switched off, or not allocatable): Phase A
+    // accumulates into the record directly, so it must be constructed now.
+    if (running.empty()) cube.construct();
 
 
     // Frames the measuring pass did not keep are loaded AHEAD, in parallel.
@@ -814,11 +828,14 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             const int g = f0 + k;
             MeasuredFrame& m = measured[static_cast<std::size_t>(g)];
             using O = MeasuredFrame::Outcome;
+            // A thread of its own: read the flag, never ask the observer.
+            if (cancel.cancelled()) return;
             if (!m.kept.empty()) return;
             if (m.outcome != O::MEASURED && m.outcome != O::BLOWN_OUT) return;
             FITSReadResult rr = (g == 0 && first.success) ? std::move(first)
                                                           : FITSReader::read(light_paths[g]);
             if (!rr.success) return;   // Phase A's own read reports it
+            if (cancel.cancelled()) return;
             Image img = std::move(rr.image);
             const BayerPattern gb = parse_bayer_pattern(rr.metadata.bayer_pattern);
             if (gb != BayerPattern::NONE) img = DebayerEngine::debayer(img, gb);
@@ -861,6 +878,15 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         obs.message(msg);
     }
 
+    // Checked between every step of a frame, so a cancel lands within one
+    // step (each well under a second at 24 MP) rather than one frame.
+    auto cancelled_loading = [&]() {
+        if (!cancel.check()) return false;
+        obs.message("Cancelled during frame loading.");
+        obs.end_phase();
+        return true;
+    };
+
     for (int f = 0; f < n_frames; f++) {
         if (config_.load_ahead) ensure_loaded(f);
         std::string filename = light_paths[f];
@@ -896,6 +922,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
         Image image = std::move(read_result.image);
         auto& meta = read_result.metadata;
+        if (cancelled_loading()) return result;
 
         // 1b. Per-frame filter classification — drives Phase A routing.
         Filter frame_filter = filter_classifier_->classify(meta);
@@ -1008,6 +1035,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         auto aligned = mf.has_stars
             ? aligner.align(image, f, obs_time, std::move(mf.stars))
             : aligner.align(image, f, obs_time);
+        if (cancelled_loading()) return result;
         // Surface the alignment outcome including the actual inlier / RMS
         // numbers so a user reading the Process Console can tell which
         // frames genuinely aligned from which were weight-penalised.
@@ -1197,6 +1225,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         // BROADBAND_OSC additionally synthesises an "L" slot via rec709
         // luminance (0.299 R + 0.587 G + 0.114 B) — that's how we get the
         // "OSC-as-LRGB" effect that the spec promises.
+        if (cancelled_loading()) return result;
         obs.advance(0, "  accumulating");
         AccumulateKind kind = AccumulateKind::MONO;
         int slots[4] = {-1, -1, -1, -1};
@@ -1274,11 +1303,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         result.n_frames_processed++;
         obs.advance(1);
 
-        if (obs.is_cancelled()) {
-            obs.message("Cancelled during frame loading.");
-            obs.end_phase();
-            return result;
-        }
+        if (cancelled_loading()) return result;
     }
 
     // Phase A is done writing. Schedule the last writeback now, so the
@@ -1299,8 +1324,9 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // The record gets its Phase A fields once, here, in one pass, rather
     // than once per frame.
     if (!running.empty()) {
-        running.store_into(cube);
+        running.store_into(cube, &cancel);
         running.release();
+        if (cancelled_loading()) return result;
     }
 
     obs.end_phase();
@@ -1523,7 +1549,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                           phase_b_end - phase_b_start ).count();
     obs.message("Phase B: " + std::to_string(phase_b_ms) + " ms");
 
-    if (obs.is_cancelled()) {
+    if (cancel.check()) {
         obs.message("Cancelled during distribution fitting.");
         return result;
     }
@@ -1596,6 +1622,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     }
 
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
+    }
+
     // Post-processing: spatial context, then ONE pass over the record.
     //
     // Dominant shape, quality score, the spatial-context writeback, the
@@ -1614,12 +1645,22 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     const LuminanceSpec noise_luminance =
         LuminanceSpec::for_config(cube.channel_config, stacked.n_channels());
     std::vector<float> sc_grad, sc_bg, sc_rms;
-    gpu.compute_spatial_context(stacked, noise_luminance, sc_grad, sc_bg, sc_rms);
+    gpu.compute_spatial_context(stacked, noise_luminance, sc_grad, sc_bg, sc_rms, &cancel);
     obs.advance(1);
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        obs.end_phase();
+        return result;
+    }
 
     obs.advance(1, "dominant shape, quality scores, quality and noise maps (one pass)");
     Image quality_map, measured_noise;
-    post_process_record(cube, n_ch, sc_grad, sc_bg, sc_rms, quality_map, measured_noise);
+    post_process_record(cube, n_ch, sc_grad, sc_bg, sc_rms, quality_map, measured_noise, &cancel);
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        obs.end_phase();
+        return result;
+    }
     obs.advance(1);
 
     obs.end_phase();
@@ -1856,6 +1897,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 obs.message(buf);
             }
         }
+    }
+
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
     }
 
     // Match the chroma slots' sky levels before anything downstream sees them.

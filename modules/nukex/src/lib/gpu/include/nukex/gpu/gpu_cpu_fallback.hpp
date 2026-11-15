@@ -2,6 +2,7 @@
 
 #include "nukex/gpu/gpu_shadow_buffers.hpp"
 #include "nukex/core/luminance_spec.hpp"
+#include "nukex/core/cancel_poll.hpp"
 #include "nukex/core/frame_stats.hpp"
 #include "nukex/classify/weight_computer.hpp"
 
@@ -43,7 +44,8 @@ public:
                                  float* gradient_mag,
                                  float* local_background,
                                  float* local_rms,
-                                 LuminanceSpec luminance = LuminanceSpec{});
+                                 LuminanceSpec luminance = LuminanceSpec{},
+                                 CancelPoll* cancel = nullptr);
 };
 
 } // namespace nukex

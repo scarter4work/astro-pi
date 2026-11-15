@@ -338,14 +338,16 @@ void GPUCPUFallback::spatial_context(
     float* gradient_mag,
     float* local_background,
     float* local_rms,
-    LuminanceSpec luminance) {
+    LuminanceSpec luminance,
+    CancelPoll* cancel) {
 
     constexpr int WINDOW_RADIUS = 7;  // 15x15 window
     const LuminanceSpec lum = luminance.resolved(n_channels);
 
     // Row-parallel: each pixel reads the stack and writes only its own
     // outputs. Single-threaded this took 124 s on an 8 MP 4-channel stack.
-    parallel_for_dynamic(height, 4, [&](int y, int) {
+    parallel_for_dynamic(height, 4, [&](int y, int worker) {
+        if (cancel && cancel->poll(worker)) return;
         for (int x = 0; x < width; x++) {
             int pi = y * width + x;
 

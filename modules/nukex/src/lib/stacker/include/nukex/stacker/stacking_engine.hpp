@@ -65,6 +65,13 @@ public:
         bool                  file_backed_cube = true;
         double                file_backed_cube_fraction = 0.5;
 
+        /// With a file-backed record, accumulate Phase A in RAM beside it and
+        /// copy the result in once (RunningAccumulators), instead of
+        /// rewriting the whole file every frame. Off is the old path, kept as
+        /// the fallback when the RAM cannot be allocated and as the reference
+        /// the RAM path is tested against.
+        bool                  ram_accumulators = true;
+
         /// What Phase A takes from the measuring pass instead of redoing it.
         ///
         /// The measuring pass reads, debayers, flat-corrects and

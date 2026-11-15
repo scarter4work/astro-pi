@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nukex/core/cube.hpp"
+#include "nukex/core/cancel_poll.hpp"
 #include "nukex/io/image.hpp"
 #include <vector>
 
@@ -22,10 +23,13 @@ void compute_dominant_shape(SubcubeVoxel& voxel, int n_ch);
 ///
 /// `quality_map` and `measured_noise` are (re)allocated to the cube's size
 /// with 4 and 1 channels.
+/// With `cancel`, rows stop being processed once it reads cancelled; the
+/// outputs are then incomplete and the caller must abandon them.
 void post_process_record(Cube& cube, int n_ch,
                          const std::vector<float>& gradient_mag,
                          const std::vector<float>& local_background,
                          const std::vector<float>& local_rms,
-                         Image& quality_map, Image& measured_noise);
+                         Image& quality_map, Image& measured_noise,
+                         CancelPoll* cancel = nullptr);
 
 } // namespace nukex

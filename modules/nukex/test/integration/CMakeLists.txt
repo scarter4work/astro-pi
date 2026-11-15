@@ -16,3 +16,7 @@ target_compile_definitions(test_file_backed_accumulate PRIVATE NUKEX_TEST_FIXTUR
 nukex_add_test(test_measuring_pass_reuse test_measuring_pass_reuse.cpp
     nukex4_stacker nukex4_calibration nukex4_compose nukex4_io nukex4_core cfitsio)
 target_compile_definitions(test_measuring_pass_reuse PRIVATE NUKEX_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/test/fixtures")
+
+nukex_add_test(test_cancel test_cancel.cpp
+    nukex4_stacker nukex4_calibration nukex4_compose nukex4_io nukex4_core cfitsio)
+target_compile_definitions(test_cancel PRIVATE NUKEX_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/test/fixtures")

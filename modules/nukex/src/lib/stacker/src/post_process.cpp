@@ -25,7 +25,8 @@ void post_process_record(Cube& cube, int n_ch,
                          const std::vector<float>& gradient_mag,
                          const std::vector<float>& local_background,
                          const std::vector<float>& local_rms,
-                         Image& quality_map, Image& measured_noise) {
+                         Image& quality_map, Image& measured_noise,
+                         CancelPoll* cancel) {
     const int w = cube.width, h = cube.height;
     const std::size_t npix = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
     if (gradient_mag.size() != npix || local_background.size() != npix || local_rms.size() != npix)
@@ -33,7 +34,8 @@ void post_process_record(Cube& cube, int n_ch,
     quality_map = Image(w, h, 4);
     measured_noise = Image(w, h, 1);
 
-    parallel_for_dynamic(h, 4, [&](int y, int) {
+    parallel_for_dynamic(h, 4, [&](int y, int worker) {
+        if (cancel && cancel->poll(worker)) return;
         for (int x = 0; x < w; x++) {
             auto& voxel = cube.at(x, y);
             compute_dominant_shape(voxel, n_ch);

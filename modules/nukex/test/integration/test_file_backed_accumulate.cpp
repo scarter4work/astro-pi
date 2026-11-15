@@ -83,10 +83,32 @@ void stack_both_ways(const std::vector<std::string>& lights, const fs::path& cac
     StackingEngine::Config on_file = base;
     on_file.file_backed_cube = true;
     on_file.file_backed_cube_fraction = 1e-12;   // any record "crowds" this budget
+    StackingEngine::Config on_file_direct = on_file;
+    on_file_direct.ram_accumulators = false;     // the old path: straight into the file
 
     MessageLog mem_log, file_log;
     auto a = StackingEngine(in_mem).execute(lights, {}, &mem_log);
     auto b = StackingEngine(on_file).execute(lights, {}, &file_log);
+    MessageLog direct_log;
+    auto d = StackingEngine(on_file_direct).execute(lights, {}, &direct_log);
+    REQUIRE(d.ok);
+    REQUIRE(d.cube->file_backed());
+    REQUIRE_FALSE(direct_log.saw("Phase A accumulators"));
+    REQUIRE(same_image(a.stacked, d.stacked));
+    REQUIRE(same_image(a.quality_map, d.quality_map));
+    {
+        long dm = 0;
+        for (int y = 0; y < a.cube->height; y++)
+            for (int x = 0; x < a.cube->width; x++) {
+                const auto& va = a.cube->at(x, y);
+                const auto& vd = d.cube->at(x, y);
+                if (va.n_frames != vd.n_frames || va.n_channels != vd.n_channels) ++dm;
+                for (int c = 0; c < va.n_channels; c++)
+                    if (std::memcmp(&va.channel(c).welford, &vd.channel(c).welford,
+                                    sizeof(WelfordAccumulator)) != 0) ++dm;
+            }
+        REQUIRE(dm == 0);
+    }
     REQUIRE(a.ok);
     REQUIRE(b.ok);
     REQUIRE(a.n_frames_processed == static_cast<int>(lights.size()));
