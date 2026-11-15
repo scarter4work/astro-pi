@@ -330,11 +330,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     {
         // Worker count and the kept-frame budget, from the memory free now.
         // One worker holds the raw plane, the debayered planes and the star
-        // detector's working set: about eight float planes of the raw size.
+        // detector's working set. Measured at 24 MP (M8, 7 workers): 0.32 GB
+        // of transient RSS per worker beside the kept frames, 3.3 float planes
+        // of the raw size; six planes are budgeted, for margin.
         const std::size_t plane = static_cast<std::size_t>(raw_width)
                                 * static_cast<std::size_t>(raw_height) * sizeof(float);
         const std::size_t avail = GPUContext::host_available_bytes();
-        const std::size_t per_worker = 8 * plane;
+        const std::size_t per_worker = 6 * plane;
         int max_workers = 0;   // uncapped when memory cannot be read
         std::size_t keep_budget = 0;
         if (avail > 0) {
