@@ -136,6 +136,7 @@ nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
 nukex_add_test(test_calibrate unit/stretch/test_calibrate.cpp nukex4_stretch test_util)
 nukex_add_test(test_param_bounds unit/stretch/test_param_bounds.cpp nukex4_stretch)
 nukex_add_test(test_image_stats unit/stretch/test_image_stats.cpp nukex4_stretch test_util)
+nukex_add_test(test_image_stats_exact unit/stretch/test_image_stats_exact.cpp nukex4_stretch nukex4_io)
 nukex_add_test(test_param_model unit/stretch/test_param_model.cpp nukex4_stretch test_util)
 nukex_add_test(test_layer_loader unit/stretch/test_layer_loader.cpp nukex4_stretch test_util)
 

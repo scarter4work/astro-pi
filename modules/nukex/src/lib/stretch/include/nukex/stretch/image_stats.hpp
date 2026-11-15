@@ -35,6 +35,18 @@ struct ImageStats {
 //   3 -> RGB
 // star_fwhm_median and star_count are computed via the existing StarDetector
 // when available; pass 0 / 0 when the caller has no star catalogue.
+//
+// Non-finite samples (NaN, +/-Inf) are excluded: every per-channel field is
+// computed over that channel's finite samples only, and sat_frac is a fraction
+// of the finite samples. A channel with NO finite sample has every per-channel
+// field NaN (as an unused mono channel does), so color_rg / color_bg are NaN
+// when R, G or B is such a channel, and bright_concentration skips any pixel
+// whose luminance is not finite. A NaN feature row is refused by
+// ParamModel::predict_and_apply, so the caller falls back to defaults.
+//
+// Median, MAD and the percentiles are exact order statistics (nth_element
+// selection, identical to a full sort); channels run concurrently via
+// nukex::parallel_for_dynamic. Reentrant: no shared state.
 ImageStats compute_image_stats(const Image& img,
                                double       star_fwhm_median = 0.0,
                                int          star_count       = 0,

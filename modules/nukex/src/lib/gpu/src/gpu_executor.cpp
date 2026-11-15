@@ -3,7 +3,7 @@
 #include "nukex/stacker/cache_sig.hpp"
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/core/progress_observer.hpp"
-#include "nukex/gpu/parallel_for.hpp"
+#include "nukex/core/parallel_for.hpp"
 
 #if NUKEX_HAS_OPENCL
 #define CL_TARGET_OPENCL_VERSION 300

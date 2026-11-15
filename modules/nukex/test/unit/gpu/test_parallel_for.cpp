@@ -1,6 +1,6 @@
 #include "catch_amalgamated.hpp"
 
-#include "nukex/gpu/parallel_for.hpp"
+#include "nukex/core/parallel_for.hpp"
 
 #include <atomic>
 #include <mutex>
