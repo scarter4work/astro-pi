@@ -18,11 +18,10 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <unistd.h>
 
 using namespace nukex;
 namespace fs = std::filesystem;
@@ -46,11 +45,15 @@ void write_fits(const std::string& path, int w, int h, int seed) {
     REQUIRE(status == 0);
 }
 
+// A fresh directory under the system temp dir. The name is random (portable:
+// no getpid), and create_directory() returning true proves it did not exist.
 fs::path scratch_dir() {
-    const fs::path d = fs::temp_directory_path() /
-        ("nukex_fits_concurrent_" + std::to_string(::getpid()));
-    fs::create_directories(d);
-    return d;
+    std::random_device rd;
+    for (;;) {
+        const fs::path d = fs::temp_directory_path() /
+            ("nukex_fits_concurrent_" + std::to_string(rd()) + "_" + std::to_string(rd()));
+        if (fs::create_directory(d)) return d;
+    }
 }
 
 } // namespace
