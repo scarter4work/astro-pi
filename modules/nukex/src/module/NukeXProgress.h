@@ -46,6 +46,10 @@ public:
    void advance( int steps, const std::string& detail ) override;
    void end_phase() override;
    void message( const std::string& text ) override;
+   /// Asks PixInsight directly whether the user has aborted (Process
+   /// Console > Pause/Abort, answered Yes), at most once per
+   /// kAbortPollInterval; the answer is sticky. See the .cpp for why the
+   /// owner thread alone asks.
    bool is_cancelled() const override;
 
 private:
@@ -55,7 +59,12 @@ private:
       int current;
    };
 
-   Console            console_;
+   mutable Console    console_;   // mutable: is_cancelled() accepts an abort (Abort())
+   // The thread that constructed this observer: ExecuteGlobal()'s, the one
+   // PixInsight's abort state may be asked from (see is_cancelled()).
+   const std::thread::id owner_;
+   mutable std::atomic<bool> aborted_{false};
+   mutable std::chrono::steady_clock::time_point last_abort_poll_{};
    StandardStatus     status_;
    StatusMonitor      monitor_;
    std::vector<Phase> stack_;

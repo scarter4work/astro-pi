@@ -19,6 +19,13 @@ namespace {
 
 constexpr auto kHeartbeatInterval = std::chrono::seconds(10);
 
+// How often is_cancelled() asks PixInsight for an abort. The engine checks
+// cancellation from inside its loops (CancelPoll), far more often than this;
+// the interval bounds the cost of the core call, which also runs the core's
+// event loop (that is how a Pause/Abort click is seen at all while the engine
+// computes), and adds at most this much to the time a cancel takes.
+constexpr auto kAbortPollInterval = std::chrono::milliseconds(100);
+
 std::string iso_timestamp_ms() {
    auto now = std::chrono::system_clock::now();
    auto t = std::chrono::system_clock::to_time_t(now);
@@ -36,7 +43,8 @@ std::string iso_timestamp_ms() {
 } // anonymous namespace
 
 NukeXProgress::NukeXProgress()
-   : status_()
+   : owner_( std::this_thread::get_id() )
+   , status_()
    , monitor_()
    , run_dir_( File::SystemTempDirectory().ToUTF8().c_str() )
    , progress_log_path_( run_dir_.file( "nukex_progress.log" ) )
@@ -130,8 +138,13 @@ void NukeXProgress::begin_phase( const std::string& name, int total_steps )
       console_.WriteLn( String( "<end><cbr>" ) );
       console_.WriteLn( String().Format( "=== %s (%d steps) ===",
                                          name.c_str(), total_steps ) );
-      monitor_.SetCallback( &status_ );
-      monitor_.Initialize( String( name.c_str() ), total_steps );
+      // Not once aborted: Initialize() would throw ProcessAborted through
+      // the engine's cancel path (see advance()).
+      if ( !aborted_.load( std::memory_order_relaxed ) )
+      {
+         monitor_.SetCallback( &status_ );
+         monitor_.Initialize( String( name.c_str() ), total_steps );
+      }
    }
    else
    {
@@ -174,8 +187,10 @@ void NukeXProgress::advance( int steps, const std::string& detail )
    {
       phase.current += steps;
 
-      // Advance the outermost progress bar
-      if ( depth_ == 1 )
+      // Advance the outermost progress bar. Not once the run is aborted:
+      // the engine is unwinding through its own cancel path, and a monitor
+      // update would throw ProcessAborted through it instead.
+      if ( depth_ == 1 && !aborted_.load( std::memory_order_relaxed ) )
       {
          for ( int i = 0; i < steps; i++ )
             ++monitor_;
@@ -241,7 +256,44 @@ void NukeXProgress::message( const std::string& text )
 
 bool NukeXProgress::is_cancelled() const
 {
-   return monitor_.IsAborted();
+   // Sticky: once aborted, every thread sees it without asking PixInsight.
+   if ( aborted_.load( std::memory_order_relaxed ) )
+      return true;
+
+   // PixInsight's abort state may only be read from the thread that runs the
+   // process: Console::AbortRequested() runs the core's event loop (the
+   // Pause/Abort click, and the "abort the current process?" question, are
+   // handled inside it), which is main-thread-only. The engine asks from that
+   // thread alone (CancelPoll: the calling thread, worker 0 of its parallel
+   // loops); any other caller gets the flag above and never touches the core.
+   if ( std::this_thread::get_id() != owner_ )
+      return false;
+
+   // The progress bar's own abort (StandardStatus saw the request when the
+   // outer phase advanced).
+   if ( monitor_.IsAborted() )
+   {
+      aborted_.store( true, std::memory_order_relaxed );
+      return true;
+   }
+
+   // This used to be the only check, so a Pause/Abort was not even SEEN until
+   // the outer phase next advanced: one step of Phase A is a whole frame.
+   // Ask the core directly instead, rate-limited (kAbortPollInterval).
+   const auto now = std::chrono::steady_clock::now();
+   if ( now - last_abort_poll_ < kAbortPollInterval )
+      return false;
+   last_abort_poll_ = now;
+
+   if ( console_.AbortRequested() )
+   {
+      // Accept the request, as StandardStatus does, and return the engine's
+      // own cancel path; nothing here throws through the engine.
+      console_.Abort();
+      aborted_.store( true, std::memory_order_relaxed );
+      return true;
+   }
+   return false;
 }
 
 } // namespace pcl
