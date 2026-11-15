@@ -6,7 +6,7 @@
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
    <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="9bb92ab3b6c336ccd7158ab3c2eb77df8ca697cf" type="generic" releaseDate="20261110">
+      <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="9bb92ab3b6c336ccd7158ab3c2eb77df8ca697cf" type="generic" releaseDate="20261115">
          <title>Gaia Depth Grade sidecar</title>
          <description>
             <p>
@@ -18,17 +18,17 @@
       </package>
    </platform>
    <platform os="linux" arch="x64" version="1.9.6:2.0.0">
-      <package fileName="20261110-linux-x64-NukeX-5.2.0.4.tar.gz" sha1="eb44c3f150ec6bc4fa77b83bf05c48976844c6c7" type="module" releaseDate="20261110">
+      <package fileName="20261115-linux-x64-NukeX-5.3.0.0.tar.gz" sha1="8ea9e2cc4e0e4f89b2312aec081daa1a246738e9" type="module" releaseDate="20261115">
          <title>NukeX</title>
          <description>
             <p>
-               <b>NukeX 5.2.0.4</b>
+               <b>NukeX 5.3.0.0</b>
             </p>
-            <p>Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight. NukeX works on the FITS light frames you add (with optional flats): for every pixel it fits a statistical distribution to every pixel&apos;s samples across the stack, estimates the signal from the fitted model, and applies one of its stretches (Auto is recommended). A camera quantum-efficiency (QE) database built into the module routes each frame and decomposes dual-narrowband colour data (HaO3 / S2O3) into emission lines. Frames open only as local files, and the FITS library has no network or shared-memory drivers. New in 5.2.0.4: Third-party notices corrected to PCL 2.13. Built for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later. CFITSIO&apos;s shared-memory driver is removed, progress files go to a private per-run directory, and NUKEX_PHASE8_NO_POPUP (no dialogs during scripted or headless runs) is documented. It loads on any Linux with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
+            <p>Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight. NukeX works on the FITS light frames you add (with optional flats): for every pixel it fits a statistical distribution to every pixel&apos;s samples across the stack, estimates the signal from the fitted model, and applies one of its stretches (Auto is recommended). A camera quantum-efficiency (QE) database built into the module routes each frame and decomposes dual-narrowband colour data (HaO3 / S2O3) into emission lines. Frames open only as local files, and the FITS library has no network or shared-memory drivers. New in 5.3.0.0: stacking is five to six times faster (59 frames from a 24-megapixel colour camera went from about 13 minutes to about 2.5 minutes), and a stack too large for memory writes far less to disk (about 61 GB instead of about 940 GB for the same 59 frames). Pause/Abort in the Process Console now stops a run within about a second, including near the end of a stack, where it used to be ignored. Image statistics are faster and no longer misbehave on NaN or infinite pixels, and the MTF stretch is faster. On frames without NaN pixels the results are identical to the previous release, bit for bit. Built for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later. It loads on any Linux with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
             <p>Network: one kind of connection only, the camera-database update check. It makes HTTPS requests to raw.githubusercontent.com (this repository), automatically at most once every 7 days when you open the NukeX window, and whenever you press Check now; it sends no identifier, usage data or image data. A newer database is downloaded and installed only if you agree, after its Ed25519 signatures are verified. Automatic checks can be turned off in the NukeX window. NukeX launches no external program. Files outside the PixInsight installation: ~/.config/nukex4/ (update-check state, a downloaded database, filter names you teach it, your stretch ratings), a frame cache in ~/.cache/nukex4/cache/ while a run lasts, and, while a run lasts, its progress files in a private directory (mode 0700) under $TMPDIR or /tmp, deleted when the run ends. Documentation, including every network connection, external program and file location: doc/tools/NukeX/NukeX.html.</p>
          </description>
       </package>
-      <package fileName="20261110-linux-x64-PICopilot-0.2.2.3.tar.gz" sha1="8f05eb44ca0f35e0b8dfacf7bbee4189855a95c3" type="module" releaseDate="20261110">
+      <package fileName="20261110-linux-x64-PICopilot-0.2.2.3.tar.gz" sha1="8f05eb44ca0f35e0b8dfacf7bbee4189855a95c3" type="module" releaseDate="20261115">
          <title>PI Copilot</title>
          <description>
             <p>
@@ -39,7 +39,7 @@
             <p>Network: HTTPS to api.anthropic.com only, and nothing is sent until you agree in its consent dialog. External programs: secret-tool, started directly (no shell), keeps the API key in the system keyring; PixInsight&apos;s GraXpert process, when the model runs it, starts the GraXpert program you chose in GraXpert&apos;s own settings. Files outside the PixInsight installation: the journey library in ~/.local/share/PICopilot/journeys/, short-lived files in the system temporary directory, and an export folder only if you choose one. Documentation, including every network connection, external program and file location: doc/tools/PICopilot/PICopilot.html.</p>
          </description>
       </package>
-      <package fileName="20261110-linux-x64-Planetary-0.5.0.2.tar.gz" sha1="e2464bc6506d47a43a136546d5c38d476eccbfce" type="module" releaseDate="20261110">
+      <package fileName="20261110-linux-x64-Planetary-0.5.0.2.tar.gz" sha1="e2464bc6506d47a43a136546d5c38d476eccbfce" type="module" releaseDate="20261115">
          <title>Planetary</title>
          <description>
             <p>
@@ -51,7 +51,7 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.12.zip" sha1="3999ccced0bf7ee4654b2beb1cb44a27bf6c59f5" type="script" releaseDate="20261110">
+      <package fileName="EZStretch_v1.0.12.zip" sha1="3999ccced0bf7ee4654b2beb1cb44a27bf6c59f5" type="script" releaseDate="20261115">
          <title>EZ Stretch</title>
          <remove>
             src/scripts/scarter4work/EZDonutRepair.js
@@ -64,7 +64,7 @@
             <p>Stretches a linear colour image with Lupton RGB, a root-power stretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the withdrawn EZ Donut Repair script (src/scripts/scarter4work/EZDonutRepair.js and .xsgn). Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.1.0.zip" sha1="53f8e036866145199f1723f3307e522218220686" type="script" releaseDate="20261110">
+      <package fileName="EZHazeKill_v1.1.0.zip" sha1="53f8e036866145199f1723f3307e522218220686" type="script" releaseDate="20261115">
          <title>EZ Haze Kill</title>
          <description>
             <p>
@@ -74,7 +74,7 @@
             <p>Licence: CC BY-NC 4.0 (non-commercial use only). Not covered by the BSD 3-Clause license of the rest of the astro-pi repository.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261110">
+      <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261115">
          <title>Gaia Depth Grade</title>
          <description>
             <p>
@@ -87,4 +87,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-11-11T04:21:05.256Z" encoding="Base64">dEiCbqSW0ZaX2eLssKgwqL5UMJ8ByODaKFQ6ptEwvCXdLwYz8DglRr2SUybBBBTCTzvrAjeda32oKF0pFnDRDg==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-11-15T23:46:09.630Z" encoding="Base64">HV3TgNLAh1fPiIZewHDe+dn7EiVFvvMIzItgSkdEjSkrQyxYq06xi1k8rXmvJTnsBnh6o4BKLU0dPILQnuSjDQ==</Signature>
