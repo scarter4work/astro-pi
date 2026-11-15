@@ -40,7 +40,25 @@ public:
     /// mapped, so a crash leaves nothing behind. Throws std::runtime_error
     /// when the file cannot be created or mapped; the caller falls back to
     /// memory and says so.
-    Cube(int w, int h, const ChannelConfig& config, const std::string& backing_dir);
+    ///
+    /// `construction` DEFERRED leaves the records unconstructed: the caller
+    /// constructs them later, either all at once (construct()) or a row at a
+    /// time in a pass of its own (construct_row(), then mark_constructed()) --
+    /// the stacker does it in the pass that stores Phase A's accumulators,
+    /// which saves writing the whole file once more and can be cancelled.
+    /// Nothing may read a voxel before then.
+    enum class Construction { NOW, DEFERRED };
+    Cube(int w, int h, const ChannelConfig& config, const std::string& backing_dir,
+         Construction construction = Construction::NOW);
+
+    /// False only for a DEFERRED cube whose records are not yet constructed.
+    bool constructed() const { return constructed_; }
+    /// Construct every record now (row-parallel); a no-op when constructed.
+    void construct();
+    /// Construct row y's records. For a deferred cube's own pass; call
+    /// mark_constructed() once every row is done.
+    void construct_row(int y);
+    void mark_constructed() { constructed_ = true; }
 
     Cube() = default;
     ~Cube();
@@ -97,6 +115,7 @@ private:
     std::size_t  bytes_    = 0;
     std::byte*   storage_  = nullptr;
     int          fd_       = -1;      ///< backing file, or -1 for heap
+    bool         constructed_ = true;
 };
 
 } // namespace nukex

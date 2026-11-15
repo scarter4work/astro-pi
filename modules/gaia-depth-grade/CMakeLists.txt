@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(GaiaDepthGrade VERSION 1.0.0 LANGUAGES C CXX)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # clangd: compile_commands.json lands in the build dir
 
 # PCL 2.13 (the only PCL with BlindAstrometricSolver) is C++20: its headers use
 # <bit>, <compare> and concepts, and its makefiles build with -std=c++20.

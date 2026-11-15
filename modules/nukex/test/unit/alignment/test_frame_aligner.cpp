@@ -3,6 +3,7 @@
 #include "nukex/io/fits_reader.hpp"
 #include <filesystem>
 #include <cmath>
+#include <cstring>
 
 using namespace nukex;
 
@@ -559,4 +560,69 @@ TEST_CASE("FrameAligner::chain_order: anchors nearest in time come first, index 
     // A timed anchor outranks an untimed one however close in index.
     auto mixed = FrameAligner::chain_order({{46, 0.0}, {3, T0 + 120.0}}, 47, T0);
     REQUIRE(mixed[0] == 1);
+}
+
+// ── Precomputed star catalogues (the stacker's measuring pass) ───────────
+
+namespace {
+
+bool same_pixels(const Image& a, const Image& b) {
+    if (a.width() != b.width() || a.height() != b.height() || a.n_channels() != b.n_channels())
+        return false;
+    const std::size_t n = static_cast<std::size_t>(a.width()) * a.height() * a.n_channels();
+    return std::memcmp(a.data(), b.data(), n * sizeof(float)) == 0;
+}
+
+} // namespace
+
+TEST_CASE("FrameAligner: aligning on a precomputed catalogue is identical to detecting",
+          "[aligner][precomputed]") {
+    // A drifting session, so frames align directly, by chaining, and the
+    // reference short-circuits -- every path align() has.
+    const auto sky = drift_sky();
+    const int n = 9, ref = 4;
+    std::vector<Image> frames;
+    for (int i = 0; i < n; i++) frames.push_back(drift_frame(sky, 22.0f * i));
+
+    FrameAligner detecting, given;
+    detecting.set_reference(frames[ref], ref);
+    const StarCatalog ref_stars = StarDetector::detect(frames[ref], StarDetector::Config{});
+    given.set_reference(ref_stars, frames[ref].width(), frames[ref].height(), ref);
+    REQUIRE(given.has_reference());
+    REQUIRE(given.reference_catalog().stars.size() == detecting.reference_catalog().stars.size());
+
+    int aligned_ok = 0;
+    for (int i = 0; i < n; i++) {
+        INFO("frame " << i);
+        auto a = detecting.align(frames[i], i, 100.0 * i);
+        auto b = given.align(frames[i], i, 100.0 * i,
+                             StarDetector::detect(frames[i], StarDetector::Config{}));
+        REQUIRE(a.alignment.alignment_failed == b.alignment.alignment_failed);
+        REQUIRE(a.alignment.chained == b.alignment.chained);
+        REQUIRE(a.alignment.match.n_inliers == b.alignment.match.n_inliers);
+        REQUIRE(a.stars.stars.size() == b.stars.stars.size());
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) REQUIRE(a.alignment.H.H[r][c] == b.alignment.H.H[r][c]);
+        REQUIRE(same_pixels(a.image, b.image));
+        if (!a.alignment.alignment_failed) ++aligned_ok;
+    }
+    REQUIRE(detecting.chained_count() == given.chained_count());
+    REQUIRE(aligned_ok > n / 2);   // the case must actually align frames
+}
+
+TEST_CASE("FrameAligner: the catalogue handed to align() is the one it uses",
+          "[aligner][precomputed]") {
+    // An empty catalogue for a frame full of stars must fail the match: the
+    // overload trusts its argument rather than detecting behind its back.
+    const auto sky = drift_sky();
+    Image f0 = drift_frame(sky, 0.0f), f1 = drift_frame(sky, 5.0f);
+    FrameAligner al;
+    al.set_reference(f0, 0);
+    auto ok = al.align(f1, 1, 0.0, StarDetector::detect(f1, StarDetector::Config{}));
+    REQUIRE_FALSE(ok.alignment.alignment_failed);
+    FrameAligner al2;
+    al2.set_reference(f0, 0);
+    auto bad = al2.align(f1, 1, 0.0, StarCatalog{});
+    REQUIRE(bad.alignment.alignment_failed);
+    REQUIRE(bad.stars.stars.empty());
 }

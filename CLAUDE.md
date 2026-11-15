@@ -15,7 +15,7 @@ by subproject) -- never a new per-folder memory directory. No CLAUDE.md below th
   `doc/tools/SERViewer/` and `doc/tools/PlanetaryStack/`).
   0.5.0.1 (rebuilt for PixInsight 1.9.6 / PCL 2.13); 0.5.0.0 (released 2026-10-29: Planet processing (Saturation / Chroma blur / Sharpen sliders, catalogue-colour calibration, small-disc dispersion alignment)); 0.4.0.1 (released 2026-10-28: frame-filling Moon sharpening noise from the disc, IR-pass filters refused, NaN/Inf refused; 0.4.0.0 released 2026-10-28: Target from the ASIAIR name + mineral moon with Strength/Chroma blur/Sharpen sliders; 0.3.0.2 released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
 - `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
-- `scripts/ez-stretch/` → EZStretch / EZDonutRepair / EZHazeKill (`.js` + `.xsgn`).
+- `scripts/ez-stretch/` → EZStretch / EZHazeKill (`.js` + `.xsgn` + docs under `scripts/ez-stretch/doc/<Name>/`). EZDonutRepair was withdrawn 2026-11-10 (private repo `scarter4work/ez-donut-repair`; the EZStretch package carries a `<remove>` for it).
 Everything in `tools/` and `archive/` is NOT shipped.
 
 ## Not distributed from here (2026-10-04)
@@ -28,6 +28,8 @@ to "bridge" scripts that only shell out to a competing program):
   derived from the PCL headers / PJSR reference and exist to feed AI code generation. Never commit
   them. Backup: `~/projects/backups/astro-pi-schemas/`.
 Both were also stripped from this repo's history (git filter-repo + force-push, 2026-10-04).
+- PCL/PJSR parsers moved to PRIVATE repo `scarter4work/pi-parsers` (`~/projects/pi-parsers`), 2026-11-10.
+- BayesianAstro moved to PRIVATE repo `scarter4work/bayesian-astro`, 2026-11-10.
 
 ## Release rules (MUST follow)
 1. NEVER `make install` — users install from the GitHub repository URL.

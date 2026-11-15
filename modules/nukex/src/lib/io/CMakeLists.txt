@@ -44,6 +44,14 @@ else()
     set(TESTS             OFF CACHE BOOL "" FORCE)
     set(UTILS             OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # static into NukeX-pxm.so
+    # Thread-safe CFITSIO: compiles it with -D_REENTRANT and links Threads, so
+    # its global open-file table and error-message stack are mutex-guarded.
+    # Without it, concurrent FITSReader calls SIGSEGV inside ffopen. Set here,
+    # not inherited: the NukeX root's add_compile_definitions(_REENTRANT) is
+    # for PCL and does not reach a build that consumes src/lib/io on its own
+    # (test/standalone_io, the engine bridge). Guarded by test_fits_concurrent
+    # and test_fits_concurrent_standalone.
+    set(USE_PTHREADS      ON  CACHE BOOL "" FORCE)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)         # -fPIC so objects can go in a .so
 
     # No network drivers. USE_CURL=OFF only drops libcurl (https); CFITSIO's own

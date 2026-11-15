@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.24)
 # pulled in by FetchContent (cfitsio) declare their own project() and are
 # unaffected either way.
 project(NukeX VERSION 5.2.0 LANGUAGES CXX C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # clangd: compile_commands.json lands in the build dir
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,8 +41,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wpedantic
         -Wno-unused-parameter
     )
+    # Every optimised build type is optimised. RelWithDebInfo used to fall
+    # into the -O0 branch, so a profile of it measured unoptimised code.
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         add_compile_options(-O3 -DNDEBUG)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(-O2 -g -DNDEBUG)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+        add_compile_options(-Os -DNDEBUG)
     else()
         add_compile_options(-O0 -g)
     endif()
@@ -49,6 +56,10 @@ elseif(MSVC)
     add_compile_options(/W4 /permissive-)
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         add_compile_options(/O2 /DNDEBUG)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(/O2 /Zi /DNDEBUG)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+        add_compile_options(/O1 /DNDEBUG)
     else()
         add_compile_options(/Od /Zi)
     endif()

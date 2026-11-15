@@ -13,6 +13,7 @@
 #include "nukex/io/image.hpp"
 #include "nukex/stacker/cache_sig.hpp"
 #include <vector>
+#include "nukex/core/cancel_poll.hpp"
 #include <functional>
 
 namespace nukex {
@@ -78,7 +79,19 @@ public:
         Image* half_even = nullptr,
         Image* half_odd = nullptr);
 
-    /// Run spatial context on the stacked output.
+    /// Spatial context of the stacked output, per pixel, into the three
+    /// arrays (each resized to width * height) -- GPU kernel 4, or the
+    /// row-parallel CPU fallback. Touches no voxel, so a caller can write the
+    /// results into the record in the same pass as its other per-voxel work.
+    /// `cancel` interrupts the CPU fallback between rows; a GPU launch runs to
+    /// completion. Either way the arrays are incomplete once it reads cancelled.
+    void compute_spatial_context(const Image& stacked, LuminanceSpec luminance,
+                                 std::vector<float>& gradient_mag,
+                                 std::vector<float>& local_background,
+                                 std::vector<float>& local_rms,
+                                 CancelPoll* cancel = nullptr);
+
+    /// Run spatial context on the stacked output and write it into `cube`.
     void execute_spatial_context(
         const Image& stacked,
         Cube& cube,

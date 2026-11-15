@@ -93,6 +93,16 @@ public:
     /// 0 means unknown. It orders the chain's anchors: nearest in TIME first.
     AlignedFrame align(const Image& frame, int frame_index, double obs_time = 0.0);
 
+    /// align() with the frame's stars already detected.
+    ///
+    /// `stars` MUST be StarDetector::detect(frame, star_config) for this very
+    /// image -- the stacker's measuring pass detects on the same debayered,
+    /// flat-corrected frame with the same config, and passing that catalogue
+    /// here saves a second detection per frame (about a second at 24 MP)
+    /// with an identical result.
+    AlignedFrame align(const Image& frame, int frame_index, double obs_time,
+                       StarCatalog stars);
+
     /// The order in which chaining tries anchors, as (index, time) pairs:
     /// by |time difference| when both times are known, else by |index
     /// difference|. Exposed because it was wrong once -- the comment said
@@ -110,6 +120,11 @@ public:
     /// against its own catalog.
     void set_reference(const Image& frame, int frame_index);
 
+    /// set_reference() from an already-detected catalogue of a
+    /// `width` x `height` frame, under the same contract as the align()
+    /// overload: `stars` is what StarDetector::detect would return for it.
+    void set_reference(StarCatalog stars, int width, int height, int frame_index);
+
     /// How many frames were rescued by chaining. Diagnostic.
     int chained_count() const { return chained_count_; }
 
@@ -123,9 +138,10 @@ public:
     void reset();
 
 private:
-    /// Adopt `frame` as the reference. Shared by set_reference() and the
-    /// first-frame fallback inside align().
-    void adopt_reference(const Image& frame, const StarCatalog& stars,
+    /// Adopt a `width` x `height` frame with catalogue `stars` as the reference.
+    /// Shared by both set_reference() overloads and the first-frame fallback
+    /// inside align().
+    void adopt_reference(const StarCatalog& stars, int width, int height,
                          int frame_index);
 
     /// A frame already aligned to the reference, usable as a stepping stone.

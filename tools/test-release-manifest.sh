@@ -182,6 +182,19 @@ else while IFS= read -r l; do bad "$l"; done <<< "$writes_report"; fi
 RET_RE="$(sed -nE "s/^RETIRED_PKG_RE=\('(.*)'\)\s*$/\1/p" "$SCRIPT")"
 if [ -n "$RET_RE" ] && have retire_manifest; then
   RM="$WORK/retire.xri"; cp "$MF" "$RM"
+  # Once a release has retired the package, the published manifest no longer carries it: stand in an entry
+  # (a clone of the first script package, renamed to a fileName the regex matches) so the drop is still tested.
+  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 0 ]; then
+    python3 - "$RM" "$RET_RE" <<'PYF'
+import re,sys
+mf,pat=sys.argv[1:3]; s=open(mf).read()
+m=re.search(r'[ \t]*<package fileName="[^"]+" [^>]*type="script"[^>]*>.*?</package>[ \t]*\n',s,re.S)
+name="EZDonutRepair_v1.0.0.zip"
+assert re.fullmatch(pat,name),pat
+clone=re.sub(r'fileName="[^"]+"','fileName="%s"'%name,m.group(0),count=1)
+open(mf,'w').write(s[:m.end()]+clone+s[m.end():])
+PYF
+  fi
   before="$(grep -c '<package fileName=' "$RM")"
   if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 1 ] && ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 \
      && [ "$(grep -c '<package fileName=' "$RM")" -eq $((before - 1)) ] && ! grep -qE "fileName=\"$RET_RE\"" "$RM" \

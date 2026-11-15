@@ -1,4 +1,5 @@
 #include "nukex/stacker/frame_cache.hpp"
+#include "nukex/core/parallel_for.hpp"
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -144,22 +145,39 @@ int FrameCache::write_frame(const Image& aligned, int global_index,
     if (aligned.width() != width_ || aligned.height() != height_ || aligned.n_channels() != n_channels_)
         throw std::invalid_argument("FrameCache::write_frame: image dimensions do not match cache");
 
-    for (int y = 0; y < height_; y++) {
-        for (int x = 0; x < width_; x++) {
-            for (int ch = 0; ch < n_channels_; ch++) {
-                float value = aligned.at(x, y, ch);
-                mapped_[offset(x, y, ch, frame_index)] = encode(value);
-                // An empty mask means the frame was cloned, not warped, so it
-                // covers itself completely.
-                const bool covered = coverage.empty()
-                                   || coverage.covered(ch, y, x);
-                const size_t b = cov_bit(x, y, ch, frame_index);
-                const std::uint8_t bit = static_cast<std::uint8_t>(1u << (b & 7));
-                if (covered) coverage_bits_[b >> 3] |= bit;
-                else         coverage_bits_[b >> 3] &= static_cast<std::uint8_t>(~bit);
+    // Row-parallel, in blocks of 8 rows of the GLOBAL row index
+    // frame_index * height + y. A row is width * n_channels consecutive
+    // coverage bits, so a block of 8 is whole bytes starting on a byte and no
+    // two workers ever share one -- blocking this frame's own rows would not
+    // be, whenever width * height * n_channels is not a multiple of 8. A
+    // block at either end of the frame may also hold another frame's rows;
+    // only this frame's are written, and the read-modify-write below leaves
+    // the other bits alone.
+    const std::int64_t g0 = static_cast<std::int64_t>(frame_index) * height_;
+    const std::int64_t g1 = g0 + height_;
+    const int b0 = static_cast<int>(g0 / 8);
+    const int b1 = static_cast<int>((g1 + 7) / 8);
+    parallel_for_dynamic(b1 - b0, 1, [&](int k, int) {
+        const std::int64_t r0 = std::max<std::int64_t>(g0, static_cast<std::int64_t>(b0 + k) * 8);
+        const std::int64_t r1 = std::min<std::int64_t>(g1, static_cast<std::int64_t>(b0 + k) * 8 + 8);
+        for (std::int64_t r = r0; r < r1; r++) {
+            const int y = static_cast<int>(r - g0);
+            for (int x = 0; x < width_; x++) {
+                for (int ch = 0; ch < n_channels_; ch++) {
+                    float value = aligned.at(x, y, ch);
+                    mapped_[offset(x, y, ch, frame_index)] = encode(value);
+                    // An empty mask means the frame was cloned, not warped, so
+                    // it covers itself completely.
+                    const bool covered = coverage.empty()
+                                       || coverage.covered(ch, y, x);
+                    const size_t b = cov_bit(x, y, ch, frame_index);
+                    const std::uint8_t bit = static_cast<std::uint8_t>(1u << (b & 7));
+                    if (covered) coverage_bits_[b >> 3] |= bit;
+                    else         coverage_bits_[b >> 3] &= static_cast<std::uint8_t>(~bit);
+                }
             }
         }
-    }
+    });
 
     // Schedule writeback of THIS frame's bytes, and nothing else.
     //

@@ -2,6 +2,8 @@
 #include "nukex/calibration/frame_normalization.hpp"
 
 #include <cmath>
+#include <cstring>
+#include <random>
 #include <limits>
 #include <vector>
 
@@ -290,4 +292,19 @@ TEST_CASE("sky: screening on background would bias the scale",
     for (auto& v : px) v = static_cast<float>(nd(rng));
     const FrameSky s = measure_channel_sky(px.data(), W, H);
     REQUIRE(s.scale == Catch::Approx(0.00100).epsilon(0.03));
+}
+
+TEST_CASE("apply_normalization equals the serial multiply-add on every sample",
+          "[frame_normalization][parallel]") {
+    // Several 64 Ki chunks and a ragged tail.
+    const std::size_t n = 5 * 65536 + 4321;
+    std::vector<float> d(n), ref(n);
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    for (std::size_t i = 0; i < n; i++) d[i] = ref[i] = u(rng);
+    const float a = 0.97f, b = 0.0123f;
+    for (std::size_t i = 0; i < n; i++) ref[i] = a * ref[i] + b;
+    nukex::apply_normalization(d.data(), n, a, b);
+    REQUIRE(std::memcmp(d.data(), ref.data(), n * sizeof(float)) == 0);
+    nukex::apply_normalization(d.data(), 0, a, b);   // empty is a no-op
 }

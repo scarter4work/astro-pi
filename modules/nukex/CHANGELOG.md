@@ -1,5 +1,38 @@
 # NukeX — Changelog
 
+## v5.3.0.0 — 2026-11-15
+
+Stacking is five to six times faster and writes far less to disk, Cancel stops a run promptly, and image statistics no longer trip over NaN
+pixels. On frames without NaN or infinite pixels every output image is the same as 5.2.0.4 produced, bit for bit.
+
+- **Stacking is five to six times faster.** 59 frames from a 24-megapixel colour camera (ASI2400MC) took about
+  13 minutes and now take about 2.5 minutes on the same machine. Frames are measured, loaded, aligned and written
+  to the frame cache using all CPU cores, and the next frames load while the current ones are aligned. Memory use
+  for this work is sized from the memory actually available.
+- **Far less is written to disk when a stack does not fit in memory.** NukeX keeps a large working file when the
+  stack's working data would not fit in RAM. It used to rewrite that whole file for every frame; it now gathers
+  each frame's contribution in memory and writes the file once. The same 59-frame stack wrote about 940 GB and
+  now writes about 61 GB, which also spares an SSD's write endurance.
+- **Cancel works promptly.** Process Console's Pause/Abort is now noticed within a fraction of a second, so
+  PixInsight asks "abort the current process?" right away and the run stops within about a second of Yes
+  (measured at under 0.9 s in every stage tested). Before, the question waited for the next step of the run, which
+  could be a whole frame or more, and an abort near the end of a stack was ignored: the run finished and opened its
+  images anyway. The one slower stage is the GPU's spatial-context step, which runs to its end before stopping.
+- **The CPU fallback is faster too.** Machines without a usable GPU run the per-pixel steps on all cores.
+- **FITS reading is thread-safe in every build.** The bundled CFITSIO is now built with its thread-safe
+  option. It used to get that only from a build setting meant for PixInsight's own headers, so software
+  that builds the NukeX library on its own got an unsafe CFITSIO and crashed when two files were opened at once.
+- **Image statistics ignore NaN and infinite pixels.** One NaN pixel used to make the statistics step behave
+  unpredictably (it could crash). Each channel's statistics now use only its finite pixels. A channel with no
+  finite pixel reports its statistics as "not available", and the stretch then keeps its default settings.
+- **Image statistics are about 12 times faster** (10.5 s to 0.83 s on a 25-megapixel RGB stack). The median,
+  MAD and percentiles are exactly the same values as before.
+- **The MTF stretch is 2.4 to 5.4 times faster**, with output identical to before, bit for bit.
+
+## v5.2.0.4 — 2026-11-10
+
+Third-party notices corrected to PCL 2.13.
+
 ## v5.2.0.3 — 2026-11-10
 
 Rebuilt for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later.

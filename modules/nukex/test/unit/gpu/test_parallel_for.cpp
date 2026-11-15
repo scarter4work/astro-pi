@@ -1,8 +1,10 @@
 #include "catch_amalgamated.hpp"
 
-#include "nukex/gpu/parallel_for.hpp"
+#include "nukex/core/parallel_for.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -111,5 +113,29 @@ TEST_CASE("parallel_for_dynamic: worker 0 always runs the first chunk", "[parall
         std::atomic<int> zero_seen{0};
         parallel_for_dynamic(4096, 1, [&](int, int worker) { if (worker == 0) zero_seen++; });
         REQUIRE(zero_seen.load() >= 1);
+    }
+}
+
+TEST_CASE("parallel_for_dynamic: max_workers caps the thread count and still covers the range",
+          "[parallel_for]") {
+    const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    for (int cap : {1, 2, 3}) {
+        std::vector<std::atomic<int>> hits(500);
+        for (auto& h : hits) h.store(0);
+        std::mutex mu;
+        std::set<std::thread::id> threads;
+        int max_worker_id = -1;
+        nukex::parallel_for_dynamic(500, 1, cap, [&](int i, int worker) {
+            hits[i].fetch_add(1);
+            std::lock_guard<std::mutex> lk(mu);
+            threads.insert(std::this_thread::get_id());
+            max_worker_id = std::max(max_worker_id, worker);
+            // Hold the body long enough that an uncapped pool would spread
+            // over more threads than the cap.
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        });
+        for (auto& h : hits) REQUIRE(h.load() == 1);
+        REQUIRE(static_cast<int>(threads.size()) <= std::min(cap, hw));
+        REQUIRE(max_worker_id < std::min(cap, hw));
     }
 }

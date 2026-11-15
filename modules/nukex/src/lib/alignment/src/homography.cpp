@@ -1,10 +1,12 @@
 #include "nukex/alignment/types.hpp"
 #include "nukex/alignment/homography.hpp"
+#include "nukex/core/parallel_for.hpp"
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <random>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace nukex {
 
@@ -348,14 +350,32 @@ Image HomographyComputer::warp_impl(const Image& source, const HomographyMatrix&
 
     int sw = source.width();
     int sh = source.height();
+    const int nch = source.n_channels();
 
-    for (int ch = 0; ch < source.n_channels(); ch++) {
+    std::vector<ChannelTransform> cts(static_cast<std::size_t>(nch));
+    std::vector<char> apply(static_cast<std::size_t>(nch), 0);
+    for (int ch = 0; ch < nch; ch++) {
         const bool has_ct = ch < static_cast<int>(channels.per_channel.size());
-        const ChannelTransform ct =
-            has_ct ? channels.per_channel[ch] : ChannelTransform{};
-        const bool apply_ct = has_ct && !ct.is_identity();
+        cts[ch] = has_ct ? channels.per_channel[ch] : ChannelTransform{};
+        apply[ch] = (has_ct && !cts[ch].is_identity()) ? 1 : 0;
+    }
 
-        for (int y = 0; y < output_height; y++) {
+    // Parallel over blocks of 8 rows of the GLOBAL (channel, row) index g =
+    // ch * output_height + y. The coverage mask is a bit per pixel laid out in
+    // that same order, so a block covers 8 * output_width bits -- whole bytes,
+    // starting on a byte -- and no two workers ever write the same byte of it.
+    // Blocking per channel row would not do that whenever width * height is
+    // not a multiple of 8. Every pixel is computed exactly as before.
+    const int total_rows = nch * output_height;
+    const int n_blocks = (total_rows + 7) / 8;
+    parallel_for_dynamic(n_blocks, 1, [&](int blk, int) {
+      const int g_end = std::min(total_rows, blk * 8 + 8);
+      for (int g = blk * 8; g < g_end; g++) {
+        const int ch = g / output_height;
+        const int y  = g % output_height;
+        const ChannelTransform& ct = cts[ch];
+        const bool apply_ct = apply[ch] != 0;
+        {
             for (int x = 0; x < output_width; x++) {
                 // Map output (x, y) back to source coordinates
                 float w = H_inv(2, 0) * x + H_inv(2, 1) * y + H_inv(2, 2);
@@ -398,7 +418,8 @@ Image HomographyComputer::warp_impl(const Image& source, const HomographyMatrix&
                 if (coverage) coverage->set_covered(ch, y, x, true);
             }
         }
-    }
+      }
+    });
 
     return output;
 }

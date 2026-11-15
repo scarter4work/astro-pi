@@ -1,4 +1,5 @@
 #include "nukex/alignment/star_matcher.hpp"
+#include "nukex/core/parallel_for.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -125,9 +126,13 @@ std::vector<std::pair<int, int>> StarMatcher::match(
     std::sort(ref_tris.begin(), ref_tris.end(),
               [](const Triangle& a, const Triangle& b) { return a.r1 < b.r1; });
 
-    // Vote on (src_star, ref_star) correspondences from matched triangles.
-    std::unordered_map<uint64_t, int> votes;
-    for (const auto& st : src_tris) {
+    // Each source triangle's best reference triangle, searched in parallel:
+    // the searches are independent and read only the two sorted lists. About
+    // 0.4 s per 24 MP frame serially, nearly all of match().
+    const int n_src = static_cast<int>(src_tris.size());
+    std::vector<int> best_of(static_cast<std::size_t>(n_src), -1);
+    parallel_for_dynamic(n_src, 2048, [&](int si, int) {
+        const Triangle& st = src_tris[static_cast<std::size_t>(si)];
         // Candidate ref triangles have r1 within ±tol of st.r1.
         auto lo = std::lower_bound(ref_tris.begin(), ref_tris.end(), st.r1 - tol,
             [](const Triangle& t, float v) { return t.r1 < v; });
@@ -147,7 +152,18 @@ std::vector<std::pair<int, int>> StarMatcher::match(
                 best = &*it;
             }
         }
-        if (!best) continue;
+        if (best) best_of[static_cast<std::size_t>(si)] = static_cast<int>(best - ref_tris.data());
+    });
+
+    // Vote on (src_star, ref_star) correspondences from matched triangles --
+    // serially and in source-triangle order, as before, so the map is built by
+    // the same sequence of insertions and iterates in the same order: the
+    // match list (and the homography fitted from it) is unchanged.
+    std::unordered_map<uint64_t, int> votes;
+    for (int si = 0; si < n_src; ++si) {
+        if (best_of[static_cast<std::size_t>(si)] < 0) continue;
+        const Triangle& st = src_tris[static_cast<std::size_t>(si)];
+        const Triangle* best = &ref_tris[static_cast<std::size_t>(best_of[static_cast<std::size_t>(si)])];
         // Canonical ordering guarantees vertex-by-vertex correspondence.
         votes[pack_pair(st.v[0], best->v[0])]++;
         votes[pack_pair(st.v[1], best->v[1])]++;
