@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include <cmath>
 
@@ -59,15 +60,19 @@ bool FrameAligner::try_chain(const StarCatalog& stars, int frame_index, double f
 }
 
 FrameAligner::AlignedFrame FrameAligner::align(const Image& frame, int frame_index, double obs_time) {
+    return align(frame, frame_index, obs_time,
+                 StarDetector::detect(frame, config_.star_config));
+}
+
+FrameAligner::AlignedFrame FrameAligner::align(const Image& frame, int frame_index, double obs_time,
+                                               StarCatalog stars) {
     AlignedFrame result;
     result.frame_index = frame_index;
-
-    // Detect stars
-    result.stars = StarDetector::detect(frame, config_.star_config);
+    result.stars = std::move(stars);
 
     if (!has_ref_) {
         // No reference was set: fall back to the first frame to arrive.
-        adopt_reference(frame, result.stars, frame_index);
+        adopt_reference(result.stars, frame.width(), frame.height(), frame_index);
     }
 
     // Measure the channel disagreement on the UNWARPED frame, using the stars
@@ -184,15 +189,19 @@ FrameAligner::AlignedFrame FrameAligner::align(const Image& frame, int frame_ind
 }
 
 void FrameAligner::set_reference(const Image& frame, int frame_index) {
-    adopt_reference(frame, StarDetector::detect(frame, config_.star_config),
-                    frame_index);
+    adopt_reference(StarDetector::detect(frame, config_.star_config),
+                    frame.width(), frame.height(), frame_index);
 }
 
-void FrameAligner::adopt_reference(const Image& frame, const StarCatalog& stars,
+void FrameAligner::set_reference(StarCatalog stars, int width, int height, int frame_index) {
+    adopt_reference(stars, width, height, frame_index);
+}
+
+void FrameAligner::adopt_reference(const StarCatalog& stars, int width, int height,
                                    int frame_index) {
     ref_catalog_ = stars;
-    ref_width_   = frame.width();
-    ref_height_  = frame.height();
+    ref_width_   = width;
+    ref_height_  = height;
     ref_index_   = frame_index;
     has_ref_     = true;
 }

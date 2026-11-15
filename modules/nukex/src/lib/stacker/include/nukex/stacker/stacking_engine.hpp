@@ -65,6 +65,21 @@ public:
         bool                  file_backed_cube = true;
         double                file_backed_cube_fraction = 0.5;
 
+        /// What Phase A takes from the measuring pass instead of redoing it.
+        ///
+        /// The measuring pass reads, debayers, flat-corrects and
+        /// star-detects every frame before Phase A does all of that again.
+        /// With `reuse_measured_stars`, each frame's star catalogue goes to
+        /// the aligner -- it is detect() of the same image with the same
+        /// config, so the alignment is identical and a second detection
+        /// (about a second per 24 MP frame) is saved. Calibrated frames are
+        /// kept for Phase A while they fit in `keep_calibrated_fraction` of
+        /// the memory available when the pass starts (0 keeps none); the rest
+        /// are read and debayered again. Both exist as switches so the reuse
+        /// can be checked bit for bit against the path without it.
+        bool                  reuse_measured_stars = true;
+        double                keep_calibrated_fraction = 0.2;
+
         /// Selects the source of the QE database:
         ///   - EMPTY (production default): load the database compiled INTO the
         ///     module binary (nukex::embedded_qe_database_json()). There is no
