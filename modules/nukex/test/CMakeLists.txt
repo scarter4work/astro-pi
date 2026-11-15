@@ -77,6 +77,7 @@ nukex_add_test(test_fits_time      unit/core/test_fits_time.cpp      nukex4_core
 nukex_add_test(test_flat          unit/io/test_flat_calibration.cpp nukex4_io)
 nukex_add_test(test_star_detector unit/alignment/test_star_detector.cpp nukex4_alignment)
 nukex_add_test(test_homography     unit/alignment/test_homography.cpp     nukex4_alignment)
+nukex_add_test(test_alignment_parallel unit/alignment/test_alignment_parallel.cpp nukex4_alignment Eigen3::Eigen)
 nukex_add_test(test_frame_aligner unit/alignment/test_frame_aligner.cpp nukex4_alignment)
 nukex_add_test(test_alignment_diag unit/alignment/test_alignment_diag.cpp nukex4_alignment)
 nukex_add_test(test_reference_selector unit/alignment/test_reference_selector.cpp nukex4_alignment)
