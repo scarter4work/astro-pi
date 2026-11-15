@@ -126,6 +126,7 @@ nukex_add_test(test_png_writer util/test_png_writer.cpp nukex4_io test_util)
 
 nukex_add_test(test_stretch_pipeline unit/stretch/test_stretch_pipeline.cpp nukex4_stretch)
 nukex_add_test(test_mtf unit/stretch/test_mtf.cpp nukex4_stretch test_util)
+nukex_add_test(test_mtf_batch unit/stretch/test_mtf_batch.cpp nukex4_stretch)
 nukex_add_test(test_arcsinh unit/stretch/test_arcsinh.cpp nukex4_stretch test_util)
 nukex_add_test(test_log unit/stretch/test_log.cpp nukex4_stretch test_util)
 nukex_add_test(test_rnc unit/stretch/test_rnc.cpp nukex4_stretch test_util)
