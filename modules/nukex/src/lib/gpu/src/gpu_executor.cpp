@@ -422,10 +422,12 @@ void GPUExecutor::execute_select_gpu(
 
 void GPUExecutor::execute_spatial_gpu(
     const Image& stacked,
-    float* gradient_mag, float* local_background, float* local_rms) {
+    float* gradient_mag, float* local_background, float* local_rms,
+    LuminanceSpec luminance) {
     GPUCPUFallback::spatial_context(stacked.data(), stacked.width(),
         stacked.height(), stacked.n_channels(),
-        gradient_mag, local_background, local_rms);
+        gradient_mag, local_background, local_rms,
+        luminance.resolved(stacked.n_channels()));
 }
 
 #endif
@@ -622,22 +624,13 @@ void GPUExecutor::execute_spatial_context(
     ProgressObserver* progress,
     LuminanceSpec luminance) {
 
-    ProgressObserver& obs = progress ? *progress : null_progress_observer();
+    (void)progress;
 
     int w = stacked.width();
     int h = stacked.height();
-    int nc = stacked.n_channels();
-    const LuminanceSpec lum = luminance.resolved(nc);
 
-    std::vector<float> grad(w * h), bg(w * h), rms(w * h);
-
-    bool use_gpu = context_.is_gpu_available() && kernels_.is_compiled();
-    if (use_gpu) {
-        execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum);
-    } else {
-        GPUCPUFallback::spatial_context(stacked.data(), w, h, nc,
-                                         grad.data(), bg.data(), rms.data(), lum);
-    }
+    std::vector<float> grad, bg, rms;
+    compute_spatial_context(stacked, luminance, grad, bg, rms);
 
     // Write back to voxels
     for (int y = 0; y < h; y++) {
@@ -648,6 +641,28 @@ void GPUExecutor::execute_spatial_context(
             voxel.local_background = bg[pi];
             voxel.local_rms = rms[pi];
         }
+    }
+}
+
+void GPUExecutor::compute_spatial_context(const Image& stacked, LuminanceSpec luminance,
+                                          std::vector<float>& grad,
+                                          std::vector<float>& bg,
+                                          std::vector<float>& rms) {
+    const int w = stacked.width();
+    const int h = stacked.height();
+    const int nc = stacked.n_channels();
+    const LuminanceSpec lum = luminance.resolved(nc);
+    const std::size_t npix = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    grad.assign(npix, 0.0f);
+    bg.assign(npix, 0.0f);
+    rms.assign(npix, 0.0f);
+
+    bool use_gpu = context_.is_gpu_available() && kernels_.is_compiled();
+    if (use_gpu) {
+        execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum);
+    } else {
+        GPUCPUFallback::spatial_context(stacked.data(), w, h, nc,
+                                         grad.data(), bg.data(), rms.data(), lum);
     }
 }
 

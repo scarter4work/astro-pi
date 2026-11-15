@@ -1,5 +1,6 @@
 #include "nukex/gpu/gpu_cpu_fallback.hpp"
 #include "nukex/core/noise_model.hpp"
+#include "nukex/core/parallel_for.hpp"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -40,12 +41,13 @@ void GPUCPUFallback::classify_weights(
     int N = n_frames;
     int C = n_channels;
 
-    for (int vi = 0; vi < B; vi++) {
+    // Voxel-parallel: every write below lands in this voxel's own slots.
+    parallel_for_dynamic(B, 1024, [&](int vi, int) {
         // Per-channel frame counts: two slots can read different caches with
         // different frame sets, so there is no single count for the voxel.
         int nf_any = 0;
         for (int ch = 0; ch < C; ch++) nf_any = std::max(nf_any, (int)buf.n_frames[ch * B + vi]);
-        if (nf_any == 0) continue;
+        if (nf_any == 0) return;
 
         float worst_sigma = 0.0f;
         float best_sigma = 1e30f;
@@ -122,7 +124,7 @@ void GPUCPUFallback::classify_weights(
         const int nf0 = buf.n_frames[0 * B + vi];
         buf.mean_weight_out[vi]   = (nf0 > 0) ? weight_sum / static_cast<float>(nf0) : 0.0f;
         buf.total_exposure_out[vi] = total_exp;
-    }
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -137,7 +139,7 @@ void GPUCPUFallback::robust_stats(
     int N = n_frames;
     int C = n_channels;
 
-    for (int vi = 0; vi < B; vi++) {
+    parallel_for_dynamic(B, 1024, [&](int vi, int) {
         for (int ch = 0; ch < C; ch++) {
             // Per-channel frame count: a channel with fewer than two samples
             // has no spread to measure, and that is now a per-channel
@@ -209,7 +211,7 @@ void GPUCPUFallback::robust_stats(
                 : 0.0f;
             buf.biweight_midvar_out[ch * B + vi] = bwmv;
         }
-    }
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -225,7 +227,7 @@ void GPUCPUFallback::select_pixels(
     int N = n_frames;
     int C = n_channels;
 
-    for (int vi = 0; vi < B; vi++) {
+    parallel_for_dynamic(B, 1024, [&](int vi, int) {
         for (int ch = 0; ch < C; ch++) {
             const int nf = buf.n_frames[ch * B + vi];
             float out_val = buf.dist_true_signal[ch * B + vi];
@@ -288,7 +290,7 @@ void GPUCPUFallback::select_pixels(
             buf.noise_sigma[ch * B + vi] = noise;
             buf.snr_out[ch * B + vi] = snr;
         }
-    }
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -341,7 +343,9 @@ void GPUCPUFallback::spatial_context(
     constexpr int WINDOW_RADIUS = 7;  // 15x15 window
     const LuminanceSpec lum = luminance.resolved(n_channels);
 
-    for (int y = 0; y < height; y++) {
+    // Row-parallel: each pixel reads the stack and writes only its own
+    // outputs. Single-threaded this took 124 s on an 8 MP 4-channel stack.
+    parallel_for_dynamic(height, 4, [&](int y, int) {
         for (int x = 0; x < width; x++) {
             int pi = y * width + x;
 
@@ -489,7 +493,7 @@ void GPUCPUFallback::spatial_context(
             }
             local_rms[pi] = rms_val;
         }
-    }
+    });
 }
 
 } // namespace nukex

@@ -6,6 +6,7 @@
 #include "nukex/core/parallel_for.hpp"
 #include "nukex/core/running_accumulators.hpp"
 #include "nukex/stacker/phase_a_accumulate.hpp"
+#include "nukex/stacker/post_process.hpp"
 #include "nukex/core/coverage_trim.hpp"
 #include "nukex/core/channel_config.hpp"
 #include "nukex/core/frame_stats.hpp"
@@ -151,20 +152,6 @@ float compute_median_fwhm(const StarCatalog& catalog) {
     }
     if (fwhms.empty()) return 0.0f;
     return median_inplace(fwhms.data(), static_cast<int>(fwhms.size()));
-}
-
-/// Compute dominant shape across channels for a voxel.
-void compute_dominant_shape(SubcubeVoxel& voxel, int n_ch) {
-    int counts[7] = {};
-    for (int ch = 0; ch < n_ch; ch++) {
-        int s = static_cast<int>(voxel.channel(ch).distribution.shape);
-        if (s >= 0 && s < 7) counts[s]++;
-    }
-    int best = 0;
-    for (int i = 1; i < 7; i++) {
-        if (counts[i] > counts[best]) best = i;
-    }
-    voxel.dominant_shape = static_cast<DistributionShape>(best);
 }
 
 } // anonymous namespace
@@ -1521,52 +1508,33 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     }
 
-    // Post-processing: dominant shape + quality scores + spatial context
+    // Post-processing: spatial context, then ONE pass over the record.
+    //
+    // Dominant shape, quality score, the spatial-context writeback, the
+    // quality map and the measured-noise map were five separate sweeps of
+    // the voxel record. File-backed, each sweep re-read and re-wrote the
+    // whole file: 44 GB written and 53 s on a 59-frame 24 MP stack. Every one
+    // of them is per-voxel and none reads another voxel, so they run as one
+    // row-parallel pass. Spatial context reads only `stacked`, so it is
+    // computed first, into arrays.
     obs.begin_phase("Phase C: Post-processing", 3);
 
-    obs.advance(1, "dominant shape computation");
-    for (int y = 0; y < out_height; y++) {
-        for (int x = 0; x < out_width; x++) {
-            auto& voxel = cube.at(x, y);
-            compute_dominant_shape(voxel, n_ch);
-        }
-    }
-
-    obs.advance(1, "quality scores");
-    for (int y = 0; y < out_height; y++) {
-        for (int x = 0; x < out_width; x++) {
-            auto& voxel = cube.at(x, y);
-            float avg_snr = 0.0f;
-            for (int ch = 0; ch < n_ch; ch++) avg_snr += voxel.channel(ch).snr;
-            avg_snr /= n_ch;
-            float cloud_fraction = (voxel.n_frames > 0) ?
-                static_cast<float>(voxel.cloud_frame_count) / voxel.n_frames : 0.0f;
-            voxel.quality_score = voxel.channel(0).distribution.confidence
-                * (1.0f - cloud_fraction)
-                * std::min(1.0f, avg_snr / 50.0f);
-            voxel.confidence = voxel.channel(0).distribution.confidence;
-        }
-    }
-
-    // Spatial context (GPU kernel 4)
+    // Spatial context (GPU kernel 4, or the row-parallel CPU fallback).
     obs.advance(0, "spatial context");
     // The luminance the spatial kernel measures noise on, by slot NAME: the
     // L plane when there is one, else R, G, B by name, else positional.
     const LuminanceSpec noise_luminance =
         LuminanceSpec::for_config(cube.channel_config, stacked.n_channels());
-    gpu.execute_spatial_context(stacked, cube, &obs, noise_luminance);
+    std::vector<float> sc_grad, sc_bg, sc_rms;
+    gpu.compute_spatial_context(stacked, noise_luminance, sc_grad, sc_bg, sc_rms);
+    obs.advance(1);
+
+    obs.advance(1, "dominant shape, quality scores, quality and noise maps (one pass)");
+    Image quality_map, measured_noise;
+    post_process_record(cube, n_ch, sc_grad, sc_bg, sc_rms, quality_map, measured_noise);
     obs.advance(1);
 
     obs.end_phase();
-
-    // Quality map
-    Image quality_map = OutputAssembler::assemble_quality_map(cube);
-
-    // Measured noise: the stack's realised pixel-to-pixel scatter, beside the
-    // predicted noise_map. They answer different questions, and until now only
-    // the prediction existed -- which is why an estimator that adds noise of
-    // its own was invisible to NukeX's own diagnostics.
-    Image measured_noise = OutputAssembler::assemble_measured_noise(cube);
 
     // ═══ PHASE B FOLLOW-UP — Q-solve derived semantic slots ═══════════
     //

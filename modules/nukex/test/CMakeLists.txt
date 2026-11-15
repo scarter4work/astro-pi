@@ -106,6 +106,7 @@ nukex_add_test(test_compose_image  unit/compose/test_compose_image.cpp  nukex4_c
 nukex_add_test(test_frame_cache unit/stacker/test_frame_cache.cpp nukex4_stacker)
 nukex_add_test(test_stacking_engine unit/stacker/test_stacking_engine.cpp nukex4_stacker)
 nukex_add_test(test_phase_a_accumulate unit/stacker/test_phase_a_accumulate.cpp nukex4_stacker nukex4_io nukex4_core)
+nukex_add_test(test_post_process unit/stacker/test_post_process.cpp nukex4_stacker nukex4_io nukex4_core)
 nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp nukex4_stacker nukex4_core nukex4_io)
 

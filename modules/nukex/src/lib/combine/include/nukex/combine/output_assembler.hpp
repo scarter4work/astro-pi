@@ -13,6 +13,12 @@ public:
     };
     static Image assemble_quality_map(const Cube& cube);
 
+    /// One pixel of the quality map: mean true-signal estimate, worst
+    /// uncertainty, least confidence across the voxel's `n_ch` channels, and
+    /// its dominant shape. assemble_quality_map applies this to every voxel;
+    /// the stacker calls it inside its single post-processing pass.
+    static void quality_pixel(const SubcubeVoxel& v, int n_ch, float out[4]);
+
     /// The stack's REALISED pixel-to-pixel scatter, one channel, from
     /// SubcubeVoxel::local_rms. Distinct from noise_map, which is the
     /// PREDICTED uncertainty of each estimate; the two answer different

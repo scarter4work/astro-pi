@@ -14,6 +14,7 @@
 
 #include <fitsio.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <random>
@@ -125,6 +126,38 @@ void stack_both_ways(const std::vector<std::string>& lights, const fs::path& cac
         }
     REQUIRE(mismatches == 0);
     REQUIRE(with_samples == static_cast<long>(ca.width) * ca.height);
+
+    // Phase C wrote the spatial context into the record, each field where it
+    // belongs: on these flat, gently graded frames the local background is
+    // the sky level and the Sobel gradient is small, and the measured-noise
+    // map is the record's local_rms at the trimmed coordinates.
+    std::vector<float> bgs, grads, rmss;
+    for (int y = 0; y < cb.height; y++)
+        for (int x = 0; x < cb.width; x++) {
+            bgs.push_back(cb.at(x, y).local_background);
+            grads.push_back(cb.at(x, y).gradient_mag);
+            rmss.push_back(cb.at(x, y).local_rms);
+        }
+    std::nth_element(bgs.begin(), bgs.begin() + bgs.size() / 2, bgs.end());
+    std::nth_element(grads.begin(), grads.begin() + grads.size() / 2, grads.end());
+    const float bg_med = bgs[bgs.size() / 2], grad_med = grads[grads.size() / 2];
+    INFO("median local_background " << bg_med << ", median gradient_mag " << grad_med);
+    REQUIRE(bg_med > 0.2f);
+    REQUIRE(bg_med < 0.5f);
+    REQUIRE(grad_med < 0.1f);
+    // And the measured noise is a measurement: the frames carry 0.02 of
+    // noise, so the stack's local scatter is positive and below that.
+    std::nth_element(rmss.begin(), rmss.begin() + rmss.size() / 2, rmss.end());
+    const float rms_med = rmss[rmss.size() / 2];
+    INFO("median local_rms " << rms_med);
+    REQUIRE(rms_med > 1e-4f);
+    REQUIRE(rms_med < 0.02f);
+    const int x0 = b.trim.applied ? b.trim.x0 : 0, y0 = b.trim.applied ? b.trim.y0 : 0;
+    long rms_mismatch = 0;
+    for (int y = 0; y < b.measured_noise.height(); y++)
+        for (int x = 0; x < b.measured_noise.width(); x++)
+            if (b.measured_noise.at(x, y, 0) != cb.at(x + x0, y + y0).local_rms) ++rms_mismatch;
+    REQUIRE(rms_mismatch == 0);
 }
 
 } // namespace

@@ -78,7 +78,16 @@ public:
         Image* half_even = nullptr,
         Image* half_odd = nullptr);
 
-    /// Run spatial context on the stacked output.
+    /// Spatial context of the stacked output, per pixel, into the three
+    /// arrays (each resized to width * height) -- GPU kernel 4, or the
+    /// row-parallel CPU fallback. Touches no voxel, so a caller can write the
+    /// results into the record in the same pass as its other per-voxel work.
+    void compute_spatial_context(const Image& stacked, LuminanceSpec luminance,
+                                 std::vector<float>& gradient_mag,
+                                 std::vector<float>& local_background,
+                                 std::vector<float>& local_rms);
+
+    /// Run spatial context on the stacked output and write it into `cube`.
     void execute_spatial_context(
         const Image& stacked,
         Cube& cube,
