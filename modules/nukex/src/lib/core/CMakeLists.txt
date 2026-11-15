@@ -1,6 +1,7 @@
 add_library(nukex4_core STATIC
     src/channel_config.cpp
     src/cube.cpp
+    src/running_accumulators.cpp
     src/coverage_trim.cpp
     src/filter.cpp
     src/noise_model.cpp

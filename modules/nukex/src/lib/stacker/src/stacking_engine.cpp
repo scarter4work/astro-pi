@@ -3,6 +3,9 @@
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/stacker/cache_sig.hpp"
 #include "nukex/core/cube.hpp"
+#include "nukex/core/parallel_for.hpp"
+#include "nukex/core/running_accumulators.hpp"
+#include "nukex/stacker/phase_a_accumulate.hpp"
 #include "nukex/core/coverage_trim.hpp"
 #include "nukex/core/channel_config.hpp"
 #include "nukex/core/frame_stats.hpp"
@@ -628,41 +631,38 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 + (flat_paths.empty() ? "" : ", " + std::to_string(flat_paths.size()) + " flat"));
     obs.begin_phase("Phase A: Loading frames", n_frames);
 
-    // Helper: route one pre-resolved-index sample into a voxel slot.
-    // Initializes the histogram range on the very first sample for the
-    // slot and then performs the standard Welford + histogram update.
+    // Where Phase A's running accumulators live.
     //
-    // Index-keyed variant is the *only* variant we ship — name→index
-    // resolution is hoisted to once-per-frame at each per-frame switch
-    // case below. Pre-fix this was a string-keyed lookup hit per pixel
-    // per slot (96M lookups/frame at 6000×4000 OSC, ~600ms/stack
-    // overhead). Caller is expected to bounds-check the index up-front
-    // (the per-frame switch does this and std::abort()s on missing
-    // slots — that is a programmer error in the dispatch table /
-    // ChannelConfig::merge(), not a runtime input failure).
-    auto route_sample_idx = [&](SubcubeVoxel& voxel,
-                                int idx,
-                                float value,
-                                bool covered) {
-        // An uncovered pixel is not a measurement of darkness, it is the
-        // absence of a measurement. warp leaves 0 outside the source and 0
-        // is a legal pixel value, so without this guard every frame's
-        // dither excursion was averaged in as black: measured on a 53-frame
-        // M3 stack, a rim at 48.6% of interior brightness reaching 48 px
-        // deep, and 268,802 exactly-zero pixels.
-        if (!covered) return;
-        voxel.channel(idx).welford.update(value);
-        if (voxel.channel(idx).welford.count() == 1) {
-            voxel.channel(idx).histogram.initialize_range(value - 0.1f, value + 0.1f);
+    // An in-memory record takes them directly. A file-backed one must not:
+    // each voxel's Welford state and histogram are a few bytes inside a
+    // ~600-byte record, so folding in one frame dirtied every page of the
+    // file and the kernel wrote all of it back. Measured on a 59-frame
+    // 24 MP OSC stack: 953 GB written to the NVMe and 696 s of a 1062 s run
+    // in that loop. Those accumulators are held in RAM instead (a fraction
+    // of the record: they are only the Phase A fields) and copied into the
+    // record once when Phase A ends.
+    RunningAccumulators running;
+    if (cube.file_backed()) {
+        try {
+            running = RunningAccumulators(out_width, out_height, cube.allocated_channels());
+            char msg[200];
+            std::snprintf(msg, sizeof(msg),
+                          "Phase A accumulators: %.2f GB in memory beside the "
+                          "file-backed record, copied into it once after the last frame",
+                          static_cast<double>(running.bytes_allocated()) / 1e9);
+            obs.message(msg);
+        } catch (const std::bad_alloc&) {
+            running = RunningAccumulators();
+            char msg[200];
+            std::snprintf(msg, sizeof(msg),
+                          "Phase A accumulators: could not allocate %.2f GB beside the "
+                          "file-backed record; accumulating into the file instead, "
+                          "which rewrites it once per frame and is much slower.",
+                          static_cast<double>(RunningAccumulators::bytes_for(
+                              out_width, out_height, cube.allocated_channels())) / 1e9);
+            obs.message(msg);
         }
-        voxel.channel(idx).histogram.update(value);
-    };
-
-    // An empty mask means the frame was cloned rather than warped, so it
-    // covers itself completely.
-    auto covered_at = [](const CoverageMask& cov, int c, int y, int x) {
-        return cov.empty() || cov.covered(c, y, x);
-    };
+    }
 
     for (int f = 0; f < n_frames; f++) {
         std::string filename = light_paths[f];
@@ -976,6 +976,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         // luminance (0.299 R + 0.587 G + 0.114 B) — that's how we get the
         // "OSC-as-LRGB" effect that the spec promises.
         obs.advance(0, "  accumulating");
+        AccumulateKind kind = AccumulateKind::MONO;
+        int slots[4] = {-1, -1, -1, -1};
         switch (frame_filter.cls) {
             case FilterClass::BROADBAND_OSC: {
                 // Pre-resolve once per frame — not inside the pixel loop.
@@ -986,60 +988,28 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // table — that is a programmer error, so we std::abort()
                 // before entering the loop rather than silently routing into
                 // a garbage index.
-                int r_idx = cube.channel_config.slot_index("R");
-                int g_idx = cube.channel_config.slot_index("G");
-                int b_idx = cube.channel_config.slot_index("B");
-                int l_idx = cube.channel_config.slot_index("L");
-                if (r_idx < 0 || g_idx < 0 || b_idx < 0 || l_idx < 0) {
+                slots[0] = cube.channel_config.slot_index("R");
+                slots[1] = cube.channel_config.slot_index("G");
+                slots[2] = cube.channel_config.slot_index("B");
+                slots[3] = cube.channel_config.slot_index("L");
+                if (slots[0] < 0 || slots[1] < 0 || slots[2] < 0 || slots[3] < 0) {
                     std::abort(); // missing BROADBAND_OSC slot — dispatch-table bug
                 }
-                for (int y = 0; y < out_height; y++) {
-                    for (int x = 0; x < out_width; x++) {
-                        auto& voxel = cube.at(x, y);
-                        float r = aligned.image.at(x, y, 0);
-                        float g = aligned.image.at(x, y, 1);
-                        float b = aligned.image.at(x, y, 2);
-                        float l = 0.299f * r + 0.587f * g + 0.114f * b;
-                        const bool cr = covered_at(aligned.coverage, 0, y, x);
-                        const bool cg = covered_at(aligned.coverage, 1, y, x);
-                        const bool cb = covered_at(aligned.coverage, 2, y, x);
-                        route_sample_idx(voxel, r_idx, r, cr);
-                        route_sample_idx(voxel, g_idx, g, cg);
-                        route_sample_idx(voxel, b_idx, b, cb);
-                        // Synthetic luminance mixes all three planes, so it
-                        // is only a measurement where all three are.
-                        route_sample_idx(voxel, l_idx, l, cr && cg && cb);
-                        if (cr || cg || cb) voxel.n_frames++;
-                    }
-                }
+                kind = AccumulateKind::OSC_WITH_LUMA;
                 break;
             }
             case FilterClass::DUAL_NB_OSC: {
-                std::string r_slot = "R_" + frame_filter.name;
-                std::string g_slot = "G_" + frame_filter.name;
-                std::string b_slot = "B_" + frame_filter.name;
                 // Same once-per-frame hoist as BROADBAND_OSC: 3 lookups
                 // instead of 3 × width × height per-pixel string lookups.
                 // Abort on -1 — a missing dual-NB slot is a merge() bug,
                 // not a recoverable runtime condition.
-                int r_idx = cube.channel_config.slot_index(r_slot);
-                int g_idx = cube.channel_config.slot_index(g_slot);
-                int b_idx = cube.channel_config.slot_index(b_slot);
-                if (r_idx < 0 || g_idx < 0 || b_idx < 0) {
+                slots[0] = cube.channel_config.slot_index("R_" + frame_filter.name);
+                slots[1] = cube.channel_config.slot_index("G_" + frame_filter.name);
+                slots[2] = cube.channel_config.slot_index("B_" + frame_filter.name);
+                if (slots[0] < 0 || slots[1] < 0 || slots[2] < 0) {
                     std::abort(); // missing DUAL_NB_OSC slot — dispatch-table bug
                 }
-                for (int y = 0; y < out_height; y++) {
-                    for (int x = 0; x < out_width; x++) {
-                        auto& voxel = cube.at(x, y);
-                        const bool cr = covered_at(aligned.coverage, 0, y, x);
-                        const bool cg = covered_at(aligned.coverage, 1, y, x);
-                        const bool cb = covered_at(aligned.coverage, 2, y, x);
-                        route_sample_idx(voxel, r_idx, aligned.image.at(x, y, 0), cr);
-                        route_sample_idx(voxel, g_idx, aligned.image.at(x, y, 1), cg);
-                        route_sample_idx(voxel, b_idx, aligned.image.at(x, y, 2), cb);
-                        if (cr || cg || cb) voxel.n_frames++;
-                    }
-                }
+                kind = AccumulateKind::THREE_PLANE;
                 break;
             }
             case FilterClass::BROADBAND_L:
@@ -1056,23 +1026,14 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // and R/G/B or Ha/OIII/SII to the name itself. Looking up
                 // frame_filter.name directly aborted on every mono frame
                 // whose FILTER was not literally "L".
-                const std::string& slot_name = per_frame_cfg.channel_names[0];
-                // One lookup per frame instead of one per pixel — same
-                // rationale as the OSC cases above. Abort if the slot is
-                // absent: it means merge() didn't register this filter's
-                // slot, which is a dispatch-table programmer error.
-                int slot_idx = cube.channel_config.slot_index(slot_name);
-                if (slot_idx < 0) {
+                // One lookup per frame instead of one per pixel. Abort if the
+                // slot is absent: it means merge() didn't register this
+                // filter's slot, which is a dispatch-table programmer error.
+                slots[0] = cube.channel_config.slot_index(per_frame_cfg.channel_names[0]);
+                if (slots[0] < 0) {
                     std::abort(); // missing mono slot — dispatch-table bug
                 }
-                for (int y = 0; y < out_height; y++) {
-                    for (int x = 0; x < out_width; x++) {
-                        auto& voxel = cube.at(x, y);
-                        const bool c0 = covered_at(aligned.coverage, 0, y, x);
-                        route_sample_idx(voxel, slot_idx, aligned.image.at(x, y, 0), c0);
-                        if (c0) voxel.n_frames++;
-                    }
-                }
+                kind = AccumulateKind::MONO;
                 break;
             }
             case FilterClass::UNKNOWN:
@@ -1080,6 +1041,12 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 // reaching here means the upstream gate is broken.
                 std::abort();
         }
+        if (!running.empty())
+            accumulate_frame(RamSink{running}, aligned.image, aligned.coverage,
+                             out_width, out_height, kind, slots);
+        else
+            accumulate_frame(CubeSink{cube}, aligned.image, aligned.coverage,
+                             out_width, out_height, kind, slots);
 
         cube.n_frames_loaded++;
         result.n_frames_processed++;
@@ -1097,6 +1064,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // write_frame() only syncs every 8th frame -- see the note there on the
     // 26x write amplification a per-frame sync costs.
     for (auto& [sig, cache] : caches) cache.flush();
+
+    // The record gets its Phase A fields once, here, in one pass, rather
+    // than once per frame.
+    if (!running.empty()) {
+        running.store_into(cube);
+        running.release();
+    }
 
     obs.end_phase();
 
