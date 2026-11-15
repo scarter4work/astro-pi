@@ -37,6 +37,26 @@ endfunction()
 # Core library tests — each added when implemented (Tasks 4-10)
 nukex_add_test(test_image         unit/io/test_image.cpp           nukex4_io)
 nukex_add_test(test_fits_reader   unit/io/test_fits_reader.cpp     nukex4_io cfitsio)
+nukex_add_test(test_fits_concurrent unit/io/test_fits_concurrent.cpp nukex4_io cfitsio)
+# The same concurrency test against src/lib/io built WITHOUT this tree's root
+# definitions (as an embedding application builds it): the root's global
+# _REENTRANT once made CFITSIO thread-safe here by accident while the bridge
+# got a non-reentrant CFITSIO. Vendored CFITSIO only (it reuses its source).
+if(NOT NUKEX_USE_SYSTEM_CFITSIO)
+    FetchContent_GetProperties(cfitsio)
+    FetchContent_GetProperties(nlohmann_json)
+    add_test(NAME test_fits_concurrent_standalone
+             COMMAND ${CMAKE_COMMAND}
+                 -DNUKEX_ROOT=${CMAKE_SOURCE_DIR}
+                 -DBIN=${CMAKE_BINARY_DIR}/standalone_io
+                 -DC_COMPILER=${CMAKE_C_COMPILER}
+                 -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+                 -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+                 -DCFITSIO_SRC=${cfitsio_SOURCE_DIR}
+                 -DJSON_SRC=${nlohmann_json_SOURCE_DIR}
+                 -P ${CMAKE_SOURCE_DIR}/test/standalone_io/run.cmake)
+    set_tests_properties(test_fits_concurrent_standalone PROPERTIES TIMEOUT 600)
+endif()
 nukex_add_test(test_debayer       unit/io/test_debayer.cpp         nukex4_io)
 nukex_add_test(test_filter        unit/io/test_filter.cpp          nukex4_io)
 nukex_add_test(test_filter_classifier_io unit/io/test_filter_classifier.cpp nukex4_io nukex4_core)
