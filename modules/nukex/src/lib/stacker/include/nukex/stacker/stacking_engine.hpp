@@ -80,6 +80,12 @@ public:
         bool                  reuse_measured_stars = true;
         double                keep_calibrated_fraction = 0.2;
 
+        /// Phase A reads, debayers and flat-corrects the frames the measuring
+        /// pass did not keep a window at a time, in parallel, ahead of the
+        /// (serial, order-dependent) alignment. The window is sized from the
+        /// memory available. Off: each frame is read by Phase A itself.
+        bool                  load_ahead = true;
+
         /// Selects the source of the QE database:
         ///   - EMPTY (production default): load the database compiled INTO the
         ///     module binary (nukex::embedded_qe_database_json()). There is no

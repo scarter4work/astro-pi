@@ -100,12 +100,20 @@ void stack_with_and_without_reuse(const std::vector<std::string>& lights, const 
     StackingEngine::Config off = base;
     off.reuse_measured_stars = false;
     off.keep_calibrated_fraction = 0.0;
+    off.load_ahead = false;                // the path Phase A always took
+    StackingEngine::Config ahead = base;
+    ahead.reuse_measured_stars = false;
+    ahead.keep_calibrated_fraction = 0.0;
+    ahead.load_ahead = true;               // only the parallel loading ahead
     StackingEngine::Config on = base;
     on.reuse_measured_stars = true;
     on.keep_calibrated_fraction = 1.0;   // these frames are tiny: keep all
 
-    MessageLog log_off, log_on;
+    MessageLog log_off, log_on, log_ahead;
     auto a = StackingEngine(off).execute(lights, {}, &log_off);
+    auto c = StackingEngine(ahead).execute(lights, {}, &log_ahead);
+    REQUIRE(c.ok);
+    REQUIRE(c.n_frames_processed == static_cast<int>(lights.size()));
     auto b = StackingEngine(on).execute(lights, {}, &log_on);
     REQUIRE(a.ok);
     REQUIRE(b.ok);
@@ -125,6 +133,14 @@ void stack_with_and_without_reuse(const std::vector<std::string>& lights, const 
     REQUIRE(log_on.saw("Phase A: " + N + " of " + N + " frames aligned on the measuring pass's star catalogues; "
                        + N + " arrived"));
 
+    REQUIRE(log_off.saw("0 arrived already calibrated, 0 were loaded ahead"));
+    REQUIRE(log_ahead.saw("Phase A: 0 of " + N + " frames aligned on the measuring pass's star catalogues; "
+                          "0 arrived already calibrated, " + N + " were loaded ahead"));
+    REQUIRE(log_on.saw(N + " arrived already calibrated, 0 were loaded ahead"));
+    REQUIRE(same_image(a.stacked, c.stacked));
+    REQUIRE(same_image(a.noise_map, c.noise_map));
+    REQUIRE(same_image(a.measured_noise, c.measured_noise));
+    REQUIRE(same_image(a.quality_map, c.quality_map));
     REQUIRE(same_image(a.stacked, b.stacked));
     REQUIRE(same_image(a.noise_map, b.noise_map));
     REQUIRE(same_image(a.measured_noise, b.measured_noise));

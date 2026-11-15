@@ -52,6 +52,7 @@
 #include <cmath>
 #include <map>
 #include <numeric>
+#include <future>
 #include <set>
 #include <thread>
 #include <string>
@@ -325,6 +326,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         StarCatalog stars;                    ///< detect(image, star_config)
         Image       kept;                     ///< debayered + flat-corrected, or empty
         FrameMetadata meta;                   ///< valid when `kept` is not empty
+        bool        prefetched = false;       ///< `kept` was loaded ahead by Phase A, not kept by the pass
     };
     std::vector<MeasuredFrame> measured(n_frames);
     {
@@ -757,7 +759,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // in that loop. Those accumulators are held in RAM instead (a fraction
     // of the record: they are only the Phase A fields) and copied into the
     // record once when Phase A ends.
-    int n_stars_reused = 0, n_precalibrated = 0;   // measuring-pass products used
+    int n_stars_reused = 0, n_precalibrated = 0, n_prefetched = 0;
     RunningAccumulators running;
     if (cube.file_backed()) {
         try {
@@ -781,7 +783,86 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     }
 
+
+    // Frames the measuring pass did not keep are loaded AHEAD, in parallel.
+    //
+    // Reading, debayering and flat-correcting a frame needs nothing from the
+    // frames before it, so a window of them is prepared at once with
+    // parallel_for_dynamic -- the same steps, on the same pixels, as the
+    // measuring pass -- while alignment, which chains through earlier frames,
+    // and the accumulation stay strictly in frame order. Windows are double
+    // buffered: the next one loads on a background thread while this one is
+    // aligned and accumulated, so loading leaves the critical path. Memory is
+    // bounded like the measuring pass's workers -- a quarter of what is
+    // available now, six float planes of the raw frame per frame held -- and
+    // split between the two windows. Config::load_ahead off: Phase A reads
+    // each frame itself.
+    int load_budget = 1;
+    if (config_.load_ahead) {
+        const std::size_t plane = static_cast<std::size_t>(raw_width)
+                                * static_cast<std::size_t>(raw_height) * sizeof(float);
+        const std::size_t avail = GPUContext::host_available_bytes();
+        const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+        load_budget = hw;
+        if (avail > 0)
+            load_budget = static_cast<int>(std::clamp<double>(
+                (static_cast<double>(avail) / 4.0) / static_cast<double>(6 * plane), 1.0, static_cast<double>(hw)));
+    }
+    const int load_window = std::max(1, load_budget / 2);
+    auto load_range = [&](int f0, int f1) {
+        parallel_for_dynamic(f1 - f0, 1, load_window, [&](int k, int) {
+            const int g = f0 + k;
+            MeasuredFrame& m = measured[static_cast<std::size_t>(g)];
+            using O = MeasuredFrame::Outcome;
+            if (!m.kept.empty()) return;
+            if (m.outcome != O::MEASURED && m.outcome != O::BLOWN_OUT) return;
+            FITSReadResult rr = (g == 0 && first.success) ? std::move(first)
+                                                          : FITSReader::read(light_paths[g]);
+            if (!rr.success) return;   // Phase A's own read reports it
+            Image img = std::move(rr.image);
+            const BayerPattern gb = parse_bayer_pattern(rr.metadata.bayer_pattern);
+            if (gb != BayerPattern::NONE) img = DebayerEngine::debayer(img, gb);
+            if (!master_flat.empty()) FlatCalibration::apply(img, master_flat);
+            m.kept = std::move(img);
+            m.meta = std::move(rr.metadata);
+            m.prefetched = true;
+        });
+    };
+    int loaded_until = 0, pending_until = 0;
+    std::future<void> pending;
+    // Declared after everything the background load touches, so it is
+    // destroyed first: no return from the loop below can leave a load running
+    // against freed frames.
+    struct JoinPending {
+        std::future<void>& f;
+        ~JoinPending() { if (f.valid()) f.wait(); }
+    } join_pending{pending};
+    auto ensure_loaded = [&](int f) {
+        if (f < loaded_until) return;
+        if (pending.valid()) { pending.get(); loaded_until = pending_until; }
+        if (f >= loaded_until) {             // the first window: nothing to overlap with
+            loaded_until = std::min(n_frames, f + load_window);
+            load_range(f, loaded_until);
+        }
+        if (loaded_until < n_frames) {
+            pending_until = std::min(n_frames, loaded_until + load_window);
+            pending = std::async(std::launch::async,
+                                 [&load_range, a = loaded_until, b = pending_until] { load_range(a, b); });
+        }
+    };
+    if (config_.load_ahead) {
+        char msg[200];
+        std::snprintf(msg, sizeof(msg),
+                      "Phase A: loading %d frames at a time in parallel, the next %d "
+                      "in the background (%.2f GB of calibrated frames at most)",
+                      load_window, load_window,
+                      2.0 * static_cast<double>(load_window) * raw_width * raw_height
+                          * (bayer != BayerPattern::NONE ? 3 : 1) * sizeof(float) / 1e9);
+        obs.message(msg);
+    }
+
     for (int f = 0; f < n_frames; f++) {
+        if (config_.load_ahead) ensure_loaded(f);
         std::string filename = light_paths[f];
         auto slash = filename.rfind('/');
         if (slash != std::string::npos) filename = filename.substr(slash + 1);
@@ -798,8 +879,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             read_result.image    = std::move(mf.kept);
             read_result.metadata = std::move(mf.meta);
             if (f == 0) first = FITSReadResult{};
-            ++n_precalibrated;
-            obs.advance(0, "  calibrated in the measuring pass");
+            if (mf.prefetched) {
+                ++n_prefetched;
+                obs.advance(0, "  loaded ahead");
+            } else {
+                ++n_precalibrated;
+                obs.advance(0, "  calibrated in the measuring pass");
+            }
         } else {
             read_result = (f == 0) ? std::move(first) : FITSReader::read(light_paths[f]);
         }
@@ -1205,8 +1291,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         char msg[200];
         std::snprintf(msg, sizeof(msg),
                       "Phase A: %d of %d frames aligned on the measuring pass's star "
-                      "catalogues; %d arrived already calibrated",
-                      n_stars_reused, n_frames, n_precalibrated);
+                      "catalogues; %d arrived already calibrated, %d were loaded ahead",
+                      n_stars_reused, n_frames, n_precalibrated, n_prefetched);
         obs.message(msg);
     }
 
