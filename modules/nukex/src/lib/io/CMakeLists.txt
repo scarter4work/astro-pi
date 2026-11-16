@@ -4,7 +4,8 @@
 # to LD_LIBRARY_PATH, so PI's bundled libssl wins at module load time and
 # cannot satisfy those newer symbols — the module fails to load.
 #
-# Default path: FetchContent pulls a pinned cfitsio and builds it statically
+# Default path: FetchContent unpacks the committed, SHA-256-pinned cfitsio
+# archive (third_party/archives/, no network) and builds it statically
 # with --disable-curl, linked privately into nukex4_io. Hermetic, reproducible,
 # no user bootstrap.
 #
@@ -38,7 +39,7 @@ if(NUKEX_USE_SYSTEM_CFITSIO)
     target_compile_definitions(cfitsio INTERFACE NUKEX_SYSTEM_CFITSIO=1)
 else()
     enable_language(C)
-    include(FetchContent)
+    include(${CMAKE_CURRENT_LIST_DIR}/../../../cmake/NukeXVendoredArchives.cmake)
 
     set(USE_CURL          OFF CACHE BOOL "" FORCE)  # the whole point of vendoring
     set(TESTS             OFF CACHE BOOL "" FORCE)
@@ -76,12 +77,9 @@ else()
     # only with fits_open_diskfile().)
     set(HAVE_SHMEM_SERVICES FALSE CACHE INTERNAL "NukeX: no CFITSIO shared-memory driver" FORCE)
 
-    FetchContent_Declare(
-        cfitsio
-        GIT_REPOSITORY https://github.com/HEASARC/cfitsio.git
-        GIT_TAG        cfitsio-4.6.3
-        GIT_SHALLOW    TRUE
-    )
+    # cfitsio-4.6.3 from the committed, SHA-256-pinned archive (no network);
+    # see third_party/archives/README.md.
+    nukex_declare_vendored_archive(cfitsio cfitsio-4.6.3.tar.gz)
     FetchContent_MakeAvailable(cfitsio)
 
     set(_nukex_cfitsio_libs cfitsio)

@@ -75,13 +75,10 @@ endif()
 # nlohmann/json — header-only, vendored via FetchContent. Hoisted to root
 # so any subdir (calibration, learning, future composers) can link against
 # `nlohmann_json::nlohmann_json` without depending on subdir ordering.
-include(FetchContent)
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG        v3.11.3
-    GIT_SHALLOW    TRUE
-)
+# Every FetchContent source is a committed, SHA-256-pinned archive under
+# third_party/archives/ (see its README.md); the build never touches the network.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/NukeXVendoredArchives.cmake)
+nukex_declare_vendored_archive(nlohmann_json nlohmann_json-v3.11.3.tar.xz)
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install    OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)

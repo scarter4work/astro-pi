@@ -25,7 +25,11 @@ ensure_image
 # root): outputs are owned by the user, and permission-based tests are real
 # (root bypasses directory permissions, so test_atomic_write's read-only-dir
 # case can never fail as root).
-podman run --rm --security-opt label=disable --userns=keep-id \
+# --network=none: the module build is hermetic. Every third-party source is in
+# the image or committed (NukeX: modules/nukex/third_party/archives/, SHA-256
+# pinned), so anything that tries to download fails here instead of shipping
+# bytes nobody pinned.
+podman run --rm --network=none --security-opt label=disable --userns=keep-id \
    -v "$ROOT:/src" -e RUN_TESTS="$RUN_TESTS" \
    "$IMAGE" bash -euo pipefail -c '
    # test_pcl213_solver_links: the image libPCL is 2.13 (its blind solver is

@@ -4,7 +4,8 @@
 # sqlite3-dev vs. sqlite3 in different ABI variants will cause module-load
 # failures on end-user systems.
 #
-# Default path: FetchContent pulls the SQLite amalgamation and builds it as
+# Default path: FetchContent unpacks the committed, SHA-256-pinned SQLite
+# amalgamation (third_party/archives/, no network) and builds it as
 # a static object, linked privately into nukex4_learning.
 
 option(NUKEX_USE_SYSTEM_SQLITE
@@ -21,13 +22,11 @@ if(NUKEX_USE_SYSTEM_SQLITE)
     set(_nukex_sqlite_inc  "")
 else()
     enable_language(C)
-    include(FetchContent)
+    include(${CMAKE_CURRENT_LIST_DIR}/../../../cmake/NukeXVendoredArchives.cmake)
 
-    FetchContent_Declare(
-        sqlite_amalgamation
-        URL      https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip
-        URL_HASH SHA3_256=af6aae8d3eccc608857c63cf56efbadc70da48b5c719446b353ed88dded1e288
-    )
+    # The sqlite.org zip (SHA3-256 af6aae8d...e288, NukeX's earlier pin),
+    # committed and SHA-256-pinned; no network. See third_party/archives/README.md.
+    nukex_declare_vendored_archive(sqlite_amalgamation sqlite-amalgamation-3460100.zip)
     FetchContent_MakeAvailable(sqlite_amalgamation)
 
     add_library(sqlite3_vendored STATIC
