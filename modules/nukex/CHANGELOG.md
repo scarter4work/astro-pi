@@ -1,8 +1,16 @@
 # NukeX — Changelog
 
-## Engine library, after v5.3.1.2 (no PixInsight release: the process is unchanged)
+## v5.3.1.3 — 2026-11-16
 
-- **A master flat built beforehand can stand in for the flat frames.** Software built on the NukeX engine (the NukeX
+Pause/Abort during the final post-processing stops promptly. Every stack is unchanged.
+
+- **Pause/Abort after fitting is seen within a fraction of a second.** The steps after distribution fitting (finding
+  the area every frame covers, removing the sky gradient, measuring local background and noise, separating
+  dual-narrowband colour into emission lines, trimming and the noise check) checked for Abort only between some of
+  them, and several ran on one processor core. On ten 24-megapixel frames on a busy machine single stretches ran
+  12-36 s with no check. They now check as they go, and most use every core. The stacked image is byte-for-byte
+  identical to 5.3.1.2's.
+- **Engine library: a master flat built beforehand can stand in for the flat frames.** Software built on the NukeX engine (the NukeX
   standalone app's Calibrate stage) builds and caches its masters before it stacks, but the stacker took flat
   frames only, so every calibrated stack fitted the master flat again. A calibration set now carries an optional
   master flat. The stack is byte-for-byte the one the flat frames give, with the same report of what was taken off
