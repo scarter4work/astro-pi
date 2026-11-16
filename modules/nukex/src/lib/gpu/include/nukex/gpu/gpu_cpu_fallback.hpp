@@ -23,18 +23,21 @@ public:
     static void classify_weights(ShadowBuffers& buf,
                                   const FrameStats* frame_stats,
                                   const WeightConfig& config,
-                                  int batch_size, int n_channels, int n_frames);
+                                  int batch_size, int n_channels, int n_frames,
+                                  CancelPoll* cancel = nullptr);
 
     /// Kernel 2: Robust statistics (MAD, biweight midvariance, IQR).
     /// Mirrors robust_stats.cl
     static void robust_stats(ShadowBuffers& buf,
-                              int batch_size, int n_channels, int n_frames);
+                              int batch_size, int n_channels, int n_frames,
+                              CancelPoll* cancel = nullptr);
 
     /// Kernel 3: Pixel selection + noise propagation.
     /// Mirrors select_pixels.cl
     static void select_pixels(ShadowBuffers& buf,
                                const FrameStats* frame_stats,
-                               int batch_size, int n_channels, int n_frames);
+                               int batch_size, int n_channels, int n_frames,
+                               CancelPoll* cancel = nullptr);
 
     /// Kernel 4: Spatial context (Sobel + local background/RMS).
     /// Mirrors spatial_context.cl

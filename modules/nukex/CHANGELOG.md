@@ -1,6 +1,6 @@
 # NukeX — Changelog
 
-## Engine library, after v5.3.1.1 (no PixInsight release: the process is unchanged)
+## Engine library, after v5.3.1.2 (no PixInsight release: the process is unchanged)
 
 - **A master flat built beforehand can stand in for the flat frames.** Software built on the NukeX engine (the NukeX
   standalone app's Calibrate stage) builds and caches its masters before it stacks, but the stacker took flat
@@ -9,6 +9,21 @@
   the flats, because a master flat now records that report and which masters it was taken from (cached masters
   from earlier builds are rebuilt once). A master flat whose pedestal came from masters that are not in the set is
   refused, as is a master flat given together with flat frames.
+
+## v5.3.1.2 — 2026-11-16
+
+Pause/Abort during distribution fitting stops promptly. Every stack is unchanged.
+
+- **Pause/Abort while distributions are fitted is seen within a few hundredths of a second.** Fitting works
+  through the image in batches. Around the fit itself, each batch is copied out of the stack's working record,
+  through the GPU, and back, and each of those copies covered the whole batch (4.8 million pixels on ten
+  24-megapixel colour frames) with one check for Abort at its end. With the working record on disk and the machine
+  short of memory, fitting could run 0.4-6.9 s without a check. The copies now check for Abort as they go and use every core, the
+  GPU is given smaller batches, and opening the GPU checks before fitting starts. Measured on ten 24-megapixel
+  IC 1805 frames on a busy machine: an Abort during fitting was seen 0.12-1.16 s after it was requested (up to
+  0.94 s with every core also busy), and is now seen in 0.01-0.02 s (up to 0.1 s). The run ends once its working
+  files are released, usually about half a second later. The stacked image is byte-for-byte identical to
+  5.3.1.1's.
 
 ## v5.3.1.1 — 2026-11-16
 

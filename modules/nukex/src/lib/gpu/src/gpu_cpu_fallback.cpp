@@ -35,14 +35,15 @@ void GPUCPUFallback::classify_weights(
     ShadowBuffers& buf,
     const FrameStats* frame_stats,
     const WeightConfig& config,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, CancelPoll* cancel) {
 
     int B = batch_size;
     int N = n_frames;
     int C = n_channels;
 
     // Voxel-parallel: every write below lands in this voxel's own slots.
-    parallel_for_dynamic(B, 1024, [&](int vi, int) {
+    parallel_for_dynamic(B, 1024, [&](int vi, int worker) {
+        if (cancel && cancel->poll(worker)) return;
         // Per-channel frame counts: two slots can read different caches with
         // different frame sets, so there is no single count for the voxel.
         int nf_any = 0;
@@ -133,13 +134,14 @@ void GPUCPUFallback::classify_weights(
 
 void GPUCPUFallback::robust_stats(
     ShadowBuffers& buf,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, CancelPoll* cancel) {
 
     int B = batch_size;
     int N = n_frames;
     int C = n_channels;
 
-    parallel_for_dynamic(B, 1024, [&](int vi, int) {
+    parallel_for_dynamic(B, 1024, [&](int vi, int worker) {
+        if (cancel && cancel->poll(worker)) return;
         for (int ch = 0; ch < C; ch++) {
             // Per-channel frame count: a channel with fewer than two samples
             // has no spread to measure, and that is now a per-channel
@@ -221,13 +223,14 @@ void GPUCPUFallback::robust_stats(
 void GPUCPUFallback::select_pixels(
     ShadowBuffers& buf,
     const FrameStats* frame_stats,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames, CancelPoll* cancel) {
 
     int B = batch_size;
     int N = n_frames;
     int C = n_channels;
 
-    parallel_for_dynamic(B, 1024, [&](int vi, int) {
+    parallel_for_dynamic(B, 1024, [&](int vi, int worker) {
+        if (cancel && cancel->poll(worker)) return;
         for (int ch = 0; ch < C; ch++) {
             const int nf = buf.n_frames[ch * B + vi];
             float out_val = buf.dist_true_signal[ch * B + vi];

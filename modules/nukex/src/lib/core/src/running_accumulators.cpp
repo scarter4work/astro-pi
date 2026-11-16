@@ -39,10 +39,11 @@ void RunningAccumulators::store_into(Cube& cube, CancelPoll* cancel) const {
     const bool build = !cube.constructed();
     // A row per index: voxels of distinct rows are disjoint records, and a
     // whole row keeps each worker on contiguous pages of the record.
-    parallel_for_dynamic(height_, 8, [&](int y, int worker) {
-        if (cancel && cancel->poll(worker)) return;
+    auto row = [&](int y, int) {
+        if (cancel && cancel->cancelled()) return;
         if (build) cube.construct_row(y);
         for (int x = 0; x < w; ++x) {
+            if (cancel && (x & 1023) == 0 && cancel->cancelled()) return;
             const std::size_t p = static_cast<std::size_t>(y) * w + x;
             SubcubeVoxel& v = cube.at(x, y);
             for (int c = 0; c < nc; ++c) {
@@ -52,7 +53,14 @@ void RunningAccumulators::store_into(Cube& cube, CancelPoll* cancel) const {
             }
             v.n_frames = n_frames_[p];
         }
-    });
+    };
+    // With a CancelPoll the calling thread writes nothing and asks every
+    // 20 ms until the workers are done; they read the flag every 1024 voxels.
+    // Asking only from worker 0, between its own rows, left the tail of the
+    // pass unwatched once it ran out of rows -- rows of a file-backed record
+    // that page in from disk under memory pressure.
+    if (cancel) parallel_for_polled(height_, 8, 0, row, [&] { cancel->check(); });
+    else        parallel_for_dynamic(height_, 8, row);
     if (build && !(cancel && cancel->cancelled())) cube.mark_constructed();
 }
 

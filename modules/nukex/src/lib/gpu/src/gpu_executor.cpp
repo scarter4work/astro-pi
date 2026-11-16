@@ -33,10 +33,12 @@ GPUExecutor::GPUExecutor(const GPUExecutorConfig& config)
 
 void GPUExecutor::execute_batch_cpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    CancelPoll* cancel) {
 
-    GPUCPUFallback::classify_weights(buf, fs, wc, batch_size, n_channels, n_frames);
-    GPUCPUFallback::robust_stats(buf, batch_size, n_channels, n_frames);
+    GPUCPUFallback::classify_weights(buf, fs, wc, batch_size, n_channels, n_frames, cancel);
+    if (cancel && cancel->check()) return;
+    GPUCPUFallback::robust_stats(buf, batch_size, n_channels, n_frames, cancel);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -57,10 +59,11 @@ static cl_mem create_buf(cl_context ctx, cl_mem_flags flags, size_t size, void* 
 
 void GPUExecutor::execute_batch_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    CancelPoll* cancel) {
 
     if (!kernels_.is_compiled()) {
-        execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames);
+        execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames, cancel);
         return;
     }
 
@@ -240,10 +243,11 @@ void GPUExecutor::execute_batch_gpu(
 
 void GPUExecutor::execute_select_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    int batch_size, int n_channels, int n_frames) {
+    int batch_size, int n_channels, int n_frames,
+    CancelPoll* cancel) {
 
     if (!kernels_.is_compiled()) {
-        GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames);
+        GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames, cancel);
         return;
     }
 
@@ -410,14 +414,16 @@ void GPUExecutor::execute_spatial_gpu(
 
 void GPUExecutor::execute_batch_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    const WeightConfig& wc, int batch_size, int n_channels, int n_frames) {
-    execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames);
+    const WeightConfig& wc, int batch_size, int n_channels, int n_frames,
+    CancelPoll* cancel) {
+    execute_batch_cpu(buf, fs, wc, batch_size, n_channels, n_frames, cancel);
 }
 
 void GPUExecutor::execute_select_gpu(
     ShadowBuffers& buf, const FrameStats* fs,
-    int batch_size, int n_channels, int n_frames) {
-    GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames);
+    int batch_size, int n_channels, int n_frames,
+    CancelPoll* cancel) {
+    GPUCPUFallback::select_pixels(buf, fs, batch_size, n_channels, n_frames, cancel);
 }
 
 void GPUExecutor::execute_spatial_gpu(
@@ -494,24 +500,33 @@ void GPUExecutor::execute_phase_b(
                        + std::to_string(total_batches) + " ("
                        + std::to_string(count) + " voxels)");
 
-        // Step 1: Extract voxel data into SoA buffers
-        buf.extract_from_cube(cube, slot_refs, processed, count, n_channels);
-        if (cancel.check()) break;
+        // Every step below checks for a cancel inside its own loop, not only
+        // between steps: each covers the whole batch, and the copies to and
+        // from a file-backed record took 0.4-6.7 s per 4.8M-voxel batch under
+        // load. A step that returns false was cancelled part-way; the batch
+        // is abandoned, and nothing after the loop reads it.
 
-        // Steps 2-3: Weight computation + robust stats (GPU or CPU)
+        // Step 1: Extract voxel data into SoA buffers
+        if (!buf.extract_from_cube(cube, slot_refs, processed, count, n_channels, &cancel)
+            || cancel.check()) break;
+
+        // Steps 2-3: Weight computation + robust stats (GPU or CPU). The
+        // OpenCL dispatch itself cannot be interrupted; the staging cap in
+        // GPUContext::estimate_batch_size keeps it to a fraction of a second.
         obs.advance(0, "  kernel 1: weight classification" + backend_tag);
         obs.advance(0, "  kernel 2: robust statistics" + backend_tag);
         if (use_gpu) {
             execute_batch_gpu(buf, frame_stats.data(), weight_config,
-                              count, n_channels, N);
+                              count, n_channels, N, &cancel);
         } else {
             execute_batch_cpu(buf, frame_stats.data(), weight_config,
-                              count, n_channels, N);
+                              count, n_channels, N, &cancel);
         }
+        if (cancel.check()) break;
 
         // Step 4: Writeback classification + robust stats
-        buf.writeback_classification(cube, processed, count, n_channels);
-        if (cancel.check()) break;
+        if (!buf.writeback_classification(cube, processed, count, n_channels, &cancel)
+            || cancel.check()) break;
 
         // Step 5: CPU fitting (Ceres — cannot run on GPU).
         //
@@ -527,16 +542,23 @@ void GPUExecutor::execute_phase_b(
         //   - vals / wts are per-iteration stack locals.
         // dynamic scheduling with a moderately large chunk keeps the
         // heterogeneous per-voxel work balanced without excessive
-        // scheduling overhead (parallel_for_dynamic: std::thread, not
-        // OpenMP -- libgomp is not on stock distros, see parallel_for.hpp).
+        // scheduling overhead (std::thread, not OpenMP -- libgomp is not on
+        // stock distros, see parallel_for.hpp).
+        //
+        // parallel_for_polled: the calling thread fits nothing and asks for a
+        // cancel every 20 ms until the last worker is done. With
+        // parallel_for_dynamic it asked only between its own voxels, so once
+        // it ran out of chunks nobody asked while the others finished theirs
+        // -- each fit writes a file-backed record, and under memory pressure
+        // that tail ran to ~0.9 s. Workers read the flag before every voxel.
         obs.advance(0, "  fitting distributions (Ceres, parallel)");
         int w = cube.width;
         // Heartbeat: emits a "fitted K/N voxels (Ts)" line every 2 s from
-        // thread 0 so PI's Process Console shows liveness during the 3-4 min
-        // single-batch fit (otherwise silent between kernel 2 and kernel 3).
+        // the polling thread so PI's Process Console shows liveness during a
+        // long fit (otherwise silent between kernel 2 and kernel 3).
         FitHeartbeat hb(count, 2000);
-        parallel_for_dynamic(count, 256, [&](int vi, int worker) {
-            if (cancel.poll(worker)) return;
+        parallel_for_polled(count, 256, 0, [&](int vi, int worker) {
+            if (cancel.cancelled()) return;
             int voxel_idx = processed + vi;
             int px = voxel_idx % w;
             int py = voxel_idx / w;
@@ -587,26 +609,31 @@ void GPUExecutor::execute_phase_b(
                 }
             }
 
-            hb.tick(worker, obs);
+            hb.tick(worker, obs);   // counts only: worker is never 0 here
+        }, [&] {
+            if (!cancel.check()) hb.report(obs);
         });
 
         if (cancel.check()) break;
 
         // Step 6: Extract fitted distributions for select_pixels
-        buf.extract_distributions(cube, processed, count, n_channels);
+        if (!buf.extract_distributions(cube, processed, count, n_channels, &cancel)
+            || cancel.check()) break;
 
         // Step 7: Pixel selection (GPU or CPU)
         obs.advance(0, "  kernel 3: pixel selection" + backend_tag);
         if (use_gpu) {
-            execute_select_gpu(buf, frame_stats.data(), count, n_channels, N);
+            execute_select_gpu(buf, frame_stats.data(), count, n_channels, N, &cancel);
         } else {
             GPUCPUFallback::select_pixels(buf, frame_stats.data(),
-                                           count, n_channels, N);
+                                           count, n_channels, N, &cancel);
         }
+        if (cancel.check()) break;
 
         // Step 8: Writeback output values
-        buf.writeback_selection(cube, processed, count, n_channels,
-                                 stacked_output.data(), noise_output.data());
+        if (!buf.writeback_selection(cube, processed, count, n_channels,
+                                     stacked_output.data(), noise_output.data(), &cancel))
+            break;
 
         processed += count;
         obs.advance(1);  // batch complete, advance progress bar

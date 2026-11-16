@@ -6,6 +6,7 @@
 #include "nukex/core/frame_stats.hpp"
 #include "nukex/classify/weight_computer.hpp"
 #include "nukex/stacker/cache_sig.hpp"
+#include "nukex/core/cancel_poll.hpp"
 #include <vector>
 #include <cstdint>
 
@@ -106,13 +107,21 @@ struct ShadowBuffers {
     /// Allocate all buffers for a given batch size.
     void allocate(int batch_size, int n_channels, int max_frames);
 
+    // The four copies between the cube and these buffers each cover a whole
+    // batch (millions of voxels, file-backed records that page-fault), so each
+    // checks `cancel` as it goes (before every voxel, and every 64k pixels of
+    // a frame-row read; see for_each_voxel in the .cpp). They return false
+    // when it was set, leaving the buffers or the cube part-way written -- the
+    // caller abandons the batch. nullptr: no checks, always true.
+
     /// Extract voxel data from the cube into SoA layout.
     /// Reads per-frame pixel values via slot_refs (one entry per cube slot).
     /// start_voxel: linear index into the cube's voxel array.
     /// count: number of voxels in this batch.
-    void extract_from_cube(const Cube& cube,
+    bool extract_from_cube(const Cube& cube,
                            const std::vector<ChannelCacheRef>& slot_refs,
-                           int start_voxel, int count, int n_channels);
+                           int start_voxel, int count, int n_channels,
+                           CancelPoll* cancel = nullptr);
 
     /// Fill global_frame_of from the slot refs. Call once per batch, before
     /// extract_from_cube. Separate because it depends only on the caches,
@@ -121,18 +130,20 @@ struct ShadowBuffers {
                     int n_channels);
 
     /// Write classification + robust stats back to voxels.
-    void writeback_classification(Cube& cube, int start_voxel, int count,
-                                   int n_channels) const;
+    bool writeback_classification(Cube& cube, int start_voxel, int count,
+                                   int n_channels,
+                                   CancelPoll* cancel = nullptr) const;
 
     /// Write fitted distributions from voxels into the dist_* input buffers.
     /// Called after CPU fitting, before the select_pixels kernel.
-    void extract_distributions(const Cube& cube, int start_voxel, int count,
-                                int n_channels);
+    bool extract_distributions(const Cube& cube, int start_voxel, int count,
+                                int n_channels, CancelPoll* cancel = nullptr);
 
     /// Write selection output (value, noise, SNR) back to the cube's output arrays.
-    void writeback_selection(Cube& cube, int start_voxel, int count,
+    bool writeback_selection(Cube& cube, int start_voxel, int count,
                               int n_channels,
-                              float* output_image, float* noise_image) const;
+                              float* output_image, float* noise_image,
+                              CancelPoll* cancel = nullptr) const;
 };
 
 } // namespace nukex

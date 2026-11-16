@@ -15,6 +15,23 @@ add_compile_definitions(NUKEX_REPOSITORY_DIR="${CMAKE_SOURCE_DIR}/repository")
 # (as opposed to synthetic test/fixtures/ data) through their real loaders.
 add_compile_definitions(NUKEX_SHARE_DIR="${CMAKE_SOURCE_DIR}/share")
 
+# Every test's scratch files go under the build tree, not /tmp: /tmp can be a
+# RAM tmpfs, the big-frame tests write 300-400 MB each, and a test killed by a
+# timeout or a signal leaves its directory behind. Tests take their scratch
+# root from std::filesystem::temp_directory_path(), which reads TMPDIR, so
+# ctest sets TMPDIR for each of them; the fixture below empties the directory
+# before every run, which removes whatever a killed run left.
+set(NUKEX_TEST_TMPDIR "${CMAKE_BINARY_DIR}/test-tmp")
+add_test(NAME nukex_test_tmp_reset
+         COMMAND ${CMAKE_COMMAND} -DDIR=${NUKEX_TEST_TMPDIR}
+                 -P ${CMAKE_SOURCE_DIR}/test/reset_test_tmp.cmake)
+set_tests_properties(nukex_test_tmp_reset PROPERTIES FIXTURES_SETUP nukex_test_tmp)
+function(nukex_test_scratch test_name)
+    set_tests_properties(${test_name} PROPERTIES
+        ENVIRONMENT "TMPDIR=${NUKEX_TEST_TMPDIR}"
+        FIXTURES_REQUIRED nukex_test_tmp)
+endfunction()
+
 # Helper function to add a test executable.
 #
 # `--allow-running-no-tests` is passed so that test binaries whose
@@ -32,6 +49,7 @@ function(nukex_add_test test_name test_source)
     add_test(NAME ${test_name}
              COMMAND ${test_name} --allow-running-no-tests
              WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    nukex_test_scratch(${test_name})
 endfunction()
 
 # Core library tests — each added when implemented (Tasks 4-10)
@@ -56,6 +74,7 @@ if(NOT NUKEX_USE_SYSTEM_CFITSIO)
                  -DJSON_SRC=${nlohmann_json_SOURCE_DIR}
                  -P ${CMAKE_SOURCE_DIR}/test/standalone_io/run.cmake)
     set_tests_properties(test_fits_concurrent_standalone PROPERTIES TIMEOUT 600)
+    nukex_test_scratch(test_fits_concurrent_standalone)
 endif()
 nukex_add_test(test_debayer       unit/io/test_debayer.cpp         nukex4_io)
 nukex_add_test(test_filter        unit/io/test_filter.cpp          nukex4_io)

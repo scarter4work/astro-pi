@@ -2,11 +2,51 @@
 #include "nukex/core/cube.hpp"
 #include "nukex/stacker/frame_cache.hpp"
 #include "nukex/stacker/cache_sig.hpp"
+#include "nukex/core/parallel_for.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 
 namespace nukex {
+
+namespace {
+
+// Voxels per claimed block in the cube <-> buffer copies.
+constexpr int kCopyBlock = 16384;
+
+// Pixels per cancel check in extract_from_cube's frame-row reads.
+constexpr int kRowSpan = 65536;
+
+// Runs fn(vi) for every vi in [0, count), in blocks of kCopyBlock spread over
+// worker threads. Each vi touches only its own voxel and its own buffer slots,
+// so the blocks are independent and the result does not depend on how they
+// are scheduled. False when a cancel stopped it.
+//
+// With a CancelPoll the calling thread does no copying: it asks for a cancel
+// every 20 ms until the workers are done (parallel_for_polled), and they read
+// the flag before every voxel. A block of a file-backed record can take most
+// of a second when its pages have to come back from disk, so asking between
+// blocks -- or only from a thread that also copies -- is not enough.
+template <typename Fn>
+bool for_each_voxel(int count, CancelPoll* cancel, Fn&& fn) {
+    const int n_blocks = (count + kCopyBlock - 1) / kCopyBlock;
+    auto block = [&](int b, int) {
+        const int v0 = b * kCopyBlock;
+        const int v1 = std::min(count, v0 + kCopyBlock);
+        for (int vi = v0; vi < v1; ++vi) {
+            if (cancel && cancel->cancelled()) return;
+            fn(vi);
+        }
+    };
+    if (!cancel) {
+        parallel_for_dynamic(n_blocks, 1, block);
+        return true;
+    }
+    parallel_for_polled(n_blocks, 1, 0, block, [&] { cancel->check(); });
+    return !cancel->cancelled();
+}
+
+} // namespace
 
 void ShadowBuffers::allocate(int bs, int nc, int mf) {
     batch_size = bs;
@@ -55,10 +95,10 @@ void ShadowBuffers::allocate(int bs, int nc, int mf) {
     snr_out.resize(C * B, 0.0f);
 }
 
-void ShadowBuffers::extract_from_cube(
+bool ShadowBuffers::extract_from_cube(
     const Cube& cube,
     const std::vector<ChannelCacheRef>& slot_refs,
-    int start_voxel, int count, int nc) {
+    int start_voxel, int count, int nc, CancelPoll* cancel) {
 
     int B = count;
     int C = nc;
@@ -74,17 +114,18 @@ void ShadowBuffers::extract_from_cube(
     // The cube's per-voxel statistics are indexed by voxel; the cache is read
     // by frame-row. Two loops rather than one, because interleaving them would
     // put the cache back on a per-pixel access pattern.
-    for (int vi = 0; vi < B; vi++) {
-        int voxel_idx = start_voxel + vi;
-        int px = voxel_idx % w;
-        int py = voxel_idx / w;
-        const auto& voxel = cube.at(px, py);
-        for (int ch = 0; ch < C; ch++) {
-            welford_mean[ch * B + vi] = voxel.channel(ch).welford.mean;
-            welford_M2[ch * B + vi]   = voxel.channel(ch).welford.M2;
-            welford_n[ch * B + vi]    = voxel.channel(ch).welford.n;
-        }
-    }
+    if (!for_each_voxel(B, cancel, [&](int vi) {
+            int voxel_idx = start_voxel + vi;
+            int px = voxel_idx % w;
+            int py = voxel_idx / w;
+            const auto& voxel = cube.at(px, py);
+            for (int ch = 0; ch < C; ch++) {
+                welford_mean[ch * B + vi] = voxel.channel(ch).welford.mean;
+                welford_M2[ch * B + vi]   = voxel.channel(ch).welford.M2;
+                welford_n[ch * B + vi]    = voxel.channel(ch).welford.n;
+            }
+        }))
+        return false;
 
     // Scratch for one frame-row of one channel. Sized by the BATCH, not by
     // the frame count, so this costs a few bytes per voxel however deep the
@@ -114,6 +155,22 @@ void ShadowBuffers::extract_from_cube(
         }
 
         for (int fi = 0; fi < n_ch; fi++) {
+            // Reads frame-row `fi` of cache channel `cache_ch` in spans of
+            // kRowSpan pixels, asking for a cancel before each. On this
+            // thread only: the valid bits of neighbouring voxels share bytes,
+            // so a row is not split across workers. The cache stores a
+            // frame's pixels in raster order, so the spans read exactly what
+            // one whole-row read would. 1 read, 0 cancelled, -1 refused.
+            auto read_row = [&](int cache_ch, float* v, std::uint8_t* ok) -> int {
+                for (int s = 0; s < B; s += kRowSpan) {
+                    if (cancel && cancel->check()) return 0;
+                    const int n = std::min(kRowSpan, B - s);
+                    if (!ref.cache->read_frame_range(fi, start_voxel + s, n,
+                                                     cache_ch, v + s, ok + s))
+                        return -1;
+                }
+                return 1;
+            };
             if (ref.kind == SlotSynthesis::DIRECT) {
                 // A false return here is currently unreachable: n_ch above is
                 // min(ref.cache->n_frames_written(), N), which is exactly what
@@ -122,10 +179,9 @@ void ShadowBuffers::extract_from_cube(
                 // set_sample_valid below, so the sample's valid bit stays at
                 // the 0 pixel_valid was assigned to, and both Phase B
                 // consumers gate on that bit.
-                if (!ref.cache->read_frame_range(fi, start_voxel, B,
-                                                 ref.cache_ch,
-                                                 row.data(), row_ok.data()))
-                    continue;
+                const int got = read_row(ref.cache_ch, row.data(), row_ok.data());
+                if (got == 0) return false;
+                if (got < 0) continue;
 
             } else if (ref.kind == SlotSynthesis::REC709_LUMA) {
                 // Synthesise L per-frame from cached R, G, B. Same formula as
@@ -134,15 +190,11 @@ void ShadowBuffers::extract_from_cube(
                 //
                 // Same unreachable-but-harmless refusal as the DIRECT branch
                 // above, for each of these three reads.
-                if (!ref.cache->read_frame_range(fi, start_voxel, B, 0,
-                                                 row.data(), row_ok.data()))
-                    continue;
-                if (!ref.cache->read_frame_range(fi, start_voxel, B, 1,
-                                                 g_row.data(), g_ok.data()))
-                    continue;
-                if (!ref.cache->read_frame_range(fi, start_voxel, B, 2,
-                                                 b_row.data(), b_ok.data()))
-                    continue;
+                int got = read_row(0, row.data(), row_ok.data());
+                if (got > 0) got = read_row(1, g_row.data(), g_ok.data());
+                if (got > 0) got = read_row(2, b_row.data(), b_ok.data());
+                if (got == 0) return false;
+                if (got < 0) continue;
                 for (int vi = 0; vi < B; ++vi) {
                     row[vi] = 0.299f * row[vi]
                             + 0.587f * g_row[vi]
@@ -173,6 +225,7 @@ void ShadowBuffers::extract_from_cube(
         for (int vi = 0; vi < B; ++vi)
             n_frames[ch * B + vi] = static_cast<uint16_t>(n_ch);
     }
+    return true;
 }
 
 void ShadowBuffers::map_frames(const std::vector<ChannelCacheRef>& slot_refs,
@@ -188,14 +241,14 @@ void ShadowBuffers::map_frames(const std::vector<ChannelCacheRef>& slot_refs,
     }
 }
 
-void ShadowBuffers::writeback_classification(
-    Cube& cube, int start_voxel, int count, int nc) const {
+bool ShadowBuffers::writeback_classification(
+    Cube& cube, int start_voxel, int count, int nc, CancelPoll* cancel) const {
 
     int B = count;
     int C = nc;
     int w = cube.width;
 
-    for (int vi = 0; vi < B; vi++) {
+    return for_each_voxel(B, cancel, [&](int vi) {
         int voxel_idx = start_voxel + vi;
         int px = voxel_idx % w;
         int py = voxel_idx / w;
@@ -213,17 +266,17 @@ void ShadowBuffers::writeback_classification(
             voxel.channel(ch).biweight_midvariance = biweight_midvar_out[ch * B + vi];
             voxel.channel(ch).iqr                  = iqr_out[ch * B + vi];
         }
-    }
+    });
 }
 
-void ShadowBuffers::extract_distributions(
-    const Cube& cube, int start_voxel, int count, int nc) {
+bool ShadowBuffers::extract_distributions(
+    const Cube& cube, int start_voxel, int count, int nc, CancelPoll* cancel) {
 
     int B = count;
     int C = nc;
     int w = cube.width;
 
-    for (int vi = 0; vi < B; vi++) {
+    return for_each_voxel(B, cancel, [&](int vi) {
         int voxel_idx = start_voxel + vi;
         int px = voxel_idx % w;
         int py = voxel_idx / w;
@@ -234,19 +287,19 @@ void ShadowBuffers::extract_distributions(
             dist_uncertainty[ch * B + vi] = voxel.channel(ch).distribution.signal_uncertainty;
             dist_confidence[ch * B + vi]  = voxel.channel(ch).distribution.confidence;
         }
-    }
+    });
 }
 
-void ShadowBuffers::writeback_selection(
+bool ShadowBuffers::writeback_selection(
     Cube& cube, int start_voxel, int count, int nc,
-    float* output_image, float* noise_image) const {
+    float* output_image, float* noise_image, CancelPoll* cancel) const {
 
     int B = count;
     int C = nc;
     int w = cube.width;
     int h = cube.height;
 
-    for (int vi = 0; vi < B; vi++) {
+    return for_each_voxel(B, cancel, [&](int vi) {
         int voxel_idx = start_voxel + vi;
         int px = voxel_idx % w;
         int py = voxel_idx / w;
@@ -265,7 +318,7 @@ void ShadowBuffers::writeback_selection(
             if (noise_image)
                 noise_image[ch * w * h + py * w + px] = noise;
         }
-    }
+    });
 }
 
 } // namespace nukex
