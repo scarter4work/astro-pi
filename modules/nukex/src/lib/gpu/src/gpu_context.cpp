@@ -273,10 +273,17 @@ int GPUContext::estimate_batch_size(int n_frames, int n_channels) const {
         //
         // Batch size is a staging choice, not a numerical one -- proven
         // bit-exact across batch splits in test_gpu_cpu_fallback -- so a
-        // smaller batch buys more kernel launches and costs nothing else. At
-        // 2 GiB a 156-frame, 4-channel run still stages ~400k voxels at a
-        // time, which is ~21 batches for a 24 MP frame.
-        constexpr std::size_t kMaxHostStagingBytes = 2ull * 1024 * 1024 * 1024;
+        // smaller batch buys more kernel launches and costs nothing else.
+        //
+        // The ceiling also bounds how long a cancel can wait. A kernel
+        // dispatch cannot be interrupted, and its upload, run and read-back
+        // scale with the batch: at 2 GiB (4.8M voxels of ten 24 MP colour
+        // frames) kernels 1-2 took 0.17-0.4 s and kernel 3 0.3-0.7 s under
+        // load. At 512 MiB that batch is 1.2M voxels (21 batches for the
+        // frame) and each dispatch took 0.07-0.21 s at load 35-48 -- no
+        // shorter at 256 MiB, where the GPU's own latency and other processes
+        // on it dominate. A 156-frame, 4-channel run stages ~100k at a time.
+        constexpr std::size_t kMaxHostStagingBytes = 512ull * 1024 * 1024;
         if (avail > 0) host_budget = std::min(avail / 2, kMaxHostStagingBytes);
         else           host_budget = kMaxHostStagingBytes;
     }

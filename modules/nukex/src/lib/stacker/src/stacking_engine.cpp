@@ -1721,6 +1721,12 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     } else {
         obs.message("GPU: CPU fallback");
     }
+    // Routing the caches, allocating the outputs and opening the OpenCL
+    // context took ~1 s on 24 MP colour under load, with no check.
+    if (cancel.check()) {
+        obs.message("Cancelled during distribution fitting.");
+        return result;
+    }
 
     // Fitting callback — called per-voxel by the GPU executor after
     // kernels 1+2 complete. Runs the Ceres-based model selection cascade.

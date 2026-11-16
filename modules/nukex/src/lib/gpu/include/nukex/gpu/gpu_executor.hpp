@@ -105,15 +105,18 @@ public:
     /// Public for GPU vs CPU agreement testing.
     void execute_batch_gpu(ShadowBuffers& buf, const FrameStats* fs,
                            const WeightConfig& wc, int batch_size,
-                           int n_channels, int n_frames);
+                           int n_channels, int n_frames,
+                           CancelPoll* cancel = nullptr);
 
     void execute_batch_cpu(ShadowBuffers& buf, const FrameStats* fs,
                            const WeightConfig& wc, int batch_size,
-                           int n_channels, int n_frames);
+                           int n_channels, int n_frames,
+                           CancelPoll* cancel = nullptr);
 
     /// Execute kernel 3 (select_pixels) on GPU for a batch.
     void execute_select_gpu(ShadowBuffers& buf, const FrameStats* fs,
-                            int batch_size, int n_channels, int n_frames);
+                            int batch_size, int n_channels, int n_frames,
+                            CancelPoll* cancel = nullptr);
 
     /// Execute kernel 4 (spatial_context) on GPU.
     void execute_spatial_gpu(const Image& stacked,

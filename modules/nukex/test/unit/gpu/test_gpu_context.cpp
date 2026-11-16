@@ -109,7 +109,7 @@ TEST_CASE("GPUContext: the measured default is bounded, not just proportional",
     ctx.set_host_memory_budget(0);                          // measured default
     const int measured = ctx.estimate_batch_size(156, 4);
 
-    ctx.set_host_memory_budget(2ull * 1024 * 1024 * 1024);  // the ceiling
+    ctx.set_host_memory_budget(512ull * 1024 * 1024);       // the ceiling
     const int at_ceiling = ctx.estimate_batch_size(156, 4);
 
     INFO("measured=" << measured << " at_ceiling=" << at_ceiling);

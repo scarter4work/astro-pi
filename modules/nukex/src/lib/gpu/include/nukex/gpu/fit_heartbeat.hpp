@@ -27,6 +27,11 @@ public:
     /// has elapsed since the last emission, emits via `obs.advance(0, ...)`.
     void tick(int thread_id, ProgressObserver& obs);
 
+    /// Emits the line if the interval has elapsed, without counting a voxel:
+    /// for the thread that polls while workers fit (parallel_for_polled),
+    /// which is never worker 0 of the loop.
+    void report(ProgressObserver& obs);
+
     int done() const { return done_.load(std::memory_order_relaxed); }
 
 private:

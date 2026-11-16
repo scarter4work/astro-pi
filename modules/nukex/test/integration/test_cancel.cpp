@@ -114,7 +114,10 @@ struct Outcome {
 
 Outcome cancel_at(const std::string& name, const std::string& trigger, int skip,
                   bool file_backed = false) {
-    const fs::path root = fs::temp_directory_path() / ("nukex_cancel_" + name);
+    // Unique per run: two runs at once (ctest -j, other worktrees) must not
+    // share frames or a cache directory.
+    std::random_device rd;
+    const fs::path root = fs::temp_directory_path() / ("nukex_cancel_" + name + "_" + std::to_string(rd()));
     fs::remove_all(root);
     const auto lights = write_frames(root / "frames");
     const fs::path cache = root / "cache";
@@ -198,6 +201,16 @@ TEST_CASE("Cancel: while the RAM accumulators are stored into a file-backed reco
 #endif
 }
 
+TEST_CASE("Cancel: after the GPU is set up, before Phase B's first batch",
+          "[integration][cancel]") {
+    // Routing, the output images and the OpenCL context come between the last
+    // check of Phase A and the first of Phase B: ~1 s on 24 MP colour.
+    auto o = cancel_at("gpu_setup", "GPU: ", 0);
+    require_clean(o);
+    REQUIRE_FALSE(o.obs.saw_after("Batch 1/"));
+    REQUIRE(o.obs.saw_after("Cancelled during distribution fitting."));
+}
+
 TEST_CASE("Cancel: in Phase B between a batch's kernels and its fitting",
           "[integration][cancel]") {
     auto o = cancel_at("kernels", "  kernel 1", 0);
@@ -278,47 +291,98 @@ std::vector<std::string> write_big_frames(const fs::path& dir) {
     return out;
 }
 
-/// Records every is_cancelled() from the owning thread while the measuring
-/// pass runs; cancels `after` into the pass when `after` is positive, or at
-/// the pass's first progress line when `on_first_frame` is set.
+/// Records every is_cancelled() from the owning thread while the phase named
+/// `phase` runs; cancels `after` into the phase when `after` is positive, or at
+/// the phase's first progress line when `on_first_frame` is set. With
+/// `bounded`, the phase's begin_phase and end_phase count as the first and last
+/// poll, so a stretch before the first check or after the last one is a gap too.
+///
+/// A GPU kernel dispatch cannot check for a cancel: Phase B announces one with
+/// a "kernel 2: ... [GPU]" or "kernel 3: ... [GPU]" line and checks right after
+/// it. That stretch (the line to the next poll) is recorded as a dispatch, not
+/// a gap; GPUContext's staging cap bounds it, not a check.
 struct PollRecorder : ProgressObserver {
     std::thread::id owner = std::this_thread::get_id();
+    std::string phase = "Measuring frames";
+    bool bounded = false;
     bool in_pass = false;
     clk::time_point pass_start{};
     std::chrono::milliseconds after{0};
     bool on_first_frame = false;
     mutable bool fired = false;
     mutable clk::time_point fired_at{};
-    mutable std::vector<clk::time_point> polls;
+    mutable long polls = 0;
     mutable int foreign_calls = 0;
-    void begin_phase(const std::string& n, int) override {
-        in_pass = n.find("Measuring frames") != std::string::npos;
-        if (in_pass) pass_start = clk::now();
+    mutable bool have_last = false;
+    mutable clk::time_point last_poll{};
+    mutable double max_gap = 0.0;
+    mutable std::string last_line, max_gap_at;
+    mutable bool in_dispatch = false;
+    mutable clk::time_point dispatch_start{};
+    mutable double max_dispatch = 0.0;
+    mutable std::vector<std::pair<clk::time_point, clk::time_point>> dispatches;
+    void gap_to(clk::time_point now) const {
+        if (in_dispatch) {
+            in_dispatch = false;
+            dispatches.push_back({dispatch_start, now});
+            max_dispatch = std::max(max_dispatch,
+                                    std::chrono::duration<double>(now - dispatch_start).count());
+        } else if (have_last) {
+            const double g = std::chrono::duration<double>(now - last_poll).count();
+            if (g > max_gap) { max_gap = g; max_gap_at = last_line; }
+        }
+        have_last = true;
+        last_poll = now;
     }
-    void advance(int, const std::string&) override {
+    /// Seconds of [a, b] spent inside GPU dispatches.
+    double dispatch_overlap_s(clk::time_point a, clk::time_point b) const {
+        double s = 0.0;
+        for (const auto& [d0, d1] : dispatches) {
+            const auto lo = std::max(a, d0), hi = std::min(b, d1);
+            if (hi > lo) s += std::chrono::duration<double>(hi - lo).count();
+        }
+        return s;
+    }
+    void begin_phase(const std::string& n, int) override {
+        in_pass = n.find(phase) != std::string::npos;
+        if (in_pass) {
+            pass_start = clk::now();
+            last_line = n;
+            if (bounded) gap_to(pass_start);
+        }
+    }
+    void advance(int, const std::string& d) override {
+        if (in_pass) last_line = d;
+        if (in_pass && d.find("[GPU]") != std::string::npos
+            && (d.find("kernel 2:") != std::string::npos || d.find("kernel 3:") != std::string::npos)) {
+            const auto now = clk::now();
+            gap_to(now);   // the host work up to this line is a gap like any other
+            in_dispatch = true;
+            dispatch_start = now;
+        }
         if (in_pass && on_first_frame && !fired) {
             fired = true;
             fired_at = clk::now();
         }
     }
-    void end_phase() override { in_pass = false; }
+    clk::time_point ended_at{};   // when the watched phase ended
+    void end_phase() override {
+        if (in_pass) ended_at = clk::now();
+        if (in_pass && bounded) gap_to(ended_at);
+        in_pass = false;
+    }
     void message(const std::string&) override {}
     bool is_cancelled() const override {
         if (std::this_thread::get_id() != owner) { ++foreign_calls; return false; }
         const auto now = clk::now();
-        if (in_pass) polls.push_back(now);
+        if (in_pass) { ++polls; gap_to(now); }
         if (!fired && in_pass && after.count() > 0 && now - pass_start >= after) {
             fired = true;
             fired_at = now;
         }
         return fired;
     }
-    double max_gap_s() const {
-        double g = 0.0;
-        for (std::size_t i = 1; i < polls.size(); ++i)
-            g = std::max(g, std::chrono::duration<double>(polls[i] - polls[i - 1]).count());
-        return g;
-    }
+    double max_gap_s() const { return max_gap; }
 };
 
 StackingEngine::Config big_config(const fs::path& cache) {
@@ -343,8 +407,8 @@ TEST_CASE("Cancel: the measuring pass asks for a cancel every few tens of ms, on
         PollRecorder rec;
         auto r = StackingEngine(big_config(root / "cache")).execute(lights, {}, &rec);
         (void)r;
-        INFO(rec.polls.size() << " polls during the pass, longest gap " << rec.max_gap_s() << " s");
-        REQUIRE(rec.polls.size() > 5);
+        INFO(rec.polls << " polls during the pass, longest gap " << rec.max_gap_s() << " s");
+        REQUIRE(rec.polls > 5);
         REQUIRE(rec.max_gap_s() < 0.05);
         REQUIRE(rec.foreign_calls == 0);
     }
@@ -439,4 +503,91 @@ TEST_CASE("Cancel: in the measuring pass while every worker detects stars on a c
     REQUIRE(r.stacked.empty());
     REQUIRE(rec.foreign_calls == 0);
     fs::remove_all(root);
+}
+
+// ── Phase B asks often enough, in every step of a batch ─────────────
+//
+// Phase B checked for a cancel only between the steps of a batch (and inside
+// the fit loop), and its batches are sized by memory: up to 2 GiB of staging,
+// 4.8M voxels for ten 24 MP colour frames. The steps around the fit -- copying
+// the batch out of the cube, kernels 1-2, writing the classification back,
+// reading the fits, kernel 3, writing the selection back -- each ran over the
+// whole batch without a check: measured on the IC1805 lights (10 x 24 MP,
+// file-backed record, load ~30 on 32 threads) 0.1-0.9 s each, and 6.7 s once
+// for the classification writeback under memory pressure. A cancel landing in
+// one of them waited for it.
+//
+// Here the whole of Phase B is watched, from begin_phase to end_phase.
+
+namespace {
+
+void phase_b_gaps(bool gpu, bool file_backed, const char* tag) {
+    std::random_device rd;
+    const fs::path root = fs::temp_directory_path() / (std::string("nukex_cancel_phase_b_") + tag + "_" + std::to_string(rd()));
+    struct RemoveOnExit {
+        fs::path p;
+        ~RemoveOnExit() { std::error_code ec; fs::remove_all(p, ec); }
+    } remove_on_exit{root};
+    const auto lights = write_big_frames(root / "frames");
+    fs::create_directories(root / "cache");
+    StackingEngine::Config cfg = big_config(root / "cache");
+    cfg.gpu_config.force_cpu_fallback = !gpu;
+    if (file_backed) { cfg.file_backed_cube = true; cfg.file_backed_cube_fraction = 1e-12; }
+
+    SECTION("no cancel: every step of every batch is watched") {
+        PollRecorder rec;
+        rec.phase = "Phase B";
+        rec.bounded = true;
+        auto r = StackingEngine(cfg).execute(lights, {}, &rec);
+        REQUIRE_FALSE(r.stacked.empty());
+        INFO(rec.polls << " polls in Phase B, longest gap " << rec.max_gap_s()
+             << " s, ending in \"" << rec.max_gap_at << "\"; longest GPU dispatch "
+             << rec.max_dispatch << " s");
+        REQUIRE(rec.polls > 5);
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+        REQUIRE(rec.max_gap_s() < 0.2);
+#endif
+        REQUIRE(rec.max_dispatch < 5.0);
+        REQUIRE(rec.foreign_calls == 0);
+    }
+    SECTION("a cancel part-way through lands promptly") {
+        PollRecorder rec;
+        rec.phase = "Phase B";
+        rec.after = std::chrono::milliseconds(300);
+        auto r = StackingEngine(cfg).execute(lights, {}, &rec);
+        const auto returned = clk::now();
+        REQUIRE(rec.fired);
+        REQUIRE(rec.ended_at > rec.fired_at);
+        // Three different costs: Phase B's host work after the request (what
+        // the checks bound), a GPU dispatch already under way (the staging cap
+        // bounds it), and releasing the file-backed record and caches
+        // afterwards (0.4-2.1 s at 24 MP under load; no check can shorten it).
+        const double stop = std::chrono::duration<double>(rec.ended_at - rec.fired_at).count();
+        const double in_gpu = rec.dispatch_overlap_s(rec.fired_at, rec.ended_at);
+        const double total = std::chrono::duration<double>(returned - rec.fired_at).count();
+        INFO("Phase B ended " << stop << " s after the request (" << in_gpu
+             << " s of it in a GPU dispatch); execute() returned after " << total << " s");
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+        REQUIRE(stop - in_gpu < 0.25);
+#endif
+        REQUIRE(total < 15.0);
+        REQUIRE(r.stacked.empty());
+        REQUIRE(rec.foreign_calls == 0);
+    }
+}
+
+} // namespace
+
+TEST_CASE("Cancel: Phase B asks for a cancel inside every step (CPU kernels, cube in RAM)",
+          "[integration][cancel][phase_b]") {
+    phase_b_gaps(/*gpu=*/false, /*file_backed=*/false, "cpu");
+}
+
+TEST_CASE("Cancel: Phase B asks for a cancel inside every step (GPU kernels, file-backed record)",
+          "[integration][cancel][phase_b][file_backed]") {
+#if defined(_WIN32)
+    SKIP("Cube file backing is not implemented on Windows");
+#else
+    phase_b_gaps(/*gpu=*/true, /*file_backed=*/true, "gpu");
+#endif
 }

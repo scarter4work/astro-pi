@@ -78,7 +78,7 @@ TEST_CASE("FrameCache: write and read back single frame", "[cache]") {
         for (int x = 0; x < 4; x++)
             frame.at(x, y, 0) = (x + y * 4) / 16.0f;
 
-    FrameCache cache(4, 4, 1, 10, "/tmp");
+    FrameCache cache(4, 4, 1, 10, std::filesystem::temp_directory_path().string());
     cache.write_frame(frame, 0);
     REQUIRE(cache.n_frames_written() == 1);
 
@@ -97,7 +97,7 @@ TEST_CASE("FrameCache: write multiple frames, read all back", "[cache]") {
     f2.fill(0.5f);
     f3.fill(0.7f);
 
-    FrameCache cache(8, 8, 2, 10, "/tmp");
+    FrameCache cache(8, 8, 2, 10, std::filesystem::temp_directory_path().string());
     cache.write_frame(f1, 0);
     cache.write_frame(f2, 1);
     cache.write_frame(f3, 2);
@@ -119,7 +119,7 @@ TEST_CASE("FrameCache: write multiple frames, read all back", "[cache]") {
 TEST_CASE("FrameCache: temp file cleaned up on destruction", "[cache]") {
     std::string filepath;
     {
-        FrameCache cache(2, 2, 1, 1, "/tmp");
+        FrameCache cache(2, 2, 1, 1, std::filesystem::temp_directory_path().string());
         Image frame(2, 2, 1);
         frame.fill(0.5f);
         cache.write_frame(frame, 0);
@@ -136,7 +136,7 @@ TEST_CASE("FrameCache: quantization error within tolerance", "[cache]") {
         for (int x = 0; x < 16; x++)
             frame.at(x, y, 0) = (x * 16 + y) / 256.0f;
 
-    FrameCache cache(16, 16, 1, 1, "/tmp");
+    FrameCache cache(16, 16, 1, 1, std::filesystem::temp_directory_path().string());
     cache.write_frame(frame, 0);
 
     float values[1];
@@ -157,7 +157,7 @@ TEST_CASE("FrameCache: a sparse global frame set reads back only what it receive
     // batch therefore reported thirteen frames and handed Phase B ten
     // unwritten slots as though they were measurements. Any batch producing
     // more than one cache hit this, not only mono ones.
-    const std::string dir = "/tmp";
+    const std::string dir = std::filesystem::temp_directory_path().string();
     FrameCache cache(2, 2, 1, /*max_frames*/ 20, dir);
 
     const int globals[] = {5, 9, 12};
@@ -191,7 +191,7 @@ TEST_CASE("FrameCache: coverage survives the round trip", "[frame_cache]") {
     // zero without recording that it is absent is what left a rim at 94% of
     // interior brightness on a finished stack even after the accumulators
     // themselves were guarded.
-    FrameCache cache(2, 2, 1, /*max_frames*/ 4, "/tmp");
+    FrameCache cache(2, 2, 1, /*max_frames*/ 4, std::filesystem::temp_directory_path().string());
 
     Image f(2, 2, 1);
     f.fill(0.5f);
@@ -236,7 +236,7 @@ TEST_CASE("FrameCache: writeback covers the frame just written, and only it",
     // of dirty page cache beside a 14.8 GB voxel cube and PixInsight was
     // OOM-killed mid-cache.
     Image frame(8, 8, 1);
-    FrameCache cache(8, 8, 1, 64, "/tmp");
+    FrameCache cache(8, 8, 1, 64, std::filesystem::temp_directory_path().string());
     for (int f = 0; f < 32; ++f) {
         for (int y = 0; y < 8; ++y)
             for (int x = 0; x < 8; ++x)
@@ -275,7 +275,7 @@ TEST_CASE("FrameCache::read_frame_range crosses a row boundary",
     // in the layout change (not just element_offset's arithmetic) against
     // values computed independently here.
     const int W = 5, H = 3, NC = 2, NF = 3;
-    FrameCache cache(W, H, NC, /*max_frames*/ NF, "/tmp");
+    FrameCache cache(W, H, NC, /*max_frames*/ NF, std::filesystem::temp_directory_path().string());
 
     // Every (x, y, ch, f) gets its own value and its own coverage bit, so a
     // read that lands on the wrong pixel, channel, or frame reads back a
@@ -329,7 +329,7 @@ TEST_CASE("FrameCache::read_frame_range refuses ranges it cannot serve",
     // Loud and total, never partial: a caller that silently got half a row
     // would fit a distribution to whatever was left in its buffer.
     const int W = 4, H = 2;
-    FrameCache cache(W, H, 1, /*max_frames*/ 4, "/tmp");
+    FrameCache cache(W, H, 1, /*max_frames*/ 4, std::filesystem::temp_directory_path().string());
     Image img(W, H, 1);
     img.fill(0.5f);
     cache.write_frame(img, 0);
