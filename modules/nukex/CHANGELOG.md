@@ -1,7 +1,19 @@
 # NukeX — Changelog
 
-## Unreleased
+## v5.3.1.1 — 2026-11-16
 
+Pause/Abort while frames are measured no longer waits for star detection, and detection on nebula-filled frames
+is much faster. Every stack is unchanged.
+
+- **Pause/Abort during frame measuring stops promptly on frames with a bright nebula.** Star detection takes
+  every local brightness peak above the background noise as a candidate star, then drops candidates too close to a
+  brighter one. Where a nebula is brighter than that threshold, every noise peak in it is a candidate (125,000 to
+  260,000 on 24-megapixel IC 1805 frames), and each was compared with every candidate kept so far, which took 4-15 s
+  per frame with no check for Abort. 5.3.1.0 measures all frames at once, so an Abort early in the pass waited for
+  the slowest detection: 14-20 s on ten 24-megapixel frames on a busy machine. Detection now compares a candidate
+  only with kept candidates nearby and checks for Abort as it goes; the same frames now stop in about half a second
+  (0.13-2.0 s). It keeps exactly the same stars: the stacked image is byte-for-byte identical to 5.3.1.0's, and
+  measuring those frames uses about a third of the processor time.
 - **Engine library: flats calibrate with darks and no bias.** Software built on the NukeX engine (the NukeX
   standalone app's Calibrate stage) refused a calibration set of lights, darks and flats with no master bias or
   dark-flat. The flats' pedestal now comes from the darks: a master dark at the flats' exposure is used as their
