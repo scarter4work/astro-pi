@@ -13,19 +13,17 @@ https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/
 Then Resources → Updates → Check for Updates. Installs:
 
 - **NukeX** — per-pixel distribution-fitting signal estimator and stretching module (`modules/nukex/`)
-- **PI Copilot** — AI assistant panel, bring your own Anthropic API key (`modules/pi-copilot/`)
 - **Planetary** — SER and AVI video viewer with Save as SER (process SERViewer), and PlanetaryStack, automatic lucky-imaging stacking of those videos (`modules/planetary/`)
-- **Gaia Depth Grade** — PJSR scripts + their linux-x64 sidecar (`gaia-depth-grade/`)
 - **EZ Stretch / EZ Haze Kill** — PJSR scripts (`scripts/ez-stretch/`)
+
+PI Copilot and Gaia Depth Grade were withdrawn from this repository on 2026-11-16 and are no longer distributed; installing EZ Stretch 1.0.13 removes their files (and EZ Donut Repair's, withdrawn 2026-11-10) from a PixInsight installation.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `modules/nukex/` | NukeX C++ module (CMake). Builds `NukeX-pxm.so`. |
-| `modules/pi-copilot/` | PI Copilot C++ module (CMake). Builds `PICopilot-pxm.so`. |
 | `modules/planetary/` | Planetary C++ module (CMake): SER/AVI reader library, the stack engine, and the SERViewer and PlanetaryStack processes. Builds `Planetary-pxm.so`. |
-| `gaia-depth-grade/` | Gaia Depth Grade PJSR scripts + the Python sidecar they run. |
 | `scripts/ez-stretch/` | EZ PJSR scripts + native signing tooling. |
 | `tools/` | Dev tooling (astro-stretch-studio, build environment, release checks). Not shipped. |
 | `archive/` | Frozen prior NukeX versions (v1–v4). Never built or shipped. |
@@ -47,15 +45,12 @@ Each component keeps its own license; none of it is relicensed here.
 | Ceres Solver 2.2.0 (with miniglog) | NukeX | BSD 3-Clause |
 | Eigen 5.0.1 | NukeX | Mozilla Public License 2.0 |
 | Khronos OpenCL ICD Loader and Headers | NukeX | Apache License 2.0 |
-| SQLite 3 amalgamation | `third_party/sqlite/` (PI Copilot) | Public domain (`third_party/sqlite/LICENSE.md`) |
 | Catch2 (tests) | `modules/nukex/third_party/catch2/` | Boost Software License 1.0 (`LICENSE.txt`) |
 | TweetNaCl (Ed25519 verification) | `modules/nukex/third_party/tweetnacl/` | Public domain (`LICENSE`) |
 | stb_image_write | `modules/nukex/third_party/stb/` | MIT or public domain (Unlicense), dual-licensed in the header |
 | CFITSIO | fetched at build time (HEASARC/cfitsio), NukeX | NASA/HEASARC CFITSIO license |
-| nlohmann/json v3.11.3 | fetched at build time, NukeX and PI Copilot | MIT |
+| nlohmann/json v3.11.3 | fetched at build time, NukeX | MIT |
 | SQLite amalgamation | fetched at build time (NukeX learning library) | Public domain |
-| zstd | `gaia-depth-grade/tools/licenses/LICENSE.zstd.txt` (Gaia Depth Grade sidecar) | BSD 3-Clause or GPLv2 (zstd dual license) |
-| Python runtime dependencies of the Gaia Depth Grade sidecar (numpy, scipy, astropy, requests, PyInstaller, others) | pinned in `gaia-depth-grade/tools/sidecar-requirements.txt` | Their own licenses; CPython license text is collected by `gaia-depth-grade/tools/cpython-licenses.py` |
 
 ## Release
 

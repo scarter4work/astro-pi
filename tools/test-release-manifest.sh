@@ -6,7 +6,7 @@
 #
 # It takes release.sh's own functions (write_pkg, manifest_rename, manifest_names_check) out of the
 # script, so it tests exactly what a release runs:
-#  - a bumped EZ zip (EZStretch) and a bumped Gaia script zip are renamed in the manifest, exactly once each;
+#  - two bumped EZ zips (EZStretch, EZHazeKill) are renamed in the manifest, exactly once each;
 #  - write_pkg writes the sha1 and releaseDate of both new names, and keeps the releaseDate of a package
 #    whose sha1 is unchanged; published_entries_check refuses a published entry with a new sha1 or date;
 #  - signed_state (what to sign) decides by content against the published package: unchanged sources
@@ -42,25 +42,25 @@ bad(){ echo "  FAIL  $*"; fails=$((fails + 1)); }
 have(){ declare -F "$1" >/dev/null; }
 
 OLD_EZ="$(sed -nE 's/.*fileName="(EZStretch_v[0-9.]+\.zip)".*/\1/p' "$MF")"
-OLD_GAIA="$(sed -nE 's/.*fileName="(gaia-depth-grade_v[0-9.]+\.zip)".*/\1/p' "$MF")"
-[ -n "$OLD_EZ" ] && [ -n "$OLD_GAIA" ] || { echo "FAIL: the manifest has no EZStretch or gaia-depth-grade zip entry"; exit 1; }
+OLD_HK="$(sed -nE 's/.*fileName="(EZHazeKill_v[0-9.]+\.zip)".*/\1/p' "$MF")"
+[ -n "$OLD_EZ" ] && [ -n "$OLD_HK" ] || { echo "FAIL: the manifest has no EZStretch or EZHazeKill zip entry"; exit 1; }
 NEW_EZ=EZStretch_v9.9.9.zip
-NEW_GAIA=gaia-depth-grade_v9.9.9.zip
+NEW_HK=EZHazeKill_v9.9.9.zip
 SHA_EZ=1111111111111111111111111111111111111111
-SHA_GAIA=2222222222222222222222222222222222222222
+SHA_HK=2222222222222222222222222222222222222222
 
 # 1-2. The bump renames each entry exactly once.
 if have manifest_rename && ( manifest_rename "$MF" 'EZStretch_v[0-9.]+\.zip' "$NEW_EZ" ) >/dev/null 2>&1 \
    && grep -qF "fileName=\"$NEW_EZ\"" "$MF" && ! grep -qF "fileName=\"$OLD_EZ\"" "$MF"; then
   ok "EZStretch renamed $OLD_EZ -> $NEW_EZ"
 else bad "EZStretch was not renamed $OLD_EZ -> $NEW_EZ"; fi
-if have manifest_rename && ( manifest_rename "$MF" 'gaia-depth-grade_v[0-9.]+\.zip' "$NEW_GAIA" ) >/dev/null 2>&1 \
-   && grep -qF "fileName=\"$NEW_GAIA\"" "$MF" && ! grep -qF "fileName=\"$OLD_GAIA\"" "$MF"; then
-  ok "Gaia script renamed $OLD_GAIA -> $NEW_GAIA"
-else bad "Gaia script was not renamed $OLD_GAIA -> $NEW_GAIA"; fi
+if have manifest_rename && ( manifest_rename "$MF" 'EZHazeKill_v[0-9.]+\.zip' "$NEW_HK" ) >/dev/null 2>&1 \
+   && grep -qF "fileName=\"$NEW_HK\"" "$MF" && ! grep -qF "fileName=\"$OLD_HK\"" "$MF"; then
+  ok "EZHazeKill renamed $OLD_HK -> $NEW_HK"
+else bad "EZHazeKill was not renamed $OLD_HK -> $NEW_HK"; fi
 
 # 3. write_pkg writes both new names' sha1 and releaseDate.
-for pair in "$NEW_EZ $SHA_EZ" "$NEW_GAIA $SHA_GAIA"; do
+for pair in "$NEW_EZ $SHA_EZ" "$NEW_HK $SHA_HK"; do
   set -- $pair
   if have write_pkg && ( write_pkg "$MF" "$1" "$2" ) >/dev/null 2>&1 \
      && grep -qE "fileName=\"$1\" sha1=\"$2\"[^>]*releaseDate=\"$DATE\"" "$MF"; then
@@ -70,7 +70,7 @@ done
 
 # 3b. write_pkg of an unchanged package (the sha1 the entry already records) keeps its releaseDate: an
 #     idempotent release leaves every unchanged entry, and so the manifest, as it was.
-KEEP_FN="$(sed -nE 's/.*<package fileName="([^"]+)" sha1="[0-9a-f]{40}".*/\1/p' "$MF" | grep -vF -e "$NEW_EZ" -e "$NEW_GAIA" | head -1)"
+KEEP_FN="$(sed -nE 's/.*<package fileName="([^"]+)" sha1="[0-9a-f]{40}".*/\1/p' "$MF" | grep -vF -e "$NEW_EZ" -e "$NEW_HK" | head -1)"
 KEEP_SHA="$(sed -nE "s/.*fileName=\"$KEEP_FN\" sha1=\"([0-9a-f]{40})\".*/\1/p" "$MF")"
 before="$(sha1sum < "$MF")"
 if have write_pkg && [ -n "$KEEP_FN" ] && ( write_pkg "$MF" "$KEEP_FN" "$KEEP_SHA" ) >/dev/null 2>&1 && [ "$(sha1sum < "$MF")" = "$before" ]; then
@@ -206,63 +206,69 @@ PY
 if [[ "$writes_report" == OK* ]]; then ok "steps 3-6 edit only the work copy ($writes_report)"
 else while IFS= read -r l; do bad "$l"; done <<< "$writes_report"; fi
 
-# 8. retire_manifest: a withdrawn package (RETIRED_PKG_RE in release.sh) is dropped from a work copy,
-#    exactly once, and the remaining packages are exactly the release's.
-RET_RE="$(sed -nE "s/^RETIRED_PKG_RE=\('(.*)'\)\s*$/\1/p" "$SCRIPT")"
-if [ -n "$RET_RE" ] && have retire_manifest; then
+# 8. retire_manifest: each withdrawn package (RETIRED_PKG_RE in release.sh) is dropped from a work copy,
+#    exactly once, a <platform> block it leaves empty goes with it, and the rest is untouched.
+mapfile -t RET_RES < <(sed -n '/^RETIRED_PKG_RE=(/,/^)/p' "$SCRIPT" | sed -nE "s/^[[:space:]]*'([^']+)'[[:space:]]*$/\1/p")
+if [ "${#RET_RES[@]}" -gt 0 ] && have retire_manifest; then
   RM="$WORK/retire.xri"; cp "$MF" "$RM"
-  # Once a release has retired the package, the published manifest no longer carries it: stand in an entry
+  # Once a release has retired a package, the published manifest no longer carries it: stand in an entry
   # (a clone of the first script package, renamed to a fileName the regex matches) so the drop is still tested.
-  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 0 ]; then
-    python3 - "$RM" "$RET_RE" <<'PYF'
+  python3 - "$RM" "${RET_RES[@]}" <<'PYF' || bad "could not stand in the withdrawn packages"
 import re,sys
-mf,pat=sys.argv[1:3]; s=open(mf).read()
-m=re.search(r'[ \t]*<package fileName="[^"]+" [^>]*type="script"[^>]*>.*?</package>[ \t]*\n',s,re.S)
-name="EZDonutRepair_v1.0.0.zip"
-assert re.fullmatch(pat,name),pat
-clone=re.sub(r'fileName="[^"]+"','fileName="%s"'%name,m.group(0),count=1)
-open(mf,'w').write(s[:m.end()]+clone+s[m.end():])
+mf=sys.argv[1]; s=open(mf).read()
+samples=["EZDonutRepair_v1.0.0.zip","20990101-linux-x64-PICopilot-9.9.9.9.tar.gz","gaia-depth-grade_v9.9.9.zip",
+         "20990101-linux-x64-GaiaDepthGradeSidecar-9.9.9.tar.gz"]
+for pat in sys.argv[2:]:
+    if re.search(r'fileName="'+pat+'"',s): continue
+    name=next((n for n in samples if re.fullmatch(pat,n)),None)
+    if name is None: sys.exit("no sample fileName matches %s: add one to the test"%pat)
+    m=re.search(r'[ \t]*<package fileName="[^"]+" [^>]*type="script"[^>]*>.*?</package>[ \t]*\n',s,re.S)
+    clone=re.sub(r'fileName="[^"]+"','fileName="%s"'%name,m.group(0),count=1)
+    s=s[:m.end()]+clone+s[m.end():]
+open(mf,'w').write(s)
 PYF
-  fi
   before="$(grep -c '<package fileName=' "$RM")"
-  if [ "$(grep -cE "fileName=\"$RET_RE\"" "$RM")" -eq 1 ] && ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1 \
-     && [ "$(grep -c '<package fileName=' "$RM")" -eq $((before - 1)) ] && ! grep -qE "fileName=\"$RET_RE\"" "$RM" \
+  one=1; for rx in "${RET_RES[@]}"; do [ "$(grep -cE "fileName=\"$rx\"" "$RM")" -eq 1 ] || one=0; done
+  if [ "$one" = 1 ] && ( retire_manifest "$RM" "${RET_RES[@]}" ) >/dev/null 2>&1 \
+     && [ "$(grep -c '<package fileName=' "$RM")" -eq $((before - ${#RET_RES[@]})) ] \
+     && ! grep -qE "fileName=\"($(IFS='|'; echo "${RET_RES[*]}"))\"" "$RM" \
+     && python3 -c 'import re,sys; sys.exit(bool(re.search(r"<platform [^>]*>\s*</platform>",open(sys.argv[1]).read())))' "$RM" \
      && python3 -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1])' "$RM"; then
-    ok "retire_manifest drops the withdrawn package ($RET_RE) once; the manifest stays well-formed"
-  else bad "retire_manifest did not drop exactly one entry for $RET_RE"; fi
-  if ( retire_manifest "$RM" "$RET_RE" ) >/dev/null 2>&1; then ok "retire_manifest is idempotent once the entry is gone"; else bad "retire_manifest failed on an already-retired manifest"; fi
-else echo "  (no RETIRED_PKG_RE / retire_manifest in release.sh)"; fi
-# 10. module_platform_block (PCL 2.13: modules need PixInsight >= 1.9.6): on a fresh copy of the manifest,
-#     the module packages move into ONE linux/x64 1.9.6:2.0.0 block placed after the 1.8.0 one, the
-#     sidecar stays in the 1.8.0 block, the noarch block is untouched, a second run changes nothing,
-#     and two entries for one module fail.
+    ok "retire_manifest drops each of the ${#RET_RES[@]} withdrawn packages once; no empty <platform> left; well-formed"
+  else bad "retire_manifest did not drop exactly one entry for each of ${RET_RES[*]}, or left an empty <platform>"; fi
+  if ( retire_manifest "$RM" "${RET_RES[@]}" ) >/dev/null 2>&1; then ok "retire_manifest is idempotent once the entries are gone"; else bad "retire_manifest failed on an already-retired manifest"; fi
+  # A block that keeps another package stays; a block left empty goes (the Gaia sidecar's 1.8.0 block).
+  printf '<xri>\n   <platform os="linux" arch="x64" version="1.8.0:2.0.0">\n      <package fileName="gaia-depth-grade_v1.0.0.zip" sha1="%s" type="script" releaseDate="20991231">\n      </package>\n   </platform>\n   <platform os="all" arch="noarch" version="1.8.0:2.0.0">\n      <package fileName="Keep_v1.0.0.zip" sha1="%s" type="script" releaseDate="20991231">\n      </package>\n   </platform>\n</xri>\n' "$SHA_EZ" "$SHA_EZ" > "$WORK/blocks.xri"
+  if ( retire_manifest "$WORK/blocks.xri" 'gaia-depth-grade_v[0-9.]+\.zip' ) >/dev/null 2>&1 \
+     && [ "$(grep -c '<platform ' "$WORK/blocks.xri")" = 1 ] && grep -q 'os="all"' "$WORK/blocks.xri" && grep -q 'Keep_v1.0.0.zip' "$WORK/blocks.xri"; then
+    ok "retire_manifest drops the <platform> block it empties and keeps the one that still has a package"
+  else bad "retire_manifest kept an emptied <platform> block or dropped a non-empty one"; sed 's/^/        /' "$WORK/blocks.xri"; fi
+else bad "release.sh has no RETIRED_PKG_RE or no retire_manifest"; fi
+# 10. module_platform_block (PCL 2.13: modules need PixInsight >= 1.9.6): on a fresh copy of the manifest with the
+#     withdrawn packages retired (as a release does first), the module packages are in ONE linux/x64 1.9.6:2.0.0
+#     block, the noarch block is untouched, a second run changes nothing, and two entries for one module fail.
 MB="$WORK/module-block.xri"
 sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MB"
+[ "${#RET_RES[@]}" -eq 0 ] || ( retire_manifest "$MB" "${RET_RES[@]}" ) >/dev/null 2>&1 || bad "retire_manifest failed on the module-block copy"
 mb_report(){ python3 - "$MB" <<'PY'
 import re,sys
 s=open(sys.argv[1]).read()
 blocks=[(m.group(1),m.group(2)) for m in re.finditer(r'<platform ([^>]*)>(.*?)</platform>',s,re.S)]
-heads=[h for h,_ in blocks]
 names=lambda b: re.findall(r'<package fileName="([^"]+)"',b)
-out=[]
-for h,b in blocks: out.append("%s: %s"%(h," ".join(sorted(names(b)))))
-print("\n".join(out))
+print("\n".join("%s: %s"%(h," ".join(sorted(names(b)))) for h,b in blocks))
 PY
 }
 noarch_before="$(mb_report | grep 'os="all"')"
-if have module_platform_block && ( module_platform_block "$MB" NukeX PICopilot Planetary GaiaDepthGrade ) >/dev/null 2>&1; then
+if have module_platform_block && ( module_platform_block "$MB" NukeX Planetary ) >/dev/null 2>&1; then
   rep="$(mb_report)"
   heads="$(grep -c 'os="linux" arch="x64"' <<< "$rep")"
   mods="$(grep 'version="1.9.6:2.0.0"' <<< "$rep")"
-  old="$(grep 'os="linux" arch="x64" version="1.8.0:2.0.0"' <<< "$rep")"
-  if [ "$heads" = 2 ] && grep -q 'NukeX' <<< "$mods" && grep -q 'PICopilot' <<< "$mods" && grep -q 'Planetary' <<< "$mods" \
-     && ! grep -q 'NukeX\|PICopilot\|Planetary' <<< "$old" && grep -q 'GaiaDepthGradeSidecar' <<< "$old" \
-     && ! grep -q 'GaiaDepthGradeSidecar' <<< "$mods" && [ "$(grep 'os="all"' <<< "$rep")" = "$noarch_before" ] \
-     && [ "$(grep -n 'version=' <<< "$rep" | head -2 | tail -1 | grep -c '1.9.6:2.0.0')" = 1 ]; then
-    ok "module_platform_block: NukeX, PICopilot, Planetary in the linux/x64 1.9.6:2.0.0 block; sidecar and scripts keep theirs"
+  if [ "$heads" = 1 ] && grep -q 'NukeX' <<< "$mods" && grep -q 'Planetary' <<< "$mods" \
+     && [ "$(grep 'os="all"' <<< "$rep")" = "$noarch_before" ]; then
+    ok "module_platform_block: NukeX and Planetary in the one linux/x64 1.9.6:2.0.0 block; the scripts keep theirs"
   else bad "module_platform_block placed the packages wrongly:"; sed 's/^/        /' <<< "$rep"; fi
   before="$(sha1sum < "$MB")"
-  ( module_platform_block "$MB" NukeX PICopilot Planetary GaiaDepthGrade ) >/dev/null 2>&1 && [ "$(sha1sum < "$MB")" = "$before" ] \
+  ( module_platform_block "$MB" NukeX Planetary ) >/dev/null 2>&1 && [ "$(sha1sum < "$MB")" = "$before" ] \
     && ok "module_platform_block is idempotent" || bad "a second module_platform_block run changed the manifest"
   python3 -c "import re,sys;p=sys.argv[1];s=open(p).read();m=re.search(r'\n[ \t]*<package fileName=\"[^\"]*-linux-x64-NukeX[^\"]*\".*?</package>',s,re.S);open(p,'w').write(s[:m.end()]+m.group(0)+s[m.end():])" "$MB"
   ( module_platform_block "$MB" NukeX ) >/dev/null 2>&1 && bad "module_platform_block accepted two NukeX entries" \
@@ -278,8 +284,8 @@ mapfile -t REMOVE_SPECS < <(sed -n '/^PKG_REMOVE=(/,/^)/p' "$SCRIPT" | sed -nE "
 if have manifest_removes && [ "${#REMOVE_SPECS[@]}" -gt 0 ]; then
   RMF="$WORK/removes.xri"; sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$RMF"
   # As in a release: withdrawn packages leave the work copy before step 3g (a <remove> may not delete
-  # what a package still in the manifest installs, and EZDonutRepair is still in repository/updates.xri).
-  [ -z "$RET_RE" ] || ( retire_manifest "$RMF" "$RET_RE" ) >/dev/null 2>&1 || bad "retire_manifest failed on the removes copy"
+  # what a package still in the manifest installs).
+  [ "${#RET_RES[@]}" -eq 0 ] || ( retire_manifest "$RMF" "${RET_RES[@]}" ) >/dev/null 2>&1 || bad "retire_manifest failed on the removes copy"
   PK="$WORK/pkgs"; mkdir -p "$PK"
   stand_in(){ # <fileName> <path inside the package>...
     local fn="$1" d; shift; d="$(mktemp -d "$WORK/si.XXXXXX")"
@@ -292,8 +298,6 @@ if have manifest_removes && [ "${#REMOVE_SPECS[@]}" -gt 0 ]; then
   while IFS= read -r fn; do
     case "$fn" in
       EZ*_v*.zip) n="${fn%%_v*}"; stand_in "$fn" "src/scripts/scarter4work/$n.js" "src/scripts/scarter4work/$n.xsgn" "doc/scripts/$n/$n.html" ;;
-      gaia-depth-grade_v*.zip) stand_in "$fn" src/scripts/GaiaDepthGrade/GaiaDepthGrade.js doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html ;;
-      *-GaiaDepthGradeSidecar-*.tar.gz) stand_in "$fn" bin/gaia-depth-grade-sidecar ;;
       *-linux-x64-*.tar.gz) n="${fn#*-linux-x64-}"; n="${n%%-*}"; stand_in "$fn" "bin/$n-pxm.so" "bin/$n-pxm.xsgn" ;;
       *) stand_in "$fn" "doc/scripts/unknown/$fn.html" ;;
     esac
@@ -326,11 +330,11 @@ PY
   ( manifest_removes "$RMF" "$PK" "${REMOVE_SPECS[@]}" ) >/dev/null 2>&1 && [ "$(sha1sum < "$RMF")" = "$once" ] \
     && ok "manifest_removes is idempotent" || bad "a second manifest_removes run changed the manifest"
 
-  # The mechanism is reusable: a second carrying package (the Gaia cut-over shape) gets its own element.
-  GAIA_SPEC='gaia-depth-grade_v[0-9.]+\.zip=src/scripts/GaiaDepthGrade/old_helper.js,doc/scripts/GaiaDepthGrade/old.html'
+  # The mechanism is reusable: a second carrying package gets its own element.
+  SECOND_SPEC='EZHazeKill_v[0-9.]+\.zip=src/scripts/scarter4work/OldHelper.js,doc/scripts/OldHelper'
   cp "$RMF" "$WORK/two.xri"
-  if ( manifest_removes "$WORK/two.xri" "$PK" "${REMOVE_SPECS[@]}" "$GAIA_SPEC" ) >/dev/null 2>&1 \
-     && r="$(RMF="$WORK/two.xri"; removes_report "${REMOVE_SPECS[@]}" "$GAIA_SPEC")" && [ "$r" = OK ]; then
+  if ( manifest_removes "$WORK/two.xri" "$PK" "${REMOVE_SPECS[@]}" "$SECOND_SPEC" ) >/dev/null 2>&1 \
+     && r="$(RMF="$WORK/two.xri"; removes_report "${REMOVE_SPECS[@]}" "$SECOND_SPEC")" && [ "$r" = OK ]; then
     ok "two carrying packages: each gets exactly its own <remove>"
   else bad "a second carrying package did not get its own <remove>: ${r:-manifest_removes failed}"; fi
   # Dropping a spec drops its element: no stale <remove> outlives PKG_REMOVE.
@@ -349,7 +353,7 @@ PY
     'EZStretch_v[0-9.]+\.zip=etc/x.conf|an item outside bin/ src/scripts/ doc/scripts/ doc/tools/' \
     'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/*.js|a glob' \
     'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work|a directory holding another package'"'"'s files' \
-    'gaia-depth-grade_v[0-9.]+\.zip=bin/gaia-depth-grade-sidecar|a file another package of the release installs'; do
+    'EZHazeKill_v[0-9.]+\.zip=bin/NukeX-pxm.so|a file another package of the release installs'; do
     spec="${c%%|*}"; what="${c#*|}"
     if ! ( manifest_removes "$RMF" "$PK" "$spec" ) >/dev/null 2>&1 && [ "$(sha1sum < "$RMF")" = "$before" ]; then
       ok "manifest_removes refuses $what; the manifest is unchanged"

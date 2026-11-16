@@ -19,7 +19,7 @@ die(){ echo "ERROR: $*" >&2; exit 1; }
 # Reference (section 4.2, Example 2) assigns to documentation of PCL modules,
 # and the core's Browse Documentation opens doc/tools/<ProcessId>/<ProcessId>.html,
 # so the folder and the page carry the process Id: <DocId> is the module name
-# where the two agree ("NukeX", "PICopilot"); module Planetary has two processes,
+# where the two agree ("NukeX"); module Planetary has two processes,
 # "SERViewer" and "PlanetaryStack", so it ships two doc folders.
 # doc/docs is for documents "not related to a particular module or script".
 # The source of each is modules/<m>/doc/<DocId>/: <DocId>.html (CPD rule 6.1 --
@@ -29,16 +29,8 @@ die(){ echo "ERROR: $*" >&2; exit 1; }
 # modules/<m>/doc/ must be one of the module's doc ids, so none is left unshipped.
 NUKEX_DOC="$ROOT/modules/nukex/doc"
 NUKEX_DOC_IDS=(NukeX)
-PICOPILOT_DOC="$ROOT/modules/pi-copilot/doc"
-PICOPILOT_DOC_IDS=(PICopilot)
 PLANETARY_DOC="$ROOT/modules/planetary/doc"
 PLANETARY_DOC_IDS=(SERViewer PlanetaryStack)
-GDG_DOC="$ROOT/modules/gaia-depth-grade/doc"
-GDG_DOC_IDS=(GaiaDepthGrade)
-# GaiaDepthGrade-pxm.so (modules/gaia-depth-grade) is built, unit-tested and portability-checked by every
-# release, but is NOT packaged until it replaces the Gaia Depth Grade scripts and sidecar: the cut-over
-# (plan 2026-11-10-gaia-depth-grade-pcl-port, Task 20) sets this to 1 together with the module's docs.
-GDG_MODULE_SHIPS=0
 PCL_ACK='This product is based on software from the PixInsight project, developed by Pleiades Astrophoto and its contributors (https://pixinsight.com/).'
 
 modver(){ sed -nE "s/^#define $2_MODULE_VERSION_(MAJOR|MINOR|REVISION|BUILD) +([0-9]+).*/\\2/p" "$1" | paste -sd. -; }
@@ -159,7 +151,7 @@ EZ_NAMES=(EZStretch EZHazeKill)
 # EZ script documentation (CPD rule 6.1; Repository Reference 4.2): scripts/ez-stretch/doc/<Name>/ holds
 # <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it, and
 # <Name>.js must declare "#feature-id <Name> : ...": PixInsight finds a script's documentation by that id
-# (doc/scripts/<id>/<id>.html, as for its own scripts, e.g. ImageSolver, and for GaiaDepthGrade).
+# (doc/scripts/<id>/<id>.html, as for its own scripts, e.g. ImageSolver).
 EZDOC="$ROOT/scripts/ez-stretch/doc"
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
 # Every product's version is read from its source of truth (CLAUDE.md rule 2), never written here: a
@@ -174,37 +166,45 @@ srcver(){
 declare -A EZVER=()
 for name in "${EZ_NAMES[@]}"; do EZVER[$name]="$(srcver "$EZSRC/$name.js" 's/^#define VERSION +"([^"]*)".*/\1/p' "$name")"; done
 # Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
-# first release after a withdrawal drops the entry from the work copy and, once the new manifest is
-# installed (step 6c), deletes the package file(s) from repository/. EZDonutRepair: withdrawn 2026-11-10
-# (source: private repo scarter4work/ez-donut-repair).
-RETIRED_PKG_RE=('EZDonutRepair_v[0-9.]+\.zip')
-# Installed files a package deletes when the updater installs it (Repository Reference 3, <remove>: paths
-# relative to the PixInsight installation, removed before the package is installed; missing ones are
-# ignored, with a warning in the updater's log). A package leaving the manifest uninstalls nothing, so a
-# withdrawn or reorganised product's leftovers are removed through a package that stays: one entry per
-# carrying package, '<fileName regex>=<item>[,<item>...]'. Step 3g writes exactly these <remove>
-# elements into the manifest, and no others (manifest_removes). Each regex must match exactly one package
-# of this release, each item must lie under bin/, src/scripts/, doc/scripts/ or doc/tools/, and no item may
-# be or contain a file that another package of this release installs. The carrying package must be
-# bumped in the same release (a reused package is not reinstalled), and its documentation must say what
-# it removes.
-#   EZStretch 1.0.12: EZDonutRepair (withdrawn 2026-11-10; 1.0.3 and 1.0.4 installed exactly these two).
-PKG_REMOVE=(
-  'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/EZDonutRepair.js,src/scripts/scarter4work/EZDonutRepair.xsgn'
+# first release after a withdrawal drops the entry from the work copy (and a <platform> block it leaves
+# empty) and, once the new manifest is installed (step 6c), deletes every package file the regex matches
+# from repository/. Withdrawn, source in a private repo:
+#   EZDonutRepair 2026-11-10 (scarter4work/ez-donut-repair);
+#   PI Copilot 2026-11-16 (scarter4work/pi-copilot);
+#   Gaia Depth Grade scripts and sidecar 2026-11-16 (scarter4work/gaia-depth-grade-pi).
+RETIRED_PKG_RE=(
+  'EZDonutRepair_v[0-9.]+\.zip'
+  '[0-9]{8}-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz'
+  'gaia-depth-grade_v[0-9.]+\.zip'
+  '[0-9]{8}-linux-x64-GaiaDepthGradeSidecar-[0-9.]+\.tar\.gz'
 )
-# The Gaia script package's version: gaia-depth-grade/SCRIPT_VERSION (the scripts carry none of their own;
-# the sidecar package (3d) has its own, gaia_depth_grade.__version__).
-GAIA_VER="$(srcver "$ROOT/gaia-depth-grade/SCRIPT_VERSION" 's/^([0-9][0-9.]*)$/\1/p' "the Gaia Depth Grade scripts")"
+# Installed files a package deletes when the updater installs it (Repository Reference 3, <remove>: files
+# and directories relative to the PixInsight installation, removed completely before the package is
+# installed; missing ones are ignored, with a warning in the updater's log). A package leaving the
+# manifest uninstalls nothing, so a withdrawn or reorganised product's leftovers are removed through a
+# package that stays: one entry per carrying package, '<fileName regex>=<item>[,<item>...]'. Step 3g
+# writes exactly these <remove> elements into the manifest, and no others (manifest_removes). Each regex
+# must match exactly one package of this release, each item must lie under bin/, src/scripts/,
+# doc/scripts/ or doc/tools/, and no item may be or contain a file that another package of this release
+# installs. The carrying package must be bumped in the same release (a reused package is not
+# reinstalled), and its documentation must say what it removes.
+#   EZStretch 1.0.13 (noarch, PixInsight 1.8.0-2.0.0: it reaches every installation the withdrawn
+#   packages did):
+#   - EZDonutRepair (withdrawn 2026-11-10; 1.0.3 and 1.0.4 installed exactly these two files);
+#   - PI Copilot (withdrawn 2026-11-16; every package 20260923..0.2.2.3 installed bin/PICopilot-pxm.so
+#     and .xsgn, and doc/tools/PICopilot/);
+#   - Gaia Depth Grade (withdrawn 2026-11-16; scripts 1.0.0-1.0.13 installed src/scripts/GaiaDepthGrade/
+#     and doc/scripts/GaiaDepthGrade/, sidecar 1.0.8 bin/gaia-depth-grade-sidecar and a notices file in
+#     doc/scripts/GaiaDepthGrade/).
+PKG_REMOVE=(
+  'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/EZDonutRepair.js,src/scripts/scarter4work/EZDonutRepair.xsgn,bin/PICopilot-pxm.so,bin/PICopilot-pxm.xsgn,doc/tools/PICopilot,src/scripts/GaiaDepthGrade,doc/scripts/GaiaDepthGrade,bin/gaia-depth-grade-sidecar'
+)
 REPO_DESC="$ROOT/tools/repository-description.xml"
 declare -A PKG_DESC=(
   [NukeX]="$ROOT/modules/nukex/package-description.xml"
-  [PICopilot]="$ROOT/modules/pi-copilot/package-description.xml"
   [Planetary]="$ROOT/modules/planetary/package-description.xml"
   [EZStretch]="$ROOT/scripts/ez-stretch/package-description/EZStretch.xml"
   [EZHazeKill]="$ROOT/scripts/ez-stretch/package-description/EZHazeKill.xml"
-  [GaiaDepthGrade]="$ROOT/gaia-depth-grade/package-description.xml"
-  [GaiaDepthGradeSidecar]="$ROOT/gaia-depth-grade/sidecar-package-description.xml"
-  [GaiaDepthGradeModule]="$ROOT/modules/gaia-depth-grade/package-description.xml"
 )
 # The packages' fileNames in a manifest, in order.
 manifest_files(){ sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$1"; }
@@ -213,9 +213,6 @@ desc_args(){
   local fn key
   for fn in "$@"; do
     case "$fn" in
-      *-linux-x64-GaiaDepthGradeSidecar-*) key=GaiaDepthGradeSidecar ;;
-      *-linux-x64-GaiaDepthGrade-*) key=GaiaDepthGradeModule ;;   # the module, not the script package
-      gaia-depth-grade_v*) key=GaiaDepthGrade ;;
       *-linux-x64-*.tar.gz) key="${fn#*-linux-x64-}"; key="${key%%-*}" ;;
       *_v*.zip) key="${fn%%_v*}" ;;
       *) key= ;;
@@ -295,45 +292,55 @@ print("  OK  every description in %s is its source and names only its package's 
 PY
 }
 
+# retire_manifest <manifest> <fileName-regex>... : drop the package entry matching each regex (at most one
+# each), then every <platform> block left with no package (an empty block is noise in the manifest; the
+# Gaia sidecar was the only package of its linux/x64 1.8.0:2.0.0 block).
+retire_manifest(){
+  python3 - "$@" <<'PY' || die "retire_manifest failed"
+import re,sys
+mf=sys.argv[1]; s=open(mf).read()
+for pat in sys.argv[2:]:
+    rx=re.compile(r'[ \t]*<package fileName="'+pat+r'"[^>]*>.*?</package>[ \t]*\n',re.S)
+    s,n=rx.subn('',s)
+    if n>1: sys.exit("%s matches %d manifest entries"%(pat,n))
+    print("  retired %s: %d manifest entr%s removed"%(pat,n,"y" if n==1 else "ies"))
+s,n=re.subn(r'[ \t]*<platform [^>]*>\s*</platform>[ \t]*\n','',s)
+if n: print("  dropped %d <platform> block(s) left without a package"%n)
+open(mf,'w').write(s)
+PY
+}
+
 # Packaging self-test: the same build_module_tgz + module_pkg_check the release
 # uses, on any .so/.xsgn pair (e.g. a container build and a stand-in .xsgn),
 # into a scratch directory, then the reuse verdict step 0b would give for the
 # current module versions, and the description rewrite on a copy of the
-# manifest (<outdir>/updates.xri, unsigned). No build, no signing, repository/
-# untouched.
-#   ./release.sh --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>
+# manifest (<outdir>/updates.xri, unsigned, withdrawn packages retired as step 3 does).
+# No build, no signing, repository/ untouched.
+#   ./release.sh --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>
 if [ "${1:-}" = "--package-test" ]; then
-  [ $# -eq 8 ] || die "usage: $0 --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <PICopilot-pxm.so> <PICopilot-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>"
+  [ $# -eq 6 ] || die "usage: $0 --package-test <outdir> <NukeX-pxm.so> <NukeX-pxm.xsgn> <Planetary-pxm.so> <Planetary-pxm.xsgn>"
   OUT="$2"; mkdir -p "$OUT"
   case "$(cd "$OUT" && pwd)/" in "$REPO/"*) die "--package-test must not write into repository/";; esac
   NV="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
-  PV="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
   LV="$(modver "$ROOT/modules/planetary/src/module/PlanetaryVersion.h" PLANETARY)"
   NT="$OUT/$DATE-linux-x64-NukeX-$NV.tar.gz"
-  PT="$OUT/$DATE-linux-x64-PICopilot-$PV.tar.gz"
   LT="$OUT/$DATE-linux-x64-Planetary-$LV.tar.gz"
   build_module_tgz "$NT" NukeX "$3" "$4" "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
   module_pkg_check "$NT" NukeX "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}" || die "NukeX package check failed"
-  "$ROOT/modules/pi-copilot/test/check-no-selftest-hooks.sh" "$5" || die "PICopilot-pxm.so carries self-test hooks"
-  build_module_tgz "$PT" PICopilot "$5" "$6" "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}"
-  module_pkg_check "$PT" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}" || die "PICopilot package check failed"
-  build_module_tgz "$LT" Planetary "$7" "$8" "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
+  build_module_tgz "$LT" Planetary "$5" "$6" "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
   module_pkg_check "$LT" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" || die "Planetary package check failed"
-  for t in "$NT" "$PT" "$LT"; do echo "== $(basename "$t")"; tar -tzvf "$t"; done
+  for t in "$NT" "$LT"; do echo "== $(basename "$t")"; tar -tzvf "$t"; done
   echo "== release step 0b verdict for the current versions"
   published_pkg_reusable "$(module_tgz NukeX "$NV")" NukeX "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}" \
     || echo "  release.sh would STOP: NukeX $NV is published without the current docs -- bump its version"
-  published_pkg_reusable "$(module_tgz PICopilot "$PV")" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}" \
-    || echo "  release.sh would STOP: PICopilot $PV is published without the current docs -- bump its version"
-  ! git -C "$ROOT" ls-files --error-unmatch "repository/$(module_tgz PICopilot "$PV")" >/dev/null 2>&1 || "$ROOT/modules/pi-copilot/test/check-tarball-no-selftest-hooks.sh" "$REPO/$(module_tgz PICopilot "$PV")" \
-    || echo "  release.sh would STOP: PICopilot $PV is published with self-test hooks -- bump its version"
   published_pkg_reusable "$(module_tgz Planetary "$LV")" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
     || echo "  release.sh would STOP: Planetary $LV is published without the current docs -- bump its version"
   echo "== package descriptions, rewritten into a copy of the manifest: $OUT/updates.xri"
   # The manifest's fileNames, with each module entry renamed to the package this release would ship
   # (as step 3 does), so a bumped version is checked against its own description, each with its source.
   sed '/<Signature developerId=/d' "$REPO/updates.xri" > "$OUT/updates.xri"
-  for m in "NukeX $NV" "PICopilot $PV" "Planetary $LV"; do
+  retire_manifest "$OUT/updates.xri" "${RETIRED_PKG_RE[@]}"
+  for m in "NukeX $NV" "Planetary $LV"; do
     set -- $m
     sed -i -E "s#fileName=\"[^\"]*-linux-x64-$1(-[0-9.]+)?\.tar\.gz\"#fileName=\"$(module_tgz "$1" "$2")\"#" "$OUT/updates.xri"
   done
@@ -417,9 +424,9 @@ PY
 # (src/pcl/APIInterface.cpp, Resolve), and PCL 2.13 adds five TreeBox functions the 1.9.5 core lacks;
 # measured: PixInsight 1.9.5 build 1706 rejects a 2.13 module with "Unable to resolve PCL API interface".
 # PixInsight 1.9.6's updater accepts two linux/x64 blocks and offers each block's packages by its own
-# range (measured: modules/gaia-depth-grade/test/run-probe-xri-platforms.sh). Each <Module>'s entry
+# range (measured 2026-11 by an updater probe, run-probe-xri-platforms.sh, now in scarter4work/gaia-depth-grade-pi). Each <Module>'s entry
 # (fileName *-linux-x64-<Module>[-<ver>].tar.gz) is moved into that block; none is fine (a first release
-# inserts it there), more than one is an error. Everything else (the sidecar, the scripts) keeps its block.
+# inserts it there), more than one is an error. Everything else (the scripts) keeps its block.
 module_platform_block(){
   python3 - "$@" <<'PY' || die "module_platform_block: could not place the module packages in the 1.9.6:2.0.0 block of $1"
 import re,sys
@@ -473,20 +480,6 @@ PY
   if ! cp "$work" "$tmp" || ! { if [ -e "$dest" ]; then chmod --reference="$dest" "$tmp"; else chmod 0644 "$tmp"; fi; } \
      || ! mv -f "$tmp" "$dest"; then rm -f "$tmp"; die "install_manifest: could not replace $dest"; fi
   cmp -s "$work" "$dest" || die "install_manifest: $dest is not the signed manifest"
-}
-
-# retire_manifest <manifest> <fileName-regex>... : drop the package entry matching each regex (at most one each).
-retire_manifest(){
-  python3 - "$@" <<'PY' || die "retire_manifest failed"
-import re,sys
-mf=sys.argv[1]; s=open(mf).read()
-for pat in sys.argv[2:]:
-    rx=re.compile(r'[ \t]*<package fileName="'+pat+r'"[^>]*>.*?</package>[ \t]*\n',re.S)
-    s,n=rx.subn('',s)
-    if n>1: sys.exit("%s matches %d manifest entries"%(pat,n))
-    print("  retired %s: %d manifest entr%s removed"%(pat,n,"y" if n==1 else "ies"))
-open(mf,'w').write(s)
-PY
 }
 
 # manifest_removes <manifest> <package dir> [<fileName-regex>=<item>[,<item>...]]... : make the manifest's
@@ -705,18 +698,11 @@ echo "== 0b/6 module package names and documentation (before the long build) =="
 # (/opt/PixInsight/etc/update/installed.xri). A name that changes with every
 # release can be neither stale nor mistaken for the installed one.
 NUKEX_VER="$(modver "$ROOT/modules/nukex/src/module/NukeXVersion.h" NUKEX)"
-PICOPILOT_VER="$(modver "$ROOT/modules/pi-copilot/src/module/PICopilotVersion.h" PICOPILOT)"
 PLANETARY_VER="$(modver "$ROOT/modules/planetary/src/module/PlanetaryVersion.h" PLANETARY)"
 [[ "$NUKEX_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read NukeX version (got '$NUKEX_VER')"
-[[ "$PICOPILOT_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read PICopilot version (got '$PICOPILOT_VER')"
 [[ "$PLANETARY_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read Planetary version (got '$PLANETARY_VER')"
-GDG_VER="$(modver "$ROOT/modules/gaia-depth-grade/src/module/GaiaDepthGradeVersion.h" GDG)"
-[[ "$GDG_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read GaiaDepthGrade version (got '$GDG_VER')"
 MOD_TGZ="$(module_tgz NukeX "$NUKEX_VER")"
-PICOPILOT_TGZ="$(module_tgz PICopilot "$PICOPILOT_VER")"
 PLANETARY_TGZ="$(module_tgz Planetary "$PLANETARY_VER")"
-GDG_TGZ="$(module_tgz GaiaDepthGrade "$GDG_VER")"
-GDG_PKGS=(); [ "$GDG_MODULE_SHIPS" = 1 ] && GDG_PKGS=("$GDG_TGZ")
 # A versioned module tarball that is already committed is PUBLISHED: never
 # rebuild it (a re-sign changes its bytes under the same name, and the raw CDN
 # would serve the old bytes against the new manifest sha1). Bump the module
@@ -741,27 +727,13 @@ package_module(){ # <tarball> <Name> <module .so> <module .xsgn> <doc root> <Doc
 # complete, and an already-published version can only be reused if its
 # tarball already carries exactly the current docs (else: bump the version).
 module_doc_check "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}"
-module_doc_check "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}"
 module_doc_check "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
 published_pkg_reusable "$MOD_TGZ" NukeX "$NUKEX_DOC" "${NUKEX_DOC_IDS[@]}" \
   || die "NukeX $NUKEX_VER is already published as $MOD_TGZ without the current doc/tools/NukeX/ -- bump NukeX's version so a new package is built"
-published_pkg_reusable "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}" \
-  || die "PICopilot $PICOPILOT_VER is already published as $PICOPILOT_TGZ without the current doc/tools/PICopilot/ -- bump PICopilot's version so a new package is built"
-! git -C "$ROOT" ls-files --error-unmatch "repository/$PICOPILOT_TGZ" >/dev/null 2>&1 || "$ROOT/modules/pi-copilot/test/check-tarball-no-selftest-hooks.sh" "$REPO/$PICOPILOT_TGZ" \
-  || die "PICopilot $PICOPILOT_VER is published as $PICOPILOT_TGZ with self-test hooks -- bump PICopilot's version so a clean package is built"
 published_pkg_reusable "$PLANETARY_TGZ" Planetary "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}" \
   || die "Planetary $PLANETARY_VER is already published as $PLANETARY_TGZ without the current doc/tools/{${PLANETARY_DOC_IDS[*]}}/ -- bump Planetary's version so a new package is built"
-if [ "$GDG_MODULE_SHIPS" = 1 ]; then
-  module_doc_check "$GDG_DOC" "${GDG_DOC_IDS[@]}"
-  published_pkg_reusable "$GDG_TGZ" GaiaDepthGrade "$GDG_DOC" "${GDG_DOC_IDS[@]}" \
-    || die "GaiaDepthGrade $GDG_VER is already published as $GDG_TGZ without the current doc/tools/GaiaDepthGrade/ -- bump its version"
-else
-  echo "   GaiaDepthGrade module $GDG_VER: built and checked, not packaged (GDG_MODULE_SHIPS=0 until the Task 20 cut-over)"
-fi
 # The descriptions this release will write (step 3f) must already name only
 # these versions: a bumped version with last release's text stops here.
-SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
-[[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
 EZ_ZIPS=(); for name in "${EZ_NAMES[@]}"; do EZ_ZIPS+=("${name}_v${EZVER[$name]}.zip"); done
 # EZ scripts (versions: each .js's #define VERSION): the documentation exists, and an already-published
 # zip of that version carries exactly the current .js and documentation (else: bump the version).
@@ -773,17 +745,8 @@ for name in "${EZ_NAMES[@]}"; do
     || ez_pkg_check "$REPO/${name}_v${EZVER[$name]}.zip" "$name" \
     || die "$name ${EZVER[$name]} is already published without the current $name.js and doc/scripts/$name/ -- bump $name's version so a new package is built"
 done
-GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
-GAIA_SRC="$ROOT/gaia-depth-grade/pi"
-GAIA_SOURCES=(gaia_depth_grade.js GaiaDepthGradeDialog.js gaia_depth_grade_lib.jsh)
-GAIA_DOC_HTML="$ROOT/gaia-depth-grade/doc/GaiaDepthGrade/GaiaDepthGrade.html"
-# A published Gaia script zip of this version is reused byte for byte (step 3c), so it must already carry
-# the current documentation (its sources are checked by signed_state below).
-! git -C "$ROOT" ls-files --error-unmatch "repository/$GAIA_ZIP" >/dev/null 2>&1 \
-  || git -C "$ROOT" show ":repository/$GAIA_ZIP" | python3 -c 'import io,sys,zipfile; sys.exit(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read("doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html")!=open(sys.argv[1],"rb").read())' "$GAIA_DOC_HTML" \
-  || die "Gaia Depth Grade $GAIA_VER is already published as $GAIA_ZIP without the current GaiaDepthGrade.html -- bump gaia-depth-grade/SCRIPT_VERSION so a new package is built"
 
-# What this release signs (steps 2-2c): a module only when its package is new (a published version's
+# What this release signs (steps 2-2b): a module only when its package is new (a published version's
 # tarball is reused byte for byte, so its signature would ship nowhere); a script product only when a
 # signed source differs from the one its published package carries (signed_state). The published
 # manifest is the committed one: the state every package is judged against.
@@ -792,18 +755,15 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 PUB_MF="$WORK_DIR/published.xri"
 git -C "$ROOT" show ":repository/updates.xri" > "$PUB_MF" || die "repository/updates.xri is not committed"
 declare -A MODULE_NEW=() SIGN_STATE=() SIGN_PUB=()
-for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}"; do
+for pair in "NukeX $MOD_TGZ" "Planetary $PLANETARY_TGZ"; do
   read -r m t <<< "$pair"
   MODULE_NEW[$m]=0
   [ -n "${t:-}" ] && ! git -C "$ROOT" ls-files --error-unmatch "repository/$t" >/dev/null 2>&1 && MODULE_NEW[$m]=1
   echo "   module $m: $([ "${MODULE_NEW[$m]}" = 1 ] && echo "new package ${t} -- signed" || echo "${t:-not packaged}${t:+ published} -- not signed")"
 done
-SCRIPT_PRODUCTS=("${EZ_NAMES[@]}" GaiaDepthGrade)
+SCRIPT_PRODUCTS=("${EZ_NAMES[@]}")
 product_state(){ # <product> : signed_state of a script product against the published manifest
-  case "$1" in
-    GaiaDepthGrade) signed_state "$1" "$PUB_MF" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP" src/scripts/GaiaDepthGrade "$GAIA_SRC" "${GAIA_SOURCES[@]}" ;;
-    *) signed_state "$1" "$PUB_MF" "${1}_v[0-9.]+\.zip" "${1}_v${EZVER[$1]}.zip" src/scripts/scarter4work "$EZSRC" "$1.js" ;;
-  esac
+  signed_state "$1" "$PUB_MF" "${1}_v[0-9.]+\.zip" "${1}_v${EZVER[$1]}.zip" src/scripts/scarter4work "$EZSRC" "$1.js"
 }
 for p in "${SCRIPT_PRODUCTS[@]}"; do
   out="$(product_state "$p")" || die "$p: cannot decide whether to sign it (see above)"
@@ -811,37 +771,26 @@ for p in "${SCRIPT_PRODUCTS[@]}"; do
   echo "   $p: signed sources ${SIGN_STATE[$p]} since ${SIGN_PUB[$p]} -- $([ "${SIGN_STATE[$p]}" = changed ] && echo signed || echo "not signed")"
 done
 needs_signing(){ [ "${SIGN_STATE[$1]}" = changed ]; }   # <product>
-# The sidecar package of SIDECAR_VER: its published (committed) tarball whatever date it was cut on,
-# else a new dated name (step 3d builds it).
-SIDECAR_TGZ="$(git -C "$ROOT" ls-files "repository/*-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz" | sed 's#^repository/##')"
-[ "$(printf '%s\n' "$SIDECAR_TGZ" | grep -c .)" -le 1 ] || die "several published sidecar packages for $SIDECAR_VER: $SIDECAR_TGZ"
-SIDECAR_PUBLISHED=0; [ -n "$SIDECAR_TGZ" ] && SIDECAR_PUBLISHED=1
-[ -n "$SIDECAR_TGZ" ] || SIDECAR_TGZ="$DATE-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz"
 # This release's packages, ONE list: step 0b's description check, 3f's description write and the
 # manifest name-set checks (after 3f and after step 4) all take their names from it.
-RELEASE_PKGS=("$MOD_TGZ" "$PICOPILOT_TGZ" "$PLANETARY_TGZ" "${GDG_PKGS[@]}" "${EZ_ZIPS[@]}" "$GAIA_ZIP" "$SIDECAR_TGZ")
+RELEASE_PKGS=("$MOD_TGZ" "$PLANETARY_TGZ" "${EZ_ZIPS[@]}")
 DESC_LIST="$(desc_args "${RELEASE_PKGS[@]}")" || die "a package has no description source"
 mapfile -t DESC_ARGS <<< "$DESC_LIST"
 descriptions check "$REPO/updates.xri" "${DESC_ARGS[@]}" \
   || die "a package description names a version other than its package's -- bring it up to date for this release"
 
-echo "== 1/6 build NukeX + PICopilot + Planetary + GaiaDepthGrade modules (portable Rocky 9 container, PCL 2.13.0) =="
+echo "== 1/6 build NukeX + Planetary modules (portable Rocky 9 container, PCL 2.13.0) =="
 # NEVER ship a host build: the dev box's glibc/libstdc++ symbol versions and
 # Fedora-only sonames (libceres/libglog/libgflags) end up in the module, which
 # then loads on this machine and nowhere else. See tools/build-env/Containerfile.
 "$ROOT/tools/build-env/build-modules.sh" || die "portable module build/tests failed"
 SO="$(find "$ROOT/modules/nukex/build-portable" -name 'NukeX-pxm.so' -print -quit)"
 [ -n "$SO" ] || die "NukeX-pxm.so not found after build"
-PICOPILOT_SO="$(find "$ROOT/modules/pi-copilot/build-portable" -name 'PICopilot-pxm.so' -print -quit)"
-[ -n "$PICOPILOT_SO" ] || die "PICopilot-pxm.so not found after build"
-"$ROOT/modules/pi-copilot/test/check-no-selftest-hooks.sh" "$PICOPILOT_SO" || die "PICopilot-pxm.so carries self-test hooks"
 PLANETARY_SO="$(find "$ROOT/modules/planetary/build-portable" -name 'Planetary-pxm.so' -print -quit)"
 [ -n "$PLANETARY_SO" ] || die "Planetary-pxm.so not found after build"
-GDG_SO="$(find "$ROOT/modules/gaia-depth-grade/build-portable" -name 'GaiaDepthGrade-pxm.so' -print -quit)"
-[ -n "$GDG_SO" ] || die "GaiaDepthGrade-pxm.so not found after build"
 
-echo "== 1b/6 prove all four modules load on stock older distros =="
-"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" "$GDG_SO" || die "a module would not load on a stock distro"
+echo "== 1b/6 prove both modules load on stock older distros =="
+"$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PLANETARY_SO" || die "a module would not load on a stock distro"
 
 # sign_module <Module> <module .so> : sign a module whose package is new (MODULE_NEW, step 0b); a published
 # version's tarball is reused byte for byte, so its build is not signed. Either way no .xsgn from a prior
@@ -860,19 +809,9 @@ echo "== 2/6 sign NukeX module (only a new package) =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
 sign_module NukeX "$SO"
 
-echo "== 2a/6 sign PICopilot module (only a new package) =="
-PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
-sign_module PICopilot "$PICOPILOT_SO"
-
 echo "== 2a2/6 sign Planetary module (only a new package) =="
 PLANETARY_XSGN="${PLANETARY_SO%-pxm.so}-pxm.xsgn"
 sign_module Planetary "$PLANETARY_SO"
-
-if [ "$GDG_MODULE_SHIPS" = 1 ]; then
-  echo "== 2a3/6 sign GaiaDepthGrade module (only a new package) =="
-  GDG_XSGN="${GDG_SO%-pxm.so}-pxm.xsgn"
-  sign_module GaiaDepthGrade "$GDG_SO"
-fi
 
 echo "== 2b/6 native-sign the EZ scripts whose source changed =="
 EZ_SIGN=(); for name in "${EZ_NAMES[@]}"; do needs_signing "$name" && EZ_SIGN+=("$name"); done
@@ -880,26 +819,6 @@ if [ ${#EZ_SIGN[@]} -gt 0 ]; then
   ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts "${EZ_SIGN[@]}" ) || die "EZ script signing failed"
 else
   echo "   no EZ script changed -- none signed"
-fi
-
-echo "== 2c/6 native-sign the gaia-depth-grade scripts, if their source changed =="
-# Signs pi/*.js + the shared *.jsh -> *.xsgn and verifies each via getScriptSignature.
-# Writes /tmp/.gaia_sign_result.json (automation-mode console never reaches stdout).
-if needs_signing GaiaDepthGrade; then
-  rm -f /tmp/.gaia_sign_result.json
-  LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-    pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
-          --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
-          --force-exit >/dev/null 2>&1 || true
-  python3 - /tmp/.gaia_sign_result.json "$GAIA_SRC" <<'PY' || die "gaia script signing/verification failed"
-import json,os,sys
-r=json.load(open(sys.argv[1]))
-assert r.get("ok"), r
-assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
-print("  signed+verified:", ", ".join(r["verified"]))
-PY
-else
-  echo "   Gaia Depth Grade scripts unchanged -- not signed"
 fi
 
 echo "== 2d/6 nothing unchanged was re-signed =="
@@ -914,7 +833,7 @@ done
 
 # Every manifest edit from here on (steps 3-6) is made on a WORK COPY of repository/updates.xri: the
 # repository's manifest is replaced only by step 6c, once the copy is fully edited, hashed, signed and
-# verified. A failure anywhere before that (a build, the sidecar's network fetch, a check) leaves
+# verified. A failure anywhere before that (a build, a check) leaves
 # repository/updates.xri exactly as it was -- never a renamed, re-described manifest under its old,
 # now invalid signature, which PixInsight would reject as a whole (final review, module m5).
 WORK_MF="$WORK_DIR/updates.xri"   # WORK_DIR: made in step 0b
@@ -923,7 +842,7 @@ cp "$WORK_MF" "$WORK_DIR/before.xri"   # step 5 signs the copy only if this rele
 retire_manifest "$WORK_MF" "${RETIRED_PKG_RE[@]}"
 # A module package NEW in this release is a PCL 2.13 build: it goes to the 1.9.6:2.0.0 block. A published
 # package reused byte for byte (an unbumped module) keeps its block: older builds still load on 1.9.5.
-NEW_MODULES=(); for m in NukeX PICopilot Planetary GaiaDepthGrade; do [ "${MODULE_NEW[$m]}" = 1 ] && NEW_MODULES+=("$m"); done
+NEW_MODULES=(); for m in NukeX Planetary; do [ "${MODULE_NEW[$m]}" = 1 ] && NEW_MODULES+=("$m"); done
 if [ ${#NEW_MODULES[@]} -gt 0 ]; then module_platform_block "$WORK_MF" "${NEW_MODULES[@]}"; fi
 
 echo "== 3/6 package NukeX module tarball =="
@@ -937,44 +856,6 @@ if n!=1: sys.exit("updates.xri has %d NukeX package entries, expected 1"%n)
 open(mf,'w').write(s)
 PY
 
-echo "== 3a/6 package PICopilot module tarball =="
-package_module "$PICOPILOT_TGZ" PICopilot "$PICOPILOT_SO" "$PICOPILOT_XSGN" "$PICOPILOT_DOC" "${PICOPILOT_DOC_IDS[@]}"
-"$ROOT/modules/pi-copilot/test/check-tarball-no-selftest-hooks.sh" "$REPO/$PICOPILOT_TGZ" || die "$PICOPILOT_TGZ (the package shipped) carries self-test hooks"
-# Stale dated PICopilot tarballs (like stale dated NukeX tarballs) are not
-# auto-deleted here -- they're pruned manually at commit time (see repository/
-# git history, e.g. "Dropped stale repository/ artifacts ... 20260627 NukeX tarball").
-python3 - "$WORK_MF" "$PICOPILOT_TGZ" <<'PY'
-import re,sys
-mf,fn=sys.argv[1:3]
-s=open(mf).read()
-if re.search(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', s):
-    # Entry already exists from a prior release -- just rename the dated
-    # fileName, mirroring the NukeX rename above. Idempotent: re-running
-    # with the same date is a no-op substitution.
-    s,n=re.subn(r'fileName="[^"]*-linux-x64-PICopilot(-[0-9.]+)?\.tar\.gz"', 'fileName="'+fn+'"', s)
-    if n!=1: sys.exit("updates.xri has %d PICopilot package entries, expected 1"%n)
-else:
-    # First release: insert a new <package> entry into the linux/x64
-    # 1.9.6:2.0.0 module block (module_platform_block, the block NukeX lives in). sha1/releaseDate
-    # are placeholders -- step 4 (write_pkg) fills in the real values --
-    # and step 3f writes the description from its source.
-    entry = ('\n      <package fileName="' + fn + '" '
-             'sha1="0000000000000000000000000000000000000000" '
-             'type="module" releaseDate="00000000">\n'
-             '         <title>PI Copilot</title>\n'
-             '         <description></description>\n'
-             '      </package>\n')
-    new_s,n=re.subn(
-        r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
-        lambda m: m.group(1)+entry+m.group(2),
-        s, count=1, flags=re.DOTALL)
-    if n!=1:
-        sys.exit("could not locate linux/x64 <platform> block to insert PICopilot package entry")
-    s=new_s
-open(mf,'w').write(s)
-PY
-[ -f "$REPO/$PICOPILOT_TGZ" ] || die "tarball $PICOPILOT_TGZ not produced"
-
 echo "== 3a2/6 package Planetary module tarball (docs deploy as doc/tools/{${PLANETARY_DOC_IDS[*]}}/) =="
 package_module "$PLANETARY_TGZ" Planetary "$PLANETARY_SO" "$PLANETARY_XSGN" "$PLANETARY_DOC" "${PLANETARY_DOC_IDS[@]}"
 python3 - "$WORK_MF" "$PLANETARY_TGZ" <<'PY'
@@ -983,7 +864,7 @@ mf,fn=sys.argv[1:3]
 s=open(mf).read()
 pat=r'fileName="[^"]*-linux-x64-Planetary(-[0-9.]+)?\.tar\.gz"'
 if re.search(pat, s):
-    # Entry exists from a prior release -- rename the fileName, as for PICopilot.
+    # Entry exists from a prior release -- rename the fileName, as for NukeX.
     s,n=re.subn(pat, 'fileName="'+fn+'"', s)
     if n!=1: sys.exit("updates.xri has %d Planetary package entries, expected 1"%n)
 else:
@@ -1006,34 +887,6 @@ else:
 open(mf,'w').write(s)
 PY
 [ -f "$REPO/$PLANETARY_TGZ" ] || die "tarball $PLANETARY_TGZ not produced"
-
-if [ "$GDG_MODULE_SHIPS" = 1 ]; then
-  echo "== 3a3/6 package GaiaDepthGrade module tarball (docs deploy as doc/tools/GaiaDepthGrade/) =="
-  package_module "$GDG_TGZ" GaiaDepthGrade "$GDG_SO" "$GDG_XSGN" "$GDG_DOC" "${GDG_DOC_IDS[@]}"
-  python3 - "$WORK_MF" "$GDG_TGZ" <<'PY'
-import re,sys
-mf,fn=sys.argv[1:3]
-s=open(mf).read()
-pat=r'fileName="[^"]*-linux-x64-GaiaDepthGrade(-[0-9.]+)?\.tar\.gz"'
-if re.search(pat, s):
-    s,n=re.subn(pat, 'fileName="'+fn+'"', s)
-    if n!=1: sys.exit("updates.xri has %d GaiaDepthGrade module entries, expected 1"%n)
-else:
-    # First release: a new <package> in the 1.9.6:2.0.0 module block; step 4 writes sha1/releaseDate
-    # and step 3f the description.
-    entry = ('\n      <package fileName="' + fn + '" '
-             'sha1="0000000000000000000000000000000000000000" '
-             'type="module" releaseDate="00000000">\n'
-             '         <title>Gaia Depth Grade</title>\n'
-             '         <description></description>\n'
-             '      </package>\n')
-    s,n=re.subn(r'(<platform os="linux" arch="x64" version="1\.9\.6:2\.0\.0">.*?)(\s*</platform>)',
-                lambda m: m.group(1)+entry+m.group(2), s, count=1, flags=re.DOTALL)
-    if n!=1: sys.exit("could not locate the linux/x64 1.9.6:2.0.0 block to insert the GaiaDepthGrade entry")
-open(mf,'w').write(s)
-PY
-  [ -f "$REPO/$GDG_TGZ" ] || die "tarball $GDG_TGZ not produced"
-fi
 
 echo "== 3b/6 package EZ script zips (src/scripts/scarter4work + doc/scripts/<Name>) =="
 for name in "${EZ_NAMES[@]}"; do
@@ -1067,55 +920,6 @@ for name in "${EZ_NAMES[@]}"; do
   manifest_rename "$WORK_MF" "${name}_v[0-9.]+\.zip" "$zipname"
 done
 
-echo "== 3c/6 package gaia-depth-grade script zip =="
-# Mirror PI's install layout: the 3 sources + their .xsgn in src/scripts/GaiaDepthGrade/,
-# the user documentation in doc/scripts/GaiaDepthGrade/ (Repository Reference 4.2:
-# doc/scripts is for script documentation; the folder and page carry the
-# #feature-id "GaiaDepthGrade"). Modes are normalised world-readable: the updater
-# installs as root while PixInsight runs as the user. GAIA_ZIP: named in step 0b.
-# A published version's zip is reused byte for byte, as for the EZ zips (0b checked its documentation,
-# signed_state its sources, 2d its signatures).
-if git -C "$ROOT" ls-files --error-unmatch "repository/$GAIA_ZIP" >/dev/null 2>&1; then
-  reuse_if_published "$GAIA_ZIP"
-else
-  GAIA_STAGE="$(mktemp -d)"
-  mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade"
-  for f in "${GAIA_SOURCES[@]}"; do cp "$GAIA_SRC/$f" "$GAIA_SRC/${f%.*}.xsgn" "$GAIA_STAGE/src/scripts/GaiaDepthGrade/"; done
-  cp "$GAIA_DOC_HTML" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade/"
-  chmod -R u=rwX,go=rX "$GAIA_STAGE"
-  rm -f "$REPO/$GAIA_ZIP"
-  ( cd "$GAIA_STAGE" && zip -qrX "$REPO/$GAIA_ZIP" src doc )
-  rm -rf "$GAIA_STAGE"
-  [ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
-fi
-manifest_rename "$WORK_MF" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP"
-
-echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-grade-sidecar) =="
-# The scripts run the sidecar only from <PixInsight>/bin, where this package puts
-# it; they never download or install it. A published version (a committed
-# <date>-linux-x64-GaiaDepthGradeSidecar-<ver>.tar.gz) is reused byte for byte,
-# exactly like the module tarballs: bump gaia_depth_grade.__version__ to ship
-# new bytes. Building one takes the portable Rocky 9 image and network access
-# (pinned, hash-checked inputs); see gaia-depth-grade/tools/build-sidecar.sh.
-# SIDECAR_VER and SIDECAR_TGZ (the published name, or a new dated one): set in step 0b.
-grep -qE "^#define SIDECAR_VERSION +\"$SIDECAR_VER\"" "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh" \
-  || die "gaia_depth_grade_lib.jsh SIDECAR_VERSION is not $SIDECAR_VER: the scripts would refuse the sidecar this release ships"
-if [ "$SIDECAR_PUBLISHED" = 1 ]; then
-  git -C "$ROOT" checkout -- "repository/$SIDECAR_TGZ"
-  echo "   $SIDECAR_TGZ already published -- reusing the committed bytes"
-else
-  "$ROOT/gaia-depth-grade/tools/build-sidecar.sh" "$REPO/$SIDECAR_TGZ" || die "sidecar build/smoke test failed"
-fi
-[ "$(stat -c%s "$REPO/$SIDECAR_TGZ")" -lt 95000000 ] || die "$SIDECAR_TGZ is too close to GitHub's 100 MB per-file limit"
-python3 - "$WORK_MF" "$SIDECAR_TGZ" <<'PY' || die "updates.xri has no GaiaDepthGradeSidecar package entry to point at $SIDECAR_TGZ"
-import re,sys
-mf,fn=sys.argv[1:3]
-s=open(mf).read()
-s,n=re.subn(r'fileName="[^"]*-linux-x64-GaiaDepthGradeSidecar-[0-9.]+\.tar\.gz"', 'fileName="'+fn+'"', s)
-if n!=1: sys.exit(1)
-open(mf,'w').write(s)
-PY
-
 echo "== 3e/6 publish the NukeX camera database (repository/qe_*) =="
 for f in "${QE_FILES[@]}"; do cp "$QE_SRC/$f" "$REPO/$f"; done
 qe_check "$REPO" || die "published QE set in repository/ does not verify"
@@ -1134,15 +938,11 @@ manifest_removes "$WORK_MF" "$REPO" "${PKG_REMOVE[@]}"
 
 echo "== 4/6 write fileName/sha1/releaseDate into ONE manifest =="
 write_pkg "$WORK_MF" "$MOD_TGZ"                  "$(sha1 "$REPO/$MOD_TGZ")"
-write_pkg "$WORK_MF" "$PICOPILOT_TGZ"            "$(sha1 "$REPO/$PICOPILOT_TGZ")"
 write_pkg "$WORK_MF" "$PLANETARY_TGZ"            "$(sha1 "$REPO/$PLANETARY_TGZ")"
-[ "$GDG_MODULE_SHIPS" = 1 ] && write_pkg "$WORK_MF" "$GDG_TGZ" "$(sha1 "$REPO/$GDG_TGZ")"
 for name in "${EZ_NAMES[@]}"; do
   zipname="${name}_v${EZVER[$name]}.zip"
   write_pkg "$WORK_MF" "$zipname" "$(sha1 "$REPO/$zipname")"
 done
-write_pkg "$WORK_MF" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
-write_pkg "$WORK_MF" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
 manifest_names_check "$WORK_MF" "${RELEASE_PKGS[@]}"
 
 echo "== 4a/6 packages served as published keep their sha1 and releaseDate =="

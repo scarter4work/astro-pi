@@ -2,21 +2,9 @@
 <xri version="1.0">
    <description>
       <p>astro-pi — unified PixInsight distribution (scarter4work)</p>
-      <p>NukeX stacking and stretching module, PI Copilot assistant panel, Planetary video viewer and stacker, Gaia Depth Grade script and its sidecar program, and the EZ Stretch BSC scripts.</p>
+      <p>NukeX stacking and stretching module, Planetary video viewer and stacker, and the EZ Stretch BSC scripts. PI Copilot and Gaia Depth Grade are no longer distributed here; installing EZ Stretch 1.0.13 removes their files.</p>
       <p>Repository: https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/</p>
    </description>
-   <platform os="linux" arch="x64" version="1.8.0:2.0.0">
-      <package fileName="20261013-linux-x64-GaiaDepthGradeSidecar-1.0.8.tar.gz" sha1="9bb92ab3b6c336ccd7158ab3c2eb77df8ca697cf" type="generic" releaseDate="20261115">
-         <title>Gaia Depth Grade sidecar</title>
-         <description>
-            <p>
-               <b>Gaia Depth Grade sidecar 1.0.8</b>
-            </p>
-            <p>The image-processing program used by the Gaia Depth Grade script (install both). It is installed as bin/gaia-depth-grade-sidecar and its licences in doc/scripts/GaiaDepthGrade/. It is a self-contained program (Python with NumPy, SciPy, Astropy, photutils, astroquery and Pillow); no Python installation is needed.</p>
-            <p>Delivered by PixInsight&apos;s update system (earlier versions were downloaded by the script). It runs on any Linux that runs PixInsight with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
-         </description>
-      </package>
-   </platform>
    <platform os="linux" arch="x64" version="1.9.6:2.0.0">
       <package fileName="20261115-linux-x64-NukeX-5.3.1.0.tar.gz" sha1="136dfa4d26571d4c761256922e65b6d66704226b" type="module" releaseDate="20261115">
          <title>NukeX</title>
@@ -26,17 +14,6 @@
             </p>
             <p>Distribution-fitted pixel-signal estimation and auto-stretch for PixInsight. NukeX works on the FITS light frames you add (with optional flats): for every pixel it fits a statistical distribution to every pixel&apos;s samples across the stack, estimates the signal from the fitted model, and applies one of its stretches (Auto is recommended). A camera quantum-efficiency (QE) database built into the module routes each frame and decomposes dual-narrowband colour data (HaO3 / S2O3) into emission lines. Frames open only as local files, and the FITS library has no network or shared-memory drivers. New in 5.3.1.0: flats from a colour (OSC) camera are applied to each pixel by its own colour before debayering; they used to be applied after, which printed the sensor&apos;s colour pattern into the image whenever the flat&apos;s red, green and blue levels differed. Pause/Abort while frames are measured now stops the run within about a third of a second. The Lupton stretch no longer gives a black image at Q = 0 (its linear limit) and refuses a stretch value of 0 with an error, and CLAHE&apos;s per-channel mode now equalizes every channel of a colour image. Stacks without flats give the same images as the previous release. Built for PixInsight 1.9.6 / PCL 2.13; requires PixInsight 1.9.6 or later. It loads on any Linux with glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, Rocky/RHEL 9+).</p>
             <p>Network: one kind of connection only, the camera-database update check. It makes HTTPS requests to raw.githubusercontent.com (this repository), automatically at most once every 7 days when you open the NukeX window, and whenever you press Check now; it sends no identifier, usage data or image data. A newer database is downloaded and installed only if you agree, after its Ed25519 signatures are verified. Automatic checks can be turned off in the NukeX window. NukeX launches no external program. Files outside the PixInsight installation: ~/.config/nukex4/ (update-check state, a downloaded database, filter names you teach it, your stretch ratings), a frame cache in ~/.cache/nukex4/cache/ while a run lasts, and, while a run lasts, its progress files in a private directory (mode 0700) under $TMPDIR or /tmp, deleted when the run ends. Documentation, including every network connection, external program and file location: doc/tools/NukeX/NukeX.html.</p>
-         </description>
-      </package>
-      <package fileName="20261110-linux-x64-PICopilot-0.2.2.3.tar.gz" sha1="8f05eb44ca0f35e0b8dfacf7bbee4189855a95c3" type="module" releaseDate="20261115">
-         <title>PI Copilot</title>
-         <description>
-            <p>
-               <b>PI Copilot 0.2.2.3</b>
-            </p>
-            <p>Third-party notices corrected to PCL 2.13. Built for PixInsight 1.9.6 / PCL 2.13 (requires PixInsight 1.9.6 or later). Process-safety policy updated for PixInsight 1.9.6&apos;s process set (SpectrophotometricFluxCalibration global runs and ImageAnalysis now ask first). Keyring access starts secret-tool directly instead of through a shell.</p>
-            <p>A chat panel for PixInsight: you talk to Claude, an AI model made by Anthropic, with your own Anthropic API key. It can see the active image (a small preview, its statistics and keywords) and, depending on the mode (Copilot, Guided, or the read-only Advisor), run PixInsight processes on your images, start installed and signed PixInsight scripts that you confirm, and record how each image was processed. It never runs a script written by the model; it can only start installed, signed scripts you confirm.</p>
-            <p>Network: HTTPS to api.anthropic.com only, and nothing is sent until you agree in its consent dialog. External programs: secret-tool, started directly (no shell), keeps the API key in the system keyring; PixInsight&apos;s GraXpert process, when the model runs it, starts the GraXpert program you chose in GraXpert&apos;s own settings. Files outside the PixInsight installation: the journey library in ~/.local/share/PICopilot/journeys/, short-lived files in the system temporary directory, and an export folder only if you choose one. Documentation, including every network connection, external program and file location: doc/tools/PICopilot/PICopilot.html.</p>
          </description>
       </package>
       <package fileName="20261110-linux-x64-Planetary-0.5.0.2.tar.gz" sha1="e2464bc6506d47a43a136546d5c38d476eccbfce" type="module" releaseDate="20261115">
@@ -51,17 +28,23 @@
       </package>
    </platform>
    <platform os="all" arch="noarch" version="1.8.0:2.0.0">
-      <package fileName="EZStretch_v1.0.12.zip" sha1="3999ccced0bf7ee4654b2beb1cb44a27bf6c59f5" type="script" releaseDate="20261115">
+      <package fileName="EZStretch_v1.0.13.zip" sha1="2b34a4575afc127bcc9187ba0d77fe9460f7d540" type="script" releaseDate="20261116">
          <title>EZ Stretch</title>
          <remove>
             src/scripts/scarter4work/EZDonutRepair.js
             src/scripts/scarter4work/EZDonutRepair.xsgn
+            bin/PICopilot-pxm.so
+            bin/PICopilot-pxm.xsgn
+            doc/tools/PICopilot
+            src/scripts/GaiaDepthGrade
+            doc/scripts/GaiaDepthGrade
+            bin/gaia-depth-grade-sidecar
          </remove>
          <description>
             <p>
-               <b>EZ Stretch v1.0.12</b>
+               <b>EZ Stretch v1.0.13</b>
             </p>
-            <p>Stretches a linear colour image with Lupton RGB, a root-power stretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the withdrawn EZ Donut Repair script (src/scripts/scarter4work/EZDonutRepair.js and .xsgn). Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
+            <p>Stretches a linear colour image with Lupton RGB, a root-power stretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the files of products no longer distributed from this repository, where present: EZ Donut Repair (src/scripts/scarter4work/EZDonutRepair.js and .xsgn), PI Copilot (bin/PICopilot-pxm.so and .xsgn, doc/tools/PICopilot/) and Gaia Depth Grade (src/scripts/GaiaDepthGrade/, doc/scripts/GaiaDepthGrade/, bin/gaia-depth-grade-sidecar). The stretch itself is unchanged. Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
          </description>
       </package>
       <package fileName="EZHazeKill_v1.1.1.zip" sha1="56b20c696453640a7e85da78ee1846b723b17fdf" type="script" releaseDate="20261115">
@@ -74,17 +57,6 @@
             <p>Licence: BSD 3-Clause.</p>
          </description>
       </package>
-      <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261115">
-         <title>Gaia Depth Grade</title>
-         <description>
-            <p>
-               <b>Gaia Depth Grade v1.0.13</b>
-            </p>
-            <p>Physically-grounded depth grade for astrophotographs using Gaia distances. Defaults to the offline local Gaia DR3 database (the one PixInsight uses for plate-solving; no network use); an online option queries the ESA Gaia archive over HTTPS for Bailer-Jones distances. Linux x64 only: needs the &quot;Gaia Depth Grade sidecar&quot; package from this repository, and StarXTerminator. Documentation, including network use, the programs it runs and the files it writes: doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html.</p>
-            <p>Enlarged (near) stars wear a star-shine halo whose radial shape is stacked from the frame&apos;s own bright, unsaturated, isolated stars and tinted to each star&apos;s own colour; frames with too few clean reference stars fall back to a Moffat profile, with a warning. Optional nebula depth (off by default) grades the starless layer too: dark dust and globules come forward and the diffuse glow recedes, with the overall strength calibrated by the Gaia matched-star distance spread, and Nebula depth / atmospheric / structure sliders.</p>
-            <p>The sidecar program comes from PixInsight&apos;s update system (package &quot;Gaia Depth Grade sidecar&quot;); the script downloads, unpacks and installs nothing. Working files and online Gaia query results live in a private per-user directory, ~/.cache/gaia-depth-grade (mode 0700, checked before use). Earlier versions used ~/.astro-pi/gaia-depth-grade, which you may delete.</p>
-         </description>
-      </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-11-16T02:10:48.486Z" encoding="Base64">cC4va2MvVL1T8OEmprOoNsVNR7OzBOlvWijLcqOFxIS3GQ6wGFJw3WTTZk55zGzJ08DxHcDVRR/RN74WGv2TAw==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-11-16T17:22:30.106Z" encoding="Base64">oMFg0y9Dt3pzLdGzbgrXR/nyNV78i1jVbaCzbnh5O7cG6ChRXLmPKuBzz2pE8TjX8mVWaes0Gj2iMFITOX1zCw==</Signature>

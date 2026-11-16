@@ -3,19 +3,17 @@
 Single source of truth for this monorepo (supersedes the per-project CLAUDE.md files
 in nukex5 / EZ-Stretch-BSC). Global PixInsight conventions still live in ~/.claude/CLAUDE.md.
 
-**This repo root is the project level for every subproject** (modules/*, gaia-depth-grade,
+**This repo root is the project level for every subproject** (modules/*,
 scripts/ez-stretch, tools/*), even when a session starts in a subfolder. Project memory for
 any of it goes in `~/.claude/memory/projects/projects-astro-pi/` (index: its INDEX.md, grouped
 by subproject) -- never a new per-folder memory directory. No CLAUDE.md below this one.
 
 ## What ships
 - `modules/nukex/` → `NukeX-pxm` module (ID string `"NukeX"` is STABLE — never rename; existing installs update by ID).
-- `modules/pi-copilot/` → `PICopilot-pxm` module (process/doc id `PICopilot`).
 - `modules/planetary/` → `Planetary-pxm` module, processes `SERViewer` and `PlanetaryStack` (docs deploy as
   `doc/tools/SERViewer/` and `doc/tools/PlanetaryStack/`).
   0.5.0.1 (rebuilt for PixInsight 1.9.6 / PCL 2.13); 0.5.0.0 (released 2026-10-29: Planet processing (Saturation / Chroma blur / Sharpen sliders, catalogue-colour calibration, small-disc dispersion alignment)); 0.4.0.1 (released 2026-10-28: frame-filling Moon sharpening noise from the disc, IR-pass filters refused, NaN/Inf refused; 0.4.0.0 released 2026-10-28: Target from the ASIAIR name + mineral moon with Strength/Chroma blur/Sharpen sliders; 0.3.0.2 released 2026-10-27: 4 px Bayer frame guard band + crop to covered area; 0.3.0.0 released 2026-10-24: PlanetaryStack, automatic lucky-imaging stacking; 0.2.2.0 = Flip=Vert(unimplemented) AVIs use the sidecar's Bayer pattern as is; 0.2.1.0 = Save pattern...: generated AVI sidecar; 0.2.0.0 = AVI input + Save as SER; 0.1.0.0 released 2026-10-21): module id `Planetary` and process ids `SERViewer` and `PlanetaryStack` are STABLE — never rename.
-- `gaia-depth-grade/` → Gaia Depth Grade scripts + the linux-x64 sidecar package.
-- `scripts/ez-stretch/` → EZStretch / EZHazeKill (`.js` + `.xsgn` + docs under `scripts/ez-stretch/doc/<Name>/`). EZDonutRepair was withdrawn 2026-11-10 (private repo `scarter4work/ez-donut-repair`; the EZStretch package carries a `<remove>` for it).
+- `scripts/ez-stretch/` → EZStretch / EZHazeKill (`.js` + `.xsgn` + docs under `scripts/ez-stretch/doc/<Name>/`). EZDonutRepair was withdrawn 2026-11-10 (private repo `scarter4work/ez-donut-repair`); the EZStretch package carries the `<remove>` for every withdrawn product (`PKG_REMOVE` in release.sh).
 Everything in `tools/` and `archive/` is NOT shipped.
 
 ## Not distributed from here (2026-10-04)
@@ -30,18 +28,22 @@ to "bridge" scripts that only shell out to a competing program):
 Both were also stripped from this repo's history (git filter-repo + force-push, 2026-10-04).
 - PCL/PJSR parsers moved to PRIVATE repo `scarter4work/pi-parsers` (`~/projects/pi-parsers`), 2026-11-10.
 - BayesianAstro moved to PRIVATE repo `scarter4work/bayesian-astro`, 2026-11-10.
+- **PI Copilot and Gaia Depth Grade withdrawn 2026-11-16** (Scott is building his own app; PTeam's CPD notice of
+  2026-11-10 named both). Moved, with history, to PRIVATE, UNSIGNED repos: `scarter4work/pi-copilot` (module,
+  `third_party/sqlite`, specs/plans) and `scarter4work/gaia-depth-grade-pi` (scripts, sidecar, the native port
+  `modules/gaia-depth-grade`, and the unmerged `gdg/*` and `feat/nebula-3d-depth-reconstruction` branches).
+  Their packages left `updates.xri` via `RETIRED_PKG_RE`; EZStretch 1.0.13 `<remove>`s their installed files.
+  Never re-add them to this repo or `updates.xri`.
 
 ## Release rules (MUST follow)
 1. NEVER `make install` — users install from the GitHub repository URL.
 2. Bump the relevant version before building (NukeX: `modules/nukex/src/module/NukeXVersion.h`;
-   PI Copilot: `modules/pi-copilot/src/module/PICopilotVersion.h`;
    Planetary: `modules/planetary/src/module/PlanetaryVersion.h`;
-   EZ scripts: the `#define VERSION` in each `.js`; Gaia Depth Grade scripts: `gaia-depth-grade/SCRIPT_VERSION`;
-   Gaia sidecar: `__version__` in `gaia-depth-grade/src/gaia_depth_grade/__init__.py`). release.sh reads every
+   EZ scripts: the `#define VERSION` in each `.js`). release.sh reads every
    version from these and holds none itself; it dies on one it cannot read, and on a package description
    that does not name its package's version or names another.
 2a. Update the bumped product's update-repository description (`<product>/package-description.xml`; EZ:
-   `scripts/ez-stretch/package-description/<Name>.xml`; Gaia sidecar: `gaia-depth-grade/sidecar-package-description.xml`).
+   `scripts/ez-stretch/package-description/<Name>.xml`).
    release.sh rewrites every package's `<description>` from these on every release and fails when one names a
    version other than its package's (CPD 6.1: no description outlives its release). Every manifest edit
    (fileName renames, sha1/releaseDate) must hit exactly one entry, and the manifest must list exactly the
@@ -56,7 +58,7 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
    product stops the release (step 2d). A release with nothing bumped leaves `git status` clean.
 4a. Shipped modules are built ONLY in the Rocky 9 container (`tools/build-env/build-modules.sh`, which
    release.sh calls) — never ship a host build. A host build carries this box's GLIBC_2.43/GLIBCXX_3.4.32
-   and Fedora-only sonames and loads nowhere else (NukeX ≤5.1.0.2 / PICopilot ≤0.2.1.0 shipped that way).
+   and Fedora-only sonames and loads nowhere else (NukeX ≤5.1.0.2 shipped that way).
    `tools/build-env/verify-portable.sh` gates the release: ≤GLIBC_2.34/GLIBCXX_3.4.30 (the PI core's
    own floor), no RPATH, and a real `dlopen` on stock Ubuntu 22.04 / Debian 12 / Rocky 9. New third-party
    C++ deps go into the image as static `-fPIC` archives; no OpenMP (libgomp is not on stock distros —
@@ -69,7 +71,7 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
    table at module init and 2.13 adds five TreeBox functions (1.9.5 build 1706 refuses it: "Unable to
    resolve PCL API interface."). So release.sh puts every NEW module package in a linux/x64
    `1.9.6:2.0.0` platform block (`module_platform_block`); PI 1.9.6's updater accepts two linux/x64 blocks
-   (`modules/gaia-depth-grade/test/run-probe-xri-platforms.sh`). Host `~/PCL` is the same 2.13 tree
+   (measured by `run-probe-xri-platforms.sh`, now in `scarter4work/gaia-depth-grade-pi`). Host `~/PCL` is the same 2.13 tree
    (2.9.4 kept at `/mnt/samsung_1.8/astro/PCL-2.9.4-3a4af80` and `~/projects/backups/pcl-2.9.4/`).
 4b. NukeX's camera (QE) database is compiled into the module AND published for the in-module
    updater as `repository/qe_{manifest,database}.json{,.sig}` (fetched from `nukex::kQEUpdateBaseURL`).
@@ -114,14 +116,6 @@ Stack engine benchmark and focus survey (host-only, read the NAS, never launch P
 (see `test/bench/README.md`), `bash test/run-focus-survey.sh`.
 run-avi-real.sh neither signs nor launches PixInsight: it runs the PCL-free reader (`build/test/avi-probe`, host build)
 against ffmpeg/ffprobe and needs `/mnt/qnap`, ffmpeg, ffprobe and numpy; the NAS is only read.
-
-## Build / test GaiaDepthGrade (native module; not shipped until its Task 20 cut-over, `GDG_MODULE_SHIPS` in release.sh)
-```bash
-cd modules/gaia-depth-grade && cmake -B build -DPCLDIR=$HOME/PCL -DGDG_BUILD_MODULE=ON && cmake --build build -j$(nproc)
-(cd build && ctest --output-on-failure)
-bash test/run-probe-ids.sh                      # container build: module id via module-ident.c, loaded by PI (slot 95), process ids
-bash test/run-probe-xri-platforms.sh <out-dir>  # PI 1.9.6 updater vs two linux/x64 platform blocks (slot 95, local signed scratch repo)
-```
 
 ## Distribution URL
 `https://raw.githubusercontent.com/scarter4work/astro-pi/main/repository/`

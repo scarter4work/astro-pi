@@ -23,9 +23,6 @@ node_modules/
 __pycache__/
 *.pyc
 
-# PI Copilot: ephemeral local test key (never commit)
-modules/pi-copilot/test/.test_api_key
-
 # Claude Code per-user local settings
 .claude/settings.local.json
 # Claude Code agent worktrees

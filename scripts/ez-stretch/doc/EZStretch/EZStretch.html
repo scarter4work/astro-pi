@@ -24,7 +24,7 @@
 <body>
 
 <h1>EZ Stretch</h1>
-<p class="subtitle">Three stretches of a linear colour image in one dialog, with a live preview &mdash; script version 1.0.12.<br />
+<p class="subtitle">Three stretches of a linear colour image in one dialog, with a live preview &mdash; script version 1.0.13.<br />
 By Scott Carter. Copyright &copy; 2025-2026 Brian Scott Carter.</p>
 
 <div class="toc">
@@ -148,14 +148,21 @@ files: it reads only the pixels of the image you select. Its only outputs are th
 the Process Console.</p>
 
 <h2 id="remove">What installing this version removes</h2>
-<p>EZ Donut Repair is no longer distributed. When the PixInsight update system installs this version of EZ Stretch, it
-first deletes these two files of EZ Donut Repair from the PixInsight installation, if they are there:</p>
+<p>EZ Donut Repair, PI Copilot and Gaia Depth Grade are no longer distributed from this repository. When the PixInsight
+update system installs this version of EZ Stretch, it first deletes their files and folders from the PixInsight
+installation, if they are there:</p>
 <ul>
-   <li><code>src/scripts/scarter4work/EZDonutRepair.js</code></li>
-   <li><code>src/scripts/scarter4work/EZDonutRepair.xsgn</code></li>
+   <li>EZ Donut Repair: <code>src/scripts/scarter4work/EZDonutRepair.js</code> and
+   <code>src/scripts/scarter4work/EZDonutRepair.xsgn</code>;</li>
+   <li>PI Copilot: <code>bin/PICopilot-pxm.so</code>, <code>bin/PICopilot-pxm.xsgn</code> and the folder
+   <code>doc/tools/PICopilot/</code>;</li>
+   <li>Gaia Depth Grade: the folders <code>src/scripts/GaiaDepthGrade/</code> and <code>doc/scripts/GaiaDepthGrade/</code>,
+   and the program <code>bin/gaia-depth-grade-sidecar</code>.</li>
 </ul>
-<p>Nothing else is removed. If EZ Donut Repair was never installed, nothing happens; the updater's log may mention the
-two missing files.</p>
+<p>Nothing else is removed: no settings, and none of your own files (for example PI Copilot&rsquo;s journey library in
+<code>~/.local/share/PICopilot/</code> or Gaia Depth Grade&rsquo;s working files in <code>~/.cache/gaia-depth-grade</code>,
+which you may delete yourself). Items that were never installed are skipped; the updater&rsquo;s log may mention them as
+missing.</p>
 
 <h2 id="licence">Licence and references</h2>
 <p>EZ Stretch contains no third-party code. It is released under the BSD 3-Clause License:</p>
