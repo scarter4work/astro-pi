@@ -1,6 +1,7 @@
 #include "nukex/gpu/gpu_cpu_fallback.hpp"
 #include "nukex/core/noise_model.hpp"
 #include "nukex/core/parallel_for.hpp"
+#include "nukex/core/cancellable_for.hpp"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -349,8 +350,10 @@ void GPUCPUFallback::spatial_context(
 
     // Row-parallel: each pixel reads the stack and writes only its own
     // outputs. Single-threaded this took 124 s on an 8 MP 4-channel stack.
-    parallel_for_dynamic(height, 4, [&](int y, int worker) {
-        if (cancel && cancel->poll(worker)) return;
+    // cancellable_for: the caller polls every 20 ms until the last row is
+    // done (polling from worker 0 between its own rows left the tail
+    // unwatched: 1.5 s in the Rocky 9 build container).
+    cancellable_for(height, 1, cancel, [&](int y) {
         for (int x = 0; x < width; x++) {
             int pi = y * width + x;
 

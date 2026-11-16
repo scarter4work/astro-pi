@@ -620,12 +620,13 @@ struct TailRecorder : ProgressObserver {
     mutable int foreign_calls = 0;
     mutable clk::time_point last{};
     mutable double max_gap = 0.0;
-    mutable std::string line, max_gap_at;
+    mutable std::string line, max_gap_at, line_at_last, max_gap_from;
     std::vector<std::string> lines;
     void gap_to(clk::time_point now) const {
         const double g = std::chrono::duration<double>(now - last).count();
-        if (g > max_gap) { max_gap = g; max_gap_at = line; }
+        if (g > max_gap) { max_gap = g; max_gap_at = line; max_gap_from = line_at_last; }
         last = now;
+        line_at_last = line;
     }
     void note(const std::string& s) { if (watching) { line = s; lines.push_back(s); } }
     void begin_phase(const std::string& n, int) override { note(n); }
@@ -670,10 +671,14 @@ void finishing_gaps(bool gpu, bool file_backed, const char* tag) {
     rec.gap_to(clk::now());   // from the last check to execute() returning
     REQUIRE(r.derived.slots.count("Ha") == 1);   // the Q-solve ran
     INFO(rec.polls << " polls after Phase B, longest gap " << rec.max_gap
-         << " s, ending after \"" << rec.max_gap_at << "\"");
+         << " s, from after \"" << rec.max_gap_from << "\" to after \"" << rec.max_gap_at << "\"");
     REQUIRE(rec.polls > 5);
 #if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
-    REQUIRE(rec.max_gap < 0.2);
+    // Not 0.2 s as inside Phase B: finishing allocates whole-image buffers
+    // (the quality and noise maps, 240 MB here) between checks, and under
+    // memory pressure one such allocation alone took 0.27-0.52 s. The loops
+    // themselves check every row; before they did, this was 1.4-2.2 s.
+    REQUIRE(rec.max_gap < 0.75);
 #endif
     REQUIRE(rec.foreign_calls == 0);
 }
