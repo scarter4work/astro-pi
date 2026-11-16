@@ -32,7 +32,13 @@ var TOOLS_DIR   = File.extractDirectory(#__FILE__);
 var PROJECT_DIR = parentDir(TOOLS_DIR);   // scripts/ez-stretch
 var SCRIPTS_DIR = PROJECT_DIR + "/src/scripts/EZ Stretch BSC";
 
-var SCRIPTS = [ "EZStretch", "EZHazeKill" ];
+var ALL_SCRIPTS = [ "EZStretch", "EZHazeKill" ];
+// The scripts to sign this run: tools/sign.sh writes REQUEST_FILE ({"scripts": [...]}) before every
+// launch, naming only the scripts whose source changed -- an unchanged script is never re-signed (its
+// .xsgn embeds a timestamp, so a re-sign rewrites a published signature). No request, or a name outside
+// ALL_SCRIPTS, signs nothing and fails.
+var REQUEST_FILE = "/tmp/.ez_sign_request.json";
+var SCRIPTS = null;
 
 function writeResult(obj) {
    try {
@@ -59,6 +65,17 @@ function main() {
    // Start from a clean slate so a crash before completion is detectable.
    if (File.exists(RESULT_FILE))
       try { File.remove(RESULT_FILE); } catch (e) {}
+
+   try {
+      var req = JSON.parse(File.readTextFile(REQUEST_FILE));
+      SCRIPTS = req.scripts;
+      File.remove(REQUEST_FILE);
+   } catch (e) {
+      result.error = "no readable sign request at " + REQUEST_FILE + ": " + e.message; writeResult(result); return;
+   }
+   if (!(SCRIPTS instanceof Array) || SCRIPTS.length === 0) { result.error = "empty sign request"; writeResult(result); return; }
+   for (var j = 0; j < SCRIPTS.length; ++j)
+      if (ALL_SCRIPTS.indexOf(SCRIPTS[j]) < 0) { result.error = "not an EZ script: " + SCRIPTS[j]; writeResult(result); return; }
 
    var password = readPassword();
    if (!password) { result.error = "no password at " + PASS_FILE; writeResult(result); return; }

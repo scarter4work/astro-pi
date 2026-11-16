@@ -36,7 +36,10 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
 2. Bump the relevant version before building (NukeX: `modules/nukex/src/module/NukeXVersion.h`;
    PI Copilot: `modules/pi-copilot/src/module/PICopilotVersion.h`;
    Planetary: `modules/planetary/src/module/PlanetaryVersion.h`;
-   EZ scripts: the `#define VERSION` in each `.js`).
+   EZ scripts: the `#define VERSION` in each `.js`; Gaia Depth Grade scripts: `gaia-depth-grade/SCRIPT_VERSION`;
+   Gaia sidecar: `__version__` in `gaia-depth-grade/src/gaia_depth_grade/__init__.py`). release.sh reads every
+   version from these and holds none itself; it dies on one it cannot read, and on a package description
+   that does not name its package's version or names another.
 2a. Update the bumped product's update-repository description (`<product>/package-description.xml`; EZ:
    `scripts/ez-stretch/package-description/<Name>.xml`; Gaia sidecar: `gaia-depth-grade/sidecar-package-description.xml`).
    release.sh rewrites every package's `<description>` from these on every release and fails when one names a
@@ -46,6 +49,11 @@ Both were also stripped from this repo's history (git filter-repo + force-push, 
 3. Run `./release.sh` — it builds, native-signs, packages, writes ONE `repository/updates.xri`,
    signs the manifest LAST, and integrity-checks every declared sha1 vs the on-disk artifact.
 4. Signing order is load-bearing: `.xsgn` embeds a timestamp → hash AFTER packaging, sign manifest LAST.
+   So release.sh signs only what changed: a script product only when a signed source differs from the one
+   in the package the committed manifest serves (whose committed bytes must be the recorded sha1), a module
+   only when its package is new, the manifest only when this release changed its content. An unchanged
+   product's `.xsgn`, zip and manifest entry (sha1 + releaseDate) stay byte for byte; a re-signed unchanged
+   product stops the release (step 2d). A release with nothing bumped leaves `git status` clean.
 4a. Shipped modules are built ONLY in the Rocky 9 container (`tools/build-env/build-modules.sh`, which
    release.sh calls) — never ship a host build. A host build carries this box's GLIBC_2.43/GLIBCXX_3.4.32
    and Fedora-only sonames and loads nowhere else (NukeX ≤5.1.0.2 / PICopilot ≤0.2.1.0 shipped that way).

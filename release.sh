@@ -156,13 +156,23 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
 EZ_NAMES=(EZStretch EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.1.1 )
 # EZ script documentation (CPD rule 6.1; Repository Reference 4.2): scripts/ez-stretch/doc/<Name>/ holds
 # <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it, and
 # <Name>.js must declare "#feature-id <Name> : ...": PixInsight finds a script's documentation by that id
 # (doc/scripts/<id>/<id>.html, as for its own scripts, e.g. ImageSolver, and for GaiaDepthGrade).
 EZDOC="$ROOT/scripts/ez-stretch/doc"
 EZSRC="$ROOT/scripts/ez-stretch/src/scripts/EZ Stretch BSC"
+# Every product's version is read from its source of truth (CLAUDE.md rule 2), never written here: a
+# version held in this script has to be bumped by hand beside the real one (EZHazeKill 1.1.1 was).
+#   srcver <file> <sed -E expression printing the version> <product> : exactly one dotted version, or die.
+srcver(){
+  local v; v="$(sed -nE "$2" "$1" 2>/dev/null)" || true
+  [ "$(printf '%s\n' "$v" | grep -c .)" -eq 1 ] && [[ "$v" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]] \
+    || die "could not read $3's version from $1 (got '${v//$'\n'/ }')"
+  echo "$v"
+}
+declare -A EZVER=()
+for name in "${EZ_NAMES[@]}"; do EZVER[$name]="$(srcver "$EZSRC/$name.js" 's/^#define VERSION +"([^"]*)".*/\1/p' "$name")"; done
 # Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
 # first release after a withdrawal drops the entry from the work copy and, once the new manifest is
 # installed (step 6c), deletes the package file(s) from repository/. EZDonutRepair: withdrawn 2026-11-10
@@ -182,7 +192,9 @@ RETIRED_PKG_RE=('EZDonutRepair_v[0-9.]+\.zip')
 PKG_REMOVE=(
   'EZStretch_v[0-9.]+\.zip=src/scripts/scarter4work/EZDonutRepair.js,src/scripts/scarter4work/EZDonutRepair.xsgn'
 )
-GAIA_VER=1.0.13  # script package version; the sidecar package (3d) has its own version
+# The Gaia script package's version: gaia-depth-grade/SCRIPT_VERSION (the scripts carry none of their own;
+# the sidecar package (3d) has its own, gaia_depth_grade.__version__).
+GAIA_VER="$(srcver "$ROOT/gaia-depth-grade/SCRIPT_VERSION" 's/^([0-9][0-9.]*)$/\1/p' "the Gaia Depth Grade scripts")"
 REPO_DESC="$ROOT/tools/repository-description.xml"
 declare -A PKG_DESC=(
   [NukeX]="$ROOT/modules/nukex/package-description.xml"
@@ -236,12 +248,16 @@ def rendered(t,ind=12):  # as served: a package's description is indented 9, its
 errs=[]
 srcs={}
 for fn,src in pairs:
-    t=body(src); v=version(fn); srcs[fn]=t
+    t=body(src); v=version(fn); srcs[fn]=t; own=False
     for m in re.finditer(r'(?<![A-Za-z0-9.])(v?)(\d+(?:\.\d+)+)',t):
         num=m.group(2)
         if t[:m.start()].endswith(("PixInsight ","PCL ")): continue  # a PixInsight/PCL platform version, not the package's
-        if (num.count(".")>=2 or m.group(1)) and num!=v:
+        if num==v: own=True
+        elif num.count(".")>=2 or m.group(1):
             errs.append("%s names version %s%s, but the package (%s) is %s"%(src,m.group(1),num,fn,v))
+    # The package's version comes from its product's source (release.sh, srcver/modver); a description
+    # that does not name it cannot be checked against it.
+    if not own: errs.append("%s does not name its package's version %s (%s)"%(src,v,fn))
 if errs: [print("  "+e) for e in errs]; sys.exit(1)
 if mode=="check":
     print("  OK  %d package descriptions are well-formed and name only their own package's version"%len(pairs)); sys.exit(0)
@@ -350,10 +366,33 @@ write_pkg(){
 import re,sys
 mf,fn,h,date=sys.argv[1:5]
 s=open(mf).read()
+# A package whose bytes are the ones the entry already records is unchanged: it keeps its releaseDate
+# (every release used to re-date every package, so the manifest changed on any later day's run).
+old=re.findall(r'fileName="'+re.escape(fn)+r'"\s+sha1="([0-9a-fA-F]{40})"', s)
 s,a=re.subn(r'(fileName="'+re.escape(fn)+r'"\s+sha1=")[0-9a-fA-F]{40}(")', r'\g<1>'+h+r'\g<2>', s)
-s,b=re.subn(r'(fileName="'+re.escape(fn)+r'"[^>]*releaseDate=")\d{8}(")', r'\g<1>'+date+r'\g<2>', s)
-if (a,b)!=(1,1): sys.exit("write_pkg: %s: %d sha1 and %d releaseDate substitutions, expected 1 and 1"%(fn,a,b))
+if [o.lower() for o in old]!=[h.lower()]:
+    s,b=re.subn(r'(fileName="'+re.escape(fn)+r'"[^>]*releaseDate=")\d{8}(")', r'\g<1>'+date+r'\g<2>', s)
+else:
+    b=len(re.findall(r'fileName="'+re.escape(fn)+r'"[^>]*releaseDate="\d{8}"', s))
+if (a,b)!=(1,1): sys.exit("write_pkg: %s: %d sha1 and %d releaseDate entries, expected 1 and 1"%(fn,a,b))
 open(mf,'w').write(s)
+PY
+}
+
+# published_entries_check <published manifest> <work manifest> : every package the published manifest
+# serves that this release still serves under the same fileName keeps its sha1 and releaseDate (a
+# published fileName with new bytes is the stale-CDN hazard step 0b's naming avoids; a new releaseDate
+# on unchanged bytes is a manifest edit with nothing behind it).
+published_entries_check(){
+  python3 - "$1" "$2" <<'PY'
+import re,sys
+def entries(p):
+    return {fn:(h.lower(),d) for fn,h,d in re.findall(r'<package fileName="([^"]+)"\s+sha1="([0-9a-fA-F]{40})"[^>]*releaseDate="(\d{8})"',open(p,encoding="utf-8").read())}
+pub,work=entries(sys.argv[1]),entries(sys.argv[2])
+errs=["%s: sha1 %s releaseDate %s, published as sha1 %s releaseDate %s"%(fn,work[fn][0],work[fn][1],pub[fn][0],pub[fn][1])
+      for fn in sorted(set(pub)&set(work)) if pub[fn]!=work[fn]]
+if errs: [print("  "+e) for e in errs]; sys.exit(1)
+print("  OK  %d package(s) served as published keep their sha1 and releaseDate; %d new"%(len(set(pub)&set(work)),len(set(work)-set(pub))))
 PY
 }
 
@@ -531,6 +570,54 @@ print("  OK  %s deploys %s.js/.xsgn and doc/scripts/%s/ (%d doc files)"%(os.path
 PY
 }
 
+# ── What to sign: only products whose signed sources changed ────────────────
+# An .xsgn embeds a timestamp, so re-signing an unchanged script rewrites a published signature: the
+# tree then holds a signature no package ever shipped, and every release left EZStretch's and the Gaia
+# scripts' .xsgn modified (2026-11-15: both releases restored them by hand; the Gaia .xsgn had been
+# re-signed and committed four times since gaia-depth-grade_v1.0.13.zip shipped). Change is decided by
+# content, against what is published: the package the committed manifest serves for the product (its
+# committed bytes must be the sha1 the manifest records) carries the signed sources and their .xsgn.
+#
+# signed_state <product> <published manifest> <fileName regex> <this release's fileName> <dir in the zip> <src dir> <source>...
+#   prints "changed <published fileName|->" (a source differs from the published one, or nothing is
+#   published yet: sign it) or "unchanged <published fileName>" (every source is byte for byte the
+#   published one, and so is its .xsgn: do not sign). Refuses (exit 1): a changed source under the
+#   published version (bump it), a published package that is not committed or not the recorded sha1,
+#   this release's fileName committed but not the one served, and an unchanged source whose tree .xsgn is
+#   not the published one (a stray re-sign; the published signature is the one that shipped).
+signed_state(){
+  python3 - "$ROOT" "$@" <<'PY'
+import re,sys,os,io,hashlib,subprocess,zipfile
+root,prod,mf,rx,cur,inner,src=sys.argv[1:8]; files=sys.argv[8:]
+def err(m): print("  %s: %s"%(prod,m),file=sys.stderr); sys.exit(1)
+def committed(p):
+    r=subprocess.run(["git","-C",root,"show",":repository/"+p],capture_output=True)
+    return r.stdout if r.returncode==0 else None
+ents=[(fn,h) for fn,h in re.findall(r'<package fileName="([^"]+)"\s+sha1="([0-9a-fA-F]{40})"',open(mf,encoding="utf-8").read()) if re.fullmatch(rx,fn)]
+if len(ents)>1: err("the published manifest has %d entries matching %s"%(len(ents),rx))
+if not ents: print("changed -"); sys.exit(0)
+pub,h=ents[0]
+b=committed(pub)
+if b is None: err("the published manifest serves %s, which is not committed in repository/"%pub)
+if hashlib.sha1(b).hexdigest()!=h.lower(): err("committed repository/%s is not the sha1 the published manifest records (%s)"%(pub,h))
+if cur!=pub and committed(cur) is not None: err("%s is committed, but the published manifest serves %s (a version rollback?)"%(cur,pub))
+z=zipfile.ZipFile(io.BytesIO(b)); names=set(z.namelist())
+changed=[]; drift=[]
+for f in files:
+    sig=os.path.splitext(f)[0]+".xsgn"
+    tp,ts=os.path.join(src,f),os.path.join(src,sig)
+    if not os.path.isfile(tp): err("source %s not found"%tp)
+    if inner+"/"+f not in names or open(tp,"rb").read()!=z.read(inner+"/"+f): changed.append(f); continue
+    if inner+"/"+sig not in names: err("%s carries %s without its %s"%(pub,f,sig))
+    if not os.path.isfile(ts) or open(ts,"rb").read()!=z.read(inner+"/"+sig): drift.append(ts)
+if changed:
+    if cur==pub: err("%s changed since %s was published, under the same version: bump %s's version"%(", ".join(changed),pub,prod))
+    print("changed "+pub); sys.exit(0)
+if drift: err("%s: not the signature published in %s for the same source (a stray re-sign) -- restore the published bytes from that package"%(", ".join(drift),pub))
+print("unchanged "+pub)
+PY
+}
+
 # manifest_names_check <manifest> <fileName>... : the manifest's packages are exactly these, each once.
 manifest_names_check(){
   python3 - "$@" <<'PY' || die "updates.xri does not list exactly this release's packages"
@@ -676,11 +763,9 @@ fi
 SIDECAR_VER="$(sed -nE 's/^__version__ = "([0-9.]+)"$/\1/p' "$ROOT/gaia-depth-grade/src/gaia_depth_grade/__init__.py")"
 [[ "$SIDECAR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the sidecar version (got '$SIDECAR_VER')"
 EZ_ZIPS=(); for name in "${EZ_NAMES[@]}"; do EZ_ZIPS+=("${name}_v${EZVER[$name]}.zip"); done
-# EZ scripts: the version in each .js is EZVER's, the documentation exists, and an already-published zip
-# of that version carries exactly the current .js and documentation (else: bump the version).
+# EZ scripts (versions: each .js's #define VERSION): the documentation exists, and an already-published
+# zip of that version carries exactly the current .js and documentation (else: bump the version).
 for name in "${EZ_NAMES[@]}"; do
-  grep -qE "^#define VERSION +\"${EZVER[$name]}\"" "$EZSRC/$name.js" \
-    || die "$name.js's #define VERSION is not ${EZVER[$name]} (EZVER in release.sh)"
   [ -f "$EZDOC/$name/$name.html" ] || die "$name has no documentation: $EZDOC/$name/$name.html (CPD rule 6.1)"
   grep -qE "^#feature-id +$name +:" "$EZSRC/$name.js" \
     || die "$name.js has no '#feature-id $name : ...' directive: PixInsight would not find doc/scripts/$name/$name.html"
@@ -689,6 +774,43 @@ for name in "${EZ_NAMES[@]}"; do
     || die "$name ${EZVER[$name]} is already published without the current $name.js and doc/scripts/$name/ -- bump $name's version so a new package is built"
 done
 GAIA_ZIP="gaia-depth-grade_v${GAIA_VER}.zip"
+GAIA_SRC="$ROOT/gaia-depth-grade/pi"
+GAIA_SOURCES=(gaia_depth_grade.js GaiaDepthGradeDialog.js gaia_depth_grade_lib.jsh)
+GAIA_DOC_HTML="$ROOT/gaia-depth-grade/doc/GaiaDepthGrade/GaiaDepthGrade.html"
+# A published Gaia script zip of this version is reused byte for byte (step 3c), so it must already carry
+# the current documentation (its sources are checked by signed_state below).
+! git -C "$ROOT" ls-files --error-unmatch "repository/$GAIA_ZIP" >/dev/null 2>&1 \
+  || git -C "$ROOT" show ":repository/$GAIA_ZIP" | python3 -c 'import io,sys,zipfile; sys.exit(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read("doc/scripts/GaiaDepthGrade/GaiaDepthGrade.html")!=open(sys.argv[1],"rb").read())' "$GAIA_DOC_HTML" \
+  || die "Gaia Depth Grade $GAIA_VER is already published as $GAIA_ZIP without the current GaiaDepthGrade.html -- bump gaia-depth-grade/SCRIPT_VERSION so a new package is built"
+
+# What this release signs (steps 2-2c): a module only when its package is new (a published version's
+# tarball is reused byte for byte, so its signature would ship nowhere); a script product only when a
+# signed source differs from the one its published package carries (signed_state). The published
+# manifest is the committed one: the state every package is judged against.
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+PUB_MF="$WORK_DIR/published.xri"
+git -C "$ROOT" show ":repository/updates.xri" > "$PUB_MF" || die "repository/updates.xri is not committed"
+declare -A MODULE_NEW=() SIGN_STATE=() SIGN_PUB=()
+for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}"; do
+  read -r m t <<< "$pair"
+  MODULE_NEW[$m]=0
+  [ -n "${t:-}" ] && ! git -C "$ROOT" ls-files --error-unmatch "repository/$t" >/dev/null 2>&1 && MODULE_NEW[$m]=1
+  echo "   module $m: $([ "${MODULE_NEW[$m]}" = 1 ] && echo "new package ${t} -- signed" || echo "${t:-not packaged}${t:+ published} -- not signed")"
+done
+SCRIPT_PRODUCTS=("${EZ_NAMES[@]}" GaiaDepthGrade)
+product_state(){ # <product> : signed_state of a script product against the published manifest
+  case "$1" in
+    GaiaDepthGrade) signed_state "$1" "$PUB_MF" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP" src/scripts/GaiaDepthGrade "$GAIA_SRC" "${GAIA_SOURCES[@]}" ;;
+    *) signed_state "$1" "$PUB_MF" "${1}_v[0-9.]+\.zip" "${1}_v${EZVER[$1]}.zip" src/scripts/scarter4work "$EZSRC" "$1.js" ;;
+  esac
+}
+for p in "${SCRIPT_PRODUCTS[@]}"; do
+  out="$(product_state "$p")" || die "$p: cannot decide whether to sign it (see above)"
+  SIGN_STATE[$p]="${out%% *}"; SIGN_PUB[$p]="${out#* }"
+  echo "   $p: signed sources ${SIGN_STATE[$p]} since ${SIGN_PUB[$p]} -- $([ "${SIGN_STATE[$p]}" = changed ] && echo signed || echo "not signed")"
+done
+needs_signing(){ [ "${SIGN_STATE[$1]}" = changed ]; }   # <product>
 # The sidecar package of SIDECAR_VER: its published (committed) tarball whatever date it was cut on,
 # else a new dated name (step 3d builds it).
 SIDECAR_TGZ="$(git -C "$ROOT" ls-files "repository/*-linux-x64-GaiaDepthGradeSidecar-$SIDECAR_VER.tar.gz" | sed 's#^repository/##')"
@@ -721,69 +843,87 @@ GDG_SO="$(find "$ROOT/modules/gaia-depth-grade/build-portable" -name 'GaiaDepthG
 echo "== 1b/6 prove all four modules load on stock older distros =="
 "$ROOT/tools/build-env/verify-portable.sh" "$SO" "$PICOPILOT_SO" "$PLANETARY_SO" "$GDG_SO" || die "a module would not load on a stock distro"
 
-echo "== 2/6 sign NukeX module =="
+# sign_module <Module> <module .so> : sign a module whose package is new (MODULE_NEW, step 0b); a published
+# version's tarball is reused byte for byte, so its build is not signed. Either way no .xsgn from a prior
+# build or self-test survives beside the .so (a failed sign must not leave one to package).
+sign_module(){
+  local m="$1" so="$2" xsgn="${2%-pxm.so}-pxm.xsgn"
+  rm -f "$xsgn"
+  if [ "${MODULE_NEW[$m]}" = 1 ]; then
+    pi_headless "$PI" --sign-module-file="$so" --xssk-file="$KEYS" --xssk-password="$PASS"
+    [ -f "$xsgn" ] || die "module signature $xsgn not produced"
+  else
+    echo "   $m: package published -- not signed"
+  fi
+}
+echo "== 2/6 sign NukeX module (only a new package) =="
 XSGN="${SO%-pxm.so}-pxm.xsgn"
-rm -f "$XSGN"   # a stale .xsgn from a prior build/self-test must not survive a failed sign
-pi_headless "$PI" --sign-module-file="$SO" --xssk-file="$KEYS" --xssk-password="$PASS"
-[ -f "$XSGN" ] || die "module signature $XSGN not produced"
+sign_module NukeX "$SO"
 
-echo "== 2a/6 sign PICopilot module =="
+echo "== 2a/6 sign PICopilot module (only a new package) =="
 PICOPILOT_XSGN="${PICOPILOT_SO%-pxm.so}-pxm.xsgn"
-rm -f "$PICOPILOT_XSGN"   # same guard as NukeX above
-pi_headless "$PI" --sign-module-file="$PICOPILOT_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
-[ -f "$PICOPILOT_XSGN" ] || die "module signature $PICOPILOT_XSGN not produced"
+sign_module PICopilot "$PICOPILOT_SO"
 
-echo "== 2a2/6 sign Planetary module =="
+echo "== 2a2/6 sign Planetary module (only a new package) =="
 PLANETARY_XSGN="${PLANETARY_SO%-pxm.so}-pxm.xsgn"
-rm -f "$PLANETARY_XSGN"   # same guard as NukeX above
-pi_headless "$PI" --sign-module-file="$PLANETARY_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
-[ -f "$PLANETARY_XSGN" ] || die "module signature $PLANETARY_XSGN not produced"
+sign_module Planetary "$PLANETARY_SO"
 
 if [ "$GDG_MODULE_SHIPS" = 1 ]; then
-  echo "== 2a3/6 sign GaiaDepthGrade module =="
+  echo "== 2a3/6 sign GaiaDepthGrade module (only a new package) =="
   GDG_XSGN="${GDG_SO%-pxm.so}-pxm.xsgn"
-  rm -f "$GDG_XSGN"   # same guard as NukeX above
-  pi_headless "$PI" --sign-module-file="$GDG_SO" --xssk-file="$KEYS" --xssk-password="$PASS"
-  [ -f "$GDG_XSGN" ] || die "module signature $GDG_XSGN not produced"
+  sign_module GaiaDepthGrade "$GDG_SO"
 fi
 
-echo "== 2b/6 native-sign EZ scripts =="
-( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts )
+echo "== 2b/6 native-sign the EZ scripts whose source changed =="
+EZ_SIGN=(); for name in "${EZ_NAMES[@]}"; do needs_signing "$name" && EZ_SIGN+=("$name"); done
+if [ ${#EZ_SIGN[@]} -gt 0 ]; then
+  ( cd "$ROOT/scripts/ez-stretch" && bash tools/sign.sh scripts "${EZ_SIGN[@]}" ) || die "EZ script signing failed"
+else
+  echo "   no EZ script changed -- none signed"
+fi
 
-echo "== 2c/6 native-sign gaia-depth-grade scripts =="
+echo "== 2c/6 native-sign the gaia-depth-grade scripts, if their source changed =="
 # Signs pi/*.js + the shared *.jsh -> *.xsgn and verifies each via getScriptSignature.
 # Writes /tmp/.gaia_sign_result.json (automation-mode console never reaches stdout).
-rm -f /tmp/.gaia_sign_result.json
-LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
-  pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
-        --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
-        --force-exit >/dev/null 2>&1 || true
-python3 - /tmp/.gaia_sign_result.json "$ROOT/gaia-depth-grade/pi" <<'PY' || die "gaia script signing/verification failed"
+if needs_signing GaiaDepthGrade; then
+  rm -f /tmp/.gaia_sign_result.json
+  LD_LIBRARY_PATH="${ASTROPI_PI_DIR:-/opt/PixInsight}/bin/lib:${ASTROPI_PI_DIR:-/opt/PixInsight}/bin" \
+    pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
+          --no-startup-gui-messages -r="$ROOT/gaia-depth-grade/tools/SignGaiaScriptsNative.js" \
+          --force-exit >/dev/null 2>&1 || true
+  python3 - /tmp/.gaia_sign_result.json "$GAIA_SRC" <<'PY' || die "gaia script signing/verification failed"
 import json,os,sys
 r=json.load(open(sys.argv[1]))
 assert r.get("ok"), r
 assert os.path.realpath(r.get("dir") or "") == os.path.realpath(sys.argv[2]), ("signed the wrong tree", r.get("dir"), sys.argv[2])
 print("  signed+verified:", ", ".join(r["verified"]))
 PY
+else
+  echo "   Gaia Depth Grade scripts unchanged -- not signed"
+fi
+
+echo "== 2d/6 nothing unchanged was re-signed =="
+# Each script product judged unchanged in step 0b must still carry exactly its published .xsgn: a signer
+# that wrote one anyway (or a decision that let it) stops the release here, before anything is packaged.
+for p in "${SCRIPT_PRODUCTS[@]}"; do
+  [ "${SIGN_STATE[$p]}" = unchanged ] || continue
+  out="$(product_state "$p")" || die "$p was re-signed although its sources are unchanged since ${SIGN_PUB[$p]}"
+  [ "${out%% *}" = unchanged ] || die "$p: its sources changed during the release (now: $out)"
+  echo "  OK  $p: .xsgn still the one published in ${SIGN_PUB[$p]}"
+done
 
 # Every manifest edit from here on (steps 3-6) is made on a WORK COPY of repository/updates.xri: the
 # repository's manifest is replaced only by step 6c, once the copy is fully edited, hashed, signed and
 # verified. A failure anywhere before that (a build, the sidecar's network fetch, a check) leaves
 # repository/updates.xri exactly as it was -- never a renamed, re-described manifest under its old,
 # now invalid signature, which PixInsight would reject as a whole (final review, module m5).
-WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
-WORK_MF="$WORK_DIR/updates.xri"
+WORK_MF="$WORK_DIR/updates.xri"   # WORK_DIR: made in step 0b
 cp "$REPO/updates.xri" "$WORK_MF"
+cp "$WORK_MF" "$WORK_DIR/before.xri"   # step 5 signs the copy only if this release changed it
 retire_manifest "$WORK_MF" "${RETIRED_PKG_RE[@]}"
 # A module package NEW in this release is a PCL 2.13 build: it goes to the 1.9.6:2.0.0 block. A published
 # package reused byte for byte (an unbumped module) keeps its block: older builds still load on 1.9.5.
-NEW_MODULES=()
-for pair in "NukeX $MOD_TGZ" "PICopilot $PICOPILOT_TGZ" "Planetary $PLANETARY_TGZ" "GaiaDepthGrade ${GDG_PKGS[*]}"; do
-  read -r m t <<< "$pair"
-  [ -n "${t:-}" ] || continue
-  git -C "$ROOT" ls-files --error-unmatch "repository/$t" >/dev/null 2>&1 || NEW_MODULES+=("$m")
-done
+NEW_MODULES=(); for m in NukeX PICopilot Planetary GaiaDepthGrade; do [ "${MODULE_NEW[$m]}" = 1 ] && NEW_MODULES+=("$m"); done
 if [ ${#NEW_MODULES[@]} -gt 0 ]; then module_platform_block "$WORK_MF" "${NEW_MODULES[@]}"; fi
 
 echo "== 3/6 package NukeX module tarball =="
@@ -899,6 +1039,15 @@ echo "== 3b/6 package EZ script zips (src/scripts/scarter4work + doc/scripts/<Na
 for name in "${EZ_NAMES[@]}"; do
   ver="${EZVER[$name]}"
   zipname="${name}_v${ver}.zip"
+  # A published version's zip is reused byte for byte (never rebuilt: a rebuild under the same name is
+  # new bytes behind a fileName the CDN already serves); step 0b checked it carries the current .js and
+  # documentation, and step 2d that the tree's .xsgn is the one inside it.
+  if git -C "$ROOT" ls-files --error-unmatch "repository/$zipname" >/dev/null 2>&1; then
+    reuse_if_published "$zipname"
+    ez_pkg_check "$REPO/$zipname" "$name" || die "$zipname does not deploy exactly $name.js/.xsgn and the current doc/scripts/$name/"
+    manifest_rename "$WORK_MF" "${name}_v[0-9.]+\.zip" "$zipname"
+    continue
+  fi
   # Stage into src/scripts/scarter4work/ so the menu and the on-disk folder both
   # read scarter4work (the #feature-id in each .js already points there); the
   # documentation goes to doc/scripts/<Name>/ (Repository Reference 4.2).
@@ -914,7 +1063,6 @@ for name in "${EZ_NAMES[@]}"; do
   ( cd "$stage" && zip -qrX "$REPO/$zipname" src doc )
   rm -rf "$stage"
   [ -f "$REPO/$zipname" ] || die "zip $zipname not produced"
-  reuse_if_published "$zipname"
   ez_pkg_check "$REPO/$zipname" "$name" || die "$zipname does not deploy exactly $name.js/.xsgn and the current doc/scripts/$name/"
   manifest_rename "$WORK_MF" "${name}_v[0-9.]+\.zip" "$zipname"
 done
@@ -925,19 +1073,21 @@ echo "== 3c/6 package gaia-depth-grade script zip =="
 # doc/scripts is for script documentation; the folder and page carry the
 # #feature-id "GaiaDepthGrade"). Modes are normalised world-readable: the updater
 # installs as root while PixInsight runs as the user. GAIA_ZIP: named in step 0b.
-GAIA_STAGE="$(mktemp -d)"
-mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade"
-cp "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.js"        "$ROOT/gaia-depth-grade/pi/gaia_depth_grade.xsgn" \
-   "$ROOT/gaia-depth-grade/pi/GaiaDepthGradeDialog.js"    "$ROOT/gaia-depth-grade/pi/GaiaDepthGradeDialog.xsgn" \
-   "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.jsh"   "$ROOT/gaia-depth-grade/pi/gaia_depth_grade_lib.xsgn" \
-   "$GAIA_STAGE/src/scripts/GaiaDepthGrade/"
-cp "$ROOT/gaia-depth-grade/doc/GaiaDepthGrade/GaiaDepthGrade.html" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade/"
-chmod -R u=rwX,go=rX "$GAIA_STAGE"
-rm -f "$REPO/$GAIA_ZIP"
-( cd "$GAIA_STAGE" && zip -qrX "$REPO/$GAIA_ZIP" src doc )
-rm -rf "$GAIA_STAGE"
-[ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
-reuse_if_published "$GAIA_ZIP"
+# A published version's zip is reused byte for byte, as for the EZ zips (0b checked its documentation,
+# signed_state its sources, 2d its signatures).
+if git -C "$ROOT" ls-files --error-unmatch "repository/$GAIA_ZIP" >/dev/null 2>&1; then
+  reuse_if_published "$GAIA_ZIP"
+else
+  GAIA_STAGE="$(mktemp -d)"
+  mkdir -p "$GAIA_STAGE/src/scripts/GaiaDepthGrade" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade"
+  for f in "${GAIA_SOURCES[@]}"; do cp "$GAIA_SRC/$f" "$GAIA_SRC/${f%.*}.xsgn" "$GAIA_STAGE/src/scripts/GaiaDepthGrade/"; done
+  cp "$GAIA_DOC_HTML" "$GAIA_STAGE/doc/scripts/GaiaDepthGrade/"
+  chmod -R u=rwX,go=rX "$GAIA_STAGE"
+  rm -f "$REPO/$GAIA_ZIP"
+  ( cd "$GAIA_STAGE" && zip -qrX "$REPO/$GAIA_ZIP" src doc )
+  rm -rf "$GAIA_STAGE"
+  [ -f "$REPO/$GAIA_ZIP" ] || die "zip $GAIA_ZIP not produced"
+fi
 manifest_rename "$WORK_MF" 'gaia-depth-grade_v[0-9.]+\.zip' "$GAIA_ZIP"
 
 echo "== 3d/6 package the gaia-depth-grade sidecar (linux-x64: bin/gaia-depth-grade-sidecar) =="
@@ -995,9 +1145,19 @@ write_pkg "$WORK_MF" "$GAIA_ZIP"                 "$(sha1 "$REPO/$GAIA_ZIP")"
 write_pkg "$WORK_MF" "$SIDECAR_TGZ"              "$(sha1 "$REPO/$SIDECAR_TGZ")"
 manifest_names_check "$WORK_MF" "${RELEASE_PKGS[@]}"
 
-echo "== 5/6 sign manifest LAST =="
-sed -i '/<Signature developerId=/d' "$WORK_MF"
-pi_headless "$PI" --sign-xml-file="$WORK_MF" --xssk-file="$KEYS" --xssk-password="$PASS"
+echo "== 4a/6 packages served as published keep their sha1 and releaseDate =="
+published_entries_check "$PUB_MF" "$WORK_MF" || die "this release rewrote a published package's manifest entry"
+
+echo "== 5/6 sign manifest LAST (only if this release changed it) =="
+# A signature embeds a timestamp: re-signing a manifest whose content this release left byte for byte as
+# it was would rewrite repository/updates.xri for nothing. The work copy still carries the published
+# signature then, and it is valid for exactly these bytes.
+if cmp -s "$WORK_MF" "$WORK_DIR/before.xri"; then
+  echo "   updates.xri unchanged -- keeping its signature"
+else
+  sed -i '/<Signature developerId=/d' "$WORK_MF"
+  pi_headless "$PI" --sign-xml-file="$WORK_MF" --xssk-file="$KEYS" --xssk-password="$PASS"
+fi
 grep -q '<Signature developerId="scarter4work"' "$WORK_MF" || die "manifest signature not appended"
 
 echo "== 6/6 integrity check: declared sha1 == on-disk =="
@@ -1025,6 +1185,13 @@ qe_check "$REPO" || die "repository/ QE publication is stale, unsigned or does n
 # that a fresh install is not offered the database it already carries.
 NUKEX_QE_PUBLISHED_DIR="$REPO" "$ROOT/modules/nukex/build-portable/test/test_qe_update" "[published]" \
   || die "the module's updater rejects the published camera database in repository/"
+
+echo "== 6b2/6 every published package in repository/ is its committed bytes =="
+for p in "${RELEASE_PKGS[@]}"; do
+  git -C "$ROOT" ls-files --error-unmatch "repository/$p" >/dev/null 2>&1 || continue
+  git -C "$ROOT" diff --quiet -- "repository/$p" || die "repository/$p is published but this release changed its bytes"
+done
+echo "  OK  no published package rewritten"
 
 echo "== 6c/6 install the signed, verified manifest as repository/updates.xri =="
 install_manifest "$WORK_MF" "$REPO/updates.xri"

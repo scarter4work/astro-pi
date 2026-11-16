@@ -4,6 +4,7 @@
 # Usage:
 #   ./tools/sign.sh            # sign scripts AND manifest
 #   ./tools/sign.sh scripts    # sign only the .js scripts (-> .xsgn)
+#   ./tools/sign.sh scripts EZHazeKill   # sign only the named scripts (release.sh passes the changed ones)
 #   ./tools/sign.sh xri        # sign only repository/updates.xri
 #
 # Requires the signing password in /tmp/.pi_codesign_pass
@@ -34,6 +35,7 @@
 set -u
 
 TARGET="${1:-all}"
+[ $# -gt 0 ] && shift
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PI_DIR="${PIXINSIGHT_DIR:-/opt/PixInsight}"
@@ -45,11 +47,21 @@ KEYS_XSSK="/home/scarter4work/projects/keys/scarter4work_keys.xssk"
 PASS_FILE="/tmp/.pi_codesign_pass"
 NATIVE_SIGNER="$SCRIPT_DIR/SignScriptsNative.js"
 SIGN_RESULT="/tmp/.ez_sign_result.json"
+SIGN_REQUEST="/tmp/.ez_sign_request.json"   # the script names SignScriptsNative.js signs
 SCRIPTS_DIR="$PROJECT_DIR/src/scripts/EZ Stretch BSC"
 XRI="$PROJECT_DIR/repository/updates.xri"
 
 # Scripts to sign (.js -> .xsgn)
 SCRIPTS=( EZStretch EZHazeKill )
+# Only these, when names follow the target ("scripts" only): an unchanged script is never re-signed
+# (its .xsgn embeds a timestamp, so a re-sign rewrites a published signature).
+if [ $# -gt 0 ]; then
+    [ "$TARGET" = scripts ] || { echo "ERROR: script names are only taken with the 'scripts' target" >&2; exit 1; }
+    for n in "$@"; do
+        printf '%s\n' "${SCRIPTS[@]}" | grep -qxF "$n" || { echo "ERROR: $n is not one of: ${SCRIPTS[*]}" >&2; exit 1; }
+    done
+    SCRIPTS=( "$@" )
+fi
 
 if [ ! -f "$PASS_FILE" ]; then
     echo "ERROR: signing password not found at $PASS_FILE" >&2
@@ -66,6 +78,8 @@ sign_scripts() {
     # not the exit code, because PI automation-mode console output never reaches
     # stdout and the process exits 0 even on a silent no-op.
     rm -f "$SIGN_RESULT"
+    python3 -c 'import json,sys; json.dump({"scripts": sys.argv[2:]}, open(sys.argv[1], "w"))' "$SIGN_REQUEST" "${SCRIPTS[@]}" \
+        || { echo "  ERROR: could not write $SIGN_REQUEST" >&2; exit 1; }
     LD_LIBRARY_PATH="$PI_DIR/bin/lib:$PI_DIR/bin:${LD_LIBRARY_PATH:-}" \
         pi_headless "$PI" -n --automation-mode --no-startup-scripts --no-startup-check-updates \
               --no-startup-gui-messages -r="$NATIVE_SIGNER" --force-exit >/dev/null 2>&1
@@ -76,7 +90,7 @@ sign_scripts() {
     if ! python3 - "$SIGN_RESULT" "$SCRIPTS_DIR" "${SCRIPTS[@]}" <<'PY'
 import json, os, sys
 res = json.load(open(sys.argv[1])); want = set(sys.argv[3:])
-ok = res.get("ok") and set(res.get("signed", [])) >= want and not res.get("failed")
+ok = res.get("ok") and set(res.get("signed", [])) == want and not res.get("failed")
 if os.path.realpath(res.get("dir") or "") != os.path.realpath(sys.argv[2]):
     print(f"  ERROR: signer signed {res.get('dir')!r}, expected {sys.argv[2]!r}", file=sys.stderr); ok = False
 for s in res.get("signed", []): print(f"  Signed: {s}")

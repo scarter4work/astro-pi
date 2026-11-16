@@ -7,7 +7,12 @@
 # It takes release.sh's own functions (write_pkg, manifest_rename, manifest_names_check) out of the
 # script, so it tests exactly what a release runs:
 #  - a bumped EZ zip (EZStretch) and a bumped Gaia script zip are renamed in the manifest, exactly once each;
-#  - write_pkg writes the sha1 and releaseDate of both new names;
+#  - write_pkg writes the sha1 and releaseDate of both new names, and keeps the releaseDate of a package
+#    whose sha1 is unchanged; published_entries_check refuses a published entry with a new sha1 or date;
+#  - signed_state (what to sign) decides by content against the published package: unchanged sources
+#    and .xsgn -> unchanged, a changed source under a new version -> changed, and refuses a changed source
+#    under the published version, a stray re-signed .xsgn, a published zip that is not its recorded sha1;
+#  - every product version is read from its source (srcver), none is written into release.sh;
 #  - write_pkg of a fileName the manifest does not hold fails (it used to change nothing and succeed);
 #  - manifest_rename fails when no entry matches;
 #  - manifest_names_check passes for exactly the manifest's names and fails for a missing or extra one;
@@ -26,7 +31,7 @@ sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MF"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 DATE=20991231
-for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest module_platform_block manifest_removes ez_pkg_check; do
+for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest module_platform_block manifest_removes ez_pkg_check signed_state published_entries_check srcver; do
   body="$(sed -n "/^$f(){/,/^}/p" "$SCRIPT")"
   if [ -n "$body" ]; then eval "$body"; else echo "  (release.sh has no $f)"; fi
 done
@@ -61,6 +66,30 @@ for pair in "$NEW_EZ $SHA_EZ" "$NEW_GAIA $SHA_GAIA"; do
      && grep -qE "fileName=\"$1\" sha1=\"$2\"[^>]*releaseDate=\"$DATE\"" "$MF"; then
     ok "write_pkg wrote $1: sha1 $2, releaseDate $DATE"
   else bad "write_pkg did not write $1's sha1 and releaseDate"; fi
+done
+
+# 3b. write_pkg of an unchanged package (the sha1 the entry already records) keeps its releaseDate: an
+#     idempotent release leaves every unchanged entry, and so the manifest, as it was.
+KEEP_FN="$(sed -nE 's/.*<package fileName="([^"]+)" sha1="[0-9a-f]{40}".*/\1/p' "$MF" | grep -vF -e "$NEW_EZ" -e "$NEW_GAIA" | head -1)"
+KEEP_SHA="$(sed -nE "s/.*fileName=\"$KEEP_FN\" sha1=\"([0-9a-f]{40})\".*/\1/p" "$MF")"
+before="$(sha1sum < "$MF")"
+if have write_pkg && [ -n "$KEEP_FN" ] && ( write_pkg "$MF" "$KEEP_FN" "$KEEP_SHA" ) >/dev/null 2>&1 && [ "$(sha1sum < "$MF")" = "$before" ]; then
+  ok "write_pkg of an unchanged package ($KEEP_FN) leaves the manifest byte for byte as it was"
+else bad "write_pkg of an unchanged package ($KEEP_FN) changed the manifest (re-dated it?)"; fi
+
+# 3c. published_entries_check: the published manifest against itself passes; a published fileName with a
+#     new sha1, or with a new releaseDate on the same sha1, fails.
+PUBM="$WORK/pub.xri"; sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$PUBM"
+if have published_entries_check && ( published_entries_check "$PUBM" "$PUBM" ) >/dev/null 2>&1; then
+  ok "published_entries_check passes for the published manifest itself"
+else bad "published_entries_check failed for the published manifest itself"; fi
+PFN="$(sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$PUBM" | head -1)"
+sed -E "s#(fileName=\"$PFN\" sha1=\")[0-9a-f]{40}#\1$SHA_EZ#" "$PUBM" > "$WORK/pub-sha.xri"
+sed -E "s#(fileName=\"$PFN\"[^>]*releaseDate=\")[0-9]{8}#\120991231#" "$PUBM" > "$WORK/pub-date.xri"
+for c in "pub-sha:a new sha1" "pub-date:a new releaseDate on unchanged bytes"; do
+  if have published_entries_check && ! cmp -s "$PUBM" "$WORK/${c%%:*}.xri" && ! ( published_entries_check "$PUBM" "$WORK/${c%%:*}.xri" ) >/dev/null 2>&1; then
+    ok "published_entries_check refuses a published package ($PFN) with ${c#*:}"
+  else bad "published_entries_check accepted a published package ($PFN) with ${c#*:}"; fi
 done
 
 # 4. write_pkg of an absent fileName fails.
@@ -356,6 +385,43 @@ if have ez_pkg_check && [ -f "$EZSRC/EZStretch.js" ] && [ -f "$EZDOC/EZStretch/E
       || bad "ez_pkg_check accepted a zip with $m"
   done
 else bad "release.sh has no ez_pkg_check, or EZStretch has no source/documentation"; fi
+
+# 12. signed_state (release.sh step 0b/2d: what to sign) on a scratch git repository: a published package
+#     Pkg_v1.0.0.zip carrying a.js + a.xsgn, served by a committed manifest.
+G="$WORK/sg"; mkdir -p "$G/repository" "$G/src" "$WORK/sgz/s"
+printf 'var a = 1;\n' > "$G/src/a.js"; printf '<xsgn>published</xsgn>\n' > "$G/src/a.xsgn"
+cp "$G/src/a.js" "$G/src/a.xsgn" "$WORK/sgz/s/"
+( cd "$WORK/sgz" && zip -qrX "$G/repository/Pkg_v1.0.0.zip" s )
+SG_SHA="$(sha1sum "$G/repository/Pkg_v1.0.0.zip" | cut -d' ' -f1)"
+printf '<xri>\n<package fileName="Pkg_v1.0.0.zip" sha1="%s" type="script" releaseDate="20991231">\n</package>\n</xri>\n' "$SG_SHA" > "$G/repository/updates.xri"
+git -C "$G" init -q && git -C "$G" add -A && git -C "$G" -c user.name=t -c user.email=t@t commit -qm published
+sg(){ ( ROOT="$G"; signed_state Pkg "$G/repository/updates.xri" 'Pkg_v[0-9.]+\.zip' "$1" s "$G/src" a.js ) 2>/dev/null; }
+if have signed_state; then
+  [ "$(sg Pkg_v1.0.0.zip)" = "unchanged Pkg_v1.0.0.zip" ] && ok "signed_state: source and .xsgn as published -> unchanged (not signed)" \
+    || bad "signed_state did not call an unchanged product unchanged (got '$(sg Pkg_v1.0.0.zip)')"
+  printf '<xsgn>re-signed</xsgn>\n' > "$G/src/a.xsgn"
+  ! sg Pkg_v1.0.0.zip >/dev/null && ok "signed_state refuses an unchanged source whose .xsgn was re-signed" \
+    || bad "signed_state accepted a re-signed .xsgn of an unchanged source"
+  cp "$WORK/sgz/s/a.xsgn" "$G/src/a.xsgn"; printf 'var a = 2;\n' > "$G/src/a.js"
+  [ "$(sg Pkg_v1.0.1.zip)" = "changed Pkg_v1.0.0.zip" ] && ok "signed_state: a changed source under a new version -> changed (signed)" \
+    || bad "signed_state did not call a changed, bumped product changed"
+  ! sg Pkg_v1.0.0.zip >/dev/null && ok "signed_state refuses a changed source under the published version (bump it)" \
+    || bad "signed_state accepted a changed source under the published version"
+  cp "$WORK/sgz/s/a.js" "$G/src/a.js"
+  sed -i "s/$SG_SHA/$SHA_EZ/" "$G/repository/updates.xri"; git -C "$G" add -A
+  ! sg Pkg_v1.0.0.zip >/dev/null && ok "signed_state refuses a published package that is not the sha1 its manifest records" \
+    || bad "signed_state accepted a published package whose sha1 is not the manifest's"
+else bad "release.sh has no signed_state"; fi
+
+# 13. Versions come from their sources (CLAUDE.md rule 2): srcver reads exactly one dotted version or dies,
+#     and release.sh assigns no product version a literal.
+if have srcver; then
+  printf '#define VERSION "1.2.3"\n' > "$WORK/v1.js"; printf '// none\n' > "$WORK/v0.js"; printf '#define VERSION "1.2.3"\n#define VERSION "1.2.4"\n' > "$WORK/v2.js"
+  [ "$(srcver "$WORK/v1.js" 's/^#define VERSION +"([^"]*)".*/\1/p' T 2>/dev/null)" = 1.2.3 ] && ok "srcver reads #define VERSION" || bad "srcver did not read #define VERSION"
+  for f in v0 v2; do ! ( srcver "$WORK/$f.js" 's/^#define VERSION +"([^"]*)".*/\1/p' T ) >/dev/null 2>&1 && ok "srcver dies on $f.js (no / two versions)" || bad "srcver accepted $f.js"; done
+else bad "release.sh has no srcver"; fi
+lit="$(grep -nE '^[[:space:]]*(declare -A +)?[A-Z_]*VER[A-Z_]*=.*[0-9]+\.[0-9]+\.[0-9]+' "$SCRIPT" || true)"
+[ -z "$lit" ] && ok "release.sh assigns no product version a literal" || bad "release.sh hard-codes a version: $lit"
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1
