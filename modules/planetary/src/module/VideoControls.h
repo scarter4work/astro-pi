@@ -1,5 +1,5 @@
 // Planetary — Native PCL Module for PixInsight
-// Copyright (c) 2026 Scott Carter. MIT License.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
 //
 // What the SERViewer and PlanetaryStack interfaces share: their exception
 // guard, the Open... dialog, the Bayer pattern combo, and Save pattern....

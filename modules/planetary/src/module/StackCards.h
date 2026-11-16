@@ -1,5 +1,5 @@
 // Planetary — Native PCL Module for PixInsight
-// Copyright (c) 2026 Scott Carter. MIT License.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
 //
 // PlanetaryStack's keyword plan and result text: which FITS cards and HISTORY
 // lines a stack carries, the summary lines the console shows, and the

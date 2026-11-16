@@ -1,5 +1,5 @@
 // PI Copilot — Native PCL Module for PixInsight
-// Copyright (c) 2026 Scott Carter. MIT License.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
 //
 // Compiled ONLY into a self-test build (CMake option PICOPILOT_SELFTEST_BUILD, src/module/CMakeLists.txt).
 // The sentinel marks such a module: test/check-no-selftest-hooks.sh (run by release.sh) refuses to ship
