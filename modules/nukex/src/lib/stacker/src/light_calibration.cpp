@@ -339,6 +339,66 @@ MasterFrame LightCalibrator::estimate_bias(const MasterFrame& dark, std::vector<
     return b;
 }
 
+PlanResult CalibrationMatcher::flat_pedestal_plan(const CalibrationHeader& flat,
+                                                  const CalibrationSet& set,
+                                                  MasterFrame& estimated_bias,
+                                                  std::string* source) {
+    // `set` with neither dark-flats nor biases holds darks when the engine
+    // calibrates, so the last branch always has darks to work from.
+    if (!set.dark_flats.empty()) {
+        if (source) *source = "dark-flat";
+        return plan(flat, set.biases, set.dark_flats, set.tolerance, true, !set.biases.empty());
+    }
+    if (!set.biases.empty()) {
+        if (source) *source = "bias";
+        return plan(flat, set.biases, {}, set.tolerance, false, true);
+    }
+    if (source) *source = "darks";
+    return flat_plan_from_darks(flat, set.darks, set.tolerance, estimated_bias);
+}
+
+std::string CalibrationMatcher::master_flat_fits(const MasterFrame& flat, const CalibrationSet& set) {
+    if (flat.kind != MasterKind::FLAT)
+        return std::string("it is a master ") + master_kind_name(flat.kind) + ", not a flat";
+    if (flat.empty()) return "it holds no data";
+    if (flat.pedestal_signature.empty() || flat.pedestal_plan.empty())
+        return "it records no pedestal (which masters were subtracted from its flats), so it cannot be "
+               "checked against this set; rebuild it with this set's masters";
+    // "D<sig>B<sig>x<scale>" (pedestal_signature): a master signature is lower-case
+    // hex or "floor(<hex>)", so 'D', 'B' and 'x' only ever start a field.
+    const std::string& s = flat.pedestal_signature;
+    auto field = [&](char tag) -> std::string {
+        const auto at = s.find(tag);
+        if (at == std::string::npos) return {};
+        const auto end = s.find_first_of("DBx", at + 1);
+        return s.substr(at + 1, end == std::string::npos ? std::string::npos : end - at - 1);
+    };
+    auto in = [](const std::vector<MasterFrame>& v, const std::string& sig) {
+        return std::any_of(v.begin(), v.end(), [&](const MasterFrame& m) { return m.signature == sig; });
+    };
+    const std::string dark = field('D'), bias = field('B');
+    if (!dark.empty() && !in(set.darks, dark) && !in(set.dark_flats, dark))
+        return "the dark its flats' pedestal came from (signature " + dark + ") is not in this calibration set";
+    if (!bias.empty()) {
+        const bool floor = bias.rfind("floor(", 0) == 0 && bias.back() == ')';
+        const bool ok = floor ? in(set.darks, bias.substr(6, bias.size() - 7)) : in(set.biases, bias);
+        if (!ok)
+            return std::string(floor ? "the dark whose floor stood in for its flats' bias" : "the bias its flats' pedestal came from")
+                 + " (signature " + bias + ") is not in this calibration set";
+    }
+    if (dark.empty() && bias.empty())
+        return "its recorded pedestal '" + s + "' names no master";
+    return {};
+}
+
+std::string LightCalibrator::pedestal_signature(const CalibrationPlan& plan) {
+    std::string s;
+    if (plan.dark) s += "D" + plan.dark->signature;
+    if (plan.bias) s += "B" + plan.bias->signature;
+    if (plan.dark_scaled) s += "x" + std::to_string(plan.dark_scale);
+    return s;
+}
+
 Image LightCalibrator::pedestal(const CalibrationPlan& plan) {
     if (plan.dark && !plan.dark_scaled) return plan.dark->data.clone();
     if (plan.dark) {

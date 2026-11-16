@@ -222,7 +222,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     std::vector<CalibrationPlan> light_plan;
     std::vector<DarkScaleFit> light_fit;      // per light, for scaled darks
     std::vector<char> light_fitted;           // 1 once light_fit[f] is set
-    MasterFrame calibrated_flat;              // CFA master flat, applied before debayer
+    MasterFrame calibrated_flat;              // built here from the flat frames
+    const MasterFrame* calib_flat = nullptr;  // CFA master flat, applied before debayer
     std::mutex calib_error_mutex;
     std::string calib_error;                  // first per-frame calibration failure
     if (calibrating) {
@@ -237,6 +238,18 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             const auto slash = p.find_last_of("/\\");
             return slash == std::string::npos ? p : p.substr(slash + 1);
         };
+        // A master flat built beforehand stands in for the flat frames. It must
+        // be one, and its pedestal must have come from this set's masters, or
+        // the lights and the flat would be calibrated against different ones.
+        const MasterFrame& given_flat = calibration.flat;
+        const std::string given_flat_name = given_flat.path.empty()
+            ? std::string("(") + std::to_string(given_flat.n_frames) + " frames)" : name_of(given_flat.path);
+        if (!given_flat.empty()) {
+            if (!flat_paths.empty())
+                return fail("Calibration: both flat frames and a master flat were given; pass one or the other.");
+            const std::string why = CalibrationMatcher::master_flat_fits(given_flat, calibration);
+            if (!why.empty()) return fail("Calibration: master flat " + given_flat_name + " -- " + why + ".");
+        }
         light_plan.resize(light_paths.size());
         std::map<std::string, int> plan_count;
         std::set<std::string> warned;
@@ -274,7 +287,13 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             obs.message("Calibration: " + std::to_string(count) + " light" + (count == 1 ? "" : "s")
                         + ": " + (desc.empty() ? "nothing to subtract" : desc) + ".");
 
-        if (!flat_paths.empty()) {
+        if (!given_flat.empty()) {
+            obs.message("Calibration: flats -- master flat " + given_flat_name + ", built beforehand from "
+                        + std::to_string(given_flat.n_frames) + " flats: " + given_flat.pedestal_plan
+                        + " subtracted from each flat.");
+            result.flat_pedestal = given_flat.pedestal_plan;
+            calib_flat = &given_flat;
+        } else if (!flat_paths.empty()) {
             const FrameMetadata fm = FITSReader::read_headers(flat_paths[0]);
             if (fm.width <= 0 || fm.height <= 0)
                 return fail("Calibration: cannot read the header of flat " + name_of(flat_paths[0]) + ".");
@@ -282,31 +301,16 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 fm, 1, FITSReader::full_scale_for_bitpix(fm.equiv_bitpix));
             // The flats' pedestal: a matched master dark-flat, else the master
             // bias, else -- lights + darks + flats, no bias -- from the darks
-            // (CalibrationMatcher::flat_plan_from_darks: a dark at the flats'
-            // exposure, else a dark scaled around its estimated floor). Never
-            // none: a flat divided in with its pedestal under-corrects the
-            // vignetting by ~pedestal / flat level. `calibrating` with neither
-            // dark-flats nor biases means darks were given, so the last
-            // branch always has darks to work from.
-            PlanResult fp;
+            // (CalibrationMatcher::flat_pedestal_plan). Never none: a flat
+            // divided in with its pedestal under-corrects the vignetting by
+            // ~pedestal / flat level.
             MasterFrame estimated_bias;   // outlives fp.plan, which may point at it
-            if (!calibration.dark_flats.empty()) {
-                fp = CalibrationMatcher::plan(fh, calibration.biases, calibration.dark_flats,
-                                              calibration.tolerance, true, !calibration.biases.empty());
-            } else if (!calibration.biases.empty()) {
-                fp = CalibrationMatcher::plan(fh, calibration.biases, {}, calibration.tolerance, false, true);
-            } else {
-                fp = CalibrationMatcher::flat_plan_from_darks(fh, calibration.darks, calibration.tolerance,
-                                                              estimated_bias);
-            }
+            const PlanResult fp = CalibrationMatcher::flat_pedestal_plan(fh, calibration, estimated_bias);
             if (!fp.ok) return fail("Calibration: flats -- " + fp.error);
             for (const auto& w : fp.warnings)
                 if (warned.insert(w).second) obs.message("Calibration warning (flats): " + w + ".");
             const Image pedestal = LightCalibrator::pedestal(fp.plan);
-            std::string ped_sig;
-            if (fp.plan.dark) ped_sig += "D" + fp.plan.dark->signature;
-            if (fp.plan.bias) ped_sig += "B" + fp.plan.bias->signature;
-            if (fp.plan.dark_scaled) ped_sig += "x" + std::to_string(fp.plan.dark_scale);
+            const std::string ped_sig = LightCalibrator::pedestal_signature(fp.plan);
             MasterBuilder::Config fc = calibration.flat_builder;
             fc.cache_dir = config_.cache_dir;
             fc.estimator = (config_.estimator == Config::Estimator::HUBER)
@@ -319,6 +323,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                                            fp.plan.description, ped_sig, &obs);
             if (!br.ok) return fail("Calibration: " + br.error);
             calibrated_flat = std::move(br.master);
+            calib_flat = &calibrated_flat;
         }
     }
 
@@ -355,7 +360,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         const CalibrationPlan& pl = light_plan[static_cast<std::size_t>(f)];
         const std::string e = LightCalibrator::apply(
             rr.image, rr.full_scale, pl,
-            calibrated_flat.empty() ? nullptr : &calibrated_flat, 0.01f, &fit);
+            calib_flat, 0.01f, &fit);
         if (pl.dark && pl.dark_scaled) {
             std::lock_guard<std::mutex> lk(calib_error_mutex);
             light_fit[static_cast<std::size_t>(f)] = fit;

@@ -66,6 +66,12 @@ struct MasterFrame {
     /// signature). A cached master is reused only when this matches.
     std::string       signature;
     std::string       pedestal;    ///< flat: what was subtracted from each flat (description)
+    /// Flat: the pedestal plan's description, exactly as the engine reports it
+    /// in ExecuteResult::flat_pedestal when it builds the flat itself.
+    std::string       pedestal_plan;
+    /// Flat: the pedestal's provenance (LightCalibrator::pedestal_signature):
+    /// which masters it came from, checked against the set it is used with.
+    std::string       pedestal_signature;
     std::vector<std::string> sources;   ///< input file names
     std::string       path;        ///< the file it was read from or written to, if any
 

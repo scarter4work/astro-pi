@@ -279,6 +279,12 @@ public:
     /// the stacker's estimator. The path taken is logged and returned in
     /// ExecuteResult::flat_pedestal. Flats no master can calibrate are
     /// refused, not divided in with their pedestal.
+    ///
+    /// A master flat built beforehand (`calibration.flat`, with no
+    /// `flat_paths`) is used as it is: the same stack, bit for bit, and the
+    /// same flat_pedestal (the master records it), without fitting the flat
+    /// again. It is refused unless its pedestal came from the set's masters
+    /// (CalibrationMatcher::master_flat_fits), and with flat frames beside it.
     ExecuteResult execute(const std::vector<std::string>& light_paths,
                           const std::vector<std::string>& flat_paths,
                           const CalibrationSet& calibration,

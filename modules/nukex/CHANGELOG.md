@@ -1,5 +1,15 @@
 # NukeX — Changelog
 
+## Engine library, after v5.3.1.1 (no PixInsight release: the process is unchanged)
+
+- **A master flat built beforehand can stand in for the flat frames.** Software built on the NukeX engine (the NukeX
+  standalone app's Calibrate stage) builds and caches its masters before it stacks, but the stacker took flat
+  frames only, so every calibrated stack fitted the master flat again. A calibration set now carries an optional
+  master flat. The stack is byte-for-byte the one the flat frames give, with the same report of what was taken off
+  the flats, because a master flat now records that report and which masters it was taken from (cached masters
+  from earlier builds are rebuilt once). A master flat whose pedestal came from masters that are not in the set is
+  refused, as is a master flat given together with flat frames.
+
 ## v5.3.1.1 — 2026-11-16
 
 Pause/Abort while frames are measured no longer waits for star detection, and detection on nebula-filled frames

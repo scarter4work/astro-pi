@@ -49,7 +49,17 @@ struct CalibrationSet {
     /// when a calibration set is active (cache_dir is taken from the engine).
     MasterBuilder::Config    flat_builder;
 
-    bool empty() const { return biases.empty() && darks.empty() && dark_flats.empty(); }
+    /// A master flat built beforehand (MasterBuilder, kind FLAT, from flats
+    /// less the pedestal CalibrationMatcher::flat_pedestal_plan gives for this
+    /// set, signed with LightCalibrator::pedestal_signature), used by
+    /// StackingEngine::execute instead of flat frames -- the stack is the same,
+    /// bit for bit, without fitting the flat again. Empty: none. It must come
+    /// with the masters its pedestal was taken from (master_flat_fits).
+    MasterFrame              flat;
+
+    /// No master at all. A set holding only a master flat is not empty: the
+    /// engine refuses it, since the flat's pedestal masters are missing.
+    bool empty() const { return biases.empty() && darks.empty() && dark_flats.empty() && flat.empty(); }
 };
 
 /// The dark current's fine structure -- hot pixels, fixed pattern, glow
@@ -187,6 +197,25 @@ public:
                                            const std::vector<MasterFrame>& darks,
                                            const MatchTolerance& tol,
                                            MasterFrame& estimated_bias);
+
+    /// The flats' pedestal plan exactly as StackingEngine::execute makes it
+    /// for a calibration set: a matched master dark-flat (with the biases),
+    /// else the master bias, else from the darks (flat_plan_from_darks).
+    /// `flat` is the header of the set's first flat. `estimated_bias` must
+    /// outlive the plan, which may point at it. `source` (optional) receives
+    /// the branch: "dark-flat", "bias" or "darks".
+    static PlanResult flat_pedestal_plan(const CalibrationHeader& flat,
+                                         const CalibrationSet& set,
+                                         MasterFrame& estimated_bias,
+                                         std::string* source = nullptr);
+
+    /// Empty if `flat` -- a master flat built beforehand -- may calibrate a
+    /// batch with `set`'s masters, else why not: it must be a non-empty
+    /// master FLAT whose recorded pedestal (MasterFrame::pedestal_signature)
+    /// came from masters in the set (an estimated bias from one of its darks).
+    /// A flat whose pedestal came from other masters would leave the lights
+    /// and the flat calibrated against different pedestals.
+    static std::string master_flat_fits(const MasterFrame& flat, const CalibrationSet& set);
 };
 
 /// Applies a plan to one frame, before debayer, on the fixed [0, 1] scale.
@@ -233,6 +262,11 @@ public:
     /// header ratio here: a flat's signal swamps the dark structure a scale
     /// would be fitted against.
     static Image pedestal(const CalibrationPlan& plan);
+
+    /// The pedestal's provenance for a master flat's signature: "D<dark>"
+    /// (dark or dark-flat), "B<bias>" (an estimated bias is "floor(<dark>)")
+    /// and "x<scale>" when the dark is scaled, each <...> a master signature.
+    static std::string pedestal_signature(const CalibrationPlan& plan);
 
     /// A master bias estimated from a master dark: every pixel of each CFA
     /// channel (each 2x2 phase of a mosaic; the whole plane for mono) set to

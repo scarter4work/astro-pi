@@ -10,6 +10,8 @@
 #include "catch_amalgamated.hpp"
 #include "nukex/stacker/stacking_engine.hpp"
 #include "nukex/stacker/calibration_masters.hpp"
+#include "nukex/stacker/light_calibration.hpp"
+#include "nukex/io/fits_reader.hpp"
 #include "nukex/core/progress_observer.hpp"
 
 #include <fitsio.h>
@@ -370,6 +372,132 @@ TEST_CASE("Calibrated stack: flats no dark can calibrate are refused, with every
     REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("flats"));
     REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("gain 100 vs 0"));
     REQUIRE(r.n_frames_processed == 0);
+}
+
+// ── A master flat built beforehand ──────────────────────────────────
+
+namespace {
+
+/// The master flat a caller builds beforehand for `set` (e.g. Astro Studio's
+/// Calibrate stage): the flats' pedestal planned as execute() plans it,
+/// subtracted from every flat, fitted, cached as FITS, and read back.
+MasterFrame prebuilt_flat(const Fixture& fx, const std::vector<std::string>& flats,
+                          const CalibrationSet& set, const std::string& name) {
+    const FrameMetadata fm = FITSReader::read_headers(flats[0]);
+    const CalibrationHeader fh =
+        CalibrationHeader::from_metadata(fm, 1, FITSReader::full_scale_for_bitpix(fm.equiv_bitpix));
+    MasterFrame estimated_bias;
+    const PlanResult fp = CalibrationMatcher::flat_pedestal_plan(fh, set, estimated_bias);
+    INFO(fp.error);
+    REQUIRE(fp.ok);
+    const Image ped = LightCalibrator::pedestal(fp.plan);
+    MasterBuilder::Config mc;
+    mc.cache_dir = fx.dir.string();
+    const std::string cache = (fx.dir / (name + ".fits")).string();
+    auto built = MasterBuilder::build_or_load(MasterKind::FLAT, flats, cache, mc, &ped, fp.plan.description,
+                                              LightCalibrator::pedestal_signature(fp.plan));
+    INFO(built.error);
+    REQUIRE(built.ok);
+    auto back = MasterBuilder::read(cache);
+    INFO(back.error);
+    REQUIRE(back.ok);
+    return std::move(back.master);
+}
+
+void require_same_stack(const StackingEngine::ExecuteResult& a, const StackingEngine::ExecuteResult& b) {
+    INFO(a.error << " | " << b.error);
+    REQUIRE(a.ok);
+    REQUIRE(b.ok);
+    REQUIRE(a.n_frames_processed == b.n_frames_processed);
+    REQUIRE(a.flat_pedestal == b.flat_pedestal);
+    REQUIRE(same_bits(a.stacked, b.stacked));
+    REQUIRE(same_bits(a.noise_map, b.noise_map));
+    REQUIRE(same_bits(a.measured_noise, b.measured_noise));
+    REQUIRE(same_bits(a.quality_map, b.quality_map));
+}
+
+} // namespace
+
+TEST_CASE("Calibrated stack: a master flat built beforehand stacks bit for bit as its flat frames do",
+          "[integration][darkbias][masterflat]") {
+    Fixture fx;
+    VignettedSet vs(fx, 0.5);
+    std::vector<std::string> dark_flats;
+    for (int f = 0; f < 5; ++f) {
+        Hdr d; d.imagetyp = "Dark Flat"; d.exptime = 0.5;
+        dark_flats.push_back((fx.dir / ("dfl_" + std::to_string(f) + ".fit")).string());
+        write_u16(dark_flats.back(), [&](int x, int y) { return bias_adu(x, y) + dark_adu(x, y, 0.5); }, d);
+    }
+    const MasterFrame bias = fx.master(MasterKind::BIAS, fx.biases);
+    const MasterFrame dark = fx.master(MasterKind::DARK, fx.darks);
+    const MasterFrame dflat = fx.master(MasterKind::DARK_FLAT, dark_flats);
+
+    // Every pedestal path: the bias, the darks alone (estimated floor), a dark-flat.
+    struct Case { const char* name; CalibrationSet set; const char* pedestal; };
+    std::vector<Case> cases(3);
+    cases[0].name = "bias";      cases[0].set.biases.push_back(bias); cases[0].set.darks.push_back(dark);
+    cases[0].pedestal = "bias ";
+    cases[1].name = "darks";     cases[1].set.darks.push_back(dark);
+    cases[1].pedestal = "bias level estimated";
+    cases[2].name = "dark-flat"; cases[2].set.darks.push_back(dark); cases[2].set.dark_flats.push_back(dflat);
+    cases[2].pedestal = "subtracted as is";
+    for (auto& c : cases) {
+        DYNAMIC_SECTION("pedestal from " << c.name) {
+            auto from_frames = StackingEngine(fx.config()).execute(vs.lights, vs.flats, c.set, nullptr);
+            CalibrationSet with_master = c.set;
+            with_master.flat = prebuilt_flat(fx, vs.flats, c.set, std::string("mflat_") + c.name);
+            Log log;
+            auto from_master = StackingEngine(fx.config()).execute(vs.lights, {}, with_master, &log);
+            require_same_stack(from_frames, from_master);
+            REQUIRE_THAT(from_master.flat_pedestal, Catch::Matchers::ContainsSubstring(c.pedestal));
+            // The flat was not fitted again.
+            REQUIRE(log.saw("Calibration: flats -- master flat "));
+            REQUIRE_FALSE(log.saw("Built master flat"));
+            // And the flat did its job.
+            REQUIRE(std::fabs(flat_residual(from_master) - 1.0) < 0.003);
+        }
+    }
+}
+
+TEST_CASE("Calibrated stack: a master flat that does not belong to the set is refused",
+          "[integration][darkbias][masterflat][mismatch]") {
+    Fixture fx;
+    VignettedSet vs(fx, 0.5);
+    CalibrationSet with_bias;
+    with_bias.biases.push_back(fx.master(MasterKind::BIAS, fx.biases));
+    with_bias.darks.push_back(fx.master(MasterKind::DARK, fx.darks));
+    const MasterFrame flat = prebuilt_flat(fx, vs.flats, with_bias, "mflat_bias");
+
+    SECTION("its pedestal's bias is not in the set") {
+        CalibrationSet darks_only;
+        darks_only.darks = with_bias.darks;
+        darks_only.flat = flat;
+        auto r = StackingEngine(fx.config()).execute(vs.lights, {}, darks_only, nullptr);
+        REQUIRE_FALSE(r.ok);
+        REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("master flat"));
+        REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("not in this calibration set"));
+    }
+    SECTION("flat frames and a master flat together") {
+        CalibrationSet both = with_bias;
+        both.flat = flat;
+        auto r = StackingEngine(fx.config()).execute(vs.lights, vs.flats, both, nullptr);
+        REQUIRE_FALSE(r.ok);
+        REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("both flat frames and a master flat"));
+    }
+    SECTION("a master flat alone, with none of the masters its pedestal came from") {
+        CalibrationSet alone;
+        alone.flat = flat;
+        auto r = StackingEngine(fx.config()).execute(vs.lights, {}, alone, nullptr);
+        REQUIRE_FALSE(r.ok);
+        REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("not in this calibration set"));
+    }
+    SECTION("a master that is not a flat") {
+        CalibrationSet wrong = with_bias;
+        wrong.flat = with_bias.darks[0];
+        auto r = StackingEngine(fx.config()).execute(vs.lights, {}, wrong, nullptr);
+        REQUIRE_FALSE(r.ok);
+        REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("is a master dark, not a flat"));
+    }
 }
 
 // ── The flat-only path's order ──────────────────────────────────────

@@ -23,7 +23,28 @@ namespace nukex {
 
 namespace {
 
-constexpr int kMasterFormatVersion = 1;
+// 2: a master flat records its full pedestal, pedestal plan and pedestal
+//    signature (HISTORY "NKXP... " records), so it can stand in for the flat
+//    frames in StackingEngine::execute. A version-1 file is rebuilt.
+constexpr int kMasterFormatVersion = 2;
+
+// A string too long for one card, as HISTORY records "<tag> <up to 60 chars>|".
+// The '|' keeps trailing spaces, which the HISTORY reader trims.
+constexpr std::size_t kHistoryChunk = 60;
+
+void push_long(std::vector<std::string>& history, const char* tag, const std::string& s) {
+    for (std::size_t i = 0; i < s.size(); i += kHistoryChunk)
+        history.push_back(std::string(tag) + " " + s.substr(i, kHistoryChunk) + "|");
+}
+
+std::string read_long(const std::vector<std::string>& history, const char* tag) {
+    const std::string prefix = std::string(tag) + " ";
+    std::string out;
+    for (const auto& line : history)
+        if (line.rfind(prefix, 0) == 0 && line.size() > prefix.size() && line.back() == '|')
+            out += line.substr(prefix.size(), line.size() - prefix.size() - 1);
+    return out;
+}
 
 std::string fmt(double v, int prec = 1) {
     char b[64];
@@ -480,7 +501,11 @@ MasterBuilder::Result MasterBuilder::build(MasterKind kind, const std::vector<st
     m.n_frames  = n;
     m.estimator = estimator_name(config.estimator);
     m.signature = signature(kind, paths, config, kind == MasterKind::FLAT ? pedestal_signature : std::string());
-    if (kind == MasterKind::FLAT) m.pedestal = pedestal_label + " (flat level " + fmt_g(flat_level) + ")";
+    if (kind == MasterKind::FLAT) {
+        m.pedestal = pedestal_label + " (flat level " + fmt_g(flat_level) + ")";
+        m.pedestal_plan = pedestal_label;
+        m.pedestal_signature = pedestal_signature;
+    }
     for (const auto& p : paths) m.sources.push_back(base_name(p));
     obs.message("Built " + what + " from " + std::to_string(n) + " frames (" + m.header.describe()
                 + "), per-pixel " + m.estimator + " fit, no frame or pixel rejected.");
@@ -521,6 +546,9 @@ bool MasterBuilder::write(const MasterFrame& m, const std::string& path, std::st
     history.push_back(std::string("NukeX master ") + master_kind_name(m.kind) + ": per-pixel "
                       + m.estimator + " fit of " + std::to_string(m.n_frames) + " frames, no frame or pixel rejected");
     if (!m.pedestal.empty()) history.push_back("pedestal subtracted from each flat: " + m.pedestal);
+    push_long(history, "NKXPED", m.pedestal);
+    push_long(history, "NKXPPLAN", m.pedestal_plan);
+    push_long(history, "NKXPSIG", m.pedestal_signature);
     for (const auto& s : m.sources) history.push_back("source: " + s);
     return FITSWriter::write_float(path, m.data, cards, history, error);
 }
@@ -555,8 +583,12 @@ MasterBuilder::Result MasterBuilder::read(const std::string& path) {
     if (parse_double(kw["NCOMBINE"], v)) m.n_frames = static_cast<int>(v);
     m.estimator = kw["NKXEST"];
     m.signature = kw["NKXSIG"];
-    m.pedestal  = kw["NKXPED"];
-    for (const auto& line : FITSReader::read_history(path))
+    m.pedestal  = kw["NKXPED"];   // a card holds 60 characters of it; HISTORY holds all
+    const std::vector<std::string> history = FITSReader::read_history(path);
+    if (std::string full = read_long(history, "NKXPED"); !full.empty()) m.pedestal = std::move(full);
+    m.pedestal_plan = read_long(history, "NKXPPLAN");
+    m.pedestal_signature = read_long(history, "NKXPSIG");
+    for (const auto& line : history)
         if (line.rfind("source: ", 0) == 0) m.sources.push_back(line.substr(8));
     m.path = path;
     res.ok = true;
