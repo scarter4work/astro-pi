@@ -1,5 +1,28 @@
 # NukeX — Changelog
 
+## v5.3.1.0 — 2026-11-15
+
+Flat frames from a colour camera now correct each pixel by its own colour's flat, and several smaller fixes.
+Stacks without flats give the same images as 5.3.0.0; stacks of colour frames with flats change, because the
+flat is now applied correctly.
+
+- **Flats on colour (OSC) cameras are applied before debayering.** NukeX divided each light by the flat after
+  turning the raw colour mosaic into RGB, so each colour at a pixel was divided by the flat value of whichever
+  colour the sensor has there. A flat whose red, green and blue levels differ (most flats; an L-QEF flat on an
+  ASI2400MC measured red at about a third of green) left the sensor's colour pattern printed into every channel:
+  measured on real frames, a 233% pixel-to-pixel pattern, now 0.15%. The leftover vignetting in the red channel
+  dropped from 10.2% to 5.4% across the field. Mono cameras are not affected.
+- **Pause/Abort while frames are measured stops the run sooner.** Measured on eight 24-megapixel frames, the run
+  now stops 0.15-0.36 s after Abort, where it took up to about 1.1 s before (and more on a busy machine).
+- **The Lupton stretch no longer turns the image black at Q = 0.** Q = 0 is the stretch's linear limit and now
+  gives it. A stretch value of 0 or less is refused with an error instead of producing a black image, and the
+  smallest offered stretch value is now 0.001.
+- **CLAHE in per-channel mode equalizes every channel.** It used to equalize only the first channel of a colour
+  image and leave the others as they were. (The default, luminance mode, is unchanged.)
+- **Dark and bias calibration in the NukeX engine library**, for software that builds on it (the NukeX
+  standalone app's Calibrate stage). It is not part of the PixInsight process, whose interface is unchanged:
+  light frames, optional flats, Execute.
+
 ## v5.3.0.0 — 2026-11-15
 
 Stacking is five to six times faster and writes far less to disk, Cancel stops a run promptly, and image statistics no longer trip over NaN
