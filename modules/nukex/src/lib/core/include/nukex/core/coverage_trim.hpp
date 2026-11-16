@@ -5,6 +5,7 @@
 namespace nukex {
 
 class Cube;
+class CancelPoll;
 
 /// An inclusive pixel rectangle of the stacked output.
 struct TrimBounds {
@@ -41,6 +42,10 @@ struct TrimBounds {
 /// Walking inward from each edge until the edge line happens to be clean is
 /// NOT equivalent and can stop early, because coverage is ragged rather than
 /// rectangular. This computes the genuine largest covered rectangle.
-TrimBounds full_coverage_rect(const Cube& cube);
+///
+/// Two passes over the voxel record (a file-backed one is 14.8 GB at 24 MP x 4
+/// channels), row-parallel and watched by `cancel` when given: on a cancel it
+/// returns early with an unspecified rectangle, and the caller must not use it.
+TrimBounds full_coverage_rect(const Cube& cube, CancelPoll* cancel = nullptr);
 
 } // namespace nukex

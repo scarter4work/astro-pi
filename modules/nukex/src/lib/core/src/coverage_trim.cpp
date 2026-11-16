@@ -1,12 +1,13 @@
 #include "nukex/core/coverage_trim.hpp"
 #include "nukex/core/cube.hpp"
+#include "nukex/core/cancellable_for.hpp"
 
 #include <cstdint>
 #include <vector>
 
 namespace nukex {
 
-TrimBounds full_coverage_rect(const Cube& cube) {
+TrimBounds full_coverage_rect(const Cube& cube, CancelPoll* cancel) {
     TrimBounds t;
     const int w = cube.width;
     const int h = cube.height;
@@ -20,26 +21,40 @@ TrimBounds full_coverage_rect(const Cube& cube) {
 
     // Peak coverage per slot. A slot that peaks at zero was never filled and
     // takes no part in the decision.
+    //
+    // Both passes are row-parallel: they read a file-backed record that took
+    // 34.6 s to sweep twice on one thread under memory pressure (24 MP colour),
+    // with no check for a cancel. A row's peak is a max, so reducing the rows'
+    // peaks gives the same answer in any order.
+    std::vector<std::uint32_t> row_peak(static_cast<std::size_t>(h) * nc, 0);
+    if (!cancellable_for(h, 4, cancel, [&](int y) {
+            std::uint32_t* rp = row_peak.data() + static_cast<std::size_t>(y) * nc;
+            for (int x = 0; x < w; ++x) {
+                const SubcubeVoxel& v = cube.at(x, y);
+                for (int c = 0; c < nc; ++c)
+                    rp[c] = std::max(rp[c], v.channel(c).welford.count());
+            }
+        }))
+        return t;
     std::vector<std::uint32_t> peak(static_cast<std::size_t>(nc), 0);
     for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) {
-            const SubcubeVoxel& v = cube.at(x, y);
-            for (int c = 0; c < nc; ++c)
-                peak[c] = std::max(peak[c], v.channel(c).welford.count());
-        }
+        for (int c = 0; c < nc; ++c)
+            peak[c] = std::max(peak[c], row_peak[static_cast<std::size_t>(y) * nc + c]);
 
     std::vector<std::uint8_t> complete(static_cast<std::size_t>(w) * h, 1);
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) {
-            const SubcubeVoxel& v = cube.at(x, y);
-            for (int c = 0; c < nc; ++c) {
-                if (peak[c] == 0) continue;
-                if (v.channel(c).welford.count() < peak[c]) {
-                    complete[static_cast<std::size_t>(y) * w + x] = 0;
-                    break;
+    if (!cancellable_for(h, 4, cancel, [&](int y) {
+            for (int x = 0; x < w; ++x) {
+                const SubcubeVoxel& v = cube.at(x, y);
+                for (int c = 0; c < nc; ++c) {
+                    if (peak[c] == 0) continue;
+                    if (v.channel(c).welford.count() < peak[c]) {
+                        complete[static_cast<std::size_t>(y) * w + x] = 0;
+                        break;
+                    }
                 }
             }
-        }
+        }))
+        return t;
 
     // Largest all-complete rectangle: per row, the height of the complete run
     // ending at each column, then the largest rectangle in that histogram.
@@ -50,6 +65,7 @@ TrimBounds full_coverage_rect(const Cube& cube) {
     long long best = 0;
 
     for (int y = 0; y < h; ++y) {
+        if (cancel && (y & 255) == 0 && cancel->check()) return t;
         for (int x = 0; x < w; ++x)
             height[x] = complete[static_cast<std::size_t>(y) * w + x] ? height[x] + 1 : 0;
 

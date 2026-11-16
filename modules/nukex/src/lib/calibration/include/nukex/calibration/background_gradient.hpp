@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nukex/io/image.hpp"
+#include "nukex/core/cancel_poll.hpp"
 
 namespace nukex {
 
@@ -52,13 +53,20 @@ public:
     /// thin-coverage rim is several times noisier than its interior and sits
     /// at maximum leverage for a plane, so the caller passes the rectangle
     /// every frame contributed to.
+    ///
+    /// `cancel`, when given, is checked between the fit's iterations; on a
+    /// cancel the model comes back invalid and must not be used.
     static GradientModel fit_planar(const Image& img, int channel,
-                                    const FitRegion* region = nullptr);
+                                    const FitRegion* region = nullptr,
+                                    CancelPoll* cancel = nullptr);
 
     /// Subtract the model's TILT from `channel`, leaving the sky level where
     /// it was. The level feeds the auto-stretch's sky target, and moving it is
     /// a separate decision from flattening.
-    static void subtract(Image& img, int channel, const GradientModel& model);
+    /// Row-parallel; with `cancel` it stops part-way on a cancel (false), leaving
+    /// the channel partly corrected -- the caller abandons the image.
+    static bool subtract(Image& img, int channel, const GradientModel& model,
+                         CancelPoll* cancel = nullptr);
 
     /// Peak-to-peak amplitude of the model across the frame: the difference
     /// between the brightest and darkest corner, |dx| + |dy|.

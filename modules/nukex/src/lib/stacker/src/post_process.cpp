@@ -1,6 +1,6 @@
 #include "nukex/stacker/post_process.hpp"
 #include "nukex/combine/output_assembler.hpp"
-#include "nukex/core/parallel_for.hpp"
+#include "nukex/core/cancellable_for.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -34,8 +34,10 @@ void post_process_record(Cube& cube, int n_ch,
     quality_map = Image(w, h, 4);
     measured_noise = Image(w, h, 1);
 
-    parallel_for_dynamic(h, 4, [&](int y, int worker) {
-        if (cancel && cancel->poll(worker)) return;
+    // cancellable_for: the calling thread asks every 20 ms while the workers
+    // write; asking only from worker 0 between its own rows left the pass
+    // unwatched for up to 3.8 s once it ran out of rows (file-backed, 24 MP).
+    cancellable_for(h, 4, cancel, [&](int y) {
         for (int x = 0; x < w; x++) {
             auto& voxel = cube.at(x, y);
             compute_dominant_shape(voxel, n_ch);

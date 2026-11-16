@@ -1,4 +1,5 @@
 #include "nukex/calibration/background_gradient.hpp"
+#include "nukex/core/cancellable_for.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -45,7 +46,8 @@ float quantile_of(std::vector<float>& v, float q) {
 } // namespace
 
 GradientModel BackgroundGradient::fit_planar(const Image& img, int channel,
-                                             const FitRegion* region) {
+                                             const FitRegion* region,
+                                             CancelPoll* cancel) {
     GradientModel model;
     if (img.empty() || channel < 0 || channel >= img.n_channels()) return model;
 
@@ -95,6 +97,7 @@ GradientModel BackgroundGradient::fit_planar(const Image& img, int channel,
     std::vector<char>  next(pts.size());
 
     for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
+        if (cancel && cancel->check()) return GradientModel{};
         // Normal equations for z = c0 + cx*x + cy*y over the kept samples.
         double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
         double sz = 0, sxz = 0, syz = 0;
@@ -161,12 +164,14 @@ GradientModel BackgroundGradient::fit_planar(const Image& img, int channel,
     return model;
 }
 
-void BackgroundGradient::subtract(Image& img, int channel, const GradientModel& model) {
-    if (!model.valid || img.empty()) return;
-    if (channel < 0 || channel >= img.n_channels()) return;
+bool BackgroundGradient::subtract(Image& img, int channel, const GradientModel& model,
+                                  CancelPoll* cancel) {
+    if (!model.valid || img.empty()) return true;
+    if (channel < 0 || channel >= img.n_channels()) return true;
 
     const int w = img.width(), h = img.height();
-    for (int y = 0; y < h; y++) {
+    // Each pixel is corrected on its own, so rows run in parallel.
+    return cancellable_for(h, 16, cancel, [&](int y) {
         const double fy = static_cast<double>(y) / h - 0.5;
         for (int x = 0; x < w; x++) {
             float& v = img.at(x, y, channel);
@@ -175,7 +180,7 @@ void BackgroundGradient::subtract(Image& img, int channel, const GradientModel& 
             // The TILT only: `level` is deliberately left in place.
             v = static_cast<float>(v - (model.dx * fx + model.dy * fy));
         }
-    }
+    });
 }
 
 double BackgroundGradient::amplitude(const GradientModel& model) {

@@ -5,6 +5,7 @@
 #include "nukex/core/cube.hpp"
 #include "nukex/core/cancel_poll.hpp"
 #include "nukex/core/parallel_for.hpp"
+#include "nukex/core/cancellable_for.hpp"
 #include "nukex/core/running_accumulators.hpp"
 #include "nukex/stacker/phase_a_accumulate.hpp"
 #include "nukex/stacker/post_process.hpp"
@@ -1803,7 +1804,16 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // interior and sits at maximum leverage for a plane fit, so sampling it
     // manufactures a tilt. The same rectangle is applied as the coverage trim
     // below; it is computed once here.
-    const TrimBounds coverage = full_coverage_rect(cube);
+    //
+    // Everything from here to the end checks for a cancel inside its loops or
+    // between its steps: finishing ran 12-48 s at a stretch with no check on
+    // ten 24 MP colour frames under load (coverage sweep, gradient, spatial
+    // context, the Q-solve, background match and noise check).
+    const TrimBounds coverage = full_coverage_rect(cube, &cancel);
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
+    }
     if (config_.remove_sky_gradient && !stacked.empty()) {
         const FitRegion region{coverage.x0, coverage.y0, coverage.x1, coverage.y1};
         const FitRegion* roi = coverage.applied ? &region : nullptr;
@@ -1824,7 +1834,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         };
         for (int ch = 0; ch < nch; ch++) {
             if (is_synth_L(ch)) continue;
-            models[ch] = BackgroundGradient::fit_planar(stacked, ch, roi);
+            models[ch] = BackgroundGradient::fit_planar(stacked, ch, roi, &cancel);
+        }
+        if (cancel.check()) {
+            obs.message("Cancelled during post-processing.");
+            return result;
         }
         for (int ch = 0; ch < nch; ch++) {
             if (!is_synth_L(ch)) continue;
@@ -1848,7 +1862,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 continue;
             }
             const double amp = BackgroundGradient::amplitude(m);
-            BackgroundGradient::subtract(stacked, ch, m);
+            if (!BackgroundGradient::subtract(stacked, ch, m, &cancel)) {
+                obs.message("Cancelled during post-processing.");
+                return result;
+            }
             char msg[224];
             std::snprintf(msg, sizeof(msg),
                           "Sky gradient: channel %d%s -- removed a tilt of %.3e "
@@ -1931,11 +1948,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             if (idx < 0) return;
             auto& dst = derived.slots[name];
             dst.assign(N, 0.0f);
-            for (int y = 0; y < out_height; ++y) {
+            cancellable_for(out_height, 16, &cancel, [&](int y) {
                 for (int x = 0; x < out_width; ++x) {
                     dst[y * out_width + x] = stacked.at(x, y, idx);
                 }
-            }
+            });
         };
         for (const char* name : {"L", "R", "G", "B", "Ha", "OIII", "SII"}) {
             passthrough_slot(name);
@@ -2025,7 +2042,24 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             }
             auto qr = Q.colPivHouseholderQr();
 
-            for (int y = 0; y < out_height; ++y) {
+            // The accumulators this group writes, resolved once rather than
+            // hashed by name for every pixel.
+            const int n_lines = static_cast<int>(Q.cols());
+            std::vector<double*>  sum_of(static_cast<std::size_t>(n_lines));
+            std::vector<int64_t*> n_of(static_cast<std::size_t>(n_lines));
+            for (int j = 0; j < n_lines; ++j) ensure_acc(fp.lines[j].name);
+            for (int j = 0; j < n_lines; ++j) {
+                sum_of[j] = line_sum[fp.lines[j].name].data();
+                n_of[j]   = line_n  [fp.lines[j].name].data();
+            }
+
+            // Rows in parallel: a pixel's solve and its accumulator slots are
+            // its own, and groups still run one after another, so each pixel
+            // sums its groups in the same order as before. Single-threaded,
+            // this pass took 36 s on 24 MP under load with no check for a
+            // cancel. Clamp counts are per row, summed after.
+            std::vector<int64_t> clamped(static_cast<std::size_t>(out_height), 0);
+            const bool done = cancellable_for(out_height, 4, &cancel, [&](int y) {
                 for (int x = 0; x < out_width; ++x) {
                     const int p = y * out_width + x;
                     Eigen::Vector3d rgb(stacked.at(x, y, ri),
@@ -2049,34 +2083,40 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                         vox.channel(bi).welford.count()
                     }));
 
-                    // NOTE: this block is single-threaded today. If anyone
-                    // later parallelises the (y, x) loop (e.g. OpenMP over y),
-                    // the ++derived.negative_clamped_count below becomes a
-                    // data race; switch to std::atomic<int64_t> or a per-thread
-                    // accumulator with reduction at that point.
-                    for (int j = 0; j < lines.size(); ++j) {
+                    for (int j = 0; j < n_lines; ++j) {
                         double v = lines(j);
                         if (v < 0.0) {
                             v = 0.0;
-                            ++derived.negative_clamped_count;
+                            ++clamped[y];
                         }
-                        ensure_acc(fp.lines[j].name);
-                        line_sum[fp.lines[j].name][p] += v * static_cast<double>(n_samples);
-                        line_n  [fp.lines[j].name][p] += n_samples;
+                        sum_of[j][p] += v * static_cast<double>(n_samples);
+                        n_of[j][p]   += n_samples;
                     }
                 }
+            });
+            if (!done) {
+                obs.message("Cancelled during post-processing.");
+                return result;
             }
+            for (int64_t c : clamped) derived.negative_clamped_count += c;
         }
 
         // Finalise the line slots: weighted mean.
         for (auto& [name, sumv] : line_sum) {
             auto& dst = derived.slots[name];
             dst.assign(N, 0.0f);
-            for (int p = 0; p < N; ++p) {
-                if (line_n[name][p] > 0) {
-                    dst[p] = static_cast<float>(sumv[p] / static_cast<double>(line_n[name][p]));
+            const std::vector<int64_t>& cnt = line_n[name];
+            cancellable_for(out_height, 16, &cancel, [&](int y) {
+                for (int p = y * out_width; p < (y + 1) * out_width; ++p) {
+                    if (cnt[p] > 0) {
+                        dst[p] = static_cast<float>(sumv[p] / static_cast<double>(cnt[p]));
+                    }
                 }
-            }
+            });
+        }
+        if (cancel.check()) {
+            obs.message("Cancelled during post-processing.");
+            return result;
         }
 
         result.derived = std::move(derived);
@@ -2186,6 +2226,10 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             obs.message(msg + ".");
         }
     }
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
+    }
 
     // The one number that makes estimator-injected noise visible. NukeX's
     // noise_map is a model of what the noise ought to be; measured_noise is
@@ -2223,6 +2267,11 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             // What the ratio is made of. Half the samples against the other
             // half: what cancels was in every frame and is not noise the
             // estimator made -- it is what flats remove.
+            // Two medians over the whole image each: checked between them.
+            if (cancel.check()) {
+                obs.message("Cancelled during post-processing.");
+                return result;
+            }
             const OutputAssembler::NoiseDecomposition nd =
                 OutputAssembler::noise_decomposition(nc.measured_median, half_even, half_odd, noise_luminance);
             if (nd.valid) {
@@ -2237,6 +2286,12 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         }
     }
 
+    // The last check: a cancel during the noise diagnostics above returns no
+    // stack, as one anywhere earlier does.
+    if (cancel.check()) {
+        obs.message("Cancelled during post-processing.");
+        return result;
+    }
     result.stacked = std::move(stacked);
     result.noise_map = std::move(noise_map);
     result.measured_noise = std::move(measured_noise);

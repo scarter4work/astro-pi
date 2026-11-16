@@ -371,7 +371,10 @@ struct PollRecorder : ProgressObserver {
         if (in_pass && bounded) gap_to(ended_at);
         in_pass = false;
     }
-    void message(const std::string&) override {}
+    mutable clk::time_point stopped_at{};   // the engine's own "Cancelled ..." line
+    void message(const std::string& t) override {
+        if (fired && stopped_at == clk::time_point{} && t.rfind("Cancelled", 0) == 0) stopped_at = clk::now();
+    }
     bool is_cancelled() const override {
         if (std::this_thread::get_id() != owner) { ++foreign_calls; return false; }
         const auto now = clk::now();
@@ -418,7 +421,8 @@ TEST_CASE("Cancel: the measuring pass asks for a cancel every few tens of ms, on
         auto r = StackingEngine(big_config(root / "cache")).execute(lights, {}, &rec);
         const double latency = std::chrono::duration<double>(clk::now() - rec.fired_at).count();
         REQUIRE(rec.fired);
-        INFO("latency " << latency << " s");
+        const double stop = rec.stopped_at == clk::time_point{} ? -1.0 : std::chrono::duration<double>(rec.stopped_at - rec.fired_at).count();
+        INFO("engine stopped " << stop << " s after the request; returned after " << latency << " s");
         // The 0.75 s target is a property of an optimised build: unoptimised
         // and under ASan one 12 MP step takes seconds. The poll cadence above
         // is asserted in every build; here a sanitizer/debug build only has
@@ -494,7 +498,8 @@ TEST_CASE("Cancel: in the measuring pass while every worker detects stars on a c
     auto r = StackingEngine(big_config(root / "cache")).execute(lights, {}, &rec);
     const double latency = std::chrono::duration<double>(clk::now() - rec.fired_at).count();
     REQUIRE(rec.fired);
-    INFO("latency " << latency << " s");
+    const double stop = rec.stopped_at == clk::time_point{} ? -1.0 : std::chrono::duration<double>(rec.stopped_at - rec.fired_at).count();
+        INFO("engine stopped " << stop << " s after the request; returned after " << latency << " s");
 #if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
     REQUIRE(latency < 0.75);
 #else
@@ -589,5 +594,102 @@ TEST_CASE("Cancel: Phase B asks for a cancel inside every step (GPU kernels, fil
     SKIP("Cube file backing is not implemented on Windows");
 #else
     phase_b_gaps(/*gpu=*/true, /*file_backed=*/true, "gpu");
+#endif
+}
+
+// ── Finishing asks for a cancel as often as the stages before it ─────
+//
+// Everything after Phase B -- the coverage rectangle, the sky-gradient fit and
+// subtraction, the spatial context, the pass over the record, the dual-NB
+// Q-solve, the trim, background match and noise check -- ran with checks only
+// between those steps, and some not even then. On ten 24 MP HaO3 frames under
+// load the longest stretches were 34.6 s (coverage), 36.3 s (Q-solve) and
+// 18.6 s (spatial context).
+//
+// Here a 12 MP HaO3 Bayer frame (so the Q-solve runs) is stacked and the
+// observer is watched from Phase B's closing line until execute() returns.
+
+#include "synthetic_fits.hpp"
+
+namespace {
+
+struct TailRecorder : ProgressObserver {
+    std::thread::id owner = std::this_thread::get_id();
+    bool watching = false;
+    mutable long polls = 0;
+    mutable int foreign_calls = 0;
+    mutable clk::time_point last{};
+    mutable double max_gap = 0.0;
+    mutable std::string line, max_gap_at;
+    std::vector<std::string> lines;
+    void gap_to(clk::time_point now) const {
+        const double g = std::chrono::duration<double>(now - last).count();
+        if (g > max_gap) { max_gap = g; max_gap_at = line; }
+        last = now;
+    }
+    void note(const std::string& s) { if (watching) { line = s; lines.push_back(s); } }
+    void begin_phase(const std::string& n, int) override { note(n); }
+    void advance(int, const std::string& d) override { note(d); }
+    void end_phase() override {}
+    void message(const std::string& t) override {
+        if (!watching && t.rfind("Phase B: ", 0) == 0) {
+            watching = true;
+            last = clk::now();
+        }
+        note(t);
+    }
+    bool is_cancelled() const override {
+        if (std::this_thread::get_id() != owner) { ++foreign_calls; return false; }
+        if (watching) { ++polls; gap_to(clk::now()); }
+        return false;
+    }
+};
+
+void finishing_gaps(bool gpu, bool file_backed, const char* tag) {
+    std::random_device rd;
+    const fs::path root = fs::temp_directory_path() / (std::string("nukex_cancel_finishing_") + tag + "_" + std::to_string(rd()));
+    struct RemoveOnExit {
+        fs::path p;
+        ~RemoveOnExit() { std::error_code ec; fs::remove_all(p, ec); }
+    } remove_on_exit{root};
+    fs::create_directories(root / "cache");
+    const std::string frame = (root / "hao3.fits").string();
+    test_util::write_synthetic_q_solved_hao3(frame, kBigW, kBigH, "ASI585MC", 0.5f, 0.3f);
+
+    StackingEngine::Config cfg;
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+    cfg.cache_dir = (root / "cache").string();
+    cfg.gpu_config.force_cpu_fallback = !gpu;
+    if (file_backed) { cfg.file_backed_cube = true; cfg.file_backed_cube_fraction = 1e-12; }
+    else             cfg.file_backed_cube = false;
+
+    TailRecorder rec;
+    auto r = StackingEngine(cfg).execute({frame}, {}, &rec);
+    REQUIRE(r.ok);
+    REQUIRE(rec.watching);
+    rec.gap_to(clk::now());   // from the last check to execute() returning
+    REQUIRE(r.derived.slots.count("Ha") == 1);   // the Q-solve ran
+    INFO(rec.polls << " polls after Phase B, longest gap " << rec.max_gap
+         << " s, ending after \"" << rec.max_gap_at << "\"");
+    REQUIRE(rec.polls > 5);
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+    REQUIRE(rec.max_gap < 0.2);
+#endif
+    REQUIRE(rec.foreign_calls == 0);
+}
+
+} // namespace
+
+TEST_CASE("Cancel: finishing asks for a cancel inside every step (CPU, cube in RAM)",
+          "[integration][cancel][finishing]") {
+    finishing_gaps(/*gpu=*/false, /*file_backed=*/false, "cpu");
+}
+
+TEST_CASE("Cancel: finishing asks for a cancel inside every step (GPU, file-backed record)",
+          "[integration][cancel][finishing][file_backed]") {
+#if defined(_WIN32)
+    SKIP("Cube file backing is not implemented on Windows");
+#else
+    finishing_gaps(/*gpu=*/true, /*file_backed=*/true, "gpu");
 #endif
 }

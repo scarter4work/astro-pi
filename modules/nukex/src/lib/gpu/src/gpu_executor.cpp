@@ -360,13 +360,13 @@ void GPUExecutor::execute_select_gpu(
 void GPUExecutor::execute_spatial_gpu(
     const Image& stacked,
     float* gradient_mag, float* local_background, float* local_rms,
-    LuminanceSpec luminance) {
+    LuminanceSpec luminance, CancelPoll* cancel) {
     luminance = luminance.resolved(stacked.n_channels());
 
     if (!kernels_.is_compiled()) {
         GPUCPUFallback::spatial_context(stacked.data(), stacked.width(),
             stacked.height(), stacked.n_channels(),
-            gradient_mag, local_background, local_rms);
+            gradient_mag, local_background, local_rms, luminance, cancel);
         return;
     }
 
@@ -396,9 +396,19 @@ void GPUExecutor::execute_spatial_gpu(
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_bg);
     clSetKernelArg(k, arg++, sizeof(cl_mem), &d_rms);
 
-    size_t global_size = static_cast<size_t>(npix);
-    clEnqueueNDRangeKernel(queue, k, 1, nullptr, &global_size, nullptr, 0, nullptr, nullptr);
-    clFinish(queue);
+    // One work-item per pixel, launched in slices of kSpatialSlice pixels
+    // with a cancel check between them. As a single launch over the whole
+    // image this was the longest stretch of a run with no check: 11-19 s at
+    // 24 MP (each work-item sorts its 15x15 window). get_global_id includes
+    // the slice's offset, so every pixel computes exactly what it did.
+    constexpr size_t kSpatialSlice = 262144;
+    for (size_t g0 = 0; g0 < static_cast<size_t>(npix); g0 += kSpatialSlice) {
+        const size_t offset = g0;
+        const size_t size = std::min(kSpatialSlice, static_cast<size_t>(npix) - g0);
+        clEnqueueNDRangeKernel(queue, k, 1, &offset, &size, nullptr, 0, nullptr, nullptr);
+        clFinish(queue);
+        if (cancel && cancel->check()) break;
+    }
 
     clEnqueueReadBuffer(queue, d_grad, CL_TRUE, 0, npix * sizeof(float), gradient_mag, 0, nullptr, nullptr);
     clEnqueueReadBuffer(queue, d_bg, CL_TRUE, 0, npix * sizeof(float), local_background, 0, nullptr, nullptr);
@@ -429,11 +439,11 @@ void GPUExecutor::execute_select_gpu(
 void GPUExecutor::execute_spatial_gpu(
     const Image& stacked,
     float* gradient_mag, float* local_background, float* local_rms,
-    LuminanceSpec luminance) {
+    LuminanceSpec luminance, CancelPoll* cancel) {
     GPUCPUFallback::spatial_context(stacked.data(), stacked.width(),
         stacked.height(), stacked.n_channels(),
         gradient_mag, local_background, local_rms,
-        luminance.resolved(stacked.n_channels()));
+        luminance.resolved(stacked.n_channels()), cancel);
 }
 
 #endif
@@ -695,7 +705,7 @@ void GPUExecutor::compute_spatial_context(const Image& stacked, LuminanceSpec lu
 
     bool use_gpu = context_.is_gpu_available() && kernels_.is_compiled();
     if (use_gpu) {
-        execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum);
+        execute_spatial_gpu(stacked, grad.data(), bg.data(), rms.data(), lum, cancel);
     } else {
         GPUCPUFallback::spatial_context(stacked.data(), w, h, nc,
                                          grad.data(), bg.data(), rms.data(), lum, cancel);

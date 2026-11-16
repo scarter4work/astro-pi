@@ -122,7 +122,8 @@ public:
     void execute_spatial_gpu(const Image& stacked,
                               float* gradient_mag, float* local_background,
                               float* local_rms,
-        LuminanceSpec luminance = LuminanceSpec{});
+        LuminanceSpec luminance = LuminanceSpec{},
+        CancelPoll* cancel = nullptr);
 
 private:
     GPUContext   context_;
