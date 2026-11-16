@@ -1,5 +1,5 @@
 // NukeX -- teach NukeX an unrecognised filter name
-// Copyright (c) 2026 Scott Carter. MIT License.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
 //
 // FITS FILTER values are whatever the capture software wrote, so no shipped
 // table can list them all. When NukeX does not recognise one it refuses the

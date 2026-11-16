@@ -1,5 +1,5 @@
 // NukeX v4 — Phase 8 rating popup
-// Copyright (c) 2026 Scott Carter. MIT License.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
 
 #include "RatingDialog.h"
 

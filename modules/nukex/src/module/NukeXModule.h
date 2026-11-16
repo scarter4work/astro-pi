@@ -1,5 +1,5 @@
 // NukeX v4 — Distribution-Fitted Stacking for PixInsight
-// Copyright (c) 2026 Scott Carter. MIT License.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
 
 #ifndef __NukeXModule_h
 #define __NukeXModule_h

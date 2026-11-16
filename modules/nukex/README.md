@@ -131,7 +131,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Licence
 
-MIT. Copyright (c) 2026 Scott Carter.
+BSD 3-Clause License. Copyright (c) 2025-2026, Brian Scott Carter. See [LICENSE](../../LICENSE).
 
 This product is based on software from the PixInsight project, developed by
 Pleiades Astrophoto and its contributors (https://pixinsight.com/).
