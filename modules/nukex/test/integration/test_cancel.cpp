@@ -279,12 +279,14 @@ std::vector<std::string> write_big_frames(const fs::path& dir) {
 }
 
 /// Records every is_cancelled() from the owning thread while the measuring
-/// pass runs; cancels `after` into the pass when `after` is positive.
+/// pass runs; cancels `after` into the pass when `after` is positive, or at
+/// the pass's first progress line when `on_first_frame` is set.
 struct PollRecorder : ProgressObserver {
     std::thread::id owner = std::this_thread::get_id();
     bool in_pass = false;
     clk::time_point pass_start{};
     std::chrono::milliseconds after{0};
+    bool on_first_frame = false;
     mutable bool fired = false;
     mutable clk::time_point fired_at{};
     mutable std::vector<clk::time_point> polls;
@@ -293,7 +295,12 @@ struct PollRecorder : ProgressObserver {
         in_pass = n.find("Measuring frames") != std::string::npos;
         if (in_pass) pass_start = clk::now();
     }
-    void advance(int, const std::string&) override {}
+    void advance(int, const std::string&) override {
+        if (in_pass && on_first_frame && !fired) {
+            fired = true;
+            fired_at = clk::now();
+        }
+    }
     void end_phase() override { in_pass = false; }
     void message(const std::string&) override {}
     bool is_cancelled() const override {
@@ -360,5 +367,76 @@ TEST_CASE("Cancel: the measuring pass asks for a cancel every few tens of ms, on
         REQUIRE(r.stacked.empty());
         REQUIRE(rec.foreign_calls == 0);
     }
+    fs::remove_all(root);
+}
+
+// ── A cancel while the workers are detecting stars on a crowded field ──
+//
+// Star detection finds every local maximum above median + 5 sigma, then
+// drops those within the exclusion radius of a brighter one. On a frame
+// whose nebula sits wholly above that threshold, every noise peak in the
+// nebula is a candidate: the real IC1805 HaO3 lights (24 MP) give 125k-260k,
+// and the exclusion test against every kept candidate took 4-15 s per frame
+// with no checkpoint. A cancel landed only when the slowest detection in
+// flight finished: 14-18 s through the app 3 s into the pass under 5.3.1.0,
+// which starts every worker at once (5.3.0.0 measured frame 0 alone first, so
+// 3 s in only one detection was running: ~4 s).
+//
+// Here frame 0's nebula is narrow, so it is measured first, and every other
+// frame's covers 45% of it. The cancel comes at frame 0's progress line,
+// while the other workers are inside detection.
+
+namespace {
+
+std::vector<std::string> write_nebula_frames(const fs::path& dir) {
+    fs::create_directories(dir);
+    std::vector<std::string> out;
+    std::mt19937 rng(11);
+    std::normal_distribution<float> noise(0.0f, 0.003f);
+    for (int f = 0; f < kBigFrames; f++) {
+        const int nebula_w = f == 0 ? kBigW / 20 : kBigW * 9 / 20;
+        std::vector<float> px(static_cast<std::size_t>(kBigW) * kBigH);
+        for (int y = 0; y < kBigH; y++)
+            for (int x = 0; x < kBigW; x++)
+                px[static_cast<std::size_t>(y) * kBigW + x] = (x < nebula_w ? 0.2f : 0.05f) + noise(rng);
+        const std::string p = (dir / ("nebula_" + std::to_string(f) + ".fits")).string();
+        fitsfile* fp = nullptr;
+        int status = 0;
+        std::remove(p.c_str());
+        fits_create_file(&fp, p.c_str(), &status);
+        long naxes[2] = {kBigW, kBigH};
+        fits_create_img(fp, FLOAT_IMG, 2, naxes, &status);
+        fits_write_img(fp, TFLOAT, 1, static_cast<long>(px.size()), px.data(), &status);
+        fits_update_key_str(fp, "INSTRUME", "ASI2600MM", nullptr, &status);
+        fits_update_key_str(fp, "FILTER", "L", nullptr, &status);
+        fits_close_file(fp, &status);
+        REQUIRE(status == 0);
+        out.push_back(p);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Cancel: in the measuring pass while every worker detects stars on a crowded field",
+          "[integration][cancel][measuring][crowded]") {
+    std::random_device rd;
+    const fs::path root = fs::temp_directory_path() / ("nukex_cancel_crowded_" + std::to_string(rd()));
+    const auto lights = write_nebula_frames(root / "frames");
+    fs::create_directories(root / "cache");
+
+    PollRecorder rec;
+    rec.on_first_frame = true;
+    auto r = StackingEngine(big_config(root / "cache")).execute(lights, {}, &rec);
+    const double latency = std::chrono::duration<double>(clk::now() - rec.fired_at).count();
+    REQUIRE(rec.fired);
+    INFO("latency " << latency << " s");
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+    REQUIRE(latency < 0.75);
+#else
+    REQUIRE(latency < 15.0);
+#endif
+    REQUIRE(r.stacked.empty());
+    REQUIRE(rec.foreign_calls == 0);
     fs::remove_all(root);
 }

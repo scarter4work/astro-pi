@@ -2,6 +2,7 @@
 
 #include "nukex/alignment/types.hpp"
 #include "nukex/io/image.hpp"
+#include "nukex/core/cancel_poll.hpp"
 
 namespace nukex {
 
@@ -65,7 +66,13 @@ public:
 
     /// Detect stars in an image. The channel used is Config::channel, or the
     /// auto choice from default_reference_channel() when it is left at -1.
-    static StarCatalog detect(const Image& image, const Config& config);
+    ///
+    /// `cancel`, when given, is read (CancelPoll::cancelled(), never the
+    /// observer, so any thread may pass it) inside the long loops; once it is
+    /// set, detection stops and returns an empty catalog. A caller must check
+    /// the same CancelPoll afterwards and not take that catalog as a result.
+    static StarCatalog detect(const Image& image, const Config& config,
+                              const CancelPoll* cancel = nullptr);
 
     /// Detect stars using default configuration.
     static StarCatalog detect(const Image& image) { return detect(image, Config{}); }
@@ -79,9 +86,12 @@ private:
     /// Compute robust background (median) and noise (MAD) of the image.
     static std::pair<float, float> compute_background_noise(const Image& image, int ch);
 
-    /// Find local maxima above threshold. Returns (x, y, peak_value) triples.
+    /// Find local maxima above threshold, none within `exclusion_radius` of a
+    /// brighter one. Returns (x, y, peak_value) triples, brightest first;
+    /// empty once `cancel` is set.
     static std::vector<std::tuple<int, int, float>> find_local_maxima(
-        const Image& image, float threshold, int exclusion_radius, int ch);
+        const Image& image, float threshold, int exclusion_radius, int ch,
+        const CancelPoll* cancel);
 
     /// Refine centroid with 2D Gaussian fit on a 7x7 neighborhood.
     /// Returns sub-pixel (x, y) or the input if fit fails.

@@ -606,8 +606,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
         parallel_for_polled(n_frames, 1, max_workers, [&](int f, int worker) {
             MeasuredFrame& m = measured[static_cast<std::size_t>(f)];
             // Cancel checkpoints between the steps: a frame interrupted
-            // part-way is left NOT_RUN, and every step is well under a second
-            // even at 24 MP.
+            // part-way is left NOT_RUN. Star detection, the one step that can
+            // run for seconds (a crowded field), also checks inside its loops.
             [&] {
                 if (cancel.poll(worker)) return;
                 auto rr = read_light(f);
@@ -670,7 +670,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                             }
                             if (cancel.poll(worker)) return;
 
-                            m.stars = StarDetector::detect(img, config_.aligner_config.star_config);
+                            m.stars = StarDetector::detect(img, config_.aligner_config.star_config, &cancel);
+                            if (cancel.poll(worker)) return;
                             m.has_stars = config_.reuse_measured_stars;
                             frame_quality[f].star_count  = static_cast<int>(m.stars.stars.size());
                             frame_quality[f].median_fwhm = compute_median_fwhm(m.stars);

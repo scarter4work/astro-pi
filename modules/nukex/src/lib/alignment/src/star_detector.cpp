@@ -1,6 +1,7 @@
 #include "nukex/alignment/star_detector.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <numeric>
 #include <vector>
 #include <tuple>
@@ -39,16 +40,19 @@ std::pair<float, float> StarDetector::compute_background_noise(const Image& imag
 }
 
 std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
-    const Image& image, float threshold, int exclusion_radius, int ch) {
+    const Image& image, float threshold, int exclusion_radius, int ch,
+    const CancelPoll* cancel) {
 
     int w = image.width();
     int h = image.height();
     int r = 3; // local max search radius
 
     std::vector<std::tuple<int, int, float>> candidates;
+    const auto cancelled = [cancel] { return cancel && cancel->cancelled(); };
 
     // Skip border pixels
     for (int y = r; y < h - r; y++) {
+        if ((y & 63) == 0 && cancelled()) return {};
         for (int x = r; x < w - r; x++) {
             float val = image.at(x, y, ch);
             if (val < threshold) continue;
@@ -76,19 +80,50 @@ std::vector<std::tuple<int, int, float>> StarDetector::find_local_maxima(
                   return std::get<2>(a) > std::get<2>(b);
               });
 
-    // Apply exclusion radius — remove candidates too close to brighter ones
+    // Apply exclusion radius — remove candidates too close to brighter ones.
+    //
+    // Only kept candidates in the 3x3 block of grid cells (cell side = the
+    // radius) around a candidate can be within the radius, so only those are
+    // compared, with the same test as before. Comparing against every kept
+    // candidate was O(n^2): a nebula above the detection threshold makes every
+    // noise peak a candidate (125k-260k on 24 MP HaO3 lights), and that loop
+    // took 4-15 s per frame. Which candidates survive is unchanged: the result
+    // of the test does not depend on the order the kept ones are visited in.
     std::vector<std::tuple<int, int, float>> filtered;
+    const float min_d2 = static_cast<float>(exclusion_radius * exclusion_radius);
+    const int cell = std::abs(exclusion_radius);
+    if (cell == 0) {
+        // d^2 < 0 never holds: nothing is excluded.
+        filtered = std::move(candidates);
+        return filtered;
+    }
+    const int gw = w / cell + 1;
+    const int gh = h / cell + 1;
+    std::vector<int> head(static_cast<std::size_t>(gw) * static_cast<std::size_t>(gh), -1);
+    std::vector<int> next;   // per kept candidate: the previous one in its cell
+    std::size_t visited = 0;
     for (const auto& [cx, cy, cv] : candidates) {
+        if ((++visited & 4095) == 0 && cancelled()) return {};
+        const int gx = cx / cell, gy = cy / cell;
         bool too_close = false;
-        for (const auto& [fx, fy, fv] : filtered) {
-            float dx = static_cast<float>(cx - fx);
-            float dy = static_cast<float>(cy - fy);
-            if (dx * dx + dy * dy < static_cast<float>(exclusion_radius * exclusion_radius)) {
-                too_close = true;
-                break;
+        for (int ny = std::max(0, gy - 1); ny <= std::min(gh - 1, gy + 1) && !too_close; ny++) {
+            for (int nx = std::max(0, gx - 1); nx <= std::min(gw - 1, gx + 1) && !too_close; nx++) {
+                for (int k = head[static_cast<std::size_t>(ny) * gw + nx]; k >= 0;
+                     k = next[static_cast<std::size_t>(k)]) {
+                    const auto& [fx, fy, fv] = filtered[static_cast<std::size_t>(k)];
+                    float dx = static_cast<float>(cx - fx);
+                    float dy = static_cast<float>(cy - fy);
+                    if (dx * dx + dy * dy < min_d2) {
+                        too_close = true;
+                        break;
+                    }
+                }
             }
         }
         if (!too_close) {
+            const std::size_t c = static_cast<std::size_t>(gy) * gw + gx;
+            next.push_back(head[c]);
+            head[c] = static_cast<int>(filtered.size());
             filtered.emplace_back(cx, cy, cv);
         }
     }
@@ -191,7 +226,8 @@ float StarDetector::saturation_fraction(const Image& image, float saturation_lev
     return static_cast<float>(saturated) / static_cast<float>(total);
 }
 
-StarCatalog StarDetector::detect(const Image& image, const Config& config) {
+StarCatalog StarDetector::detect(const Image& image, const Config& config,
+                                 const CancelPoll* cancel) {
     StarCatalog catalog;
 
     if (image.empty() || image.width() < 20 || image.height() < 20) {
@@ -202,7 +238,7 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
 
     // Saturation guard: reject frames where a majority of pixels are clipped
     // to saturation.  Without this, find_local_maxima sees the entire clipped
-    // plateau as candidate stars and the O(n^2) exclusion-radius filter hangs
+    // plateau as candidate stars and the exclusion-radius filter (then O(n^2)) hung
     // (observed 2026-04-20 on a dawn-twilight M27 frame; 5 min per frame).
     if (saturation_fraction(image, config.saturation_level)
             >= config.saturation_reject_fraction) {
@@ -214,10 +250,13 @@ StarCatalog StarDetector::detect(const Image& image, const Config& config) {
     float threshold = background + config.snr_multiplier * sigma;
 
     // Step 2: Find local maxima
-    auto candidates = find_local_maxima(image, threshold, config.exclusion_radius, ch);
+    auto candidates = find_local_maxima(image, threshold, config.exclusion_radius, ch, cancel);
+    if (cancel && cancel->cancelled()) return catalog;
 
     // Step 3: Build star catalog with refined centroids
+    std::size_t visited = 0;
     for (const auto& [ix, iy, peak] : candidates) {
+        if ((++visited & 4095) == 0 && cancel && cancel->cancelled()) return StarCatalog{};
         // Reject saturated stars
         if (peak > config.saturation_level) continue;
 

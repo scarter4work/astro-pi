@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <random>
 
 using namespace nukex;
 
@@ -309,4 +310,92 @@ TEST_CASE("HomographyMatrix: small rotation is not meridian flip", "[homography]
     H(2, 0) = 0.0f;             H(2, 1) = 0.0f;              H(2, 2) = 1.0f;
 
     REQUIRE(H.is_meridian_flip() == false);
+}
+
+// ── Crowded fields: the exclusion radius and cancel ─────────────────
+
+namespace {
+
+/// 2000x1500, the left 45% a flat "nebula" well above median + 5 sigma, so
+/// every noise peak there is a candidate (~25k of them).
+Image crowded_field() {
+    Image img(2000, 1500, 1);
+    std::mt19937 rng(3);
+    std::normal_distribution<float> noise(0.0f, 0.003f);
+    for (int y = 0; y < img.height(); y++)
+        for (int x = 0; x < img.width(); x++)
+            img.at(x, y, 0) = (x < 900 ? 0.2f : 0.05f) + noise(rng);
+    return img;
+}
+
+struct CancelledObserver : ProgressObserver {
+    void begin_phase(const std::string&, int) override {}
+    void advance(int, const std::string&) override {}
+    void end_phase() override {}
+    void message(const std::string&) override {}
+    bool is_cancelled() const override { return true; }
+};
+
+} // namespace
+
+TEST_CASE("StarDetector: the exclusion radius drops a dimmer star closer than it, across grid cells",
+          "[star_detector][exclusion]") {
+    // Pairs of sharp stars (sigma 1 px, so each peak is one pixel and both are
+    // local maxima): a bright one, then a dimmer one at an exact offset. With
+    // radius 5 the dimmer survives iff dx^2 + dy^2 >= 25. The bright stars sit
+    // on x = 99 / y = 99, so every dimmer partner is in a neighbouring cell
+    // of a radius-sized grid.
+    struct Pair { int bx, by, dx, dy; bool dimmer_kept; };
+    const std::vector<Pair> pairs = {
+        {99, 99, 4, 0, false},  {199, 99, 5, 0, true},  {299, 99, 0, 4, false},
+        {399, 99, 0, 5, true},  {99, 199, 4, 2, false}, {199, 199, 4, 3, true},
+        {299, 199, -4, 0, false}, {399, 199, -5, 0, true}, {99, 299, -4, -2, false},
+        {199, 299, -3, -4, true}, {299, 299, 4, -2, false}, {399, 299, 4, -4, true},
+    };
+    Image img(500, 400, 1);
+    std::mt19937 rng(7);
+    std::normal_distribution<float> noise(0.0f, 0.001f);
+    for (int y = 0; y < img.height(); y++)
+        for (int x = 0; x < img.width(); x++) img.at(x, y, 0) = 0.1f + noise(rng);
+    auto draw = [&](int sx, int sy, float amp) {
+        for (int dy = -4; dy <= 4; dy++)
+            for (int dx = -4; dx <= 4; dx++)
+                img.at(sx + dx, sy + dy, 0) += amp * std::exp(-(dx * dx + dy * dy) / 2.0f);
+    };
+    for (const auto& p : pairs) {
+        draw(p.bx, p.by, 0.5f);
+        draw(p.bx + p.dx, p.by + p.dy, 0.4f);
+    }
+    StarDetector::Config cfg;
+    cfg.exclusion_radius = 5;
+    cfg.max_stars = 10000;
+    const auto cat = StarDetector::detect(img, cfg);
+    auto found = [&](int x, int y) {
+        for (const auto& s : cat.stars)
+            if (std::abs(s.x - x) < 0.75f && std::abs(s.y - y) < 0.75f) return true;
+        return false;
+    };
+    for (const auto& p : pairs) {
+        INFO("bright (" << p.bx << "," << p.by << ") offset (" << p.dx << "," << p.dy << ")");
+        REQUIRE(found(p.bx, p.by));
+        REQUIRE(found(p.bx + p.dx, p.by + p.dy) == p.dimmer_kept);
+    }
+}
+
+TEST_CASE("StarDetector: a set cancel stops detection and returns no stars",
+          "[star_detector][crowded][cancel]") {
+    const Image img = crowded_field();
+    StarDetector::Config cfg;
+    cfg.max_stars = 1000000;
+    REQUIRE(StarDetector::detect(img, cfg).stars.size() > 1000);   // the field has work in it
+
+    CancelledObserver obs;
+    CancelPoll cancel(obs);
+    REQUIRE(cancel.check());
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto cat = StarDetector::detect(img, cfg, &cancel);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    REQUIRE(cat.stars.empty());
+    INFO(s << " s");
+    REQUIRE(s < 0.5);
 }
