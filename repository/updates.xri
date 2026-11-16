@@ -64,14 +64,14 @@
             <p>Stretches a linear colour image with Lupton RGB, a root-power stretch or PhotometricStretch, with a live preview; the result opens as a new image window. No network connections, no external programs, no files written. Installing this version removes the withdrawn EZ Donut Repair script (src/scripts/scarter4work/EZDonutRepair.js and .xsgn). Documentation: doc/scripts/EZStretch/EZStretch.html.</p>
          </description>
       </package>
-      <package fileName="EZHazeKill_v1.1.0.zip" sha1="53f8e036866145199f1723f3307e522218220686" type="script" releaseDate="20261115">
+      <package fileName="EZHazeKill_v1.1.1.zip" sha1="56b20c696453640a7e85da78ee1846b723b17fdf" type="script" releaseDate="20261115">
          <title>EZ Haze Kill</title>
          <description>
             <p>
-               <b>EZ Haze Kill v1.1.0</b>
+               <b>EZ Haze Kill v1.1.1</b>
             </p>
             <p>Removes the flat sky pedestal and colour cast that remain after gradient extraction, on linear or stretched images. The sky is measured on the darkest tiles of the image, the background is never raised, and dark pixels roll off smoothly instead of being clipped to zero. Includes its documentation.</p>
-            <p>Licence: CC BY-NC 4.0 (non-commercial use only). Not covered by the BSD 3-Clause license of the rest of the astro-pi repository.</p>
+            <p>Licence: BSD 3-Clause.</p>
          </description>
       </package>
       <package fileName="gaia-depth-grade_v1.0.13.zip" sha1="7f736f18fa3d02511e2fd10941f567a497dfd0d2" type="script" releaseDate="20261115">
@@ -87,4 +87,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="scarter4work" timestamp="2026-11-15T23:46:09.630Z" encoding="Base64">HV3TgNLAh1fPiIZewHDe+dn7EiVFvvMIzItgSkdEjSkrQyxYq06xi1k8rXmvJTnsBnh6o4BKLU0dPILQnuSjDQ==</Signature>
+<Signature developerId="scarter4work" timestamp="2026-11-16T00:46:20.614Z" encoding="Base64">+3Ln/ERQP4pX5tPMeoN8cA6bxoNgA/5XqFEVs0K7PxUpfndVk03AhI7r5YWCvuARRzemEZssAnfUPzkupDMsCA==</Signature>

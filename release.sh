@@ -156,7 +156,7 @@ published_pkg_reusable(){ # <tarball> <Name> <doc root> <DocId>...; 0 = new pack
 # glibc 2.34, Ubuntu 22.04 -- are not package versions). So a version bump
 # fails the release until the description has been brought up to date.
 EZ_NAMES=(EZStretch EZHazeKill)
-declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.1.0 )
+declare -A EZVER=( [EZStretch]=1.0.12 [EZHazeKill]=1.1.1 )
 # EZ script documentation (CPD rule 6.1; Repository Reference 4.2): scripts/ez-stretch/doc/<Name>/ holds
 # <Name>.html (and anything it links), shipped as doc/scripts/<Name>/. Every EZ package must have it, and
 # <Name>.js must declare "#feature-id <Name> : ...": PixInsight finds a script's documentation by that id

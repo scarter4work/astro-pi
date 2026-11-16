@@ -65,8 +65,4 @@ Independent implementation (written from this repository's own requirements spec
 
 ## License
 
-EZ Stretch (and the Lupton RGB, RNC-ColorStretch and PhotometricStretch sources; RNC-ColorStretch is an independent implementation, not distributed) are under the BSD 3-Clause License of the astro-pi repository (`LICENSE`). One script is not:
-
-- **EZ Haze Kill** is licensed under CC BY-NC 4.0.
-
-Each script's header states its own license.
+EZ Stretch and EZ Haze Kill (and the Lupton RGB, RNC-ColorStretch and PhotometricStretch sources; RNC-ColorStretch is an independent implementation, not distributed) are under the BSD 3-Clause License of the astro-pi repository (`LICENSE`).

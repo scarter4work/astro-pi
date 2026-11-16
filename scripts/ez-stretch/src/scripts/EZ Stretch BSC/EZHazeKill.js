@@ -23,11 +23,8 @@
 // clipped to zero. It does NOT model a gradient - run GraXpert/DBE first.
 // Works on linear and on stretched images.
 //
-// Copyright (c) 2026 EZ Stretch BSC
-// SPDX-License-Identifier: CC-BY-NC-4.0
-// Licensed under CC BY-NC 4.0  -  http://creativecommons.org/licenses/by-nc/4.0/
-// NonCommercial use only. This file is NOT covered by the BSD 3-Clause
-// license of the rest of the astro-pi repository.
+// Copyright (c) 2025-2026, Brian Scott Carter. BSD 3-Clause License.
+// SPDX-License-Identifier: BSD-3-Clause
 //
 // ============================================================================
 
@@ -46,7 +43,7 @@
 #include <pjsr/TextAlign.jsh>
 
 #define TITLE   "EZ Haze Kill"
-#define VERSION "1.1.0"
+#define VERSION "1.1.1"
 
 // Fixed model constants (see the documentation).
 #define HK_TILE            64      // tile size, pixels

@@ -34,7 +34,7 @@ Then Resources → Updates → Check for Updates. Installs:
 
 ## License
 
-astro-pi is released under the BSD 3-Clause License (see `LICENSE`), copyright (c) 2025-2026 Brian Scott Carter, **with one exception**: `scripts/ez-stretch/src/scripts/EZ Stretch BSC/EZHazeKill.js` is licensed under the Creative Commons Attribution-NonCommercial 4.0 license (CC BY-NC 4.0), not BSD-3. Its file header, update-repository description and the carve-out at the end of `LICENSE` say so. `archive/` holds historical snapshots, each of which keeps the third-party licenses it ships with.
+astro-pi is released under the BSD 3-Clause License (see `LICENSE`), copyright (c) 2025-2026 Brian Scott Carter. `archive/` holds historical snapshots, each of which keeps the third-party licenses it ships with.
 
 The modules link the PixInsight Class Library (PCL), which is licensed by Pleiades Astrophoto under the PCL license and is not covered by this repository's `LICENSE`. PCL is not included in this repository.
 
