@@ -163,6 +163,16 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     const std::vector<std::string>& flat_paths,
     ProgressObserver* progress)
 {
+    static const CalibrationSet no_calibration;
+    return execute(light_paths, flat_paths, no_calibration, progress);
+}
+
+StackingEngine::ExecuteResult StackingEngine::execute(
+    const std::vector<std::string>& light_paths,
+    const std::vector<std::string>& flat_paths,
+    const CalibrationSet& calibration,
+    ProgressObserver* progress)
+{
     ProgressObserver& obs = progress ? *progress : null_progress_observer();
     CancelPoll cancel(obs);   // checked between and inside every long step
 
@@ -201,9 +211,133 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // ═══ SETUP ═══════════════════════════════════════════════════════
 
+    // ── Dark / bias calibration (optional pre-step) ─────────────────
+    //
+    // Off unless the caller passed masters. Off, every light goes through
+    // FITSReader::read() and the flat path below exactly as it always has.
+    // On, every light is matched to its masters by header HERE, before a
+    // pixel is read, so a batch with one unmatched light is refused whole
+    // instead of being stacked half calibrated.
+    const bool calibrating = !calibration.empty();
+    std::vector<CalibrationPlan> light_plan;
+    MasterFrame calibrated_flat;              // CFA master flat, applied before debayer
+    std::mutex calib_error_mutex;
+    std::string calib_error;                  // first per-frame calibration failure
+    if (calibrating) {
+        auto fail = [&](const std::string& e) {
+            ExecuteResult err{};
+            err.ok    = false;
+            err.error = e;
+            obs.message(e);
+            return err;
+        };
+        auto name_of = [](const std::string& p) {
+            const auto slash = p.find_last_of("/\\");
+            return slash == std::string::npos ? p : p.substr(slash + 1);
+        };
+        light_plan.resize(light_paths.size());
+        std::map<std::string, int> plan_count;
+        std::set<std::string> warned;
+        for (std::size_t f = 0; f < light_paths.size(); ++f) {
+            const FrameMetadata lm = FITSReader::read_headers(light_paths[f]);
+            if (lm.width <= 0 || lm.height <= 0)
+                return fail("Calibration: cannot read the header of light " + name_of(light_paths[f]) + ".");
+            const CalibrationHeader lh = CalibrationHeader::from_metadata(
+                lm, 1, FITSReader::full_scale_for_bitpix(lm.equiv_bitpix));
+            PlanResult pr = CalibrationMatcher::plan(lh, calibration.biases, calibration.darks,
+                                                     calibration.tolerance,
+                                                     /*require_dark=*/!calibration.darks.empty(),
+                                                     /*require_bias=*/!calibration.biases.empty());
+            if (!pr.ok)
+                return fail("Calibration: light " + name_of(light_paths[f]) + " -- " + pr.error);
+            for (const auto& w : pr.warnings)
+                if (warned.insert(w).second) obs.message("Calibration warning: " + w + ".");
+            light_plan[f] = pr.plan;
+            ++plan_count[pr.plan.description];
+        }
+        for (const auto& [desc, count] : plan_count)
+            obs.message("Calibration: " + std::to_string(count) + " light" + (count == 1 ? "" : "s")
+                        + ": " + (desc.empty() ? "nothing to subtract" : desc) + ".");
+
+        if (!flat_paths.empty()) {
+            const FrameMetadata fm = FITSReader::read_headers(flat_paths[0]);
+            if (fm.width <= 0 || fm.height <= 0)
+                return fail("Calibration: cannot read the header of flat " + name_of(flat_paths[0]) + ".");
+            const CalibrationHeader fh = CalibrationHeader::from_metadata(
+                fm, 1, FITSReader::full_scale_for_bitpix(fm.equiv_bitpix));
+            PlanResult fp;
+            if (!calibration.dark_flats.empty()) {
+                fp = CalibrationMatcher::plan(fh, calibration.biases, calibration.dark_flats,
+                                              calibration.tolerance, true, !calibration.biases.empty());
+            } else if (!calibration.biases.empty()) {
+                fp = CalibrationMatcher::plan(fh, calibration.biases, {}, calibration.tolerance, false, true);
+            } else {
+                return fail("Calibration: the flats need a master dark-flat or a master bias to remove their "
+                            "pedestal before they can divide calibrated lights; neither was given.");
+            }
+            if (!fp.ok) return fail("Calibration: flats -- " + fp.error);
+            for (const auto& w : fp.warnings)
+                if (warned.insert(w).second) obs.message("Calibration warning (flats): " + w + ".");
+            const Image pedestal = LightCalibrator::pedestal(fp.plan);
+            std::string ped_sig;
+            if (fp.plan.dark) ped_sig += "D" + fp.plan.dark->signature;
+            if (fp.plan.bias) ped_sig += "B" + fp.plan.bias->signature;
+            if (fp.plan.dark_scaled) ped_sig += "x" + std::to_string(fp.plan.dark_scale);
+            MasterBuilder::Config fc = calibration.flat_builder;
+            fc.cache_dir = config_.cache_dir;
+            fc.estimator = (config_.estimator == Config::Estimator::HUBER)
+                         ? MasterBuilder::Config::Estimator::HUBER
+                         : MasterBuilder::Config::Estimator::MODEL_RACE;
+            fc.race = config_.fitting_config;
+            obs.message("Calibration: flats -- " + fp.plan.description + " subtracted from each flat.");
+            auto br = MasterBuilder::build(MasterKind::FLAT, flat_paths, fc, &pedestal,
+                                           fp.plan.description, ped_sig, &obs);
+            if (!br.ok) return fail("Calibration: " + br.error);
+            calibrated_flat = std::move(br.master);
+        }
+    }
+
+    // One light, read and -- when calibrating -- calibrated on its raw
+    // mosaic. Without calibration this is FITSReader::read(), unchanged.
+    // Thread-safe: the plans and masters are read-only here.
+    auto read_light = [&](int f) -> FITSReadResult {
+        if (!calibrating) return FITSReader::read(light_paths[f]);
+        FITSReadResult rr = FITSReader::read_fixed_scale(light_paths[f]);
+        if (!rr.success) return rr;
+        const std::string e = LightCalibrator::apply(
+            rr.image, rr.full_scale, light_plan[static_cast<std::size_t>(f)],
+            calibrated_flat.empty() ? nullptr : &calibrated_flat);
+        if (!e.empty()) {
+            rr.success = false;
+            rr.error = "calibration: " + e;
+            std::lock_guard<std::mutex> lk(calib_error_mutex);
+            if (calib_error.empty()) calib_error = "Calibration: light " + light_paths[f] + " -- " + e;
+        }
+        return rr;
+    };
+    // A light that could not be calibrated stops the batch (it is never
+    // stacked uncalibrated beside the rest).
+    auto calibration_failed = [&]() -> bool {
+        std::lock_guard<std::mutex> lk(calib_error_mutex);
+        return !calib_error.empty();
+    };
+    auto calibration_failure = [&]() {
+        ExecuteResult err{};
+        err.ok = false;
+        {
+            std::lock_guard<std::mutex> lk(calib_error_mutex);
+            err.error = calib_error;
+        }
+        obs.message(err.error);
+        return err;
+    };
+
     // Read first frame to determine dimensions and channel config
-    auto first = FITSReader::read(light_paths[0]);
-    if (!first.success) return result;
+    auto first = read_light(0);
+    if (!first.success) {
+        if (calibration_failed()) return calibration_failure();
+        return result;
+    }
 
     int raw_width = first.image.width();
     int raw_height = first.image.height();
@@ -248,7 +382,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
 
     // Build master flat if flats provided
     Image master_flat;
-    if (!flat_paths.empty()) {
+    if (!flat_paths.empty() && !calibrating) {
         master_flat = FlatCalibration::build_master_flat(flat_paths);
     }
 
@@ -256,7 +390,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
     // applies, so measurements taken here describe the pixels that will
     // actually be aligned.
     auto load_calibrated = [&](int f, Image& out) -> bool {
-        auto rr = FITSReader::read(light_paths[f]);
+        auto rr = read_light(f);
         if (!rr.success) return false;
         out = std::move(rr.image);
         // This frame's own CFA pattern, not frame 0's (see the Phase A loop).
@@ -394,7 +528,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             // even at 24 MP.
             [&] {
                 if (cancel.poll(worker)) return;
-                auto rr = FITSReader::read(light_paths[f]);
+                auto rr = read_light(f);
                 if (cancel.poll(worker)) return;
                 if (!rr.success) {
                     m.outcome = MeasuredFrame::Outcome::READ_FAILED;
@@ -485,6 +619,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             return result;
         }
         obs.end_phase();
+        if (calibration_failed()) return calibration_failure();
 
         // The slot union and the batch's Bayer/mono mix, in frame order, as
         // the serial pass built them.
@@ -833,7 +968,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             if (!m.kept.empty()) return;
             if (m.outcome != O::MEASURED && m.outcome != O::BLOWN_OUT) return;
             FITSReadResult rr = (g == 0 && first.success) ? std::move(first)
-                                                          : FITSReader::read(light_paths[g]);
+                                                          : read_light(g);
             if (!rr.success) return;   // Phase A's own read reports it
             if (cancel.cancelled()) return;
             Image img = std::move(rr.image);
@@ -913,7 +1048,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 obs.advance(0, "  calibrated in the measuring pass");
             }
         } else {
-            read_result = (f == 0) ? std::move(first) : FITSReader::read(light_paths[f]);
+            read_result = (f == 0) ? std::move(first) : read_light(f);
         }
         if (!read_result.success) {
             obs.advance(1, "  skipped (read failed)");
@@ -1470,6 +1605,8 @@ StackingEngine::ExecuteResult StackingEngine::execute(
             }
         }
     }
+
+    if (calibration_failed()) return calibration_failure();
 
     // ═══ PHASE B — Analysis (GPU-accelerated) ════════════════════════
 

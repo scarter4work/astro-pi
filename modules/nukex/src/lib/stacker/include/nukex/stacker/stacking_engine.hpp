@@ -7,6 +7,7 @@
 #include "nukex/core/progress_observer.hpp"
 #include "nukex/fitting/model_selector.hpp"
 #include "nukex/gpu/gpu_config.hpp"
+#include "nukex/stacker/light_calibration.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -247,6 +248,29 @@ public:
 
     ExecuteResult execute(const std::vector<std::string>& light_paths,
                           const std::vector<std::string>& flat_paths,
+                          ProgressObserver* progress = nullptr);
+
+    /// The same stack with dark and bias calibration as a pre-step.
+    ///
+    /// An EMPTY `calibration` is exactly the call above, bit for bit: lights
+    /// read on their per-frame scale, the flat (if any) median-combined and
+    /// divided in after debayer. That is the PixInsight module's path and the
+    /// only one it uses.
+    ///
+    /// With masters in `calibration`, every light is matched to them by
+    /// header before anything is read (CalibrationMatcher::plan) and the
+    /// batch is refused, naming the light and every candidate's reason, if
+    /// one does not fit. Each light is then read on its fixed full scale,
+    /// calibrated on the raw CFA mosaic before debayer -- bias, then the
+    /// matched dark (scaled by exposure, and by temperature only when the
+    /// tolerance enables it), then the flat -- and stacked as usual. The
+    /// flats are calibrated the same way: their pedestal (a matched master
+    /// dark-flat, else the master bias) is subtracted from each before the
+    /// master flat is fitted per pixel with the stacker's estimator; flats
+    /// with neither are refused, not divided in with their bias.
+    ExecuteResult execute(const std::vector<std::string>& light_paths,
+                          const std::vector<std::string>& flat_paths,
+                          const CalibrationSet& calibration,
                           ProgressObserver* progress = nullptr);
 
 private:
