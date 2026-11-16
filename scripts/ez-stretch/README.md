@@ -38,7 +38,7 @@ Independent implementation (written from this repository's own requirements spec
 
 ## Installation
 
-### Via PixInsight Repository Manager (Recommended)
+### Via the PixInsight update repository
 
 1. In PixInsight, go to **Resources > Updates > Manage Repositories**
 2. Click **Add** and enter this URL:
@@ -47,15 +47,6 @@ Independent implementation (written from this repository's own requirements spec
    ```
 3. Click **OK**, then go to **Resources > Updates > Check for Updates**
 4. Select the scripts you want and click **Apply**
-
-### Manual Installation
-
-1. Download or clone this repository
-2. Copy the contents of `src/scripts/EZ Stretch BSC/` to your PixInsight scripts directory:
-   - Windows: `C:\Users\<you>\AppData\Roaming\PixInsight\scripts\EZ Stretch BSC\`
-   - macOS: `~/Library/Application Support/PixInsight/scripts/EZ Stretch BSC/`
-   - Linux: `~/.PixInsight/scripts/EZ Stretch BSC/`
-3. Restart PixInsight or use Script > Feature Scripts > Add
 
 ## References
 

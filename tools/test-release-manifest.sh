@@ -21,6 +21,8 @@
 #    repository/updates.xri is written once, by install_manifest, after the copy is signed and
 #    verified: install_manifest replaces the destination with a signed, verifying copy (keeping its
 #    mode) and refuses an unsigned or non-verifying one, leaving the destination byte for byte as it was.
+#  - prune_repository deletes every package file in repository/ the installed manifest does not name
+#    (superseded and withdrawn versions; CPD hygiene), and release.sh calls it once, after install_manifest.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${1:-$ROOT/release.sh}"
@@ -31,7 +33,7 @@ sed '/<Signature developerId=/d' "$ROOT/repository/updates.xri" > "$MF"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 DATE=20991231
-for f in write_pkg manifest_rename manifest_names_check install_manifest retire_manifest module_platform_block manifest_removes ez_pkg_check signed_state published_entries_check srcver; do
+for f in write_pkg manifest_rename manifest_names_check install_manifest prune_repository retire_manifest module_platform_block manifest_removes ez_pkg_check signed_state published_entries_check srcver; do
   body="$(sed -n "/^$f(){/,/^}/p" "$SCRIPT")"
   if [ -n "$body" ]; then eval "$body"; else echo "  (release.sh has no $f)"; fi
 done
@@ -194,6 +196,7 @@ if len(inst)!=1: errs.append('install_manifest "$WORK_MF" "$REPO/updates.xri" is
 for i,l in body:
     if "REPO/updates.xri" not in l or i in copy or i in inst: continue
     if re.match(r'\s*descriptions check "\$REPO/updates.xri" ',l) and copy and i<copy[0]: continue
+    if re.match(r'\s*prune_repository "\$REPO/updates.xri" "\$REPO"\s*$',l) and inst and i>inst[0]: continue   # reads the installed manifest
     errs.append("line %d names repository/updates.xri outside the work-copy flow: %s"%(i+1,l.strip()))
 sign=[i for i,l in body if "--sign-xml-file=" in l]
 if not sign or any('--sign-xml-file="$WORK_MF"' not in lines[i] for i in sign): errs.append("the manifest is not signed as the work copy")
@@ -426,6 +429,43 @@ if have srcver; then
 else bad "release.sh has no srcver"; fi
 lit="$(grep -nE '^[[:space:]]*(declare -A +)?[A-Z_]*VER[A-Z_]*=.*[0-9]+\.[0-9]+\.[0-9]+' "$SCRIPT" || true)"
 [ -z "$lit" ] && ok "release.sh assigns no product version a literal" || bad "release.sh hard-codes a version: $lit"
+
+# 14. prune_repository (CPD hygiene, 2026-11-16): once the new manifest is installed, every package file in
+#     repository/ that it does not name -- a superseded version or a withdrawn product -- is deleted (git rm
+#     when tracked), and nothing else is: the named packages, updates.xri and the QE publication stay. A
+#     manifest naming a package that is not on disk is refused before anything is deleted. release.sh
+#     prunes exactly once, right after install_manifest.
+if have prune_repository; then
+  P="$WORK/prune"; mkdir -p "$P"
+  for f in Keep_v2.0.0.zip 20991231-linux-x64-Mod-2.0.0.0.tar.gz Keep_v1.0.0.zip 20991230-linux-x64-Mod-1.0.0.0.tar.gz \
+           Gone_v1.0.0.zip qe_database.json qe_database.json.sig qe_manifest.json qe_manifest.json.sig; do printf '%s\n' "$f" > "$P/$f"; done
+  printf '<xri>\n<platform os="all" arch="noarch">\n<package fileName="Keep_v2.0.0.zip" sha1="%s" type="script" releaseDate="20991231">\n</package>\n</platform>\n<platform os="linux" arch="x64">\n<package fileName="20991231-linux-x64-Mod-2.0.0.0.tar.gz" sha1="%s" type="module" releaseDate="20991231">\n</package>\n</platform>\n</xri>\n' "$SHA_EZ" "$SHA_HK" > "$P/updates.xri"
+  git -C "$P" init -q && git -C "$P" add -A && git -C "$P" -c user.name=t -c user.email=t@t commit -qm published
+  printf 'untracked\n' > "$P/Stray_v0.0.1.zip"
+  if ( prune_repository "$P/updates.xri" "$P" ) >/dev/null 2>&1 \
+     && [ "$(cd "$P" && ls | sort | tr '\n' ' ')" = "20991231-linux-x64-Mod-2.0.0.0.tar.gz Keep_v2.0.0.zip qe_database.json qe_database.json.sig qe_manifest.json qe_manifest.json.sig updates.xri " ] \
+     && [ "$(git -C "$P" diff --cached --name-status | sort | tr '\n' ' ')" = "$(printf 'D\t20991230-linux-x64-Mod-1.0.0.0.tar.gz D\tGone_v1.0.0.zip D\tKeep_v1.0.0.zip ')" ]; then
+    ok "prune_repository deletes the 4 package files the manifest does not name (tracked ones staged as git rm), keeps the rest"
+  else bad "prune_repository did not leave exactly the manifest's packages, updates.xri and qe_*: $(cd "$P" && ls | tr '\n' ' ')"; fi
+  ( prune_repository "$P/updates.xri" "$P" ) >/dev/null 2>&1 && ok "prune_repository is idempotent" || bad "a second prune_repository run failed"
+  printf 'old\n' > "$P/Old_v0.zip"; rm -f "$P/Keep_v2.0.0.zip"
+  if ! ( prune_repository "$P/updates.xri" "$P" ) >/dev/null 2>&1 && [ -f "$P/Old_v0.zip" ]; then
+    ok "prune_repository refuses a manifest naming a missing package, and deletes nothing"
+  else bad "prune_repository accepted a manifest naming a missing package, or deleted before refusing"; fi
+else bad "release.sh has no prune_repository: superseded and withdrawn packages stay in repository/"; fi
+prune_report="$(python3 - "$SCRIPT" <<'PY'
+import re,sys
+lines=open(sys.argv[1]).read().split("\n")
+body=[(i,l) for i,l in enumerate(lines) if not l.lstrip().startswith("#")]
+calls=[i for i,l in body if re.match(r'\s*prune_repository "\$REPO/updates.xri" "\$REPO"\s*$',l)]
+inst=[i for i,l in body if re.match(r'\s*install_manifest "\$WORK_MF" "\$REPO/updates.xri"\s*$',l)]
+errs=[]
+if len(calls)!=1: errs.append('prune_repository "$REPO/updates.xri" "$REPO" is called %d times, expected once'%len(calls))
+elif inst and calls[0]<inst[0]: errs.append("repository/ is pruned before the new manifest is installed")
+print("\n".join(errs) if errs else "OK")
+PY
+)"
+[ "$prune_report" = OK ] && ok "release.sh prunes repository/ once, after install_manifest" || while IFS= read -r l; do bad "$l"; done <<< "$prune_report"
 
 if [ "$fails" -eq 0 ]; then echo "PASS: release.sh manifest edits ($SCRIPT)"; exit 0; fi
 echo "FAIL: $fails check(s) ($SCRIPT)"; exit 1

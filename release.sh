@@ -167,8 +167,8 @@ declare -A EZVER=()
 for name in "${EZ_NAMES[@]}"; do EZVER[$name]="$(srcver "$EZSRC/$name.js" 's/^#define VERSION +"([^"]*)".*/\1/p' "$name")"; done
 # Packages withdrawn from distribution (fileName regex, each matches at most one manifest entry). The
 # first release after a withdrawal drops the entry from the work copy (and a <platform> block it leaves
-# empty) and, once the new manifest is installed (step 6c), deletes every package file the regex matches
-# from repository/. Withdrawn, source in a private repo:
+# empty); once the new manifest is installed (step 6c), prune_repository deletes the package files it
+# no longer names from repository/. Withdrawn, source in a private repo:
 #   EZDonutRepair 2026-11-10 (scarter4work/ez-donut-repair);
 #   PI Copilot 2026-11-16 (scarter4work/pi-copilot);
 #   Gaia Depth Grade scripts and sidecar 2026-11-16 (scarter4work/gaia-depth-grade-pi).
@@ -206,6 +206,27 @@ declare -A PKG_DESC=(
   [EZStretch]="$ROOT/scripts/ez-stretch/package-description/EZStretch.xml"
   [EZHazeKill]="$ROOT/scripts/ez-stretch/package-description/EZHazeKill.xml"
 )
+# prune_repository <installed manifest> <repository dir> : delete every package file (*.zip, *.tar.gz) in
+# the directory that the manifest does not name -- the version a bump supersedes, a withdrawn product --
+# with git rm when it is tracked. A signed package stays downloadable for as long as it sits in
+# repository/, served or not (CPD hygiene, 2026-11-16: 10 superseded packages had accumulated). Only
+# package files go: updates.xri and the QE publication (qe_*) stay. Refuses, deleting nothing, when the
+# manifest names no package or a package that is not on disk.
+prune_repository(){
+  local mf="$1" dir="$2" f b
+  local -A keep=()
+  while IFS= read -r b; do [ -n "$b" ] && keep[$b]=1; done < <(sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$mf")
+  [ "${#keep[@]}" -gt 0 ] || die "prune_repository: $mf names no package"
+  for b in "${!keep[@]}"; do [ -f "$dir/$b" ] || die "prune_repository: $mf names $b, which is not in $dir"; done
+  for f in "$dir"/*.zip "$dir"/*.tar.gz; do
+    [ -e "$f" ] || continue
+    b="$(basename "$f")"; [ -n "${keep[$b]:-}" ] && continue
+    echo "  removing $b (not in the manifest)"
+    if git -C "$dir" ls-files --error-unmatch -- "$b" >/dev/null 2>&1; then
+      git -C "$dir" rm -q -f -- "$b" || die "prune_repository: git rm $b failed"
+    else rm -f -- "$f" || die "prune_repository: rm $b failed"; fi
+  done
+}
 # The packages' fileNames in a manifest, in order.
 manifest_files(){ sed -nE 's/.*<package fileName="([^"]+)".*/\1/p' "$1"; }
 # <fileName>=<source> for each fileName given (dies on one without a source).
@@ -995,11 +1016,8 @@ echo "  OK  no published package rewritten"
 
 echo "== 6c/6 install the signed, verified manifest as repository/updates.xri =="
 install_manifest "$WORK_MF" "$REPO/updates.xri"
-# Withdrawn packages leave repository/ only now that the manifest that no longer names them is installed.
-for rx in "${RETIRED_PKG_RE[@]}"; do
-  for f in "$REPO"/*; do
-    b="$(basename "$f")"; [[ "$b" =~ ^${rx}$ ]] && { echo "  removing withdrawn package $b"; git -C "$ROOT" rm -q --ignore-unmatch -f -- "repository/$b" 2>/dev/null || rm -f "$f"; }
-  done
-done
+# Superseded and withdrawn packages leave repository/ only now that the manifest that no longer names
+# them is installed.
+prune_repository "$REPO/updates.xri" "$REPO"
 
 echo "RELEASE OK — repository/ ready to commit & push"

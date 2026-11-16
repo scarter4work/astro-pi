@@ -1,17 +1,15 @@
 #!/bin/bash
-# sign.sh - Sign EZ Stretch BSC scripts and/or manifest (headless, no running PI)
+# sign.sh - Sign the EZ Stretch BSC scripts (headless, no running PI). Called by the astro-pi
+# release.sh, which packages them and signs the ONE manifest, repository/updates.xri at the repo root.
+# (This folder's own repository/ and its manifest were retired 2026-11-16: one signed repository only.)
 #
 # Usage:
-#   ./tools/sign.sh            # sign scripts AND manifest
-#   ./tools/sign.sh scripts    # sign only the .js scripts (-> .xsgn)
+#   ./tools/sign.sh scripts    # sign the .js scripts (-> .xsgn)
 #   ./tools/sign.sh scripts EZHazeKill   # sign only the named scripts (release.sh passes the changed ones)
-#   ./tools/sign.sh xri        # sign only repository/updates.xri
 #
 # Requires the signing password in /tmp/.pi_codesign_pass
 #
-# Both signers are PixInsight-native, so signatures are guaranteed PI-valid:
-#   - updates.xri  -> native `PixInsight.sh --sign-xml-file` (NukeX pattern).
-#                     A short-lived core process.
+# The signer is PixInsight-native, so signatures are guaranteed PI-valid:
 #   - *.js scripts -> tools/SignScriptsNative.js, run via PI automation mode,
 #                     which calls Security.generateScriptSignatureFile() - the
 #                     exact code path PI's loader verifies against.
@@ -24,8 +22,7 @@
 #
 # IMPORTANT ordering: .xsgn files embed a timestamp, so signing is NOT
 # deterministic - each run changes the file and therefore the package SHA1.
-# So the release order must be:  sign scripts -> build-packages -> sign xri.
-# (build-packages.sh runs this in the correct order for you.)
+# release.sh signs scripts -> packages -> hashes -> signs the manifest last.
 #
 # History: the old approach ran CLICodeSign.js via `--automation-mode --run=`.
 # Unreliable here - automation-mode routes console output to PI's internal
@@ -34,7 +31,7 @@
 
 set -u
 
-TARGET="${1:-all}"
+TARGET="${1:-scripts}"
 [ $# -gt 0 ] && shift
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -49,7 +46,6 @@ NATIVE_SIGNER="$SCRIPT_DIR/SignScriptsNative.js"
 SIGN_RESULT="/tmp/.ez_sign_result.json"
 SIGN_REQUEST="/tmp/.ez_sign_request.json"   # the script names SignScriptsNative.js signs
 SCRIPTS_DIR="$PROJECT_DIR/src/scripts/EZ Stretch BSC"
-XRI="$PROJECT_DIR/repository/updates.xri"
 
 # Scripts to sign (.js -> .xsgn)
 SCRIPTS=( EZStretch EZHazeKill )
@@ -103,25 +99,11 @@ PY
     fi
 }
 
-sign_xri() {
-    echo "Manifest (PixInsight --sign-xml-file):"
-    # The native signer appends a <Signature>; strip any existing one first.
-    sed -i '/<Signature developerId=/d' "$XRI"
-    pi_headless "$PI" --sign-xml-file="$XRI" \
-          --xssk-file="$KEYS_XSSK" \
-          --xssk-password="$(cat "$PASS_FILE")" 2>&1 | grep -iE 'signature|error|fail' | sed 's/^/  /'
-    if ! grep -q "<Signature developerId=" "$XRI"; then
-        echo "  ERROR: updates.xri NOT SIGNED" >&2; exit 1
-    fi
-}
-
 echo "Signing EZ Stretch BSC ($TARGET)..."
 echo ""
 case "$TARGET" in
     scripts) sign_scripts ;;
-    xri)     sign_xri ;;
-    all)     sign_scripts; echo ""; sign_xri ;;
-    *) echo "Unknown target '$TARGET' (use: scripts | xri | all)" >&2; exit 1 ;;
+    *) echo "Unknown target '$TARGET' (use: scripts; the manifest is signed by the astro-pi release.sh)" >&2; exit 1 ;;
 esac
 
 echo ""
