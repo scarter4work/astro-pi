@@ -53,30 +53,7 @@ std::vector<float> CLAHEStretch::build_tile_cdf(
     return cdf;
 }
 
-void CLAHEStretch::apply(Image& img) const {
-    int w = img.width();
-    int h = img.height();
-    int nch = img.n_channels();
-
-    // Determine which data to process
-    std::vector<float> lum;
-    float* process_data;
-
-    if (luminance_only && nch >= 3) {
-        // Extract luminance
-        int n = w * h;
-        lum.resize(n);
-        for (int i = 0; i < n; i++) {
-            lum[i] = 0.2126f * img.channel_data(0)[i]
-                   + 0.7152f * img.channel_data(1)[i]
-                   + 0.0722f * img.channel_data(2)[i];
-        }
-        process_data = lum.data();
-    } else {
-        // Single channel
-        process_data = img.channel_data(0);
-    }
-
+void CLAHEStretch::equalize_plane(const float* process_data, int w, int h, float* out) const {
     // Compute tile boundaries
     int tw = (w + tile_cols - 1) / tile_cols;
     int th = (h + tile_rows - 1) / tile_rows;
@@ -104,7 +81,6 @@ void CLAHEStretch::apply(Image& img) const {
         return cdf[bin];
     };
 
-    std::vector<float> output(w * h);
 
     for (int y = 0; y < h; y++) {
         // Find the two nearest tile rows
@@ -150,14 +126,29 @@ void CLAHEStretch::apply(Image& img) const {
 
             float v_top = v_tl * (1.0f - alpha) + v_tr * alpha;
             float v_bot = v_bl * (1.0f - alpha) + v_br * alpha;
-            output[y * w + x] = v_top * (1.0f - beta) + v_bot * beta;
+            out[y * w + x] = v_top * (1.0f - beta) + v_bot * beta;
         }
     }
 
-    // Apply result
+}
+
+void CLAHEStretch::apply(Image& img) const {
+    const int w = img.width();
+    const int h = img.height();
+    const int nch = img.n_channels();
+    const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    std::vector<float> output(n);
+
     if (luminance_only && nch >= 3) {
-        // Scale RGB by L_new / L_old ratio
-        for (int i = 0; i < w * h; i++) {
+        // Equalize the luminance, then scale R, G, B by L_new / L_old.
+        std::vector<float> lum(n);
+        for (std::size_t i = 0; i < n; i++) {
+            lum[i] = 0.2126f * img.channel_data(0)[i]
+                   + 0.7152f * img.channel_data(1)[i]
+                   + 0.0722f * img.channel_data(2)[i];
+        }
+        equalize_plane(lum.data(), w, h, output.data());
+        for (std::size_t i = 0; i < n; i++) {
             float L_old = lum[i];
             if (L_old < 1e-10f) continue;
             float L_new = output[i];
@@ -168,10 +159,13 @@ void CLAHEStretch::apply(Image& img) const {
             }
         }
     } else {
-        // Direct replacement
-        float* data = img.channel_data(0);
-        for (int i = 0; i < w * h; i++)
-            data[i] = output[i];
+        // Per channel: every plane equalized on its own tiles. (Up to 5.3.0.0
+        // only channel 0 was, and the rest of a colour image passed through.)
+        for (int c = 0; c < nch; c++) {
+            equalize_plane(img.channel_data(c), w, h, output.data());
+            float* data = img.channel_data(c);
+            for (std::size_t i = 0; i < n; i++) data[i] = output[i];
+        }
     }
 
     clamp_image(img);

@@ -47,20 +47,20 @@ struct Hdr {
     int    xbin = 1, ybin = 1;
 };
 
-/// Integer ADU per pixel -> unsigned 16-bit FITS.
-void write_u16(const std::string& path, const std::function<int(int, int)>& adu, const Hdr& h) {
-    std::vector<unsigned short> px(static_cast<std::size_t>(W) * H);
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x) {
+/// Integer ADU per pixel -> unsigned 16-bit FITS, any size.
+void write_u16_sized(const std::string& path, int w, int h_px, const std::function<int(int, int)>& adu, const Hdr& h) {
+    std::vector<unsigned short> px(static_cast<std::size_t>(w) * h_px);
+    for (int y = 0; y < h_px; ++y)
+        for (int x = 0; x < w; ++x) {
             const int v = adu(x, y);
             if (v < 0 || v > 65535) throw std::runtime_error("synthetic ADU out of range");
-            px[static_cast<std::size_t>(y) * W + x] = static_cast<unsigned short>(v);
+            px[static_cast<std::size_t>(y) * w + x] = static_cast<unsigned short>(v);
         }
     fs::remove(path);
     fitsfile* fp = nullptr;
     int status = 0;
     fits_create_diskfile(&fp, path.c_str(), &status);
-    long naxes[2] = {W, H};
+    long naxes[2] = {w, h_px};
     fits_create_img(fp, USHORT_IMG, 2, naxes, &status);
     fits_write_img(fp, TUSHORT, 1, static_cast<LONGLONG>(px.size()), px.data(), &status);
     fits_update_key_str(fp, "IMAGETYP", h.imagetyp.c_str(), nullptr, &status);
@@ -75,6 +75,11 @@ void write_u16(const std::string& path, const std::function<int(int, int)>& adu,
     fits_update_key_lng(fp, "YBINNING", yb, nullptr, &status);
     fits_close_file(fp, &status);
     if (status != 0) throw std::runtime_error("write_u16 failed for " + path);
+}
+
+/// Integer ADU per pixel -> unsigned 16-bit FITS at the standard W x H.
+void write_u16(const std::string& path, const std::function<int(int, int)>& adu, const Hdr& h) {
+    write_u16_sized(path, W, H, adu, h);
 }
 
 // The synthetic sensor.
@@ -586,4 +591,236 @@ TEST_CASE("Calibration: an unscaled dark is never combined with a second bias su
     // The flats' pedestal from the same plan is the dark alone, too.
     const Image ped = LightCalibrator::pedestal(plan);
     REQUIRE(ped.at(10, 7, 0) == darks[0].data.at(10, 7, 0));
+}
+
+// ── Fitted dark scale ───────────────────────────────────────────────
+
+namespace {
+
+constexpr int BW = 256, BH = 192;
+
+/// Hot-pixel and glow amplitude at 100 s (ADU): 2% of pixels hot (60..900),
+/// plus a glow wedge at the right edge.
+int structure_100s(int x, int y) {
+    const unsigned h = static_cast<unsigned>(x) * 73856093u ^ static_cast<unsigned>(y) * 19349663u;
+    int a = (h % 50u == 0u) ? 60 + static_cast<int>((h / 50u) % 841u) : 0;
+    if (x >= BW - 24) a += 4 * (x - (BW - 24));
+    return a;
+}
+/// Non-linear dark signal: the structure grows as t^0.8, the uniform floor
+/// linearly. A 100 s dark scaled by the header ratio 3 to 300 s therefore
+/// over-subtracts the structure by (3 - 3^0.8) = 0.59 of its 100 s value.
+double dark_signal(int x, int y, double t, bool structured) {
+    return 1.0 * t / 100.0 + (structured ? structure_100s(x, y) * std::pow(t / 100.0, 0.8) : 0.0);
+}
+int big_bias(int x, int y) { return 900 + (x % 5) + 3 * (y % 3); }
+
+struct BigSet {
+    MasterFrame bias, dark;
+    std::string light;
+};
+
+BigSet big_set(const TempDir& d, bool structured, double light_t = 300.0) {
+    BigSet out;
+    std::vector<std::string> bp, dp;
+    for (int f = 0; f < 5; ++f) {
+        bp.push_back(d.file("bb_" + std::to_string(f) + ".fit"));
+        write_u16_sized(bp.back(), BW, BH, [f](int x, int y) { return big_bias(x, y) + ((f + x + 2 * y) % 5) - 2; }, bias_hdr());
+        dp.push_back(d.file("bd_" + std::to_string(f) + ".fit"));
+        write_u16_sized(dp.back(), BW, BH, [&, f](int x, int y) {
+            return big_bias(x, y) + static_cast<int>(std::lround(dark_signal(x, y, 100.0, structured))) + ((f + 2 * x + y) % 5) - 2;
+        }, dark_hdr(100.0));
+    }
+    auto b = MasterBuilder::build(MasterKind::BIAS, bp, cfg_in(d));
+    auto k = MasterBuilder::build(MasterKind::DARK, dp, cfg_in(d));
+    REQUIRE(b.ok); REQUIRE(k.ok);
+    out.bias = std::move(b.master);
+    out.dark = std::move(k.master);
+    // Light: smooth sky, stars, Gaussian read+shot noise.
+    std::mt19937 rng(7);
+    std::normal_distribution<double> noise(0.0, 6.0);
+    Hdr lh; lh.exptime = light_t;
+    out.light = d.file("big_light.fit");
+    write_u16_sized(out.light, BW, BH, [&](int x, int y) {
+        double sky = 2500 + 2.0 * x + 1.5 * y;
+        for (int sidx = 0; sidx < 12; ++sidx) {
+            const double sx = 20 + (sidx * 37) % (BW - 40), sy = 15 + (sidx * 53) % (BH - 30);
+            const double r2 = (x - sx) * (x - sx) + (y - sy) * (y - sy);
+            sky += 20000.0 * std::exp(-r2 / 4.0);
+        }
+        return static_cast<int>(std::lround(big_bias(x, y) + dark_signal(x, y, light_t, structured) + sky + noise(rng)));
+    }, lh);
+    return out;
+}
+
+double true_k() { return std::pow(3.0, 0.8); }   // 2.4082
+
+} // namespace
+
+TEST_CASE("Dark scale fit: non-linear dark current is fitted, not assumed", "[darkbias][fit]") {
+    TempDir d;
+    BigSet s = big_set(d, true);
+    std::vector<MasterFrame> biases{std::move(s.bias)};
+    std::vector<MasterFrame> darks{std::move(s.dark)};
+    auto pr = CalibrationMatcher::plan(light_header(s.light), biases, darks, MatchTolerance{}, true, true);
+    REQUIRE(pr.ok);
+    REQUIRE(pr.plan.dark_scaled);
+    REQUIRE(pr.plan.dark_scale == Catch::Approx(3.0));      // the header ratio: the seed only
+    LightCalibrator::prepare(pr.plan);
+    REQUIRE(pr.plan.structure);
+    REQUIRE(pr.plan.structure->index.size() > 500);
+
+    auto rr = FITSReader::read_fixed_scale(s.light);
+    const Image raw = rr.image.clone();
+    DarkScaleFit fit;
+    REQUIRE(LightCalibrator::apply(rr.image, rr.full_scale, pr.plan, nullptr, 0.01f, &fit).empty());
+    INFO("fitted " << fit.fitted << " +/- " << fit.standard_error << " (true " << true_k() << ")");
+    REQUIRE(fit.well_conditioned);
+    REQUIRE(fit.warning.empty());
+    REQUIRE(fit.scale == fit.fitted);
+    REQUIRE(std::fabs(fit.scale - true_k()) < 0.01 * true_k());
+    REQUIRE(fit.standard_error < 0.01 * fit.scale);
+
+    // Hot pixels: with the fitted scale their residual is noise; with the
+    // header ratio they are over-subtracted by 0.59 x their 100 s value.
+    std::vector<double> fitted_res, header_res;
+    const float* bb = biases[0].data.data();
+    const float* dd = darks[0].data.data();
+    for (int y = 2; y < BH - 2; ++y)
+        for (int x = 2; x < BW - 26; ++x) {
+            const int a = structure_100s(x, y);
+            if (a < 200) continue;
+            const std::size_t i = static_cast<std::size_t>(y) * BW + x;
+            // Compare with the pixel's own truth: sky + uniform floor residual.
+            double sky = 2500 + 2.0 * x + 1.5 * y;
+            for (int sidx = 0; sidx < 12; ++sidx) {
+                const double sx = 20 + (sidx * 37) % (BW - 40), sy = 15 + (sidx * 53) % (BH - 30);
+                sky += 20000.0 * std::exp(-((x - sx) * (x - sx) + (y - sy) * (y - sy)) / 4.0);
+            }
+            const double floor_res = 3.0 - fit.scale * 1.0;
+            fitted_res.push_back(rr.image.data()[i] * FS - sky - floor_res);
+            const double hdr = raw.data()[i] - bb[i] - 3.0f * (dd[i] - bb[i]);
+            header_res.push_back(hdr * FS - sky - (3.0 - 3.0));
+        }
+    REQUIRE(fitted_res.size() > 100);
+    std::sort(fitted_res.begin(), fitted_res.end());
+    std::sort(header_res.begin(), header_res.end());
+    const double fmed = fitted_res[fitted_res.size() / 2], hmed = header_res[header_res.size() / 2];
+    INFO("hot-pixel residual median: fitted " << fmed << " ADU, header ratio " << hmed << " ADU");
+    REQUIRE(std::fabs(fmed) < 3.0);          // within the light's 6 ADU noise
+    REQUIRE(hmed < -100.0);                  // the header ratio over-subtracts
+}
+
+TEST_CASE("Dark scale fit: a linear dark gives back the header ratio", "[darkbias][fit]") {
+    TempDir d;
+    BigSet s = big_set(d, true);
+    // A light whose structure really is 3 x the 100 s dark (linear).
+    Hdr lh; lh.exptime = 300.0;
+    const std::string lp = d.file("linear_light.fit");
+    write_u16_sized(lp, BW, BH, [](int x, int y) {
+        return big_bias(x, y) + 3 + 3 * structure_100s(x, y) + 3000;
+    }, lh);
+    std::vector<MasterFrame> biases{std::move(s.bias)};
+    std::vector<MasterFrame> darks{std::move(s.dark)};
+    auto pr = CalibrationMatcher::plan(light_header(lp), biases, darks, MatchTolerance{}, true, true);
+    REQUIRE(pr.ok);
+    auto rr = FITSReader::read_fixed_scale(lp);
+    DarkScaleFit fit;
+    REQUIRE(LightCalibrator::apply(rr.image, rr.full_scale, pr.plan, nullptr, 0.01f, &fit).empty());
+    REQUIRE(fit.well_conditioned);
+    // At 100 s, a * (t/100)^0.8 is a: the dark holds the structure exactly,
+    // and this light holds exactly three times it.
+    REQUIRE(fit.scale == Catch::Approx(3.0).epsilon(1e-4));
+}
+
+TEST_CASE("Dark scale fit: no structure to fit -> header ratio, loudly", "[darkbias][fit][mismatch]") {
+    TempDir d;
+    BigSet s = big_set(d, false);
+    std::vector<MasterFrame> biases{std::move(s.bias)};
+    std::vector<MasterFrame> darks{std::move(s.dark)};
+    auto pr = CalibrationMatcher::plan(light_header(s.light), biases, darks, MatchTolerance{}, true, true);
+    REQUIRE(pr.ok);
+    auto rr = FITSReader::read_fixed_scale(s.light);
+    DarkScaleFit fit;
+    REQUIRE(LightCalibrator::apply(rr.image, rr.full_scale, pr.plan, nullptr, 0.01f, &fit).empty());
+    REQUIRE_FALSE(fit.well_conditioned);
+    REQUIRE(fit.scale == 3.0);
+    REQUIRE_THAT(fit.warning, Catch::Matchers::ContainsSubstring("header ratio 3.0000 is used instead"));
+}
+
+TEST_CASE("Dark scale fit: a fit far from the seed is refused", "[darkbias][fit][mismatch]") {
+    TempDir d;
+    BigSet s = big_set(d, true);
+    // A light whose "structure" is 20 x the dark's: no plausible exposure scaling.
+    Hdr lh; lh.exptime = 300.0;
+    const std::string lp = d.file("odd_light.fit");
+    write_u16_sized(lp, BW, BH, [](int x, int y) {
+        return std::min(65535, big_bias(x, y) + 20 * structure_100s(x, y) + 3000);
+    }, lh);
+    auto st = LightCalibrator::dark_structure(s.bias, s.dark);
+    auto rr = FITSReader::read_fixed_scale(lp);
+    const DarkScaleFit fit = LightCalibrator::fit_dark_scale(rr.image, s.bias, s.dark, *st, 3.0);
+    REQUIRE_FALSE(fit.well_conditioned);
+    REQUIRE(fit.scale == 3.0);
+    REQUIRE(fit.fitted > 12.0);
+    REQUIRE_THAT(fit.warning, Catch::Matchers::ContainsSubstring("not within a factor 4"));
+}
+
+TEST_CASE("Dark scale fit: refuses below its structure count and above its error bound", "[darkbias][fit][mismatch]") {
+    TempDir d;
+    BigSet s = big_set(d, true);
+    auto st = LightCalibrator::dark_structure(s.bias, s.dark);
+    auto rr = FITSReader::read_fixed_scale(s.light);
+    const int n = static_cast<int>(st->index.size());
+    const DarkScaleFit ok = LightCalibrator::fit_dark_scale(rr.image, s.bias, s.dark, *st, 3.0);
+    REQUIRE(ok.well_conditioned);
+    const DarkScaleFit few = LightCalibrator::fit_dark_scale(rr.image, s.bias, s.dark, *st, 3.0, n + 1);
+    REQUIRE_FALSE(few.well_conditioned);
+    REQUIRE(few.scale == 3.0);
+    REQUIRE_THAT(few.warning, Catch::Matchers::ContainsSubstring("pixels of the dark carry structure"));
+    const DarkScaleFit loose = LightCalibrator::fit_dark_scale(rr.image, s.bias, s.dark, *st, 3.0, 200,
+                                                               0.1 * ok.standard_error / ok.fitted);
+    REQUIRE_FALSE(loose.well_conditioned);
+    REQUIRE(loose.scale == 3.0);
+    REQUIRE(loose.fitted == Catch::Approx(ok.fitted));
+    REQUIRE_THAT(loose.warning, Catch::Matchers::ContainsSubstring("poorly conditioned"));
+}
+
+TEST_CASE("Dark scale fit: on a CFA it compares each photosite with its own colour", "[darkbias][fit]") {
+    // Red photosites carry 2 ADU per 100 s more dark signal than the rest (a
+    // CFA-level pattern), and the light's sky is red-heavy. Measured against
+    // ALL eight neighbours, every red photosite would look like structure and
+    // carry the sky's colour into the fit; against its same-colour neighbours
+    // only the hot pixels do.
+    TempDir d;
+    auto red = [](int x, int y) { return (x % 2 == 0) && (y % 2 == 0); };
+    std::vector<std::string> bp, dp;
+    for (int f = 0; f < 5; ++f) {
+        bp.push_back(d.file("cb_" + std::to_string(f) + ".fit"));
+        write_u16_sized(bp.back(), BW, BH, [f](int x, int y) { return big_bias(x, y) + ((f + x + 2 * y) % 5) - 2; }, bias_hdr());
+        dp.push_back(d.file("cd_" + std::to_string(f) + ".fit"));
+        write_u16_sized(dp.back(), BW, BH, [&, f](int x, int y) {
+            return big_bias(x, y) + (red(x, y) ? 2 : 0) + static_cast<int>(std::lround(dark_signal(x, y, 100.0, true)))
+                 + ((f + 2 * x + y) % 5) - 2;
+        }, dark_hdr(100.0));
+    }
+    auto b = MasterBuilder::build(MasterKind::BIAS, bp, cfg_in(d));
+    auto k = MasterBuilder::build(MasterKind::DARK, dp, cfg_in(d));
+    REQUIRE(b.ok); REQUIRE(k.ok);
+    Hdr lh; lh.exptime = 300.0;
+    const std::string lp = d.file("cfa_light.fit");
+    std::mt19937 rng(11);
+    std::normal_distribution<double> noise(0.0, 4.0);
+    write_u16_sized(lp, BW, BH, [&](int x, int y) {
+        const double sky = red(x, y) ? 6000.0 : 2500.0;
+        return static_cast<int>(std::lround(big_bias(x, y) + (red(x, y) ? 2.0 * std::pow(3.0, 0.8) : 0.0)
+                                            + dark_signal(x, y, 300.0, true) + sky + noise(rng)));
+    }, lh);
+    auto st = LightCalibrator::dark_structure(b.master, k.master);
+    REQUIRE(st->stride == 2);
+    auto rr = FITSReader::read_fixed_scale(lp);
+    const DarkScaleFit fit = LightCalibrator::fit_dark_scale(rr.image, b.master, k.master, *st, 3.0);
+    INFO("fitted " << fit.fitted << " +/- " << fit.standard_error);
+    REQUIRE(fit.well_conditioned);
+    REQUIRE(std::fabs(fit.scale - true_k()) < 0.01 * true_k());
 }

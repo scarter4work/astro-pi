@@ -24,6 +24,8 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <thread>
+#include <algorithm>
 
 using namespace nukex;
 namespace fs = std::filesystem;
@@ -226,4 +228,137 @@ TEST_CASE("Cancel: in Phase C's pass over the record",
     require_clean(o);
     REQUIRE_FALSE(o.obs.saw_after("Coverage trim"));
     REQUIRE(o.obs.saw_after("Cancelled during post-processing."));
+}
+
+// ── The measuring pass asks often enough, from the owning thread ────
+//
+// The observer may only be asked from the thread that runs execute() (the
+// PixInsight console's abort runs the core's event loop). In the measuring
+// pass that thread used to be worker 0 of the frame loop, so it asked only
+// between the steps of the frame it was measuring itself: measured through the
+// app at 24 MP, a cancel landed 0.1-4.3 s (9.4 s once) after the request.
+// Here frames are large enough that one step takes long, the observer records
+// when -- and from which thread -- it is asked, and cancels part-way.
+
+namespace {
+
+constexpr int kBigW = 4000, kBigH = 3000, kBigFrames = 6;
+
+std::vector<std::string> write_big_frames(const fs::path& dir) {
+    fs::create_directories(dir);
+    std::vector<std::string> out;
+    std::mt19937 rng(5);
+    std::normal_distribution<float> noise(0.0f, 0.003f);
+    std::vector<float> base(static_cast<std::size_t>(kBigW) * kBigH, 0.05f);
+    std::uint32_t st = 1234u;
+    auto next = [&] { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return st; };
+    for (int i = 0; i < 400; i++) {
+        const int sx = 10 + static_cast<int>(next() % (kBigW - 20)), sy = 10 + static_cast<int>(next() % (kBigH - 20));
+        for (int dy = -6; dy <= 6; dy++)
+            for (int dx = -6; dx <= 6; dx++)
+                base[static_cast<std::size_t>(sy + dy) * kBigW + (sx + dx)] += 0.4f * std::exp(-(dx * dx + dy * dy) / 6.0f);
+    }
+    for (int f = 0; f < kBigFrames; f++) {
+        std::vector<float> px = base;
+        for (auto& v : px) v += noise(rng);
+        const std::string p = (dir / ("big_" + std::to_string(f) + ".fits")).string();
+        fitsfile* fp = nullptr;
+        int status = 0;
+        std::remove(p.c_str());
+        fits_create_file(&fp, p.c_str(), &status);
+        long naxes[2] = {kBigW, kBigH};
+        fits_create_img(fp, FLOAT_IMG, 2, naxes, &status);
+        fits_write_img(fp, TFLOAT, 1, static_cast<long>(px.size()), px.data(), &status);
+        fits_update_key_str(fp, "INSTRUME", "ASI2600MM", nullptr, &status);
+        fits_update_key_str(fp, "FILTER", "L", nullptr, &status);
+        fits_close_file(fp, &status);
+        REQUIRE(status == 0);
+        out.push_back(p);
+    }
+    return out;
+}
+
+/// Records every is_cancelled() from the owning thread while the measuring
+/// pass runs; cancels `after` into the pass when `after` is positive.
+struct PollRecorder : ProgressObserver {
+    std::thread::id owner = std::this_thread::get_id();
+    bool in_pass = false;
+    clk::time_point pass_start{};
+    std::chrono::milliseconds after{0};
+    mutable bool fired = false;
+    mutable clk::time_point fired_at{};
+    mutable std::vector<clk::time_point> polls;
+    mutable int foreign_calls = 0;
+    void begin_phase(const std::string& n, int) override {
+        in_pass = n.find("Measuring frames") != std::string::npos;
+        if (in_pass) pass_start = clk::now();
+    }
+    void advance(int, const std::string&) override {}
+    void end_phase() override { in_pass = false; }
+    void message(const std::string&) override {}
+    bool is_cancelled() const override {
+        if (std::this_thread::get_id() != owner) { ++foreign_calls; return false; }
+        const auto now = clk::now();
+        if (in_pass) polls.push_back(now);
+        if (!fired && in_pass && after.count() > 0 && now - pass_start >= after) {
+            fired = true;
+            fired_at = now;
+        }
+        return fired;
+    }
+    double max_gap_s() const {
+        double g = 0.0;
+        for (std::size_t i = 1; i < polls.size(); ++i)
+            g = std::max(g, std::chrono::duration<double>(polls[i] - polls[i - 1]).count());
+        return g;
+    }
+};
+
+StackingEngine::Config big_config(const fs::path& cache) {
+    StackingEngine::Config cfg;
+    cfg.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+    cfg.cache_dir = cache.string();
+    cfg.gpu_config.force_cpu_fallback = true;
+    cfg.file_backed_cube = false;
+    return cfg;
+}
+
+} // namespace
+
+TEST_CASE("Cancel: the measuring pass asks for a cancel every few tens of ms, only from its own thread",
+          "[integration][cancel][measuring]") {
+    std::random_device rd;
+    const fs::path root = fs::temp_directory_path() / ("nukex_cancel_poll_" + std::to_string(rd()));
+    const auto lights = write_big_frames(root / "frames");
+    fs::create_directories(root / "cache");
+
+    SECTION("no cancel: the whole pass is watched") {
+        PollRecorder rec;
+        auto r = StackingEngine(big_config(root / "cache")).execute(lights, {}, &rec);
+        (void)r;
+        INFO(rec.polls.size() << " polls during the pass, longest gap " << rec.max_gap_s() << " s");
+        REQUIRE(rec.polls.size() > 5);
+        REQUIRE(rec.max_gap_s() < 0.05);
+        REQUIRE(rec.foreign_calls == 0);
+    }
+    SECTION("a cancel part-way through lands within 0.75 s") {
+        PollRecorder rec;
+        rec.after = std::chrono::milliseconds(150);
+        auto r = StackingEngine(big_config(root / "cache")).execute(lights, {}, &rec);
+        const double latency = std::chrono::duration<double>(clk::now() - rec.fired_at).count();
+        REQUIRE(rec.fired);
+        INFO("latency " << latency << " s");
+        // The 0.75 s target is a property of an optimised build: unoptimised
+        // and under ASan one 12 MP step takes seconds. The poll cadence above
+        // is asserted in every build; here a sanitizer/debug build only has
+        // to land.
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+        REQUIRE(latency < 0.75);
+#else
+        REQUIRE(latency < 15.0);
+#endif
+        REQUIRE(r.stacked.empty());
+        REQUIRE(rec.foreign_calls == 0);
+    }
+    fs::remove_all(root);
 }

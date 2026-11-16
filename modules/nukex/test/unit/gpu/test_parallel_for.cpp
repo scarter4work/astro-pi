@@ -139,3 +139,51 @@ TEST_CASE("parallel_for_dynamic: max_workers caps the thread count and still cov
         REQUIRE(max_worker_id < std::min(cap, hw));
     }
 }
+
+// ── parallel_for_polled ─────────────────────────────────────────────
+
+TEST_CASE("parallel_for_polled: every index once, never on worker 0, polled from the caller", "[parallel_for][polled]") {
+    const auto caller = std::this_thread::get_id();
+    std::vector<std::atomic<int>> hits(200);
+    for (auto& h : hits) h.store(0);
+    std::atomic<int> on_caller{0}, worker0{0};
+    int polls = 0;
+    bool poll_off_thread = false;
+    nukex::parallel_for_polled(200, 3, 4, [&](int i, int worker) {
+        if (worker == 0) worker0++;
+        if (std::this_thread::get_id() == caller) on_caller++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        hits[static_cast<std::size_t>(i)]++;
+    }, [&] {
+        if (std::this_thread::get_id() != caller) poll_off_thread = true;
+        ++polls;
+    }, std::chrono::milliseconds(5));
+    for (auto& h : hits) REQUIRE(h.load() == 1);
+    REQUIRE(worker0.load() == 0);
+    REQUIRE(on_caller.load() == 0);
+    REQUIRE_FALSE(poll_off_thread);
+    REQUIRE(polls >= 5);   // ~200 x 2 ms / 4 workers = 100 ms of work at 5 ms
+}
+
+TEST_CASE("parallel_for_polled: the caller keeps polling while one iteration is long", "[parallel_for][polled]") {
+    using clk = std::chrono::steady_clock;
+    std::vector<clk::time_point> at;
+    nukex::parallel_for_polled(2, 1, 2, [&](int, int) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }, [&] { at.push_back(clk::now()); }, std::chrono::milliseconds(10));
+    REQUIRE(at.size() >= 10);
+    double gap = 0;
+    for (std::size_t i = 1; i < at.size(); ++i)
+        gap = std::max(gap, std::chrono::duration<double>(at[i] - at[i - 1]).count());
+    REQUIRE(gap < 0.1);
+}
+
+TEST_CASE("parallel_for_polled: a body's exception stops the loop and reaches the caller", "[parallel_for][polled]") {
+    std::atomic<int> ran{0};
+    REQUIRE_THROWS_AS(nukex::parallel_for_polled(1000, 1, 4, [&](int i, int) {
+        ran++;
+        if (i == 3) throw std::runtime_error("boom");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }, [] {}), std::runtime_error);
+    REQUIRE(ran.load() < 1000);
+}

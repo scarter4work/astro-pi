@@ -2,21 +2,47 @@
 #include "nukex/stretch/stretch_utils.hpp"
 #include <cmath>
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 
 namespace nukex {
 
-float LuptonStretch::apply_scalar(float x) const {
-    // The Lupton asinh curve applied to a single intensity value.
-    // f(I) = arcsinh(Q * I / stretch) * slope
-    // where slope = frac / arcsinh(frac * Q), frac = 0.1
-    if (x <= 0.0f) return 0.0f;
+namespace {
 
-    constexpr float frac = 0.1f;
-    float slope = frac / std::asinh(frac * Q);
-    return std::asinh(Q * x / stretch) * slope;
+constexpr float kFrac = 0.1f;
+
+/// Q is the softening and stretch the linear range: Q >= 0, stretch > 0.
+/// stretch is the divisor of the intensity; at 0 the map is a step that puts
+/// every positive pixel at the top, so it is refused rather than evaluated.
+void require_valid(float Q, float stretch) {
+    if (!std::isfinite(Q) || Q < 0.0f)
+        throw std::invalid_argument("Lupton: Q must be finite and >= 0 (got " + std::to_string(Q) + ")");
+    if (!std::isfinite(stretch) || !(stretch > 0.0f))
+        throw std::invalid_argument("Lupton: stretch must be finite and > 0 (got " + std::to_string(stretch)
+                                    + "); it divides the intensity, and at 0 every positive pixel saturates");
+}
+
+/// f(I) = asinh(Q I / stretch) * frac / asinh(frac Q)   (Lupton et al. 2004),
+/// with its Q -> 0 limit I / stretch: asinh(z) = z (1 - z^2/6 + ...), so for
+/// small Q the ratio of the two asinh terms is (I / stretch)(1 + O(Q^2)). Below
+/// Q = 1e-4 the relative difference is under 1e-8 x (1 + (I/stretch)^2), far
+/// below float resolution, and the closed form would divide 0 by 0 at Q = 0.
+/// (astropy's make_lupton_rgb treats Q == 0 the same way: a linear stretch.)
+inline float lupton_f(float I, float Q, float stretch) {
+    if (Q < 1e-4f) return I / stretch;
+    return std::asinh(Q * I / stretch) * (kFrac / std::asinh(kFrac * Q));
+}
+
+} // namespace
+
+float LuptonStretch::apply_scalar(float x) const {
+    require_valid(Q, stretch);
+    if (x <= 0.0f) return 0.0f;
+    return lupton_f(x, Q, stretch);
 }
 
 void LuptonStretch::apply(Image& img) const {
+    require_valid(Q, stretch);
     int n = img.width() * img.height();
     int nch = img.n_channels();
 
@@ -40,9 +66,6 @@ void LuptonStretch::apply(Image& img) const {
     float* G = img.channel_data(1);
     float* B = img.channel_data(2);
 
-    constexpr float frac = 0.1f;
-    float slope = frac / std::asinh(frac * Q);
-
     for (int i = 0; i < n; i++) {
         float r = R[i] - minimum_r;
         float g = G[i] - minimum_g;
@@ -58,7 +81,7 @@ void LuptonStretch::apply(Image& img) const {
         }
 
         // Stretched intensity
-        float fI = std::asinh(Q * I / stretch) * slope;
+        float fI = lupton_f(I, Q, stretch);
 
         // Scale ratio
         float ratio = fI / I;
@@ -84,14 +107,17 @@ void LuptonStretch::apply(Image& img) const {
 
 std::map<std::string, std::pair<float, float>> LuptonStretch::param_bounds() const {
     return {
+        // Q = 0 is the linear limit and valid. stretch must be > 0: 0.001 is
+        // a linear range of 1/1000 of full scale, already a near-step.
         {"Q",       {0.0f, 50.0f}},
-        {"stretch", {0.0f, 100.0f}},
+        {"stretch", {0.001f, 100.0f}},
     };
 }
 
 bool LuptonStretch::set_param(const std::string& n, float v) {
-    if (n == "Q")       { Q       = v; return true; }
-    if (n == "stretch") { stretch = v; return true; }
+    // Refused loudly, and not applied: an invalid value is a caller's bug.
+    if (n == "Q")       { require_valid(v, stretch); Q = v; return true; }
+    if (n == "stretch") { require_valid(Q, v); stretch = v; return true; }
     return false;
 }
 

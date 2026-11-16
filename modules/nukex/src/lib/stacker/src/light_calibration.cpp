@@ -1,4 +1,7 @@
 #include "nukex/stacker/light_calibration.hpp"
+#include "nukex/core/parallel_for.hpp"
+#include "nukex/fitting/huber_estimator.hpp"
+#include "nukex/fitting/robust_stats.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -212,17 +215,9 @@ PlanResult CalibrationMatcher::plan(const CalibrationHeader& frame,
                                                    + " C from the frame" : std::string());
     } else if (r.plan.dark) {
         d = "bias " + master_name(*r.plan.bias) + ", then dark " + master_name(*r.plan.dark)
-          + " (" + fmt_g(r.plan.dark->header.exposure) + " s) less bias, scaled by " + fmt(r.plan.dark_scale, 4)
+          + " (" + fmt_g(r.plan.dark->header.exposure) + " s) less bias, scaled by a per-light fit seeded at " + fmt(r.plan.dark_scale, 4)
           + " (exposure " + fmt(r.plan.exposure_ratio, 4)
           + (r.plan.temperature_factor != 1.0 ? ", temperature " + fmt(r.plan.temperature_factor, 4) : std::string()) + ")";
-        // Accepted, but said out loud: the scale is the header ratio, and
-        // dark signal is not exactly proportional to it. Measured on an
-        // ASI2400MC Pro, a 180 s dark scaled to 300 s left the hot pixels
-        // ~5 ADU over-subtracted (their 300/180 ratio fits at 1.19, not 1.67).
-        r.warnings.push_back("dark " + master_name(*r.plan.dark) + " is scaled by "
-                             + fmt(r.plan.dark_scale, 4) + " from its header values; dark signal (hot "
-                             "pixels especially) is not exactly linear in exposure, and a dark of the "
-                             "light's own exposure needs no scaling");
     } else if (r.plan.bias) {
         d = "bias " + master_name(*r.plan.bias) + " only";
     }
@@ -246,10 +241,159 @@ Image LightCalibrator::pedestal(const CalibrationPlan& plan) {
     return Image();
 }
 
+namespace {
+
+/// (A - B)(p) minus the median of its eight same-colour neighbours at
+/// distance `s` (an interior pixel of one channel plane), without forming the
+/// difference image.
+inline float neighbour_excess_diff(const float* a, const float* b, int W, int x, int y, int s) {
+    float nb[8];
+    int k = 0;
+    for (int dy = -s; dy <= s; dy += s)
+        for (int dx = -s; dx <= s; dx += s)
+            if (dx || dy) {
+                const std::size_t i = static_cast<std::size_t>(y + dy) * W + (x + dx);
+                nb[k++] = a[i] - b[i];
+            }
+    const std::size_t c = static_cast<std::size_t>(y) * W + x;
+    return (a[c] - b[c]) - median_inplace(nb, 8);
+}
+
+} // namespace
+
+std::shared_ptr<const DarkStructure> LightCalibrator::dark_structure(const MasterFrame& bias,
+                                                                     const MasterFrame& dark,
+                                                                     float threshold_sigma) {
+    auto st = std::make_shared<DarkStructure>();
+    const int W = dark.data.width(), H = dark.data.height(), C = dark.data.n_channels();
+    st->stride = dark.header.bayer_pattern.empty() ? 1 : 2;
+    const int s = st->stride;
+    if (W <= 2 * s || H <= 2 * s || bias.data.width() != W || bias.data.height() != H ||
+        bias.data.n_channels() != C)
+        return st;
+    const std::size_t plane = static_cast<std::size_t>(W) * H;
+    // Excess of every interior pixel, then its robust scale.
+    std::vector<float> ex(plane * C, 0.0f);
+    for (int c = 0; c < C; ++c) {
+        const float* d = dark.data.channel_data(c);
+        const float* b = bias.data.channel_data(c);
+        float* o = ex.data() + plane * c;
+        parallel_for_dynamic(H - 2 * s, 16, [&](int r, int) {
+            const int y = r + s;
+            for (int x = s; x < W - s; ++x)
+                o[static_cast<std::size_t>(y) * W + x] = neighbour_excess_diff(d, b, W, x, y, s);
+        });
+    }
+    std::vector<float> interior;
+    interior.reserve(static_cast<std::size_t>(W - 2 * s) * (H - 2 * s) * C);
+    for (int c = 0; c < C; ++c)
+        for (int y = s; y < H - s; ++y)
+            for (int x = s; x < W - s; ++x)
+                interior.push_back(ex[plane * c + static_cast<std::size_t>(y) * W + x]);
+    st->sigma = 1.4826f * mad(interior.data(), static_cast<int>(interior.size()));
+    interior.clear();
+    interior.shrink_to_fit();
+    // Never below half an ADU: a noise-free (or heavily quantised) master has
+    // a zero noise scale, and its structure is every pixel that differs from
+    // its neighbours at all.
+    const double fs = dark.header.full_scale > 0.0 ? dark.header.full_scale : 1.0;
+    const float thr = std::max(threshold_sigma * st->sigma, static_cast<float>(0.5 / fs));
+    for (int c = 0; c < C; ++c)
+        for (int y = s; y < H - s; ++y)
+            for (int x = s; x < W - s; ++x) {
+                const std::size_t i = plane * c + static_cast<std::size_t>(y) * W + x;
+                if (std::fabs(ex[i]) > thr) {
+                    st->index.push_back(static_cast<std::uint32_t>(i));
+                    st->excess.push_back(ex[i]);
+                }
+            }
+    return st;
+}
+
+void LightCalibrator::prepare(CalibrationPlan& plan) {
+    if (plan.dark && plan.dark_scaled && plan.bias && !plan.structure)
+        plan.structure = dark_structure(*plan.bias, *plan.dark);
+}
+
+DarkScaleFit LightCalibrator::fit_dark_scale(const Image& frame, const MasterFrame& bias,
+                                             const MasterFrame& dark, const DarkStructure& st,
+                                             double initial, int min_pixels,
+                                             double max_relative_error) {
+    DarkScaleFit fit;
+    fit.initial = initial;
+    fit.scale = initial;
+    const int W = frame.width(), H = frame.height();
+    const int n = static_cast<int>(st.index.size());
+    fit.n_pixels = n;
+    auto refuse = [&](const std::string& why) {
+        fit.well_conditioned = false;
+        fit.scale = initial;
+        fit.warning = why + "; the header ratio " + fmt(initial, 4) + " is used instead";
+        return fit;
+    };
+    if (n < min_pixels)
+        return refuse("only " + std::to_string(n) + " pixels of the dark carry structure above its noise "
+                      "(at least " + std::to_string(min_pixels) + " are needed to fit a dark scale)");
+    if (frame.width() != dark.data.width() || frame.height() != dark.data.height())
+        return refuse("frame and dark geometry differ");
+
+    // The light's excess at the structure pixels, on (L - B).
+    const std::size_t plane = static_cast<std::size_t>(W) * H;
+    std::vector<float> rl(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const std::size_t idx = st.index[i];
+        const int c = static_cast<int>(idx / plane);
+        const std::size_t off = idx % plane;
+        const int y = static_cast<int>(off / W), x = static_cast<int>(off % W);
+        rl[i] = neighbour_excess_diff(frame.channel_data(c), bias.data.channel_data(c), W, x, y, st.stride);
+    }
+    const float* rd = st.excess.data();
+
+    // Huber IRLS for the slope through the origin, seeded at the header ratio.
+    const double tuning = HuberEstimator::Config{}.tuning;
+    std::vector<float> e(static_cast<std::size_t>(n));
+    double k = initial, den = 0.0, sigma = 0.0;
+    for (int it = 0; it < 50; ++it) {
+        for (int i = 0; i < n; ++i) e[i] = rl[i] - static_cast<float>(k) * rd[i];
+        sigma = 1.4826 * mad(e.data(), n);
+        // sigma == 0: at least half the residuals are exactly zero (noise-free
+        // data, or a quantised light whose structure k already matches) --
+        // every point is an inlier and the step is least squares.
+        const double delta = (sigma > 0.0) ? tuning * sigma : std::numeric_limits<double>::infinity();
+        double num = 0.0;
+        den = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double r = std::fabs(static_cast<double>(e[i]));
+            const double w = (r <= delta) ? 1.0 : delta / r;
+            num += w * rd[i] * rl[i];
+            den += w * static_cast<double>(rd[i]) * rd[i];
+        }
+        if (!(den > 0.0)) break;
+        const double next = num / den;
+        fit.iterations = it + 1;
+        const bool converged = std::fabs(next - k) <= 1e-7 * std::max(std::fabs(k), 1e-12);
+        k = next;
+        if (converged) break;
+    }
+    fit.fitted = k;
+    fit.standard_error = (den > 0.0) ? sigma / std::sqrt(den) : 0.0;
+    if (!(den > 0.0))
+        return refuse("the dark structure has no weight in the fit");
+    if (!(k > 0.0) || k < initial / 4.0 || k > initial * 4.0)
+        return refuse("the fitted scale " + fmt(k, 4) + " is not within a factor 4 of the header ratio");
+    if (fit.standard_error > max_relative_error * k)
+        return refuse("the fitted scale " + fmt(k, 4) + " +/- " + fmt(fit.standard_error, 4)
+                      + " is poorly conditioned (relative error above " + fmt(100.0 * max_relative_error, 1) + "%)");
+    fit.well_conditioned = true;
+    fit.scale = k;
+    return fit;
+}
+
 std::string LightCalibrator::apply(Image& frame, double frame_full_scale,
                                    const CalibrationPlan& plan,
                                    const MasterFrame* master_flat,
-                                   float min_flat_value) {
+                                   float min_flat_value,
+                                   DarkScaleFit* fit_out) {
     auto check = [&](const MasterFrame* m) -> std::string {
         if (!m) return {};
         if (m->data.width() != frame.width() || m->data.height() != frame.height() ||
@@ -274,9 +418,13 @@ std::string LightCalibrator::apply(Image& frame, double frame_full_scale,
         const float* d = plan.dark->data.data();
         for (std::size_t i = 0; i < n; ++i) v[i] -= d[i];
     } else if (plan.dark) {
+        std::shared_ptr<const DarkStructure> st = plan.structure;
+        if (!st) st = dark_structure(*plan.bias, *plan.dark);
+        const DarkScaleFit fit = fit_dark_scale(frame, *plan.bias, *plan.dark, *st, plan.dark_scale);
+        if (fit_out) *fit_out = fit;
         const float* d = plan.dark->data.data();
         const float* b = plan.bias->data.data();
-        const float s = static_cast<float>(plan.dark_scale);
+        const float s = static_cast<float>(fit.scale);
         for (std::size_t i = 0; i < n; ++i) v[i] = v[i] - b[i] - s * (d[i] - b[i]);
     } else if (plan.bias) {
         const float* b = plan.bias->data.data();

@@ -238,3 +238,113 @@ TEST_CASE("Calibrated stack: flats with no pedestal master are refused", "[integ
     INFO(ok.error);
     REQUIRE(ok.ok);
 }
+
+// ── The flat-only path's order ──────────────────────────────────────
+
+namespace {
+void write_cfa_float(const std::string& path, const std::function<float(int, int)>& v, const char* imagetyp) {
+    std::vector<float> px(static_cast<std::size_t>(kW) * kH);
+    for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < kW; ++x) px[static_cast<std::size_t>(y) * kW + x] = v(x, y);
+    fs::remove(path);
+    fitsfile* fp = nullptr;
+    int status = 0;
+    fits_create_diskfile(&fp, path.c_str(), &status);
+    long naxes[2] = {kW, kH};
+    fits_create_img(fp, FLOAT_IMG, 2, naxes, &status);
+    fits_write_img(fp, TFLOAT, 1, static_cast<LONGLONG>(px.size()), px.data(), &status);
+    fits_update_key_str(fp, "IMAGETYP", imagetyp, nullptr, &status);
+    fits_update_key_str(fp, "BAYERPAT", "RGGB", nullptr, &status);
+    fits_update_key_str(fp, "INSTRUME", "ASI585MC", nullptr, &status);
+    fits_close_file(fp, &status);
+    REQUIRE(status == 0);
+}
+/// A flat whose photosites differ by colour (R 0.5, G 1.0, B 0.75) as well
+/// as by vignetting -- a tinted flat panel.
+float cfa_gain(int x, int y) {
+    const bool r = (y % 2 == 0) && (x % 2 == 0), b = (y % 2 == 1) && (x % 2 == 1);
+    const float v = 1.0f - 0.3f * static_cast<float>(((x - kW / 2.0) * (x - kW / 2.0) + (y - kH / 2.0) * (y - kH / 2.0)) / (kW * kW / 4.0));
+    return (r ? 0.5f : b ? 0.75f : 1.0f) * v;
+}
+double interior_cv(const Image& img, int ch) {
+    double s = 0, s2 = 0; int n = 0;
+    for (int y = 8; y < img.height() - 8; ++y)
+        for (int x = 8; x < img.width() - 8; ++x) { const double v = img.at(x, y, ch); s += v; s2 += v * v; ++n; }
+    const double m = s / n;
+    return std::sqrt(std::max(0.0, s2 / n - m * m)) / std::fabs(m);
+}
+} // namespace
+
+TEST_CASE("Flat-only path: a CFA flat divides each photosite before debayer", "[integration][flat]") {
+    fs::path dir;
+    std::random_device rd;
+    for (;;) {
+        dir = fs::temp_directory_path() / ("nukex_cfaflat_" + std::to_string(rd()) + "_" + std::to_string(rd()));
+        if (fs::create_directory(dir)) break;
+    }
+    std::vector<std::string> flats, lights;
+    for (int f = 0; f < 3; ++f) {
+        flats.push_back((dir / ("flat_" + std::to_string(f) + ".fit")).string());
+        write_cfa_float(flats.back(), [f](int x, int y) { return (0.4f + 0.01f * f) * cfa_gain(x, y); }, "Flat");
+    }
+    // A uniformly grey sky seen through that optical path: every photosite
+    // is sky x its own flat.
+    lights.push_back((dir / "light.fit").string());
+    write_cfa_float(lights.back(), [](int x, int y) { return 0.3f * cfa_gain(x, y); }, "Light");
+
+    StackingEngine::Config c;
+    c.cache_dir = dir.string();
+    c.qe_database_path = (fs::path(NUKEX_TEST_FIXTURES_DIR) / "qe" / "minimal_db.json").string();
+    auto r = StackingEngine(c).execute(lights, flats, nullptr);
+    REQUIRE(r.ok);
+    REQUIRE(r.stacked.n_channels() >= 3);
+    for (int ch = 0; ch < 3; ++ch) {
+        INFO("channel " << ch << " CV " << interior_cv(r.stacked, ch));
+        // Divided per photosite: a grey field, flat in every channel. Divided
+        // after debayer it is the CFA pattern again (CV ~0.3).
+        REQUIRE(interior_cv(r.stacked, ch) < 1e-3);
+    }
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("Calibrated stack: a scaled dark's fit is reported, and a poorly conditioned one loudly", "[integration][darkbias]") {
+    Fixture fx;
+    MasterBuilder::Config mc; mc.cache_dir = fx.dir.string();
+    CalibrationSet good, flat_dark;
+    good.biases.push_back(fx.master(MasterKind::BIAS, fx.biases));
+    flat_dark.biases.push_back(fx.master(MasterKind::BIAS, fx.biases));
+    // 100 s darks: with ~3% structured pixels (fit well conditioned), and
+    // with a uniform dark current only (nothing to fit against). The lights
+    // carry the same structure at 300 s.
+    auto structure = [](int x, int y) {
+        const unsigned h = static_cast<unsigned>(x) * 73856093u ^ static_cast<unsigned>(y) * 19349663u;
+        return (h % 33u == 0u) ? 80.0 + static_cast<double>((h / 33u) % 400u) : 0.0;
+    };
+    std::vector<std::string> lights;
+    std::mt19937 rng(9);
+    std::normal_distribution<double> n(0.0, 6.0);
+    for (int f = 0; f < 5; ++f) {
+        lights.push_back((fx.dir / ("sl_" + std::to_string(f) + ".fit")).string());
+        write_u16(lights.back(), [&](int x, int y) { return bias_adu(x, y) + 3.0 + 3.0 * structure(x, y) + 3000 + stars(x, y) + n(rng); }, Hdr{});
+    }
+    std::vector<std::string> hot100, flat100;
+    for (int f = 0; f < 5; ++f) {
+        Hdr d; d.imagetyp = "Dark"; d.exptime = 100.0;
+        hot100.push_back((fx.dir / ("dh_" + std::to_string(f) + ".fit")).string());
+        write_u16(hot100.back(), [&, f](int x, int y) { return bias_adu(x, y) + 1.0 + structure(x, y) + ((x + y + f) % 3) - 1.0; }, d);
+        flat100.push_back((fx.dir / ("df_" + std::to_string(f) + ".fit")).string());
+        write_u16(flat100.back(), [f](int x, int y) { return bias_adu(x, y) + 1.0 + ((x + y + f) % 3) - 1.0; }, d);
+    }
+    good.darks.push_back(fx.master(MasterKind::DARK, hot100));
+    flat_dark.darks.push_back(fx.master(MasterKind::DARK, flat100));
+    Log lg, lf;
+    auto rg = StackingEngine(fx.config()).execute(lights, {}, good, &lg);
+    auto rf = StackingEngine(fx.config()).execute(lights, {}, flat_dark, &lf);
+    INFO(rg.error << " | " << rf.error);
+    REQUIRE(rg.ok); REQUIRE(rf.ok);
+    REQUIRE(lg.saw("Calibration: dark scale fitted per light on 5 lights"));
+    REQUIRE_FALSE(lg.saw("dark scale: "));
+    REQUIRE(lf.saw("Calibration warning: light "));
+    REQUIRE(lf.saw("header ratio 3.0000 is used instead"));
+}
