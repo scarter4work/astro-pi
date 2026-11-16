@@ -1,5 +1,17 @@
 # NukeX — Changelog
 
+## Unreleased
+
+- **Engine library: flats calibrate with darks and no bias.** Software built on the NukeX engine (the NukeX
+  standalone app's Calibrate stage) refused a calibration set of lights, darks and flats with no master bias or
+  dark-flat. The flats' pedestal now comes from the darks: a master dark at the flats' exposure is used as their
+  dark-flat; otherwise a dark is scaled to the flats' exposure around a bias level estimated as that dark's
+  per-colour median. The run's log, and the result, say which was used. Measured on an ASI2400MC Pro (gain 0,
+  offset 30): the estimated level was 0.9-1.1 ADU above the real master bias (about 960 ADU), and a light
+  flat-fielded this way matched the same light flat-fielded with the real master bias to within 0.01% everywhere;
+  dividing by a flat with its pedestal left on was off by up to 2.6%. Flats that no dark fits (a different gain or
+  offset, for example) are still refused, with each dark's reason. The PixInsight process is unchanged.
+
 ## v5.3.1.0 — 2026-11-15
 
 Flat frames from a colour camera now correct each pixel by its own colour's flat, and several smaller fixes.

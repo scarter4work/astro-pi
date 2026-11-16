@@ -226,6 +226,119 @@ PlanResult CalibrationMatcher::plan(const CalibrationHeader& frame,
     return r;
 }
 
+PlanResult CalibrationMatcher::flat_plan_from_darks(const CalibrationHeader& flat,
+                                                    const std::vector<MasterFrame>& darks,
+                                                    const MatchTolerance& tol,
+                                                    MasterFrame& estimated_bias) {
+    static const std::string kPrefix = "no master bias or dark-flat: ";
+
+    // 1. A dark at the flats' exposure and temperature is their dark-flat.
+    //    With no bias offered, plan() accepts only an unscaled dark.
+    PlanResult same = plan(flat, {}, darks, tol, /*require_dark=*/false, /*require_bias=*/false);
+    if (same.ok && same.plan.dark && !same.plan.dark_scaled) {
+        same.plan.description = kPrefix + same.plan.description;
+        return same;
+    }
+
+    // 2. A compatible dark scaled around its own floor.
+    PlanResult r;
+    const MasterFrame* best = nullptr;
+    std::vector<std::string> best_warnings, refusals;
+    if (!flat.has_exposure)
+        refusals.push_back("the flats record no exposure, so no dark can be scaled to them");
+    for (const auto& d : darks) {
+        if (!flat.has_exposure) break;
+        std::vector<std::string> w;
+        const std::string c = compatibility(flat, d.header, &w);
+        if (!c.empty()) { refusals.push_back(master_name(d) + ": " + c); continue; }
+        if (!d.header.has_exposure || !(d.header.exposure > 0.0)) {
+            refusals.push_back(master_name(d) + ": no positive exposure recorded, so it cannot be scaled to the flats");
+            continue;
+        }
+        auto dt = [&](const MasterFrame& m) {
+            return (flat.has_temperature && m.header.has_temperature)
+                 ? std::fabs(flat.temperature - m.header.temperature) : 0.0;
+        };
+        if (!best || d.header.exposure < best->header.exposure ||
+            (d.header.exposure == best->header.exposure && dt(d) < dt(*best))) {
+            best = &d;
+            best_warnings = w;
+        }
+    }
+    if (!best) {
+        r.error = "no master bias or dark-flat was given, and no master dark can stand in for one ("
+                  "a dark at the flats' exposure, or a compatible dark to estimate their pedestal from) for "
+                  + flat.describe() + ":";
+        for (const auto& s : refusals) r.error += "\n  - " + s;
+        return r;
+    }
+
+    std::vector<double> levels;
+    estimated_bias = LightCalibrator::estimate_bias(*best, &levels);
+    const double k = flat.exposure / best->header.exposure;
+    r.plan.bias = &estimated_bias;
+    r.plan.dark = best;
+    r.plan.dark_scaled = true;
+    r.plan.exposure_ratio = k;
+    r.plan.temperature_factor = 1.0;
+    r.plan.dark_scale = k;
+    r.warnings = best_warnings;
+
+    std::string lv;
+    for (std::size_t i = 0; i < levels.size(); ++i) lv += (i ? ", " : "") + fmt(levels[i], 1);
+    std::string d = kPrefix + "bias level estimated as the floor (median per CFA channel) of dark "
+                  + master_name(*best) + ", " + lv + " ADU (it overstates the bias by that dark's median "
+                  "dark signal and omits the bias's fixed pattern), plus the dark less its floor scaled by "
+                  + fmt(k, 4) + " (" + fmt_g(flat.exposure) + " s / " + fmt_g(best->header.exposure) + " s";
+    if (flat.has_temperature && best->header.has_temperature)
+        d += "; dark " + fmt(best->header.temperature - flat.temperature) + " C from the flats, not temperature-scaled";
+    d += ")";
+    r.plan.description = d;
+    r.ok = true;
+    return r;
+}
+
+MasterFrame LightCalibrator::estimate_bias(const MasterFrame& dark, std::vector<double>* levels_adu) {
+    MasterFrame b;
+    b.kind = MasterKind::BIAS;
+    b.header = dark.header;
+    b.header.image_type = "Bias";
+    b.header.has_exposure = false;
+    b.header.exposure = 0.0;
+    b.n_frames = 0;
+    b.temperature_min = dark.temperature_min;
+    b.temperature_max = dark.temperature_max;
+    b.estimator = "floor of a master dark";
+    b.signature = "floor(" + dark.signature + ")";
+    b.data = dark.data.clone();
+    if (levels_adu) levels_adu->clear();
+
+    const int W = b.data.width(), H = b.data.height(), C = b.data.n_channels();
+    if (W <= 0 || H <= 0) return b;
+    const int s = dark.header.bayer_pattern.empty() ? 1 : 2;
+    const double fs = dark.header.full_scale > 0.0 ? dark.header.full_scale : 1.0;
+    std::vector<float> v;
+    v.reserve(static_cast<std::size_t>((W + 1) / s) * ((H + 1) / s));
+    for (int c = 0; c < C; ++c) {
+        const float* src = dark.data.channel_data(c);
+        float* dst = b.data.channel_data(c);
+        for (int py = 0; py < s; ++py)
+            for (int px = 0; px < s; ++px) {
+                v.clear();
+                for (int y = py; y < H; y += s)
+                    for (int x = px; x < W; x += s)
+                        v.push_back(src[static_cast<std::size_t>(y) * W + x]);
+                if (v.empty()) continue;
+                const float m = median_inplace(v.data(), static_cast<int>(v.size()));
+                for (int y = py; y < H; y += s)
+                    for (int x = px; x < W; x += s)
+                        dst[static_cast<std::size_t>(y) * W + x] = m;
+                if (levels_adu) levels_adu->push_back(static_cast<double>(m) * fs);
+            }
+    }
+    return b;
+}
+
 Image LightCalibrator::pedestal(const CalibrationPlan& plan) {
     if (plan.dark && !plan.dark_scaled) return plan.dark->data.clone();
     if (plan.dark) {

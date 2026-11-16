@@ -226,17 +226,150 @@ TEST_CASE("Calibrated stack: a light the masters do not fit stops the batch, by 
     REQUIRE(r.n_frames_processed == 0);
 }
 
-TEST_CASE("Calibrated stack: flats with no pedestal master are refused", "[integration][darkbias][mismatch]") {
+// ── Flats with no bias and no dark-flat (lights + darks + flats) ─────
+
+namespace {
+
+/// Optical vignetting: 1 on axis, 0.7 at the left/right edges, 0.4 in the corners.
+double vig(int x, int y) {
+    const double dx = (x - kW / 2.0) / kW, dy = (y - kH / 2.0) / kH;
+    return 1.0 - 1.2 * (dx * dx + dy * dy);
+}
+
+/// Vignetted lights (300 s) and flats (`flat_s` s) on the shared fixture's
+/// bias and dark signal. Sky is 3000 ADU on axis.
+struct VignettedSet {
+    std::vector<std::string> lights, flats;
+    VignettedSet(const Fixture& fx, double flat_s) {
+        std::mt19937 rng(7);
+        std::normal_distribution<double> n(0.0, 6.0);
+        for (int f = 0; f < 5; ++f) {
+            lights.push_back((fx.dir / ("vl_" + std::to_string(f) + ".fit")).string());
+            write_u16(lights.back(), [&](int x, int y) {
+                return bias_adu(x, y) + dark_adu(x, y, 300) + (3000 + stars(x, y)) * vig(x, y) + n(rng);
+            }, Hdr{});
+            Hdr fl; fl.imagetyp = "Flat"; fl.exptime = flat_s;
+            flats.push_back((fx.dir / ("vf_" + std::to_string(f) + ".fit")).string());
+            write_u16(flats.back(), [&](int x, int y) {
+                return bias_adu(x, y) + dark_adu(x, y, flat_s) + 25000.0 * vig(x, y) + n(rng);
+            }, fl);
+        }
+    }
+};
+
+/// Star-free background where vignetting is deepest (vig < 0.6) over the
+/// background on axis (vig > 0.95): 1 when the flat took the vignetting out.
+double flat_residual(const StackingEngine::ExecuteResult& r) {
+    double so = 0, sc = 0;
+    int no = 0, nc = 0;
+    for (int y = 0; y < r.stacked.height(); ++y)
+        for (int x = 0; x < r.stacked.width(); ++x) {
+            const int gx = x + r.trim.x0, gy = y + r.trim.y0;
+            if (stars(gx, gy) > 1.0 || is_hot(gx, gy)) continue;
+            const double v = vig(gx, gy), p = r.stacked.at(x, y, 0);
+            if (v < 0.6) { so += p; ++no; }
+            if (v > 0.95) { sc += p; ++nc; }
+        }
+    REQUIRE(no > 100);
+    REQUIRE(nc > 100);
+    return (so / no) / (sc / nc);
+}
+
+} // namespace
+
+TEST_CASE("Calibrated stack: darks + flats with no bias or dark-flat -- the flats' pedestal comes from the darks",
+          "[integration][darkbias][flatpedestal]") {
+    // Scott's usual night: lights, darks at the lights' exposure, flats at a
+    // fraction of a second, and no bias or dark-flat frames.
     Fixture fx;
+    VignettedSet vs(fx, 0.5);
+    CalibrationSet darks_only;
+    darks_only.darks.push_back(fx.master(MasterKind::DARK, fx.darks));
+    Log log;
+    auto r = StackingEngine(fx.config()).execute(vs.lights, vs.flats, darks_only, &log);
+    INFO(r.error);
+    REQUIRE(r.ok);
+    REQUIRE(r.n_frames_processed == 5);
+    // Which pedestal path was taken is said, in the log and the result.
+    REQUIRE(log.saw("Calibration: flats -- no master bias or dark-flat: bias level estimated"));
+    REQUIRE_THAT(r.flat_pedestal, Catch::Matchers::ContainsSubstring("bias level estimated"));
+    REQUIRE_THAT(r.flat_pedestal, Catch::Matchers::ContainsSubstring("scaled by 0.0017"));
+
+    // The vignetting is gone. A flat divided in with its ~808 ADU pedestal
+    // still on would leave the deepest-vignetted background ~2.5% dark.
+    const double res = flat_residual(r);
+    INFO("edge/centre background, darks-only calibration: " << res);
+    REQUIRE(std::fabs(res - 1.0) < 0.003);
+
+    // And it agrees with the same stack calibrated with a real master bias.
+    CalibrationSet with_bias = darks_only;
+    with_bias.biases.push_back(fx.master(MasterKind::BIAS, fx.biases));
+    auto rb = StackingEngine(fx.config()).execute(vs.lights, vs.flats, with_bias, nullptr);
+    INFO(rb.error);
+    REQUIRE(rb.ok);
+    const double res_b = flat_residual(rb);
+    INFO("edge/centre background, with a real bias: " << res_b);
+    REQUIRE(std::fabs(res - res_b) < 0.002);
+
+    // Reference: the empty-set (flat-only, PixInsight module) path divides
+    // the raw light, pedestal and all, by the raw flat: the light's ~808 ADU
+    // pedestal comes out divided by the vignetting (corners bright, ~+15%
+    // here), the flat's own pedestal working the other way.
+    auto r0 = StackingEngine(fx.config()).execute(vs.lights, vs.flats, CalibrationSet{}, nullptr);
+    REQUIRE(r0.ok);
+    INFO("edge/centre background, raw flat on raw lights: " << flat_residual(r0));
+    REQUIRE(flat_residual(r0) > 1.05);
+    REQUIRE(r0.flat_pedestal.empty());
+
+    // Without flats the same darks are fine (an unscaled dark carries the bias).
+    auto nf = StackingEngine(fx.config()).execute(fx.lights, {}, darks_only, nullptr);
+    INFO(nf.error);
+    REQUIRE(nf.ok);
+}
+
+TEST_CASE("Calibrated stack: a master dark at the flats' exposure is their dark-flat",
+          "[integration][darkbias][flatpedestal]") {
+    Fixture fx;
+    VignettedSet vs(fx, 0.5);
+    std::vector<std::string> short_darks;
+    for (int f = 0; f < 5; ++f) {
+        Hdr d; d.imagetyp = "Dark"; d.exptime = 0.5;
+        short_darks.push_back((fx.dir / ("sd_" + std::to_string(f) + ".fit")).string());
+        write_u16(short_darks.back(), [&](int x, int y) { return bias_adu(x, y) + dark_adu(x, y, 0.5); }, d);
+    }
     CalibrationSet cal;
     cal.darks.push_back(fx.master(MasterKind::DARK, fx.darks));
-    auto r = StackingEngine(fx.config()).execute(fx.lights, fx.flats, cal, nullptr);
+    cal.darks.push_back(fx.master(MasterKind::DARK, short_darks));
+    Log log;
+    auto r = StackingEngine(fx.config()).execute(vs.lights, vs.flats, cal, &log);
+    INFO(r.error);
+    REQUIRE(r.ok);
+    REQUIRE(log.saw("Calibration: 5 lights: dark"));
+    REQUIRE(log.saw("Calibration: flats -- no master bias or dark-flat: dark"));
+    REQUIRE_THAT(r.flat_pedestal, Catch::Matchers::ContainsSubstring("(0.5 s"));
+    REQUIRE_THAT(r.flat_pedestal, Catch::Matchers::ContainsSubstring("same exposure"));
+    const double res = flat_residual(r);
+    INFO("edge/centre background: " << res);
+    REQUIRE(std::fabs(res - 1.0) < 0.003);
+}
+
+TEST_CASE("Calibrated stack: flats no dark can calibrate are refused, with every dark's reason",
+          "[integration][darkbias][mismatch][flatpedestal]") {
+    Fixture fx;
+    // Flats at gain 100: the gain-0 darks cannot stand in for their bias.
+    std::vector<std::string> flats;
+    for (int f = 0; f < 3; ++f) {
+        Hdr fl; fl.imagetyp = "Flat"; fl.exptime = 0.5; fl.gain = 100;
+        flats.push_back((fx.dir / ("gf_" + std::to_string(f) + ".fit")).string());
+        write_u16(flats.back(), [](int x, int y) { return bias_adu(x, y) + 25000.0 * vig(x, y); }, fl);
+    }
+    CalibrationSet cal;
+    cal.darks.push_back(fx.master(MasterKind::DARK, fx.darks));
+    auto r = StackingEngine(fx.config()).execute(fx.lights, flats, cal, nullptr);
     REQUIRE_FALSE(r.ok);
-    REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("dark-flat or a master bias"));
-    // Without flats the same darks are fine (an unscaled dark carries the bias).
-    auto ok = StackingEngine(fx.config()).execute(fx.lights, {}, cal, nullptr);
-    INFO(ok.error);
-    REQUIRE(ok.ok);
+    REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("flats"));
+    REQUIRE_THAT(r.error, Catch::Matchers::ContainsSubstring("gain 100 vs 0"));
+    REQUIRE(r.n_frames_processed == 0);
 }
 
 // ── The flat-only path's order ──────────────────────────────────────

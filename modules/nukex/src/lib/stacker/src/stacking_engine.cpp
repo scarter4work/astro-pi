@@ -280,15 +280,24 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                 return fail("Calibration: cannot read the header of flat " + name_of(flat_paths[0]) + ".");
             const CalibrationHeader fh = CalibrationHeader::from_metadata(
                 fm, 1, FITSReader::full_scale_for_bitpix(fm.equiv_bitpix));
+            // The flats' pedestal: a matched master dark-flat, else the master
+            // bias, else -- lights + darks + flats, no bias -- from the darks
+            // (CalibrationMatcher::flat_plan_from_darks: a dark at the flats'
+            // exposure, else a dark scaled around its estimated floor). Never
+            // none: a flat divided in with its pedestal under-corrects the
+            // vignetting by ~pedestal / flat level. `calibrating` with neither
+            // dark-flats nor biases means darks were given, so the last
+            // branch always has darks to work from.
             PlanResult fp;
+            MasterFrame estimated_bias;   // outlives fp.plan, which may point at it
             if (!calibration.dark_flats.empty()) {
                 fp = CalibrationMatcher::plan(fh, calibration.biases, calibration.dark_flats,
                                               calibration.tolerance, true, !calibration.biases.empty());
             } else if (!calibration.biases.empty()) {
                 fp = CalibrationMatcher::plan(fh, calibration.biases, {}, calibration.tolerance, false, true);
             } else {
-                return fail("Calibration: the flats need a master dark-flat or a master bias to remove their "
-                            "pedestal before they can divide calibrated lights; neither was given.");
+                fp = CalibrationMatcher::flat_plan_from_darks(fh, calibration.darks, calibration.tolerance,
+                                                              estimated_bias);
             }
             if (!fp.ok) return fail("Calibration: flats -- " + fp.error);
             for (const auto& w : fp.warnings)
@@ -305,6 +314,7 @@ StackingEngine::ExecuteResult StackingEngine::execute(
                          : MasterBuilder::Config::Estimator::MODEL_RACE;
             fc.race = config_.fitting_config;
             obs.message("Calibration: flats -- " + fp.plan.description + " subtracted from each flat.");
+            result.flat_pedestal = fp.plan.description;
             auto br = MasterBuilder::build(MasterKind::FLAT, flat_paths, fc, &pedestal,
                                            fp.plan.description, ped_sig, &obs);
             if (!br.ok) return fail("Calibration: " + br.error);

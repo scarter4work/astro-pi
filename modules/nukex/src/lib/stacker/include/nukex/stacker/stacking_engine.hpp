@@ -226,6 +226,13 @@ public:
         /// colour back can add it again. Empty when nothing was matched.
         std::vector<std::pair<std::string, float>> background_match;
 
+        /// What was subtracted from each flat before the master flat was
+        /// fitted (calibrated path only; empty when no calibration set was
+        /// given or there were no flats). Also logged. Callers that show a
+        /// calibration summary should show this: with no master bias or
+        /// dark-flat it says which estimate stood in for them.
+        std::string flat_pedestal;
+
         /// The rectangle the intersection trim kept, in the PRE-trim
         /// coordinates the cube still uses.
         ///
@@ -265,9 +272,13 @@ public:
     /// matched dark (scaled by exposure, and by temperature only when the
     /// tolerance enables it), then the flat -- and stacked as usual. The
     /// flats are calibrated the same way: their pedestal (a matched master
-    /// dark-flat, else the master bias) is subtracted from each before the
-    /// master flat is fitted per pixel with the stacker's estimator; flats
-    /// with neither are refused, not divided in with their bias.
+    /// dark-flat, else the master bias, else -- no bias, no dark-flat -- from
+    /// the master darks: one at the flats' exposure, else one scaled around
+    /// its estimated floor; CalibrationMatcher::flat_plan_from_darks) is
+    /// subtracted from each before the master flat is fitted per pixel with
+    /// the stacker's estimator. The path taken is logged and returned in
+    /// ExecuteResult::flat_pedestal. Flats no master can calibrate are
+    /// refused, not divided in with their pedestal.
     ExecuteResult execute(const std::vector<std::string>& light_paths,
                           const std::vector<std::string>& flat_paths,
                           const CalibrationSet& calibration,

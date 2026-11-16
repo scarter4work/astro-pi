@@ -148,6 +148,45 @@ public:
                            const std::vector<MasterFrame>& darks,
                            const MatchTolerance& tol,
                            bool require_dark, bool require_bias);
+
+    /// The pedestal plan for a flat set (header `flat`, its first frame) when
+    /// NEITHER a master dark-flat NOR a master bias was given -- lights, darks
+    /// and flats only, the common CMOS night. A flat divided in with its
+    /// pedestal still on under-corrects vignetting by about
+    /// pedestal / flat level, so the pedestal comes off before the flat is
+    /// normalised, from the darks, in this order:
+    ///
+    ///   1. A master dark at the flats' exposure (and temperature, within
+    ///      `tol`) IS a dark-flat: subtracted as is.
+    ///   2. Otherwise a compatible dark (camera, geometry, CFA, binning, gain,
+    ///      offset, data scale) is scaled to the flats' exposure around an
+    ///      ESTIMATED bias -- the dark's floor, LightCalibrator::estimate_bias:
+    ///          pedestal = B^ + k (D - B^),   k = t_flat / t_dark
+    ///      Among several, the shortest dark (least dark signal in its floor),
+    ///      then the nearest in temperature. `estimated_bias` receives B^ and
+    ///      the returned plan points at it, so it must outlive the plan.
+    ///
+    /// Limits of 2, stated in the plan's description, which the engine logs:
+    /// B^ is the dark's per-CFA-channel median, so it overstates the bias by
+    /// the dark's median dark signal (a few ADU on a cooled camera) and
+    /// carries none of the bias's fixed pattern; both land in the flat
+    /// divided by its level (~1e-4 at a 20000 ADU flat), against the
+    /// pedestal / level (~3-5%) they replace. The temperature of the dark is
+    /// not matched -- at k ~ 1e-3 its dark signal is negligible in a flat --
+    /// but the difference is reported. Lights do NOT get this: an estimate's
+    /// error would land undivided in their background, so a light whose dark
+    /// needs scaling still needs a real master bias (plan()).
+    ///
+    /// Not used: the camera's OFFSET keyword. It is a driver setting whose
+    /// ADU pedestal depends on the camera model and bit depth, so it cannot
+    /// be turned into a level without a per-camera table; the dark's floor
+    /// is a measurement of that pedestal.
+    ///
+    /// Refused, with every dark's reason, when no dark fits.
+    static PlanResult flat_plan_from_darks(const CalibrationHeader& flat,
+                                           const std::vector<MasterFrame>& darks,
+                                           const MatchTolerance& tol,
+                                           MasterFrame& estimated_bias);
 };
 
 /// Applies a plan to one frame, before debayer, on the fixed [0, 1] scale.
@@ -194,6 +233,16 @@ public:
     /// header ratio here: a flat's signal swamps the dark structure a scale
     /// would be fitted against.
     static Image pedestal(const CalibrationPlan& plan);
+
+    /// A master bias estimated from a master dark: every pixel of each CFA
+    /// channel (each 2x2 phase of a mosaic; the whole plane for mono) set to
+    /// the median of that channel of the dark. The median is robust to hot
+    /// pixels and glow, and sits above the true bias by the median dark
+    /// signal. `levels_adu` receives the per-channel levels in ADU (on the
+    /// dark's full scale) for the log. Kind BIAS, the dark's header with no
+    /// exposure, n_frames 0, signature derived from the dark's.
+    static MasterFrame estimate_bias(const MasterFrame& dark,
+                                     std::vector<double>* levels_adu = nullptr);
 };
 
 } // namespace nukex
