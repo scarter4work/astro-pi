@@ -22,6 +22,9 @@ public:
     int   tile_rows  = 8;      // Number of tile rows
     int   n_bins     = 256;    // Histogram resolution
 
+    /// true: equalize a colour image's luminance and scale R, G, B by its
+    /// change (a mono image is its own luminance). false: equalize every
+    /// channel independently.
     bool luminance_only = true;
 
     CLAHEStretch() { name = "CLAHE"; category = StretchCategory::FINISHER; }
@@ -34,6 +37,9 @@ public:
     std::optional<float>                           get_param(const std::string&) const override;
 
 private:
+    /// The tiled, clipped equalization of one plane into `out` (w x h).
+    void equalize_plane(const float* data, int w, int h, float* out) const;
+
     /// Build clipped CDF for a tile region.
     std::vector<float> build_tile_cdf(const float* data, int w, int h,
                                        int x0, int y0, int x1, int y1) const;

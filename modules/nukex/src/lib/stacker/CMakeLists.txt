@@ -3,6 +3,8 @@ add_library(nukex4_stacker STATIC
     src/cache_paths.cpp
     src/stacking_engine.cpp
     src/post_process.cpp
+    src/calibration_masters.cpp
+    src/light_calibration.cpp
 )
 
 target_include_directories(nukex4_stacker

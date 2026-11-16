@@ -110,6 +110,7 @@ nukex_add_test(test_phase_a_accumulate unit/stacker/test_phase_a_accumulate.cpp 
 nukex_add_test(test_post_process unit/stacker/test_post_process.cpp nukex4_stacker nukex4_io nukex4_core)
 nukex_add_test(test_engine_config unit/stacker/test_engine_config.cpp nukex4_stacker nukex4_calibration nukex4_io nukex4_core)
 nukex_add_test(test_cache_sig_dispatch unit/stacker/test_cache_sig_dispatch.cpp nukex4_stacker nukex4_core nukex4_io)
+nukex_add_test(test_dark_bias_calibration unit/stacker/test_dark_bias_calibration.cpp nukex4_stacker nukex4_core nukex4_io cfitsio)
 
 # Test utilities (PNG writer + test data loader + synthetic-FITS writer)
 add_library(test_util STATIC
@@ -139,6 +140,7 @@ nukex_add_test(test_sas unit/stretch/test_sas.cpp nukex4_stretch test_util)
 nukex_add_test(test_tier1 unit/stretch/test_tier1.cpp nukex4_stretch test_util)
 nukex_add_test(test_calibrate unit/stretch/test_calibrate.cpp nukex4_stretch test_util)
 nukex_add_test(test_param_bounds unit/stretch/test_param_bounds.cpp nukex4_stretch)
+nukex_add_test(test_lupton_clahe_limits unit/stretch/test_lupton_clahe_limits.cpp nukex4_stretch)
 nukex_add_test(test_image_stats unit/stretch/test_image_stats.cpp nukex4_stretch test_util)
 nukex_add_test(test_image_stats_exact unit/stretch/test_image_stats_exact.cpp nukex4_stretch nukex4_io)
 nukex_add_test(test_param_model unit/stretch/test_param_model.cpp nukex4_stretch test_util)

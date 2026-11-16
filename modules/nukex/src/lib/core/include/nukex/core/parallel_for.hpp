@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -85,6 +87,118 @@ void parallel_for_dynamic(int count, int chunk, int max_workers, Body&& body) {
     run(0, false);
     for (auto& t : pool) t.join();
 
+    if (error) std::rethrow_exception(error);
+}
+
+/// parallel_for_dynamic for loops whose iterations are long (a frame read,
+/// debayered and star-detected: seconds at 24 MP), where the CALLING thread
+/// must stay responsive -- to ask the host for a cancel, which it may only do
+/// from its own thread, and to report progress.
+///
+/// The calling thread runs no iteration: it calls `poll()` every `interval`
+/// until every worker has finished. `body(i, worker)` runs on spawned threads
+/// with `worker` in [1, workers]; worker 0 is never used, so a body must not
+/// treat any worker as the calling thread. `poll` runs once more after the
+/// workers have joined.
+///
+/// If no thread at all can be started (a process or cgroup limit), the
+/// calling thread runs the iterations itself as worker 0, calling `poll()`
+/// between them -- the old, coarser behaviour rather than none.
+///
+/// Exceptions: as parallel_for_dynamic -- the first one stops further
+/// iterations from being claimed and is rethrown after the join; one thrown
+/// by `poll` is rethrown the same way.
+template <typename Body, typename Poll>
+void parallel_for_polled(int count, int chunk, int max_workers, Body&& body, Poll&& poll,
+                         std::chrono::milliseconds interval = std::chrono::milliseconds(20)) {
+    if (count <= 0) { poll(); return; }
+    if (chunk < 1) chunk = 1;
+
+    const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    const int chunks = (count + chunk - 1) / chunk;
+    const int cap = max_workers > 0 ? std::min(hw, max_workers) : hw;
+    const int workers = std::max(1, std::min(cap, chunks));
+
+    std::atomic<int> next{0};
+    std::atomic<bool> failed{false};
+    std::exception_ptr error;
+    std::mutex m;
+    std::condition_variable cv;
+    int running = 0;
+
+    auto run = [&](int worker) {
+        try {
+            for (;;) {
+                if (failed.load(std::memory_order_relaxed)) break;
+                const int begin = next.fetch_add(chunk, std::memory_order_relaxed);
+                if (begin >= count) break;
+                const int end = std::min(begin + chunk, count);
+                for (int i = begin; i < end; ++i) body(i, worker);
+            }
+        } catch (...) {
+            std::lock_guard<std::mutex> lk(m);
+            if (!error) error = std::current_exception();
+            failed.store(true, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> pool;
+    try {
+        pool.reserve(static_cast<std::size_t>(workers));
+        for (int w = 1; w <= workers; ++w) {
+            {
+                std::lock_guard<std::mutex> lk(m);
+                ++running;
+            }
+            try {
+                pool.emplace_back([&, w] {
+                    run(w);
+                    std::lock_guard<std::mutex> lk(m);
+                    --running;
+                    cv.notify_all();
+                });
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(m);
+                --running;
+                throw;
+            }
+        }
+    } catch (const std::exception&) {
+        // fewer workers than asked; with none, the caller works below
+    }
+
+    if (pool.empty()) {
+        // No thread could be started: the calling thread does the work.
+        try {
+            for (;;) {
+                if (failed.load(std::memory_order_relaxed)) break;
+                const int begin = next.fetch_add(chunk, std::memory_order_relaxed);
+                if (begin >= count) break;
+                const int end = std::min(begin + chunk, count);
+                for (int i = begin; i < end; ++i) { body(i, 0); poll(); }
+            }
+        } catch (...) {
+            if (!error) error = std::current_exception();
+        }
+    } else {
+        std::unique_lock<std::mutex> lk(m);
+        while (running > 0) {
+            lk.unlock();
+            try {
+                poll();
+            } catch (...) {
+                std::lock_guard<std::mutex> g(m);
+                if (!error) error = std::current_exception();
+                failed.store(true, std::memory_order_relaxed);
+            }
+            lk.lock();
+            if (running > 0) cv.wait_for(lk, interval);
+        }
+    }
+    for (auto& t : pool) t.join();
+    if (!error) {
+        try { poll(); } catch (...) { error = std::current_exception(); }
+    }
     if (error) std::rethrow_exception(error);
 }
 

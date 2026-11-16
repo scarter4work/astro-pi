@@ -23,6 +23,15 @@ int FITSReader::read_int_key(void* fptr, const char* key, int default_val) {
     return value;
 }
 
+bool FITSReader::try_read_float_key(void* fptr, const char* key, float& out) {
+    float value = 0.0f;
+    int status = 0;
+    fits_read_key(static_cast<fitsfile*>(fptr), TFLOAT, key, &value, nullptr, &status);
+    if (status != 0) return false;
+    out = value;
+    return true;
+}
+
 std::string FITSReader::read_string_key(void* fptr, const char* key) {
     char value[FLEN_VALUE] = {};
     int status = 0;
@@ -134,10 +143,56 @@ FrameMetadata FITSReader::extract_metadata(void* fptr) {
     std::string ctype1 = read_string_key(f, "CTYPE1");
     m.has_wcs = !ctype1.empty();
 
+    // Calibration matching: raw values with presence flags (see FrameMetadata).
+    m.image_type = read_string_key(f, "IMAGETYP");
+    if (m.image_type.empty()) m.image_type = read_string_key(f, "FRAMETYP");
+    if (m.image_type.empty()) m.image_type = read_string_key(f, "FRAME");
+    m.has_gain_setting = try_read_float_key(f, "GAIN", m.gain_setting);
+    m.has_offset = try_read_float_key(f, "OFFSET", m.offset);
+    if (!m.has_offset) m.has_offset = try_read_float_key(f, "BLKLEVEL", m.offset);
+    m.has_ccd_temp = try_read_float_key(f, "CCD-TEMP", m.ccd_temp);
+    m.has_set_temp = try_read_float_key(f, "SET-TEMP", m.set_temp);
+    {
+        float t = 0.0f;
+        m.has_exposure = try_read_float_key(f, "EXPTIME", t) ||
+                         try_read_float_key(f, "EXPOSURE", t);
+    }
+    m.xbinning = read_int_key(f, "XBINNING", 1);
+    m.ybinning = read_int_key(f, "YBINNING", 1);
+    {
+        int eq = 0, eq_status = 0;
+        fits_get_img_equivtype(f, &eq, &eq_status);
+        m.equiv_bitpix = (eq_status == 0) ? eq : 0;
+    }
+
     return m;
 }
 
 FITSReadResult FITSReader::read(const std::string& filepath) {
+    return read_impl(filepath, Scaling::PER_FRAME_MAX);
+}
+
+FITSReadResult FITSReader::read_fixed_scale(const std::string& filepath) {
+    return read_impl(filepath, Scaling::FIXED);
+}
+
+FITSReadResult FITSReader::read_raw(const std::string& filepath) {
+    return read_impl(filepath, Scaling::NONE);
+}
+
+float FITSReader::full_scale_for_bitpix(int equiv_bitpix) {
+    switch (equiv_bitpix) {
+        case BYTE_IMG:   return 255.0f;
+        case SBYTE_IMG:  return 127.0f;
+        case USHORT_IMG: return 65535.0f;
+        case SHORT_IMG:  return 32767.0f;
+        case ULONG_IMG:  return 4294967295.0f;
+        case LONG_IMG:   return 2147483647.0f;
+        default:         return 0.0f;   // float types: decided by the data
+    }
+}
+
+FITSReadResult FITSReader::read_impl(const std::string& filepath, Scaling scaling) {
     FITSReadResult result;
     fitsfile* fptr = nullptr;
     int status = 0;
@@ -188,6 +243,33 @@ FITSReadResult FITSReader::read(const std::string& filepath) {
             fits_close_file(fptr, &status);
             return result;
         }
+    }
+
+    if (scaling == Scaling::NONE) {
+        result.full_scale = 1.0f;
+        fits_close_file(fptr, &status);
+        result.success = true;
+        return result;
+    }
+    if (scaling == Scaling::FIXED) {
+        // One scale per data type, never per frame (see read_fixed_scale).
+        float fs = full_scale_for_bitpix(result.metadata.equiv_bitpix);
+        if (fs == 0.0f) {
+            float max_val = 0.0f;
+            const float* d = result.image.data();
+            for (size_t i = 0; i < result.image.data_size(); i++) {
+                if (d[i] > max_val) max_val = d[i];
+            }
+            fs = (max_val > 1.5f) ? 65535.0f : 1.0f;
+        }
+        if (fs != 1.0f) {
+            const float scale = 1.0f / fs;
+            result.image.apply([scale](float x) { return x * scale; });
+        }
+        result.full_scale = fs;
+        fits_close_file(fptr, &status);
+        result.success = true;
+        return result;
     }
 
     // Normalize pixel data to [0, 1]
@@ -241,6 +323,80 @@ FrameMetadata FITSReader::read_headers(const std::string& filepath) {
     m = extract_metadata(fptr);
     fits_close_file(fptr, &status);
     return m;
+}
+
+} // namespace nukex
+
+namespace nukex {
+
+namespace {
+// A card's value as written: quotes removed from a string ('' -> '),
+// surrounding blanks trimmed.
+std::string card_value(const char* raw) {
+    std::string v(raw);
+    auto trim = [](std::string& t) {
+        while (!t.empty() && t.back() == ' ') t.pop_back();
+        std::size_t i = 0;
+        while (i < t.size() && t[i] == ' ') ++i;
+        t.erase(0, i);
+    };
+    trim(v);
+    if (v.size() >= 2 && v.front() == '\'' && v.back() == '\'') {
+        std::string inner;
+        for (std::size_t i = 1; i + 1 < v.size(); ++i) {
+            inner.push_back(v[i]);
+            if (v[i] == '\'' && i + 2 < v.size() && v[i + 1] == '\'') ++i;
+        }
+        trim(inner);
+        return inner;
+    }
+    return v;
+}
+} // namespace
+
+std::map<std::string, std::string> FITSReader::read_keywords(const std::string& filepath) {
+    std::map<std::string, std::string> out;
+    fitsfile* fptr = nullptr;
+    int status = 0;
+    fits_open_diskfile(&fptr, filepath.c_str(), READONLY, &status);
+    if (status != 0) return out;
+    int nkeys = 0;
+    fits_get_hdrspace(fptr, &nkeys, nullptr, &status);
+    for (int i = 1; status == 0 && i <= nkeys; ++i) {
+        char name[FLEN_KEYWORD] = {}, value[FLEN_VALUE] = {}, comment[FLEN_COMMENT] = {};
+        fits_read_keyn(fptr, i, name, value, comment, &status);
+        if (status != 0) break;
+        const std::string key(name);
+        if (key.empty() || key == "COMMENT" || key == "HISTORY") continue;
+        out[key] = card_value(value);
+    }
+    int close_status = 0;
+    fits_close_file(fptr, &close_status);
+    return out;
+}
+
+std::vector<std::string> FITSReader::read_history(const std::string& filepath) {
+    std::vector<std::string> out;
+    fitsfile* fptr = nullptr;
+    int status = 0;
+    fits_open_diskfile(&fptr, filepath.c_str(), READONLY, &status);
+    if (status != 0) return out;
+    int nkeys = 0;
+    fits_get_hdrspace(fptr, &nkeys, nullptr, &status);
+    for (int i = 1; status == 0 && i <= nkeys; ++i) {
+        char card[FLEN_CARD] = {};
+        fits_read_record(fptr, i, card, &status);
+        if (status != 0) break;
+        if (std::strncmp(card, "HISTORY", 7) == 0) {
+            std::string text(card + 7);
+            while (!text.empty() && text.back() == ' ') text.pop_back();
+            if (!text.empty() && text.front() == ' ') text.erase(0, 1);
+            out.push_back(text);
+        }
+    }
+    int close_status = 0;
+    fits_close_file(fptr, &close_status);
+    return out;
 }
 
 } // namespace nukex
